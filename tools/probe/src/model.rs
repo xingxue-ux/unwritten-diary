@@ -58,6 +58,10 @@ const QUALITY_CASES: [(&str, [&str; 3]); 3] = [
 ];
 
 fn model_dir() -> PathBuf {
+    // 设备上（Android）用环境变量指路径；桌面开发默认用仓库里的目录。
+    if let Ok(dir) = std::env::var("DIARY_MODEL_DIR") {
+        return PathBuf::from(dir);
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/bge-small-zh-v1.5")
 }
 
@@ -267,7 +271,12 @@ pub fn run() -> Result<()> {
     println!("\n结论与限制");
     println!("  - 上面是真实测量的模型体积、加载耗时、单条与长文本推理耗时、进程峰值内存。");
     println!("  - 质量检查只有 3 条虚构样例，**不构成质量评估**；任务书要求的检索质量集还没建。");
-    println!("  - 全部在 x86_64 主机上；Android arm64 上 ONNX Runtime 的算子与耗时完全未验证。");
+    println!(
+        "  - 本次运行平台：{}/{}。arm64（真机）上的算子与耗时仍未验证。",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    println!("  - 进程退出阶段可能崩溃（见 docs/architecture/M0-技术验证.md 3.3 与 issue #17），测量在崩溃前已完成。");
     println!("  - 没有测批量（padding 后一次前向）与多线程配置，实测的是单序列逐条推理。");
     if passed < QUALITY_CASES.len() {
         bail!("有查询排序错误，说明预处理或 pooling 可能不对");
