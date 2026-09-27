@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/diary_bridge"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+# 两端 Rust 版本不一致（WSL 1.98.1、Windows 1.94.1），以低版本为准，
+# 这样同一份 Cargo.lock 在两侧都能编。见 docs/architecture/M0-环境检查.md 5.2。
+rust-version = "1.94"
+publish = false
+
+[workspace.dependencies]
+flutter_rust_bridge = "=2.13.0"
+
+[profile.release]
+# 移动端体积敏感：优先体积而不是极致的编译期优化。
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

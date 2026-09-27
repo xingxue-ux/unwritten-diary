@@ -1,0 +1,18 @@
+name: diary_bridge
+description: diary_api 与 Rust 核心之间的 Dart 适配层，含 flutter_rust_bridge 生成文件。
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.9.0 <4.0.0"
+
+dependencies:
+  diary_api:
+    path: ../diary_api
+  # 必须与 crates/diary_bridge/Cargo.toml 里的 flutter_rust_bridge 版本一致。
+  flutter_rust_bridge: 2.13.0
+  ffi: ^2.1.0
+
+dev_dependencies:
+  lints: ">=5.0.0 <7.0.0"
+  test: ^1.25.0

@@ -1,0 +1,7 @@
+# flutter_rust_bridge 代码生成配置。
+# 生成命令（在仓库根目录执行）：
+#   flutter_rust_bridge_codegen generate
+# 生成产物在 packages/diary_bridge/lib/src/rust/，禁止手改。
+rust_input: crate::api
+rust_root: crates/diary_bridge/
+dart_output: packages/diary_bridge/lib/src/rust
