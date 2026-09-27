@@ -1,21 +1,22 @@
 name: 契约变更请求
-description: 发现 DiaryApi / PlatformHost 接口缺口时使用。契约由后端维护，必须走此流程。
+description: 发现 DiaryApi / PlatformHost 接口缺口时使用。契约变更必须走此流程，先改文档再改实现。
 title: "[契约] "
+labels: ["contract"]
 body:
   - type: markdown
     attributes:
       value: |
         契约是前后端唯一的同步点。**不要为了绕过缺口，在页面里直接访问数据库或原生对象。**
 
-        流程：提出 → 后端更新 `docs/development/01-共享接口契约.md` 与场景样例 → 对方以调用方身份审核 → 双方确认 → 再改实现。
+        流程：提出 → 认领该变更的人更新 `docs/development/01-共享接口契约.md` 与场景样例 → 不在该 PR 的另一人以调用方身份审核 → 双方确认 → 再改实现。
   - type: dropdown
     id: side
     attributes:
-      label: 提出方
+      label: 涉及层
       options:
-        - 前端
-        - 后端
-        - 双方
+        - 前端层
+        - 后端层
+        - 跨层
     validations:
       required: true
   - type: input
@@ -52,7 +53,7 @@ body:
     attributes:
       label: 确认
       options:
-        - label: 我理解契约由后端维护，合并前需先更新 `01-共享接口契约.md` 与共用 Mock 场景
+        - label: 我理解合并前需先更新 `01-共享接口契约.md` 与共用 Mock 场景，并由另一人审核
           required: true
         - label: 我没有为了绕过缺口在页面或插件里直接访问数据库、原生对象或模型服务 HTTP API
           required: true

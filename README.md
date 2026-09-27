@@ -19,12 +19,12 @@
 
 | 文件 | 用途 | 阅读人 |
 |---|---|---|
-| [docs/development/00-开发总览.md](docs/development/00-开发总览.md) | 产品要求、建议架构、目录所有权、M0–M5 阶段划分 | 双方 |
+| [docs/development/00-开发总览.md](docs/development/00-开发总览.md) | 产品要求、建议架构、代码分层与目录职责、M0–M5 阶段划分 | 双方 |
 | [docs/development/01-共享接口契约.md](docs/development/01-共享接口契约.md) | DiaryApi / PlatformHost、数据对象、状态机、事件、错误码 | 双方必读 |
 | [docs/development/02-前端开发任务书.md](docs/development/02-前端开发任务书.md) | Flutter 界面、平台能力、F0–F8 任务 | 前端 |
 | [docs/development/03-后端开发任务书.md](docs/development/03-后端开发任务书.md) | Rust 本地核心、存储、检索、模型、队列、插件、B0–B8 | 后端 |
 | [docs/development/04-验收与测试计划.md](docs/development/04-验收与测试计划.md) | E01–E38 验收案例、性能预算、质量门槛、发布阻断 | 双方 |
-| [docs/development/05-模型交接提示词.md](docs/development/05-模型交接提示词.md) | 分模型开工说明与协作约定 | 负责人 |
+| [docs/development/05-模型交接提示词.md](docs/development/05-模型交接提示词.md) | 按任务复制给 AI 模型的开工说明 | 认领任务的人 |
 
 接口契约在 **M0 冻结**，任何新增字段先更新契约文档和场景样例，再改实现。
 
@@ -47,8 +47,10 @@ docs/architecture/       后端起草、双方确认：架构决定与接口变�
 
 ## 参与开发
 
-协作流程见 [CONTRIBUTING.md](CONTRIBUTING.md)：目录单一所有权、分支模型、互相审查、契约变更流程。
+协作流程见 [CONTRIBUTING.md](CONTRIBUTING.md)：**任务认领制**、分支模型、互相审查、契约变更流程。我们不预设分工，F/B 任务书只区分代码层，不区分人。
 
+- 任务以 issue 为载体（用「任务认领」模板创建），**开工前先把自己设为 Assignee**；一个 issue 对应一个分支、一个 PR。
+- 开工前先看所有 open PR 的改动文件，避免两个人同时改同一个文件。
 - `main` 已开启分支保护，**任何改动都走 PR**，不允许直接推送。
 - 每个 PR 按 `.github/pull_request_template.md` 填写交付信息，空模板不予合并。
 - 发现接口缺口用「契约变更请求」issue 模板，不要为了绕过缺口直接访问数据库。
