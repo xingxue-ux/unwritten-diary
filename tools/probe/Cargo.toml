@@ -1,0 +1,21 @@
+[package]
+name = "diary_probe"
+description = "M0 技术验证脚手架：中文短词检索、本地向量模型、插件运行时候选。不是产品代码。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = ["search", "plugin"]
+# 检索实验需要 bundled SQLite（C 代码）与 jieba 词典。
+search = ["dep:rusqlite", "dep:jieba-rs"]
+# 插件实验是纯 Rust，可以只用它做 Android 交叉编译检查，不必拉进 C 工具链。
+plugin = ["dep:wasmi", "dep:wat"]
+
+[dependencies]
+anyhow = "1.0.104"
+jieba-rs = { version = "0.11.0", optional = true }
+rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
+wasmi = { version = "2.0.0", optional = true }
+wat = { version = "1.259.0", optional = true }
