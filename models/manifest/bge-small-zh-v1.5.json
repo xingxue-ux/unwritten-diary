@@ -1,0 +1,48 @@
+{
+  "modelId": "bge-small-zh-v1.5",
+  "status": "M0 候选，尚未冻结为默认模型",
+  "note": "任务书 5.1 节要求记录 modelId、revision、哈希、许可证、tokenizer、最大输入长度、pooling、归一化、查询前缀、维度与量化格式。这里是 M0 实测所用的那一份。",
+  "source": {
+    "onnxRepository": "Xenova/bge-small-zh-v1.5",
+    "onnxRevision": "75c43b069aac4d136ba6bc1122f995fedcfd2781",
+    "upstreamRepository": "BAAI/bge-small-zh-v1.5",
+    "upstreamRevision": "7999e1d3359715c523056ef9478215996d62a620",
+    "upstreamLicense": "MIT"
+  },
+  "licenseCaveat": "原模型仓库声明 MIT；提供 ONNX 转换文件的 Xenova 仓库在 HuggingFace API 上**没有声明 license 字段**。再分发前必须向转换仓库或作者确认授权，不能把上游的 MIT 直接当成转换产物的授权。这条未解决前不要把模型打进发布包。",
+  "files": [
+    {
+      "path": "model_quantized.onnx",
+      "bytes": 24010842,
+      "sha256": "15b717c382bcb518ba457b93ea6850ede7f4f1cd8937454aa06972366cd19bcc",
+      "format": "ONNX，INT8 量化"
+    },
+    {
+      "path": "tokenizer.json",
+      "bytes": 439125,
+      "sha256": "48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26",
+      "format": "HuggingFace tokenizers，BERT WordPiece"
+    }
+  ],
+  "embedding": {
+    "dimensions": 512,
+    "pooling": "mean pooling，只对 attention_mask 为 1 的位置求平均",
+    "normalization": "L2 归一化，归一化后内积即余弦相似度",
+    "queryPrefix": "候选模型文档建议检索查询加指令前缀；M0 实测未使用前缀，只有 3 条虚构样例，不足以判断前缀是否必要",
+    "maxInputTokens": "未验证。实测长文本样例为 482 token。上限与截断策略需要按模型文档确认并写入本文件"
+  },
+  "fetch": {
+    "command": "curl -fL -o models/bge-small-zh-v1.5/model_quantized.onnx https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/onnx/model_quantized.onnx && curl -fL -o models/bge-small-zh-v1.5/tokenizer.json https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/tokenizer.json",
+    "verify": "sha256sum models/bge-small-zh-v1.5/* 必须与上面的 sha256 一致"
+  },
+  "measured": {
+    "where": "WSL2 x86_64 主机，ONNX Runtime 1.22.0 CPU，单线程配置未调整",
+    "loadMs": 273,
+    "shortTextMs": 2.8,
+    "longTextMs": 25.9,
+    "longTextTokens": 482,
+    "perItemMsSequential": 3.6,
+    "peakRssDeltaMiB": 69,
+    "detail": "见 docs/architecture/M0-技术验证.md"
+  }
+}

@@ -8,6 +8,13 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `snapshot_for`
 
+/// 事件流探针：按序号发 `count` 条事件后关闭流。
+///
+/// 用来验证契约第 6 节要求的「从快照开始订阅、按序号去重」这条链路在桥接上成立。
+/// 真实实现会用持久业务事件替换它。
+Stream<ProbeEvent> watchProbeEvents({required int count}) =>
+    RustLib.instance.api.crateApiWatchProbeEvents(count: count);
+
 /// 打开或创建资料库（同步路径）。
 ///
 /// `library_handle` 为空表示使用默认库。M0 只返回结构，不碰磁盘。
@@ -104,6 +111,26 @@ class CoreSnapshot {
           pendingJobCount == other.pendingJobCount &&
           lastEventSequence == other.lastEventSequence &&
           captureCount == other.captureCount;
+}
+
+/// 契约第 6 节：事件流探针用的事件对象。
+class ProbeEvent {
+  /// 单调递增的序号，对应契约里的事件游标。
+  final int sequence;
+  final String message;
+
+  const ProbeEvent({required this.sequence, required this.message});
+
+  @override
+  int get hashCode => sequence.hashCode ^ message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ProbeEvent &&
+          runtimeType == other.runtimeType &&
+          sequence == other.sequence &&
+          message == other.message;
 }
 
 /// 启动恢复摘要：如实告知上次发生了什么。

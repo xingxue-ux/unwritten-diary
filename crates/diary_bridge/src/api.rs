@@ -1,8 +1,33 @@
 //! 桥接层最小 API，对应契约第 1.3 与 4.1 节。
 //!
 //! 这些函数现在返回可预期的固定结构，用来验证：Dart 侧能否调用到 Rust、
-//! 同步与异步两条路径是否都能用、字段映射（snake_case → camelCase）是否正确。
+//! 同步与异步两条路径是否都能用、字段映射（snake_case → camelCase）是否正确、
+//! 以及事件流（契约第 6 节）能不能走通。
 //! 它们**不是**真实实现，B1 起会被真正的核心替换。
+
+use crate::frb_generated::StreamSink;
+
+/// 契约第 6 节：事件流探针用的事件对象。
+pub struct ProbeEvent {
+    /// 单调递增的序号，对应契约里的事件游标。
+    pub sequence: u32,
+    pub message: String,
+}
+
+/// 事件流探针：按序号发 `count` 条事件后关闭流。
+///
+/// 用来验证契约第 6 节要求的「从快照开始订阅、按序号去重」这条链路在桥接上成立。
+/// 真实实现会用持久业务事件替换它。
+pub fn watch_probe_events(count: u32, sink: StreamSink<ProbeEvent>) -> Result<(), String> {
+    for index in 0..count {
+        sink.add(ProbeEvent {
+            sequence: index,
+            message: format!("事件 {index}"),
+        })
+        .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
 
 /// 契约第 1.3 节：核心与协议的版本信息。
 pub struct CoreInfo {

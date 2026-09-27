@@ -54,6 +54,17 @@ void main() {
     expect(fromAsync.pendingJobCount, fromSnapshot.pendingJobCount);
   });
 
+  test('事件流按序号送达并正常关闭', () async {
+    final events = await rust.watchProbeEvents(count: 5).toList();
+    expect(events.length, 5);
+    expect(events.map((event) => event.sequence).toList(), [0, 1, 2, 3, 4]);
+    expect(events.first.message, '事件 0');
+    expect(events.last.message, '事件 4');
+
+    final empty = await rust.watchProbeEvents(count: 0).toList();
+    expect(empty, isEmpty);
+  });
+
   test('中文与 emoji 往返不走样', () async {
     const text = '妈妈离职了，晚上又觉得还行 🙂';
     expect(await rust.echo(text: text), text);
