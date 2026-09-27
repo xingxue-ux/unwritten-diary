@@ -1,0 +1,58 @@
+name: 契约变更请求
+description: 发现 DiaryApi / PlatformHost 接口缺口时使用。契约由后端维护，必须走此流程。
+title: "[契约] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        契约是前后端唯一的同步点。**不要为了绕过缺口，在页面里直接访问数据库或原生对象。**
+
+        流程：提出 → 后端更新 `docs/development/01-共享接口契约.md` 与场景样例 → 对方以调用方身份审核 → 双方确认 → 再改实现。
+  - type: dropdown
+    id: side
+    attributes:
+      label: 提出方
+      options:
+        - 前端
+        - 后端
+        - 双方
+    validations:
+      required: true
+  - type: input
+    id: missing
+    attributes:
+      label: 缺少的方法或字段
+      description: 例如 `captures.saveDraft`，或某个 DTO 缺少字段
+      placeholder: sources.reviseText / DraftRecoveryLog.missingAssetIds
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 触发场景
+      description: 用户在什么操作下会走到这里，为什么现有接口覆盖不了
+    validations:
+      required: true
+  - type: textarea
+    id: semantics
+    attributes:
+      label: 建议语义
+      description: 期望的输入、输出、错误码、状态流转与幂等要求
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: 对现有调用的影响
+      description: 是否破坏向下兼容；现有 Mock、页面、后台任务需要怎么改
+    validations:
+      required: true
+  - type: checkboxes
+    id: ack
+    attributes:
+      label: 确认
+      options:
+        - label: 我理解契约由后端维护，合并前需先更新 `01-共享接口契约.md` 与共用 Mock 场景
+          required: true
+        - label: 我没有为了绕过缺口在页面或插件里直接访问数据库、原生对象或模型服务 HTTP API
+          required: true
