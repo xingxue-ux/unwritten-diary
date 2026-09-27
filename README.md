@@ -52,6 +52,7 @@ docs/architecture/       后端起草、双方确认：架构决定与接口变�
 - 任务以 issue 为载体（用「任务认领」模板创建），**开工前先把自己设为 Assignee**；一个 issue 对应一个分支、一个 PR。
 - 开工前先看所有 open PR 的改动文件，避免两个人同时改同一个文件。
 - `main` 已开启分支保护，**任何改动都走 PR**，不允许直接推送。
+- 合并需同时通过必过检查 `docs`（`.github/workflows/check.yml`）与 1 人批准；回滚与事故处理见 CONTRIBUTING 第 9 节。
 - 每个 PR 按 `.github/pull_request_template.md` 填写交付信息，空模板不予合并。
 - 发现接口缺口用「契约变更请求」issue 模板，不要为了绕过缺口直接访问数据库。
 
