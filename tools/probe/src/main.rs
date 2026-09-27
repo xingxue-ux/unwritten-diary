@@ -10,6 +10,8 @@
 //! cargo run -p diary_probe -- all [片段数]
 //! ```
 
+#[cfg(feature = "model")]
+mod model;
 #[cfg(feature = "plugin")]
 mod plugin;
 #[cfg(feature = "search")]
@@ -18,7 +20,7 @@ mod search;
 use anyhow::Result;
 
 fn usage() -> &'static str {
-    "用法：\n  diary_probe short-word-search [片段数，默认 20000]\n  diary_probe plugin-runtime\n  diary_probe all [片段数]"
+    "用法：\n  diary_probe short-word-search [片段数，默认 20000]\n  diary_probe plugin-runtime\n  diary_probe vector-model（需要 --features model 与本地权重）\n  diary_probe all [片段数]"
 }
 
 /// 只在需要检索的构建里解析片段数，否则 plugin-only 构建会报未使用变量。
@@ -41,6 +43,12 @@ fn main() -> Result<()> {
             search::run(segments_arg(&args)?)?;
             #[cfg(not(feature = "search"))]
             anyhow::bail!("这个构建没有启用 search feature（尝试 cargo run -p diary_probe --features search）");
+        }
+        "vector-model" => {
+            #[cfg(feature = "model")]
+            model::run()?;
+            #[cfg(not(feature = "model"))]
+            anyhow::bail!("这个构建没有启用 model feature（尝试 cargo run -p diary_probe --features model）");
         }
         "plugin-runtime" => {
             #[cfg(feature = "plugin")]

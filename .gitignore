@@ -63,6 +63,8 @@ target/
 # ---------- 模型与插件包 ----------
 # 模型权重体积大，按 models/manifest 记录的哈希单独获取或走 Git LFS。
 models/**/*.onnx
+# 分词器与权重一起按 manifest 记录的哈希获取，不随仓库分发。
+models/**/tokenizer.json
 models/**/*.bin
 models/**/*.gguf
 plugins/**/*.wasm
