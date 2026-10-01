@@ -8,7 +8,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'frb_generated.dart';
+import 'lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart';
+import 'third_party/diary_core/model.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RustLibApiImplPlatform({
@@ -18,44 +20,281 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     required super.portManager,
   });
 
-  @protected
-  AnyhowException dco_decode_AnyhowException(dynamic raw);
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_BridgeSessionPtr => wire
+      ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSessionPtr;
 
   @protected
-  RustStreamSink<ProbeEvent> dco_decode_StreamSink_probe_event_Sse(dynamic raw);
+  BridgeSession
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeSession
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+    dynamic raw,
+  );
+
+  @protected
+  DateTime dco_decode_Chrono_Utc(dynamic raw);
+
+  @protected
+  BridgeSession
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+    dynamic raw,
+  );
 
   @protected
   String dco_decode_String(dynamic raw);
 
   @protected
-  CoreInfo dco_decode_core_info(dynamic raw);
+  AssetStorageState dco_decode_asset_storage_state(dynamic raw);
 
   @protected
-  CoreSnapshot dco_decode_core_snapshot(dynamic raw);
+  AuthorType dco_decode_author_type(dynamic raw);
+
+  @protected
+  bool dco_decode_bool(dynamic raw);
+
+  @protected
+  DateTime dco_decode_box_autoadd_Chrono_Utc(dynamic raw);
+
+  @protected
+  AssetStorageState dco_decode_box_autoadd_asset_storage_state(dynamic raw);
+
+  @protected
+  AuthorType dco_decode_box_autoadd_author_type(dynamic raw);
+
+  @protected
+  CaptureState dco_decode_box_autoadd_capture_state(dynamic raw);
+
+  @protected
+  Coverage dco_decode_box_autoadd_coverage(dynamic raw);
+
+  @protected
+  EventType dco_decode_box_autoadd_event_type(dynamic raw);
+
+  @protected
+  ExtractedContent dco_decode_box_autoadd_extracted_content(dynamic raw);
+
+  @protected
+  PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
+
+  @protected
+  ImportManifest dco_decode_box_autoadd_import_manifest(dynamic raw);
+
+  @protected
+  ImportOrigin dco_decode_box_autoadd_import_origin(dynamic raw);
+
+  @protected
+  ImportState dco_decode_box_autoadd_import_state(dynamic raw);
+
+  @protected
+  JobProgress dco_decode_box_autoadd_job_progress(dynamic raw);
+
+  @protected
+  JobState dco_decode_box_autoadd_job_state(dynamic raw);
+
+  @protected
+  LocatorType dco_decode_box_autoadd_locator_type(dynamic raw);
+
+  @protected
+  ProcessingStatus dco_decode_box_autoadd_processing_status(dynamic raw);
+
+  @protected
+  RecordingState dco_decode_box_autoadd_recording_state(dynamic raw);
+
+  @protected
+  SourceLocator dco_decode_box_autoadd_source_locator(dynamic raw);
+
+  @protected
+  SourceRevision dco_decode_box_autoadd_source_revision(dynamic raw);
+
+  @protected
+  BridgeError dco_decode_bridge_error(dynamic raw);
+
+  @protected
+  Capture dco_decode_capture(dynamic raw);
+
+  @protected
+  CapturePage dco_decode_capture_page(dynamic raw);
+
+  @protected
+  CaptureState dco_decode_capture_state(dynamic raw);
+
+  @protected
+  CommitResult dco_decode_commit_result(dynamic raw);
+
+  @protected
+  Coverage dco_decode_coverage(dynamic raw);
+
+  @protected
+  DomainEvent dco_decode_domain_event(dynamic raw);
+
+  @protected
+  DraftSaveResult dco_decode_draft_save_result(dynamic raw);
+
+  @protected
+  EventType dco_decode_event_type(dynamic raw);
+
+  @protected
+  ExtractedContent dco_decode_extracted_content(dynamic raw);
+
+  @protected
+  ExtractedSegment dco_decode_extracted_segment(dynamic raw);
+
+  @protected
+  double dco_decode_f_64(dynamic raw);
+
+  @protected
+  F64Array4 dco_decode_f_64_array_4(dynamic raw);
 
   @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
+  PlatformInt64 dco_decode_i_64(dynamic raw);
+
+  @protected
+  ImportManifest dco_decode_import_manifest(dynamic raw);
+
+  @protected
+  ImportOrigin dco_decode_import_origin(dynamic raw);
+
+  @protected
+  ImportState dco_decode_import_state(dynamic raw);
+
+  @protected
+  ImportStatus dco_decode_import_status(dynamic raw);
+
+  @protected
+  ImportTicket dco_decode_import_ticket(dynamic raw);
+
+  @protected
+  Job dco_decode_job(dynamic raw);
+
+  @protected
+  JobPriority dco_decode_job_priority(dynamic raw);
+
+  @protected
+  JobProgress dco_decode_job_progress(dynamic raw);
+
+  @protected
+  JobState dco_decode_job_state(dynamic raw);
+
+  @protected
+  LibraryInfo dco_decode_library_info(dynamic raw);
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
+  List<Capture> dco_decode_list_capture(dynamic raw);
+
+  @protected
+  List<DomainEvent> dco_decode_list_domain_event(dynamic raw);
+
+  @protected
+  List<ExtractedSegment> dco_decode_list_extracted_segment(dynamic raw);
+
+  @protected
+  List<Job> dco_decode_list_job(dynamic raw);
+
+  @protected
+  List<JobState> dco_decode_list_job_state(dynamic raw);
+
+  @protected
+  Float64List dco_decode_list_prim_f_64_strict(dynamic raw);
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  LocatorType dco_decode_locator_type(dynamic raw);
+
+  @protected
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
-  ProbeEvent dco_decode_probe_event(dynamic raw);
+  DateTime? dco_decode_opt_box_autoadd_Chrono_Utc(dynamic raw);
+
+  @protected
+  AssetStorageState? dco_decode_opt_box_autoadd_asset_storage_state(
+    dynamic raw,
+  );
+
+  @protected
+  AuthorType? dco_decode_opt_box_autoadd_author_type(dynamic raw);
+
+  @protected
+  CaptureState? dco_decode_opt_box_autoadd_capture_state(dynamic raw);
+
+  @protected
+  Coverage? dco_decode_opt_box_autoadd_coverage(dynamic raw);
+
+  @protected
+  EventType? dco_decode_opt_box_autoadd_event_type(dynamic raw);
+
+  @protected
+  ExtractedContent? dco_decode_opt_box_autoadd_extracted_content(dynamic raw);
+
+  @protected
+  PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
+
+  @protected
+  ImportOrigin? dco_decode_opt_box_autoadd_import_origin(dynamic raw);
+
+  @protected
+  ImportState? dco_decode_opt_box_autoadd_import_state(dynamic raw);
+
+  @protected
+  JobProgress? dco_decode_opt_box_autoadd_job_progress(dynamic raw);
+
+  @protected
+  JobState? dco_decode_opt_box_autoadd_job_state(dynamic raw);
+
+  @protected
+  LocatorType? dco_decode_opt_box_autoadd_locator_type(dynamic raw);
+
+  @protected
+  ProcessingStatus? dco_decode_opt_box_autoadd_processing_status(dynamic raw);
+
+  @protected
+  RecordingState? dco_decode_opt_box_autoadd_recording_state(dynamic raw);
+
+  @protected
+  SourceRevision? dco_decode_opt_box_autoadd_source_revision(dynamic raw);
+
+  @protected
+  F64Array4? dco_decode_opt_f_64_array_4(dynamic raw);
+
+  @protected
+  List<JobState>? dco_decode_opt_list_job_state(dynamic raw);
+
+  @protected
+  ProcessingStatus dco_decode_processing_status(dynamic raw);
+
+  @protected
+  ProcessingSummary dco_decode_processing_summary(dynamic raw);
+
+  @protected
+  RecordingState dco_decode_recording_state(dynamic raw);
 
   @protected
   RecoverySummary dco_decode_recovery_summary(dynamic raw);
 
   @protected
-  int dco_decode_u_32(dynamic raw);
+  SourceLocation dco_decode_source_location(dynamic raw);
 
   @protected
-  BigInt dco_decode_u_64(dynamic raw);
+  SourceLocator dco_decode_source_locator(dynamic raw);
+
+  @protected
+  SourceRevision dco_decode_source_revision(dynamic raw);
+
+  @protected
+  int dco_decode_u_32(dynamic raw);
 
   @protected
   int dco_decode_u_8(dynamic raw);
@@ -64,10 +303,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void dco_decode_unit(dynamic raw);
 
   @protected
-  AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
+  BigInt dco_decode_usize(dynamic raw);
 
   @protected
-  RustStreamSink<ProbeEvent> sse_decode_StreamSink_probe_event_Sse(
+  BridgeSession
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeSession
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DateTime sse_decode_Chrono_Utc(SseDeserializer deserializer);
+
+  @protected
+  BridgeSession
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
     SseDeserializer deserializer,
   );
 
@@ -75,34 +330,296 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
-  CoreInfo sse_decode_core_info(SseDeserializer deserializer);
+  AssetStorageState sse_decode_asset_storage_state(
+    SseDeserializer deserializer,
+  );
 
   @protected
-  CoreSnapshot sse_decode_core_snapshot(SseDeserializer deserializer);
+  AuthorType sse_decode_author_type(SseDeserializer deserializer);
+
+  @protected
+  bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  DateTime sse_decode_box_autoadd_Chrono_Utc(SseDeserializer deserializer);
+
+  @protected
+  AssetStorageState sse_decode_box_autoadd_asset_storage_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AuthorType sse_decode_box_autoadd_author_type(SseDeserializer deserializer);
+
+  @protected
+  CaptureState sse_decode_box_autoadd_capture_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Coverage sse_decode_box_autoadd_coverage(SseDeserializer deserializer);
+
+  @protected
+  EventType sse_decode_box_autoadd_event_type(SseDeserializer deserializer);
+
+  @protected
+  ExtractedContent sse_decode_box_autoadd_extracted_content(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
+
+  @protected
+  ImportManifest sse_decode_box_autoadd_import_manifest(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ImportOrigin sse_decode_box_autoadd_import_origin(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ImportState sse_decode_box_autoadd_import_state(SseDeserializer deserializer);
+
+  @protected
+  JobProgress sse_decode_box_autoadd_job_progress(SseDeserializer deserializer);
+
+  @protected
+  JobState sse_decode_box_autoadd_job_state(SseDeserializer deserializer);
+
+  @protected
+  LocatorType sse_decode_box_autoadd_locator_type(SseDeserializer deserializer);
+
+  @protected
+  ProcessingStatus sse_decode_box_autoadd_processing_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RecordingState sse_decode_box_autoadd_recording_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SourceLocator sse_decode_box_autoadd_source_locator(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SourceRevision sse_decode_box_autoadd_source_revision(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeError sse_decode_bridge_error(SseDeserializer deserializer);
+
+  @protected
+  Capture sse_decode_capture(SseDeserializer deserializer);
+
+  @protected
+  CapturePage sse_decode_capture_page(SseDeserializer deserializer);
+
+  @protected
+  CaptureState sse_decode_capture_state(SseDeserializer deserializer);
+
+  @protected
+  CommitResult sse_decode_commit_result(SseDeserializer deserializer);
+
+  @protected
+  Coverage sse_decode_coverage(SseDeserializer deserializer);
+
+  @protected
+  DomainEvent sse_decode_domain_event(SseDeserializer deserializer);
+
+  @protected
+  DraftSaveResult sse_decode_draft_save_result(SseDeserializer deserializer);
+
+  @protected
+  EventType sse_decode_event_type(SseDeserializer deserializer);
+
+  @protected
+  ExtractedContent sse_decode_extracted_content(SseDeserializer deserializer);
+
+  @protected
+  ExtractedSegment sse_decode_extracted_segment(SseDeserializer deserializer);
+
+  @protected
+  double sse_decode_f_64(SseDeserializer deserializer);
+
+  @protected
+  F64Array4 sse_decode_f_64_array_4(SseDeserializer deserializer);
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
+  PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
+
+  @protected
+  ImportManifest sse_decode_import_manifest(SseDeserializer deserializer);
+
+  @protected
+  ImportOrigin sse_decode_import_origin(SseDeserializer deserializer);
+
+  @protected
+  ImportState sse_decode_import_state(SseDeserializer deserializer);
+
+  @protected
+  ImportStatus sse_decode_import_status(SseDeserializer deserializer);
+
+  @protected
+  ImportTicket sse_decode_import_ticket(SseDeserializer deserializer);
+
+  @protected
+  Job sse_decode_job(SseDeserializer deserializer);
+
+  @protected
+  JobPriority sse_decode_job_priority(SseDeserializer deserializer);
+
+  @protected
+  JobProgress sse_decode_job_progress(SseDeserializer deserializer);
+
+  @protected
+  JobState sse_decode_job_state(SseDeserializer deserializer);
+
+  @protected
+  LibraryInfo sse_decode_library_info(SseDeserializer deserializer);
+
+  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
+
+  @protected
+  List<Capture> sse_decode_list_capture(SseDeserializer deserializer);
+
+  @protected
+  List<DomainEvent> sse_decode_list_domain_event(SseDeserializer deserializer);
+
+  @protected
+  List<ExtractedSegment> sse_decode_list_extracted_segment(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<Job> sse_decode_list_job(SseDeserializer deserializer);
+
+  @protected
+  List<JobState> sse_decode_list_job_state(SseDeserializer deserializer);
+
+  @protected
+  Float64List sse_decode_list_prim_f_64_strict(SseDeserializer deserializer);
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  LocatorType sse_decode_locator_type(SseDeserializer deserializer);
+
+  @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
-  ProbeEvent sse_decode_probe_event(SseDeserializer deserializer);
+  DateTime? sse_decode_opt_box_autoadd_Chrono_Utc(SseDeserializer deserializer);
+
+  @protected
+  AssetStorageState? sse_decode_opt_box_autoadd_asset_storage_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AuthorType? sse_decode_opt_box_autoadd_author_type(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  CaptureState? sse_decode_opt_box_autoadd_capture_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Coverage? sse_decode_opt_box_autoadd_coverage(SseDeserializer deserializer);
+
+  @protected
+  EventType? sse_decode_opt_box_autoadd_event_type(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ExtractedContent? sse_decode_opt_box_autoadd_extracted_content(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
+
+  @protected
+  ImportOrigin? sse_decode_opt_box_autoadd_import_origin(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ImportState? sse_decode_opt_box_autoadd_import_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  JobProgress? sse_decode_opt_box_autoadd_job_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  JobState? sse_decode_opt_box_autoadd_job_state(SseDeserializer deserializer);
+
+  @protected
+  LocatorType? sse_decode_opt_box_autoadd_locator_type(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ProcessingStatus? sse_decode_opt_box_autoadd_processing_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RecordingState? sse_decode_opt_box_autoadd_recording_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SourceRevision? sse_decode_opt_box_autoadd_source_revision(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  F64Array4? sse_decode_opt_f_64_array_4(SseDeserializer deserializer);
+
+  @protected
+  List<JobState>? sse_decode_opt_list_job_state(SseDeserializer deserializer);
+
+  @protected
+  ProcessingStatus sse_decode_processing_status(SseDeserializer deserializer);
+
+  @protected
+  ProcessingSummary sse_decode_processing_summary(SseDeserializer deserializer);
+
+  @protected
+  RecordingState sse_decode_recording_state(SseDeserializer deserializer);
 
   @protected
   RecoverySummary sse_decode_recovery_summary(SseDeserializer deserializer);
 
   @protected
-  int sse_decode_u_32(SseDeserializer deserializer);
+  SourceLocation sse_decode_source_location(SseDeserializer deserializer);
 
   @protected
-  BigInt sse_decode_u_64(SseDeserializer deserializer);
+  SourceLocator sse_decode_source_locator(SseDeserializer deserializer);
+
+  @protected
+  SourceRevision sse_decode_source_revision(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_u_32(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_8(SseDeserializer deserializer);
@@ -111,17 +628,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_decode_unit(SseDeserializer deserializer);
 
   @protected
-  bool sse_decode_bool(SseDeserializer deserializer);
+  BigInt sse_decode_usize(SseDeserializer deserializer);
 
   @protected
-  void sse_encode_AnyhowException(
-    AnyhowException self,
+  void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+    BridgeSession self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_StreamSink_probe_event_Sse(
-    RustStreamSink<ProbeEvent> self,
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+    BridgeSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_Chrono_Utc(DateTime self, SseSerializer serializer);
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+    BridgeSession self,
     SseSerializer serializer,
   );
 
@@ -129,16 +658,238 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
-  void sse_encode_core_info(CoreInfo self, SseSerializer serializer);
+  void sse_encode_asset_storage_state(
+    AssetStorageState self,
+    SseSerializer serializer,
+  );
 
   @protected
-  void sse_encode_core_snapshot(CoreSnapshot self, SseSerializer serializer);
+  void sse_encode_author_type(AuthorType self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_Chrono_Utc(
+    DateTime self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_asset_storage_state(
+    AssetStorageState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_author_type(
+    AuthorType self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_capture_state(
+    CaptureState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_coverage(Coverage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_event_type(
+    EventType self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_extracted_content(
+    ExtractedContent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_i_64(
+    PlatformInt64 self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_import_manifest(
+    ImportManifest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_import_origin(
+    ImportOrigin self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_import_state(
+    ImportState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_job_progress(
+    JobProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_job_state(
+    JobState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_locator_type(
+    LocatorType self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_processing_status(
+    ProcessingStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_recording_state(
+    RecordingState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_source_locator(
+    SourceLocator self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_source_revision(
+    SourceRevision self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_error(BridgeError self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_capture(Capture self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_capture_page(CapturePage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_capture_state(CaptureState self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_commit_result(CommitResult self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_coverage(Coverage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_domain_event(DomainEvent self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_draft_save_result(
+    DraftSaveResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_event_type(EventType self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_extracted_content(
+    ExtractedContent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_extracted_segment(
+    ExtractedSegment self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_f_64(double self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_f_64_array_4(F64Array4 self, SseSerializer serializer);
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
+  void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_import_manifest(
+    ImportManifest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_import_origin(ImportOrigin self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_import_state(ImportState self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_import_status(ImportStatus self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_import_ticket(ImportTicket self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_job(Job self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_job_priority(JobPriority self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_job_progress(JobProgress self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_job_state(JobState self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_library_info(LibraryInfo self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_capture(List<Capture> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_domain_event(
+    List<DomainEvent> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_extracted_segment(
+    List<ExtractedSegment> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_job(List<Job> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_job_state(List<JobState> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_prim_f_64_strict(
+    Float64List self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_prim_u_8_strict(
@@ -147,10 +898,133 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_locator_type(LocatorType self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
-  void sse_encode_probe_event(ProbeEvent self, SseSerializer serializer);
+  void sse_encode_opt_box_autoadd_Chrono_Utc(
+    DateTime? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_asset_storage_state(
+    AssetStorageState? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_author_type(
+    AuthorType? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_capture_state(
+    CaptureState? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_coverage(
+    Coverage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_event_type(
+    EventType? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_extracted_content(
+    ExtractedContent? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_i_64(
+    PlatformInt64? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_import_origin(
+    ImportOrigin? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_import_state(
+    ImportState? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_job_progress(
+    JobProgress? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_job_state(
+    JobState? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_locator_type(
+    LocatorType? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_processing_status(
+    ProcessingStatus? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_recording_state(
+    RecordingState? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_source_revision(
+    SourceRevision? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_f_64_array_4(F64Array4? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_list_job_state(
+    List<JobState>? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_processing_status(
+    ProcessingStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_processing_summary(
+    ProcessingSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_recording_state(
+    RecordingState self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_recovery_summary(
@@ -159,10 +1033,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_u_32(int self, SseSerializer serializer);
+  void sse_encode_source_location(
+    SourceLocation self,
+    SseSerializer serializer,
+  );
 
   @protected
-  void sse_encode_u_64(BigInt self, SseSerializer serializer);
+  void sse_encode_source_locator(SourceLocator self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_source_revision(
+    SourceRevision self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_u_32(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_8(int self, SseSerializer serializer);
@@ -171,7 +1057,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_unit(void self, SseSerializer serializer);
 
   @protected
-  void sse_encode_bool(bool self, SseSerializer serializer);
+  void sse_encode_usize(BigInt self, SseSerializer serializer);
 }
 
 // Section: wire_class
@@ -187,4 +1073,38 @@ class RustLibWire implements BaseWire {
   /// The symbols are looked up in [dynamicLibrary].
   RustLibWire(ffi.DynamicLibrary dynamicLibrary)
     : _lookup = dynamicLibrary.lookup;
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSessionPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_diary_bridge_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession',
+      );
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSessionPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSessionPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_diary_bridge_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession',
+      );
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSessionPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 }

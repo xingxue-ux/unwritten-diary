@@ -4,57 +4,146 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import 'frb_generated.dart';
+import 'lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'third_party/diary_core/model.dart';
 
-// These functions are ignored because they are not marked as `pub`: `snapshot_for`
+// These functions are ignored because they are not marked as `pub`: `lock`, `recovery_summary`, `wired_capabilities`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
 
-/// 事件流探针：按序号发 `count` 条事件后关闭流。
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>>
+abstract class BridgeSession implements RustOpaqueInterface {
+  /// 已经接到桥上的契约方法名。
+  Future<List<String>> capabilities();
+
+  /// 提交记录，创建原始文字版本。
+  Future<CommitResult> commit({
+    required String captureId,
+    required PlatformInt64 expectedRevision,
+    required String operationId,
+  });
+
+  /// 创建草稿，契约第 4.1 节 `captures.createDraft`。
+  Future<Capture> createDraft({
+    DateTime? occurredAt,
+    required String timeZone,
+    required int utcOffsetMinutes,
+    required String operationId,
+  });
+
+  /// 从某个序号之后读取持久业务事件。
+  Future<List<DomainEvent>> eventsSince({required PlatformInt64 fromSequence});
+
+  /// 对某个来源（来源 id 或修订 id 都行）跑一次提取。
+  Future<ExtractedContent> extractSource({required String sourceRef});
+
+  /// 读取某个来源当前版本的派生内容；没提取过时返回空。
+  Future<ExtractedContent?> extractedContent({required String sourceId});
+
+  /// 声明复制完成。核心会自己重算哈希并比对。
+  Future<ImportStatus> finishImport({
+    required String importId,
+    required String stagingTicket,
+    required ImportManifest manifest,
+  });
+
+  Future<Capture> getCapture({required String captureId});
+
+  Future<Job> getJob({required String jobId});
+
+  Future<ImportStatus> importStatus({required String importId});
+
+  /// 核心信息与恢复摘要。
+  Future<LibraryInfo> info();
+
+  /// 分页读取记录。cursor 对调用方不透明。
+  Future<CapturePage> listCaptures({
+    String? dayKey,
+    String? cursor,
+    required int limit,
+  });
+
+  /// 按状态列出任务；不传状态就列全部。
+  Future<List<Job>> listJobs({List<JobState>? states, required int limit});
+
+  /// 把 sourceRef + locator 解析成可打开的原件与可用性。
+  Future<SourceLocation> locateSource({
+    required String sourceRef,
+    required SourceLocator locator,
+  });
+
+  /// 建议的下次唤醒时刻；没有待办时为空。
+  Future<DateTime?> nextWakeup();
+
+  /// 打开（或创建）资料库。
+  static Future<BridgeSession> open({required String libraryPath}) =>
+      RustLib.instance.api.crateApiBridgeSessionOpen(libraryPath: libraryPath);
+
+  /// 申请导入暂存位置。平台层只能往票据指向的文件里写。
+  Future<ImportTicket> prepareImport({
+    required String captureId,
+    required String displayName,
+    String? mimeHint,
+    PlatformInt64? sizeHint,
+    required ImportOrigin origin,
+    required String operationId,
+  });
+
+  /// 保存草稿。只有核心确认落盘后才返回 `durable = true`。
+  Future<DraftSaveResult> saveDraft({
+    required String captureId,
+    required String text,
+    required PlatformInt64 expectedRevision,
+    required String operationId,
+  });
+}
+
+/// 桥接错误：`code` 是契约第 7 节的错误码，`message` 给用户看。
 ///
-/// 用来验证契约第 6 节要求的「从快照开始订阅、按序号去重」这条链路在桥接上成立。
-/// 真实实现会用持久业务事件替换它。
-Stream<ProbeEvent> watchProbeEvents({required int count}) =>
-    RustLib.instance.api.crateApiWatchProbeEvents(count: count);
+/// frb 会把它变成 Dart 侧的异常类型，所以前端可以用 `on BridgeError catch (e)`
+/// 直接读 `e.code`。
+class BridgeError implements FrbException {
+  final String code;
+  final String message;
+  final bool retryable;
 
-/// 打开或创建资料库（同步路径）。
-///
-/// `library_handle` 为空表示使用默认库。M0 只返回结构，不碰磁盘。
-Future<CoreSnapshot> open({String? libraryHandle}) =>
-    RustLib.instance.api.crateApiOpen(libraryHandle: libraryHandle);
+  const BridgeError({
+    required this.code,
+    required this.message,
+    required this.retryable,
+  });
 
-/// 打开或创建资料库（异步路径）。
-///
-/// 与 [`open`] 返回同样的结构，用来验证 Dart 侧的 Future 是否正常完成。
-Future<CoreSnapshot> openAsync({String? libraryHandle}) =>
-    RustLib.instance.api.crateApiOpenAsync(libraryHandle: libraryHandle);
+  @override
+  int get hashCode => code.hashCode ^ message.hashCode ^ retryable.hashCode;
 
-/// 轻量启动快照。
-Future<CoreSnapshot> snapshot() => RustLib.instance.api.crateApiSnapshot();
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeError &&
+          runtimeType == other.runtimeType &&
+          code == other.code &&
+          message == other.message &&
+          retryable == other.retryable;
+}
 
-/// 一个可判定的纯计算函数：验证跨语言调用的参数与返回值没有走样。
-Future<int> add({required int a, required int b}) =>
-    RustLib.instance.api.crateApiAdd(a: a, b: b);
-
-/// 回显文本，用于验证中文与 emoji 在桥接两侧保持一致。
-Future<String> echo({required String text}) =>
-    RustLib.instance.api.crateApiEcho(text: text);
-
-/// 契约第 1.3 节：核心与协议的版本信息。
-class CoreInfo {
-  /// 主次版本；新增可选字段是次版本，删除或改变语义是主版本。
+/// 核心信息与恢复摘要。
+class LibraryInfo {
   final String apiVersion;
-  final int dataSchemaVersion;
+  final PlatformInt64 dataSchemaVersion;
   final String buildVersion;
   final String libraryId;
 
-  /// 当前构建实际支持的能力，界面据此决定哪些入口可见。
+  /// 已经接到桥上的契约方法名。**没列出来的就是还没接**，界面据此决定哪些入口可见。
   final List<String> capabilities;
+  final RecoverySummary recovery;
 
-  const CoreInfo({
+  const LibraryInfo({
     required this.apiVersion,
     required this.dataSchemaVersion,
     required this.buildVersion,
     required this.libraryId,
     required this.capabilities,
+    required this.recovery,
   });
 
   @override
@@ -63,95 +152,46 @@ class CoreInfo {
       dataSchemaVersion.hashCode ^
       buildVersion.hashCode ^
       libraryId.hashCode ^
-      capabilities.hashCode;
+      capabilities.hashCode ^
+      recovery.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is CoreInfo &&
+      other is LibraryInfo &&
           runtimeType == other.runtimeType &&
           apiVersion == other.apiVersion &&
           dataSchemaVersion == other.dataSchemaVersion &&
           buildVersion == other.buildVersion &&
           libraryId == other.libraryId &&
-          capabilities == other.capabilities;
+          capabilities == other.capabilities &&
+          recovery == other.recovery;
 }
 
-/// 轻量启动快照，不返回整库正文或媒体。
-class CoreSnapshot {
-  final CoreInfo coreInfo;
-  final RecoverySummary recovery;
-  final int pendingJobCount;
-  final BigInt lastEventSequence;
-  final int captureCount;
-
-  const CoreSnapshot({
-    required this.coreInfo,
-    required this.recovery,
-    required this.pendingJobCount,
-    required this.lastEventSequence,
-    required this.captureCount,
-  });
-
-  @override
-  int get hashCode =>
-      coreInfo.hashCode ^
-      recovery.hashCode ^
-      pendingJobCount.hashCode ^
-      lastEventSequence.hashCode ^
-      captureCount.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is CoreSnapshot &&
-          runtimeType == other.runtimeType &&
-          coreInfo == other.coreInfo &&
-          recovery == other.recovery &&
-          pendingJobCount == other.pendingJobCount &&
-          lastEventSequence == other.lastEventSequence &&
-          captureCount == other.captureCount;
-}
-
-/// 契约第 6 节：事件流探针用的事件对象。
-class ProbeEvent {
-  /// 单调递增的序号，对应契约里的事件游标。
-  final int sequence;
-  final String message;
-
-  const ProbeEvent({required this.sequence, required this.message});
-
-  @override
-  int get hashCode => sequence.hashCode ^ message.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ProbeEvent &&
-          runtimeType == other.runtimeType &&
-          sequence == other.sequence &&
-          message == other.message;
-}
-
-/// 启动恢复摘要：如实告知上次发生了什么。
+/// 打开资料库后的恢复摘要。数字都是真实统计，不是估计。
 class RecoverySummary {
-  final int recoveredDraftCount;
-  final int orphanedImportCount;
-  final int unrecoveredRecordingCount;
+  /// 上次没走完的导入数量。
+  final int recoverableImports;
+
+  /// 上次没走完的录音数量。
+  final int openRecordings;
+
+  /// 还没做完的任务数量。
+  final int pendingJobs;
   final List<String> notes;
 
   const RecoverySummary({
-    required this.recoveredDraftCount,
-    required this.orphanedImportCount,
-    required this.unrecoveredRecordingCount,
+    required this.recoverableImports,
+    required this.openRecordings,
+    required this.pendingJobs,
     required this.notes,
   });
 
   @override
   int get hashCode =>
-      recoveredDraftCount.hashCode ^
-      orphanedImportCount.hashCode ^
-      unrecoveredRecordingCount.hashCode ^
+      recoverableImports.hashCode ^
+      openRecordings.hashCode ^
+      pendingJobs.hashCode ^
       notes.hashCode;
 
   @override
@@ -159,8 +199,8 @@ class RecoverySummary {
       identical(this, other) ||
       other is RecoverySummary &&
           runtimeType == other.runtimeType &&
-          recoveredDraftCount == other.recoveredDraftCount &&
-          orphanedImportCount == other.orphanedImportCount &&
-          unrecoveredRecordingCount == other.unrecoveredRecordingCount &&
+          recoverableImports == other.recoverableImports &&
+          openRecordings == other.openRecordings &&
+          pendingJobs == other.pendingJobs &&
           notes == other.notes;
 }
