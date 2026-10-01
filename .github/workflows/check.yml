@@ -92,7 +92,7 @@ jobs:
       - name: 静态分析
         working-directory: packages/diary_bridge
         run: dart analyze --fatal-infos
-      - name: 桥接调用探针
+      - name: 端到端调用测试
         working-directory: packages/diary_bridge
         run: dart test
 

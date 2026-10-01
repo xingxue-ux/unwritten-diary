@@ -16,3 +16,6 @@ dependencies:
 dev_dependencies:
   lints: ">=5.0.0 <7.0.0"
   test: ^1.25.0
+  # 测试要给核心一个真实的 sha256（核心会自己重算并比对），
+  # 用成熟的包比在测试里手写一遍靠谱。
+  crypto: ^3.0.6

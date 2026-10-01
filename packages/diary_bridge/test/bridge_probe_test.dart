@@ -1,19 +1,22 @@
+import 'dart:convert';
 import 'dart:io';
 
-import 'package:diary_bridge/src/rust/api.dart' as rust;
-import 'package:diary_bridge/src/rust/frb_generated.dart';
+import 'package:crypto/crypto.dart';
+import 'package:diary_bridge/diary_bridge.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:test/test.dart';
 
-/// 桥接最小闭环：Dart 真正调用到 Rust cdylib。
+/// 端到端：Dart → 桥接 → 真实核心 → SQLite + 文件库。
 ///
 /// 运行前先构建宿主平台产物：
 ///   cargo build --release            （在仓库根目录）
 ///   dart test                        （在本包目录）
 ///
-/// 也可以用 `DIARY_BRIDGE_LIB` 指定别的产物路径，例如 Android 上推上去的
-/// `.so`，或 Windows 侧的 `diary_bridge.dll`。
+/// 也可以用 `DIARY_BRIDGE_LIB` 指定别的产物路径（Windows 的 dll、Android 上的 so）。
 void main() {
+  late Directory workDir;
+  late BridgeSession session;
+
   setUpAll(() async {
     final path = File(
       Platform.environment['DIARY_BRIDGE_LIB'] ?? _defaultLibraryPath(),
@@ -21,54 +24,174 @@ void main() {
     expect(File(path).existsSync(), isTrue,
         reason: '找不到桥接产物：$path。先在仓库根目录跑 cargo build --release');
     await RustLib.init(externalLibrary: ExternalLibrary.open(path));
+
+    workDir = Directory.systemTemp.createTempSync('diary_bridge_test');
+    session = await BridgeSession.open(
+      libraryPath: '${workDir.path}/library.sqlite',
+    );
   });
 
-  test('Dart 能同步拿到 Rust 的计算结果', () async {
-    expect(await rust.add(a: 2, b: 3), 5);
-    expect(await rust.add(a: -7, b: 7), 0);
+  tearDownAll(() async {
+    // 先关掉会话再删目录：Windows 上文件被打开着是删不掉的。
+    session.dispose();
+    try {
+      workDir.deleteSync(recursive: true);
+    } on FileSystemException {
+      // 删除失败不该让整个测试变成失败；临时目录留给系统清理。
+    }
   });
 
-  test('契约版本信息按字段映射过来', () async {
-    final snapshot = await rust.open();
-
-    expect(snapshot.coreInfo.apiVersion, '1.0');
-    expect(snapshot.coreInfo.dataSchemaVersion, 0);
-    expect(snapshot.coreInfo.libraryId, 'library-m0-probe');
-    expect(snapshot.coreInfo.capabilities, contains('probe.echo'));
-    expect(snapshot.recovery.recoveredDraftCount, 0);
-    expect(snapshot.pendingJobCount, 0);
+  test('打开资料库能拿到核心信息与能力清单', () async {
+    final info = await session.info();
+    expect(info.apiVersion, '1.0');
+    expect(info.dataSchemaVersion, 4, reason: '当前 schema 版本');
+    expect(info.libraryId, 'library');
+    expect(info.capabilities, contains('captures.commit'));
+    expect(info.capabilities, contains('imports.finish'));
+    // 诚实的能力声明：还没接的不该出现在清单里。
+    expect(info.capabilities, isNot(contains('search.start')));
+    expect(info.capabilities, isNot(contains('diary.generate')));
+    expect(info.recovery.pendingJobs, 0);
   });
 
-  test('传入的库句柄被原样返回', () async {
-    final snapshot = await rust.open(libraryHandle: 'library-42');
-    expect(snapshot.coreInfo.libraryId, 'library-42');
+  test('创建、保存、提交一条记录，并重新读出来', () async {
+    final draft = await session.createDraft(
+      occurredAt: DateTime.utc(2026, 9, 27, 9),
+      timeZone: 'Asia/Shanghai',
+      utcOffsetMinutes: 480,
+      operationId: 'op-create',
+    );
+    expect(draft.state, CaptureState.draft);
+    expect(draft.dayKey, '2026-09-27');
+
+    final saved = await session.saveDraft(
+      captureId: draft.id,
+      text: '今天下午面试完，走出大楼的时候风很大。',
+      expectedRevision: draft.revision,
+      operationId: 'op-save',
+    );
+    expect(saved.durable, isTrue);
+
+    final committed = await session.commit(
+      captureId: draft.id,
+      expectedRevision: saved.revision,
+      operationId: 'op-commit',
+    );
+    expect(committed.capture.state, CaptureState.committed);
+    expect(committed.capture.draftText, '今天下午面试完，走出大楼的时候风很大。');
+    expect(committed.originalTextRevision, isNotNull);
+
+    final again = await session.getCapture(captureId: draft.id);
+    expect(again.revision, committed.capture.revision);
+    expect(again.draftText, committed.capture.draftText);
+
+    final page = await session.listCaptures(dayKey: '2026-09-27', limit: 10);
+    expect(page.captures.map((capture) => capture.id), contains(draft.id));
   });
 
-  test('同步与异步两条路径结果一致', () async {
-    final fromOpen = await rust.open(libraryHandle: 'library-42');
-    final fromAsync = await rust.openAsync(libraryHandle: 'library-42');
-    final fromSnapshot = await rust.snapshot();
+  test('导入一个文本文件并提取出正文', () async {
+    final draft = await session.createDraft(
+      timeZone: 'Asia/Shanghai',
+      utcOffsetMinutes: 480,
+      operationId: 'op-create-2',
+    );
 
-    expect(fromOpen.coreInfo.libraryId, fromAsync.coreInfo.libraryId);
-    expect(fromOpen.coreInfo.apiVersion, fromAsync.coreInfo.apiVersion);
-    expect(fromAsync.pendingJobCount, fromSnapshot.pendingJobCount);
+    final ticket = await session.prepareImport(
+      captureId: draft.id,
+      displayName: '日记.txt',
+      mimeHint: 'text/plain',
+      origin: ImportOrigin.picker,
+      operationId: 'op-import',
+    );
+    expect(ticket.stagingTicket, isNotEmpty);
+
+    // 平台层负责把字节写到票据指向的位置。
+    const text = '第一段：今天风很大。\n\n第二段：晚上吃了面。\n';
+    final bytes = utf8.encode(text);
+    File(ticket.stagingTicket).writeAsBytesSync(bytes);
+
+    final status = await session.finishImport(
+      importId: ticket.importId,
+      stagingTicket: ticket.stagingTicket,
+      manifest: ImportManifest(
+        copiedBytes: bytes.length,
+        sha256: sha256.convert(bytes).toString(),
+        detectedMime: 'text/plain',
+        originalName: '日记.txt',
+      ),
+    );
+    expect(status.state, ImportState.ready);
+    final assetId = status.assetId;
+    expect(assetId, isNotNull);
+
+    // 导入完成时核心已经排了一个 extract 任务。
+    final jobs = await session.listJobs(states: [JobState.queued], limit: 10);
+    expect(jobs.map((job) => job.kind), contains('extract'));
+    final target =
+        jobs.firstWhere((job) => job.kind == 'extract').targetIds.single;
+
+    // 用任务的目标直接提取，证明这个目标真的可提取。
+    final content = await session.extractSource(sourceRef: target);
+    expect(content.extractorId, 'plain_text');
+    expect(content.coverage, Coverage.complete);
+    expect(content.segments.length, 2);
+    expect(content.segments.first.text, '第一段：今天风很大。');
+
+    // 按来源读派生内容并定位原件。
+    final bySource = await session.extractedContent(sourceId: content.sourceId);
+    expect(bySource!.text, text);
+
+    final location = await session.locateSource(
+      sourceRef: content.sourceId,
+      locator: content.segments.first.locator,
+    );
+    expect(location.available, isTrue);
+    expect(location.assetId, assetId);
   });
 
-  test('事件流按序号送达并正常关闭', () async {
-    final events = await rust.watchProbeEvents(count: 5).toList();
-    expect(events.length, 5);
-    expect(events.map((event) => event.sequence).toList(), [0, 1, 2, 3, 4]);
-    expect(events.first.message, '事件 0');
-    expect(events.last.message, '事件 4');
-
-    final empty = await rust.watchProbeEvents(count: 0).toList();
-    expect(empty, isEmpty);
+  test('核心错误映射成契约错误码', () async {
+    await expectLater(
+      session.getCapture(captureId: 'cap_不存在'),
+      throwsA(
+        isA<BridgeError>()
+            .having((error) => error.code, 'code', 'not_found')
+            .having((error) => error.retryable, 'retryable', false),
+      ),
+    );
   });
 
-  test('中文与 emoji 往返不走样', () async {
-    const text = '妈妈离职了，晚上又觉得还行 🙂';
-    expect(await rust.echo(text: text), text);
-    expect(await rust.echo(text: ''), '');
+  test('事件按序号递增，可以从游标之后补读', () async {
+    final events = await session.eventsSince(fromSequence: 0);
+    expect(events, isNotEmpty);
+    final sequences = events.map((event) => event.sequence).toList();
+    expect(sequences, orderedEquals([...sequences]..sort()));
+    // 字段名是 eventType：frb 按 Rust 字段名生成，不读 serde 的重命名。
+    // 枚举直接比值：核心给枚举加的 wire() 被 frb 镜像成了 Future<void>，不该用。
+    expect(
+      events.map((event) => event.eventType),
+      contains(EventType.captureChanged),
+    );
+
+    final tail = await session.eventsSince(fromSequence: sequences.first + 1);
+    expect(tail.length, lessThan(events.length));
+  });
+
+  test('中文与 emoji 跨桥往返不走样', () async {
+    final draft = await session.createDraft(
+      timeZone: 'Asia/Shanghai',
+      utcOffsetMinutes: 480,
+      operationId: 'op-create-3',
+    );
+    const text = '妈妈离职了，晚上又觉得还行 🙂 —— 真的吗？';
+    final saved = await session.saveDraft(
+      captureId: draft.id,
+      text: text,
+      expectedRevision: draft.revision,
+      operationId: 'op-save-3',
+    );
+    expect(saved.durable, isTrue);
+    final again = await session.getCapture(captureId: draft.id);
+    expect(again.draftText, text);
   });
 }
 
@@ -77,7 +200,7 @@ String _defaultLibraryPath() {
     return '../../target/release/libdiary_bridge.so';
   }
   if (Platform.isWindows) {
-    return r'..\..\target\release\diary_bridge.dll';
+    return r'..\..\target\x86_64-pc-windows-msvc\release\diary_bridge.dll';
   }
   if (Platform.isMacOS) {
     return '../../target/release/libdiary_bridge.dylib';
