@@ -63,7 +63,12 @@
 
 `main` 上现在有两道门禁，PR 必须同时通过：
 
-1. **必过检查 `docs`**：`.github/workflows/check.yml` 校验关键文件存在、Markdown 相对链接有效、`.github` 下的 YAML 可解析。代码落地后，`flutter analyze` 与 `cargo test` 会加进同一个 workflow，并作为必过检查一起生效。
+1. **必过检查 5 项**（都在 `.github/workflows/check.yml`，PR 上必须全绿）：
+   - `docs`：关键文件存在、Markdown 相对链接有效、`.github` 下的 YAML 可解析、共用场景 JSON 合法；
+   - `dart`：`packages/diary_api` 静态分析（`--fatal-infos`）与单元测试；
+   - `rust`：`clippy --workspace --all-targets -- -D warnings` 与全 workspace 测试；
+   - `bridge`：构建桥接产物、`packages/diary_bridge` 静态分析与端到端调用测试；
+   - `probe`：插件运行时预算与权限、插件代码的 Android arm64 编译检查、中文短词检索的结论断言。
 2. **必过审查 1 人**：GitHub 不允许作者批准自己的 PR，所以"必须 1 人批准"天然等于"必须对方批准"。已开启 `dismiss_stale_reviews`（批准后又推新提交，批准作废需重审）和 `required_conversation_resolution`（未解决的评论必须先处理才能合）。
 
 审查要真的看 diff。带着 AI 干活时，橡皮图章式批准比不审查更危险——它制造了"已经有人看过"的假象。跨层的改动除了点批准，还要在 PR 里写清「需要对方接入的内容」。
