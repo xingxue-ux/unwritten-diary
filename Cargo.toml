@@ -11,7 +11,7 @@ rust-version = "1.94"
 publish = false
 
 [workspace.dependencies]
-flutter_rust_bridge = "=2.13.0"
+flutter_rust_bridge = { version = "=2.13.0", features = ["chrono", "uuid"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 uuid = { version = "1", features = ["v7"] }

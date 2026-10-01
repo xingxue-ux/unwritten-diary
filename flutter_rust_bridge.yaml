@@ -2,6 +2,7 @@
 # 生成命令（在仓库根目录执行）：
 #   flutter_rust_bridge_codegen generate
 # 生成产物在 packages/diary_bridge/lib/src/rust/，禁止手改。
-rust_input: crate::api
+# 除了桥接自己的 API，还要扫描核心的数据对象，否则 frb 会把它们当成不透明句柄。
+rust_input: crate::api,diary_core::model
 rust_root: crates/diary_bridge/
 dart_output: packages/diary_bridge/lib/src/rust

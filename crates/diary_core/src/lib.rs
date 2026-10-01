@@ -14,7 +14,8 @@ mod assets;
 mod error;
 mod extractors;
 mod jobs;
-mod model;
+/// 数据对象。公开是为了让桥接层的 codegen 能扫描它们（见 flutter_rust_bridge.yaml）。
+pub mod model;
 mod recordings;
 mod schema;
 mod support;
@@ -674,6 +675,26 @@ impl Core {
 
     pub fn release_asset(&mut self, lease_id: &str) -> Result<()> {
         assets::release_asset(self, lease_id)
+    }
+
+    /// 还没走完的导入数量（未完成与可恢复都算）。
+    pub fn count_imports_in_flight(&self) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM import_sessions WHERE state IN \
+             ('prepared', 'copying', 'verifying', 'recoverable')",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// 还没收尾的录音数量。
+    pub fn count_open_recordings(&self) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM recording_sessions WHERE state IN \
+             ('preparing', 'recording', 'paused', 'stopping', 'interrupted', 'recoverable')",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     /// 资产数量与内容存储占用的字节数。

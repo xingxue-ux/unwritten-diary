@@ -12,3 +12,9 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 flutter_rust_bridge.workspace = true
+diary_core = { path = "../diary_core" }
+chrono.workspace = true
+# flutter_rust_bridge 的宏会注入 `#[cfg(frb_expand)]`，在这里声明一下，
+# 否则 clippy 的 unexpected_cfgs 会把它当成未知条件（CI 会因此失败）。
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

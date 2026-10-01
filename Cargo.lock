@@ -75,6 +75,8 @@ dependencies = [
  "anyhow",
  "atomic",
  "backtrace",
+ "chrono",
+ "uuid",
 ]
 
 [[package]]
@@ -288,8 +290,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -520,6 +524,8 @@ dependencies = [
 name = "diary_bridge"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "diary_core",
  "flutter_rust_bridge",
 ]
 
@@ -693,6 +699,7 @@ dependencies = [
  "build-target",
  "bytemuck",
  "byteorder",
+ "chrono",
  "console_error_panic_hook",
  "dart-sys",
  "delegate-attr",
@@ -705,6 +712,7 @@ dependencies = [
  "portable-atomic",
  "threadpool",
  "tokio",
+ "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
