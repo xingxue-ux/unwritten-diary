@@ -19,9 +19,12 @@ chardetng.workspace = true
 zip.workspace = true
 quick-xml.workspace = true
 pdf-extract.workspace = true
+jieba-rs.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# 实测脚本要直接看 EXPLAIN QUERY PLAN：核心不暴露连接，测试自己开一个只读连接。
+rusqlite.workspace = true
 sha2.workspace = true
 zip.workspace = true
 encoding_rs.workspace = true
