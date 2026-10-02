@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1986440282;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1633854652;
 
 // Section: executor
 
@@ -578,6 +578,59 @@ fn wire__crate__api__BridgeSession_import_status_impl(
                     let api_that_guard = api_that_guard.unwrap();
                     let output_ok =
                         crate::api::BridgeSession::import_status(&*api_that_guard, api_import_id)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__BridgeSession_index_status_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_index_status",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_source_scope = <Option<Vec<String>>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::BridgeSession::index_status(
+                        &*api_that_guard,
+                        api_source_scope,
+                    )?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -2099,6 +2152,25 @@ const _: fn() = || {
         let _: Option<i64> = ImportTicket.max_bytes;
     }
     {
+        let IndexStatus = None::<diary_core::model::IndexStatus>.unwrap();
+        let _: diary_core::model::Coverage = IndexStatus.coverage;
+        let _: bool = IndexStatus.keyword_index_ready;
+        let _: bool = IndexStatus.semantic_index_ready;
+        let _: String = IndexStatus.tokenizer_version;
+        let _: Option<String> = IndexStatus.model_version;
+        let _: Option<String> = IndexStatus.chunker_version;
+        let _: i64 = IndexStatus.indexed_segments;
+        let _: i64 = IndexStatus.total_segments;
+        let _: i64 = IndexStatus.pending_segments;
+        let _: i64 = IndexStatus.stale_segments;
+        let _: i64 = IndexStatus.failed_sources;
+        let _: i64 = IndexStatus.indexed_chars;
+        let _: i64 = IndexStatus.index_rows;
+        let _: i64 = IndexStatus.index_terms;
+        let _: i64 = IndexStatus.index_bytes;
+        let _: Vec<String> = IndexStatus.reasons;
+    }
+    {
         let Job = None::<diary_core::model::Job>.unwrap();
         let _: String = Job.id;
         let _: String = Job.kind;
@@ -2554,6 +2626,46 @@ impl SseDecode for diary_core::model::ImportTicket {
     }
 }
 
+impl SseDecode for diary_core::model::IndexStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_coverage = <diary_core::model::Coverage>::sse_decode(deserializer);
+        let mut var_keywordIndexReady = <bool>::sse_decode(deserializer);
+        let mut var_semanticIndexReady = <bool>::sse_decode(deserializer);
+        let mut var_tokenizerVersion = <String>::sse_decode(deserializer);
+        let mut var_modelVersion = <Option<String>>::sse_decode(deserializer);
+        let mut var_chunkerVersion = <Option<String>>::sse_decode(deserializer);
+        let mut var_indexedSegments = <i64>::sse_decode(deserializer);
+        let mut var_totalSegments = <i64>::sse_decode(deserializer);
+        let mut var_pendingSegments = <i64>::sse_decode(deserializer);
+        let mut var_staleSegments = <i64>::sse_decode(deserializer);
+        let mut var_failedSources = <i64>::sse_decode(deserializer);
+        let mut var_indexedChars = <i64>::sse_decode(deserializer);
+        let mut var_indexRows = <i64>::sse_decode(deserializer);
+        let mut var_indexTerms = <i64>::sse_decode(deserializer);
+        let mut var_indexBytes = <i64>::sse_decode(deserializer);
+        let mut var_reasons = <Vec<String>>::sse_decode(deserializer);
+        return diary_core::model::IndexStatus {
+            coverage: var_coverage,
+            keyword_index_ready: var_keywordIndexReady,
+            semantic_index_ready: var_semanticIndexReady,
+            tokenizer_version: var_tokenizerVersion,
+            model_version: var_modelVersion,
+            chunker_version: var_chunkerVersion,
+            indexed_segments: var_indexedSegments,
+            total_segments: var_totalSegments,
+            pending_segments: var_pendingSegments,
+            stale_segments: var_staleSegments,
+            failed_sources: var_failedSources,
+            indexed_chars: var_indexedChars,
+            index_rows: var_indexRows,
+            index_terms: var_indexTerms,
+            index_bytes: var_indexBytes,
+            reasons: var_reasons,
+        };
+    }
+}
+
 impl SseDecode for diary_core::model::Job {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2982,6 +3094,17 @@ impl SseDecode for Option<[f64; 4]> {
     }
 }
 
+impl SseDecode for Option<Vec<String>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<Vec<String>>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<Vec<diary_core::model::JobState>> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3178,93 +3301,94 @@ fn pde_ffi_dispatcher_primary_impl(
         8 => wire__crate__api__BridgeSession_get_capture_impl(port, ptr, rust_vec_len, data_len),
         9 => wire__crate__api__BridgeSession_get_job_impl(port, ptr, rust_vec_len, data_len),
         10 => wire__crate__api__BridgeSession_import_status_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__BridgeSession_info_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__BridgeSession_list_captures_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__BridgeSession_list_jobs_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__BridgeSession_locate_source_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__BridgeSession_next_wakeup_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__BridgeSession_open_impl(port, ptr, rust_vec_len, data_len),
-        17 => {
+        11 => wire__crate__api__BridgeSession_index_status_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__BridgeSession_info_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__BridgeSession_list_captures_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__BridgeSession_list_jobs_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__BridgeSession_locate_source_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__BridgeSession_next_wakeup_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__BridgeSession_open_impl(port, ptr, rust_vec_len, data_len),
+        18 => {
             wire__crate__api__BridgeSession_prepare_import_impl(port, ptr, rust_vec_len, data_len)
         }
-        18 => wire__crate__api__BridgeSession_save_draft_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__diary_core__model__asset_storage_state_from_wire_impl(
+        19 => wire__crate__api__BridgeSession_save_draft_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__diary_core__model__asset_storage_state_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        20 => wire__diary_core__model__asset_storage_state_wire_impl(
+        21 => wire__diary_core__model__asset_storage_state_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        21 => {
+        22 => {
             wire__diary_core__model__author_type_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        22 => wire__diary_core__model__author_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        23 => {
+        23 => wire__diary_core__model__author_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        24 => {
             wire__diary_core__model__capture_state_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        24 => wire__diary_core__model__capture_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__diary_core__model__coverage_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__diary_core__model__coverage_wire_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__diary_core__model__event_type_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__diary_core__model__event_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        29 => {
+        25 => wire__diary_core__model__capture_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__diary_core__model__coverage_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__diary_core__model__coverage_wire_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__diary_core__model__event_type_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__diary_core__model__event_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        30 => {
             wire__diary_core__model__import_origin_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        30 => wire__diary_core__model__import_origin_wire_impl(port, ptr, rust_vec_len, data_len),
-        31 => {
+        31 => wire__diary_core__model__import_origin_wire_impl(port, ptr, rust_vec_len, data_len),
+        32 => {
             wire__diary_core__model__import_state_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        32 => wire__diary_core__model__import_state_is_in_flight_impl(
+        33 => wire__diary_core__model__import_state_is_in_flight_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        33 => wire__diary_core__model__import_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__diary_core__model__job_priority_value_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__diary_core__model__job_state_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        36 => {
+        34 => wire__diary_core__model__import_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__diary_core__model__job_priority_value_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__diary_core__model__job_state_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        37 => {
             wire__diary_core__model__job_state_is_terminal_impl(port, ptr, rust_vec_len, data_len)
         }
-        37 => wire__diary_core__model__job_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        38 => {
+        38 => wire__diary_core__model__job_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        39 => {
             wire__diary_core__model__locator_type_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        39 => wire__diary_core__model__locator_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__diary_core__model__processing_status_from_wire_impl(
+        40 => wire__diary_core__model__locator_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__diary_core__model__processing_status_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        41 => {
+        42 => {
             wire__diary_core__model__processing_status_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        42 => wire__diary_core__model__processing_summary_default_impl(
+        43 => wire__diary_core__model__processing_summary_default_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        43 => wire__diary_core__model__recording_state_from_wire_impl(
+        44 => wire__diary_core__model__recording_state_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        44 => {
+        45 => {
             wire__diary_core__model__recording_state_is_open_impl(port, ptr, rust_vec_len, data_len)
         }
-        45 => wire__diary_core__model__recording_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        46 => {
+        46 => wire__diary_core__model__recording_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        47 => {
             wire__diary_core__model__source_locator_document_impl(port, ptr, rust_vec_len, data_len)
         }
-        47 => wire__diary_core__model__source_locator_text_range_impl(
+        48 => wire__diary_core__model__source_locator_text_range_impl(
             port,
             ptr,
             rust_vec_len,
@@ -3728,6 +3852,41 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::ImportTicke
     for diary_core::model::ImportTicket
 {
     fn into_into_dart(self) -> FrbWrapper<diary_core::model::ImportTicket> {
+        self.into()
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::IndexStatus> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.0.coverage.into_into_dart().into_dart(),
+            self.0.keyword_index_ready.into_into_dart().into_dart(),
+            self.0.semantic_index_ready.into_into_dart().into_dart(),
+            self.0.tokenizer_version.into_into_dart().into_dart(),
+            self.0.model_version.into_into_dart().into_dart(),
+            self.0.chunker_version.into_into_dart().into_dart(),
+            self.0.indexed_segments.into_into_dart().into_dart(),
+            self.0.total_segments.into_into_dart().into_dart(),
+            self.0.pending_segments.into_into_dart().into_dart(),
+            self.0.stale_segments.into_into_dart().into_dart(),
+            self.0.failed_sources.into_into_dart().into_dart(),
+            self.0.indexed_chars.into_into_dart().into_dart(),
+            self.0.index_rows.into_into_dart().into_dart(),
+            self.0.index_terms.into_into_dart().into_dart(),
+            self.0.index_bytes.into_into_dart().into_dart(),
+            self.0.reasons.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<diary_core::model::IndexStatus>
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::IndexStatus>>
+    for diary_core::model::IndexStatus
+{
+    fn into_into_dart(self) -> FrbWrapper<diary_core::model::IndexStatus> {
         self.into()
     }
 }
@@ -4391,6 +4550,28 @@ impl SseEncode for diary_core::model::ImportTicket {
     }
 }
 
+impl SseEncode for diary_core::model::IndexStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <diary_core::model::Coverage>::sse_encode(self.coverage, serializer);
+        <bool>::sse_encode(self.keyword_index_ready, serializer);
+        <bool>::sse_encode(self.semantic_index_ready, serializer);
+        <String>::sse_encode(self.tokenizer_version, serializer);
+        <Option<String>>::sse_encode(self.model_version, serializer);
+        <Option<String>>::sse_encode(self.chunker_version, serializer);
+        <i64>::sse_encode(self.indexed_segments, serializer);
+        <i64>::sse_encode(self.total_segments, serializer);
+        <i64>::sse_encode(self.pending_segments, serializer);
+        <i64>::sse_encode(self.stale_segments, serializer);
+        <i64>::sse_encode(self.failed_sources, serializer);
+        <i64>::sse_encode(self.indexed_chars, serializer);
+        <i64>::sse_encode(self.index_rows, serializer);
+        <i64>::sse_encode(self.index_terms, serializer);
+        <i64>::sse_encode(self.index_bytes, serializer);
+        <Vec<String>>::sse_encode(self.reasons, serializer);
+    }
+}
+
 impl SseEncode for diary_core::model::Job {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -4751,6 +4932,16 @@ impl SseEncode for Option<[f64; 4]> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <[f64; 4]>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<Vec<String>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <Vec<String>>::sse_encode(value, serializer);
         }
     }
 }
