@@ -1,7 +1,8 @@
 //! 「不写日记」设备内本地核心。
 //!
-//! B1a 这一片只做资料库、迁移、幂等写入与记录路径（对应契约第 2.1、2.2 节与
-//! 第 4.1 节的 captures / sources 部分）。原件文件库、录音、队列、搜索都还没有。
+//! 已落地：记录路径（B1a）、原件文件库与导入（B1b）、录音与队列（B1c）、
+//! 提取与来源定位（B2）、关键词索引与覆盖状态（B3a）。检索会话（search.*）、
+//! 向量与混合排序还没有。
 //!
 //! 三条硬性约束贯穿本 crate：
 //! 1. **不丢已确认的记录**：写入落在同一个事务里，事务提交后才返回 durable。
@@ -18,6 +19,7 @@ mod jobs;
 pub mod model;
 mod recordings;
 mod schema;
+mod search;
 mod support;
 
 pub use assets::ImportRequest;
@@ -28,13 +30,15 @@ pub use error::{CoreError, ErrorCode, Result};
 pub use model::{
     Asset, AssetLease, AssetStorageState, AuthorType, Capture, CapturePage, CaptureState,
     CommitResult, DomainEvent, DraftSaveResult, EventType, ImportManifest, ImportOrigin,
-    Coverage, ExtractedContent, ExtractedSegment, ImportState, ImportStatus, ImportTicket, Job,
-    JobPriority, JobProgress, JobState, LocatorType, NativeRecordingStatus, NewJob,
+    Coverage, ExtractedContent, ExtractedSegment, ImportState, ImportStatus, ImportTicket,
+    IndexStatus, Job, JobPriority, JobProgress, JobState, LocatorType, NativeRecordingStatus,
+    NewJob,
     ProcessingStatus, ProcessingSummary, RecordingFinalizeResult, RecordingRecovery,
     RecordingSession, RecordingState, RecordingTicket, SegmentManifest, SegmentReceipt,
     SourceItem, SourceLocation, SourceLocator, SourceRevision,
 };
 pub use schema::SCHEMA_VERSION;
+pub use search::TOKENIZER_VERSION;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -644,6 +648,33 @@ impl Core {
     /// 把 sourceRef + locator 解析成前端可打开的原件与可用性。
     pub fn locate_source(&self, source_ref: &str, locator: SourceLocator) -> Result<SourceLocation> {
         extractors::locate(self, source_ref, locator)
+    }
+
+    // ------------------------------------------------------------ 关键词索引
+
+    /// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
+    pub fn index_status(&self, source_scope: Option<&[String]>) -> Result<IndexStatus> {
+        search::status(self, source_scope)
+    }
+
+    /// 重建关键词索引；`source_scope` 为空表示整库。返回重建的片段数。
+    ///
+    /// 整库重建是重活，产品路径上应当是可取消的任务；这一片先提供同步入口，
+    /// 让覆盖状态与增量索引有个可靠的校准方式（任务化见 issue #31）。
+    pub fn rebuild_keyword_index(&mut self, source_scope: Option<&[String]>) -> Result<i64> {
+        search::rebuild(self, source_scope)
+    }
+
+    /// 关键词检索候选：命中片段的 ID，按索引写入顺序。
+    ///
+    /// 只做「召回 + 回原文核对」，排序、分页与会话属于 #31。
+    pub fn search_candidates(&self, query: &str, limit: usize) -> Result<Vec<String>> {
+        search::candidates(self, query, limit)
+    }
+
+    /// 命中数量。测试与实测脚本用它核对召回是否完整。
+    pub fn count_search_matches(&self, query: &str) -> Result<i64> {
+        search::count_matches(self, query)
     }
 
     // ------------------------------------------------------------ 原件与导入
