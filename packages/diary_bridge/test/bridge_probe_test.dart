@@ -44,10 +44,11 @@ void main() {
   test('打开资料库能拿到核心信息与能力清单', () async {
     final info = await session.info();
     expect(info.apiVersion, '1.0');
-    expect(info.dataSchemaVersion, 4, reason: '当前 schema 版本');
+    expect(info.dataSchemaVersion, 5, reason: '当前 schema 版本');
     expect(info.libraryId, 'library');
     expect(info.capabilities, contains('captures.commit'));
     expect(info.capabilities, contains('imports.finish'));
+    expect(info.capabilities, contains('indexes.status'));
     // 诚实的能力声明：还没接的不该出现在清单里。
     expect(info.capabilities, isNot(contains('search.start')));
     expect(info.capabilities, isNot(contains('diary.generate')));
@@ -147,6 +148,28 @@ void main() {
     );
     expect(location.available, isTrue);
     expect(location.assetId, assetId);
+
+    // 提取与建索引在同一个事务里：提取完就该是「已索引」。
+    final index = await session.indexStatus();
+    expect(index.coverage, Coverage.complete);
+    expect(index.keywordIndexReady, isTrue);
+    expect(index.indexedSegments, 2);
+    expect(index.totalSegments, 2);
+    expect(index.pendingSegments, 0);
+    expect(index.tokenizerVersion, isNotEmpty);
+    expect(index.indexRows, greaterThan(0));
+    // 语义索引还没接，状态里不能装作就绪。
+    expect(index.semanticIndexReady, isFalse);
+    expect(index.modelVersion, isNull);
+    expect(index.reasons.join(), contains('语义'));
+
+    // 范围过滤：限定了来源就只看这个来源；空范围是「什么都不看」。
+    final scoped = await session.indexStatus(sourceScope: [content.sourceId]);
+    expect(scoped.indexedSegments, 2);
+    expect(scoped.coverage, Coverage.complete);
+    final empty = await session.indexStatus(sourceScope: <String>[]);
+    expect(empty.totalSegments, 0);
+    expect(empty.coverage, Coverage.unavailable);
   });
 
   test('核心错误映射成契约错误码', () async {

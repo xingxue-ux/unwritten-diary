@@ -13,8 +13,8 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use diary_core::{
     Capture, CapturePage, CommitResult, Core, CoreError, DomainEvent, DraftSaveResult,
-    ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, Job, JobState,
-    SourceLocation, SourceLocator,
+    ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job,
+    JobState, SourceLocation, SourceLocator,
 };
 use flutter_rust_bridge::frb;
 
@@ -220,6 +220,19 @@ impl BridgeSession {
         Ok(core.locate_source(&source_ref, locator)?)
     }
 
+    // ------------------------------------------------------------ 关键词索引
+
+    /// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
+    ///
+    /// `source_scope` 为空表示整个资料库；空数组是「什么都不看」而不是「看全部」。
+    pub fn index_status(
+        &self,
+        source_scope: Option<Vec<String>>,
+    ) -> Result<IndexStatus, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.index_status(source_scope.as_deref())?)
+    }
+
     // ------------------------------------------------------------ 任务与事件
 
     /// 按状态列出任务；不传状态就列全部。
@@ -303,6 +316,7 @@ fn wired_capabilities() -> Vec<String> {
         "sources.extract",
         "sources.extractedContent",
         "sources.locate",
+        "indexes.status",
         "jobs.list",
         "jobs.get",
         "jobs.nextWakeup",
