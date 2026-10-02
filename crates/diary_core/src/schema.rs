@@ -7,7 +7,7 @@
 use rusqlite::{params, Connection};
 
 /// 本构建支持的 schema 版本。
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -35,6 +35,9 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     }
     if current < 4 {
         tx.execute_batch(V4)?;
+    }
+    if current < 5 {
+        tx.execute_batch(V5)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.execute(
@@ -272,4 +275,35 @@ CREATE TABLE extracted_segments (
     asset_id           TEXT
 );
 CREATE INDEX idx_extracted_segments_content ON extracted_segments(content_id, ordinal);
+"#;
+
+/// v5：关键词索引。
+///
+/// 索引是可重建数据，原件与派生内容都不在这里改。三张表的分工：
+///
+/// - `search_docs`：一行对一段派生文本，`doc_id` 是整数行号——索引表里存
+///   36 字节的片段 UUID 会让每一行都胖一圈，M0 量出的 42 字节/源字符里
+///   有一大块是这个。来源与内容 ID **不重复存**：它们是派生内容表里已有的
+///   事实，检索时 join 回去即可，每行能省下几十字节（10 万片段上实测差 20 MiB）。
+/// - `search_grams`：倒排表。同一个字段同时装三种词项，靠长度区分：
+///   单字（1 字查询兜底）、2-gram（两字以上查询的候选生成）、jieba 词
+///   （长度 ≥ 2 的词，用于候选收窄与后续排序区分「词命中」）。
+///   **`PRIMARY KEY (term, doc_id)` + `WITHOUT ROWID`**：等于让主键本身当索引，
+///   不再需要「堆表 + 二级索引」两份存储，天然去重。
+///
+/// 分词器版本存在每一行上：改了分词或 gram 策略就换版本号，旧行按版本重建，
+/// 不会出现新旧词项混在一张表里却没人知道。
+const V5: &str = r#"
+CREATE TABLE search_docs (
+    doc_id            INTEGER PRIMARY KEY,
+    segment_id        TEXT NOT NULL UNIQUE REFERENCES extracted_segments(id) ON DELETE CASCADE,
+    text_length       INTEGER NOT NULL,
+    tokenizer_version TEXT NOT NULL
+);
+
+CREATE TABLE search_grams (
+    term   TEXT NOT NULL,
+    doc_id INTEGER NOT NULL REFERENCES search_docs(doc_id) ON DELETE CASCADE,
+    PRIMARY KEY (term, doc_id)
+) WITHOUT ROWID;
 "#;

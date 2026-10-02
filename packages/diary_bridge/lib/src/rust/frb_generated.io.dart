@@ -172,6 +172,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ImportTicket dco_decode_import_ticket(dynamic raw);
 
   @protected
+  IndexStatus dco_decode_index_status(dynamic raw);
+
+  @protected
   Job dco_decode_job(dynamic raw);
 
   @protected
@@ -268,6 +271,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   F64Array4? dco_decode_opt_f_64_array_4(dynamic raw);
+
+  @protected
+  List<String>? dco_decode_opt_list_String(dynamic raw);
 
   @protected
   List<JobState>? dco_decode_opt_list_job_state(dynamic raw);
@@ -473,6 +479,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ImportTicket sse_decode_import_ticket(SseDeserializer deserializer);
 
   @protected
+  IndexStatus sse_decode_index_status(SseDeserializer deserializer);
+
+  @protected
   Job sse_decode_job(SseDeserializer deserializer);
 
   @protected
@@ -593,6 +602,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   F64Array4? sse_decode_opt_f_64_array_4(SseDeserializer deserializer);
+
+  @protected
+  List<String>? sse_decode_opt_list_String(SseDeserializer deserializer);
 
   @protected
   List<JobState>? sse_decode_opt_list_job_state(SseDeserializer deserializer);
@@ -847,6 +859,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_import_ticket(ImportTicket self, SseSerializer serializer);
 
   @protected
+  void sse_encode_index_status(IndexStatus self, SseSerializer serializer);
+
+  @protected
   void sse_encode_job(Job self, SseSerializer serializer);
 
   @protected
@@ -1001,6 +1016,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_f_64_array_4(F64Array4? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_list_String(List<String>? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_list_job_state(

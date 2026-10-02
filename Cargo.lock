@@ -536,6 +536,7 @@ dependencies = [
  "chardetng",
  "chrono",
  "encoding_rs",
+ "jieba-rs",
  "pdf-extract",
  "quick-xml",
  "rusqlite",

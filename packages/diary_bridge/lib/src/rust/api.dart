@@ -53,6 +53,11 @@ abstract class BridgeSession implements RustOpaqueInterface {
 
   Future<ImportStatus> importStatus({required String importId});
 
+  /// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
+  ///
+  /// `source_scope` 为空表示整个资料库；空数组是「什么都不看」而不是「看全部」。
+  Future<IndexStatus> indexStatus({List<String>? sourceScope});
+
   /// 核心信息与恢复摘要。
   Future<LibraryInfo> info();
 

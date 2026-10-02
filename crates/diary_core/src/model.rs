@@ -815,3 +815,40 @@ pub struct SourceLocation {
     pub asset_id: Option<String>,
     pub reason: Option<String>,
 }
+
+/// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
+///
+/// 核心只建关键词索引，所以 `semantic_index_ready` 恒为 false、
+/// `model_version` 恒为空——照实说，而不是留一个看起来「都就绪」的默认值。
+/// `pending_segments` 与 `failed_sources` 的单位不同（片段 / 材料），
+/// 名字里写清楚，避免前端把两个数字相加。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IndexStatus {
+    pub coverage: Coverage,
+    pub keyword_index_ready: bool,
+    pub semantic_index_ready: bool,
+    /// 建索引时用的分词器版本；与库里行不一致的片段会被算成待重建。
+    pub tokenizer_version: String,
+    pub model_version: Option<String>,
+    pub chunker_version: Option<String>,
+    /// 已进关键词索引的片段数。
+    pub indexed_segments: i64,
+    /// 派生内容里的片段总数。
+    pub total_segments: i64,
+    /// 还没进索引的片段数（未索引 + 分词器版本过期）。
+    pub pending_segments: i64,
+    /// 分词器版本过期、需要重建的片段数（已包含在 pending 里）。
+    pub stale_segments: i64,
+    /// 正文解析失败的材料数（这些材料没有片段可索引）。
+    pub failed_sources: i64,
+    /// 已索引片段的正文字符总数，用来算索引体积的每字符代价。
+    pub indexed_chars: i64,
+    /// 索引倒排表的行数。
+    pub index_rows: i64,
+    /// 索引里不同词项的个数。
+    pub index_terms: i64,
+    /// 索引表实际占用的字节数（来自 dbstat）。读不到时是 0，并在 reasons 里说明。
+    pub index_bytes: i64,
+    /// 用户可读的原因说明。
+    pub reasons: Vec<String>,
+}

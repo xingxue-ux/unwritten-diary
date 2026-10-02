@@ -21,6 +21,7 @@ use crate::error::{CoreError, ErrorCode, Result};
 use crate::model::{
     Coverage, ExtractedContent, ExtractedSegment, ProcessingStatus, SourceLocator, SourceLocation,
 };
+use crate::search;
 use crate::support;
 use crate::Core;
 
@@ -706,13 +707,14 @@ fn persist(
         ],
     )?;
     for segment in &content.segments {
+        let segment_id = support::new_id("seg");
         tx.execute(
             "INSERT INTO extracted_segments (id, content_id, ordinal, text, locator_type, \
              source_revision_id, text_start, text_end, start_ms, end_ms, page_number, block_id, \
              rect_left, rect_top, rect_right, rect_bottom, asset_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
-                support::new_id("seg"),
+                segment_id,
                 content.id,
                 segment.ordinal,
                 segment.text,
@@ -730,6 +732,15 @@ fn persist(
                 segment.locator.rect.map(|rect| rect[3]),
                 segment.locator.asset_id,
             ],
+        )?;
+        // 关键词索引与派生内容在同一个事务里：材料写进去了、索引却没写，
+        // 就会出现「检索不到刚导入的东西」而没人知道原因（任务书 3.3 节）。
+        search::index_segment(
+            &tx,
+            search::SegmentInput {
+                segment_id: &segment_id,
+                text: &segment.text,
+            },
         )?;
     }
     tx.commit()?;

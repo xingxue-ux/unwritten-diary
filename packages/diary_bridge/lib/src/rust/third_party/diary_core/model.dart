@@ -8,7 +8,7 @@ import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NativeRecordingStatus`, `NewJob`, `RecordingFinalizeResult`, `RecordingRecovery`, `RecordingSession`, `RecordingTicket`, `SegmentManifest`, `SegmentReceipt`, `SourceItem`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `targeting`, `with_snapshot`
 
 /// 资产在文件库中的状态，契约第 2.3 节。
@@ -488,6 +488,113 @@ class ImportTicket {
           importId == other.importId &&
           stagingTicket == other.stagingTicket &&
           maxBytes == other.maxBytes;
+}
+
+/// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
+///
+/// 核心只建关键词索引，所以 `semantic_index_ready` 恒为 false、
+/// `model_version` 恒为空——照实说，而不是留一个看起来「都就绪」的默认值。
+/// `pending_segments` 与 `failed_sources` 的单位不同（片段 / 材料），
+/// 名字里写清楚，避免前端把两个数字相加。
+class IndexStatus {
+  final Coverage coverage;
+  final bool keywordIndexReady;
+  final bool semanticIndexReady;
+
+  /// 建索引时用的分词器版本；与库里行不一致的片段会被算成待重建。
+  final String tokenizerVersion;
+  final String? modelVersion;
+  final String? chunkerVersion;
+
+  /// 已进关键词索引的片段数。
+  final PlatformInt64 indexedSegments;
+
+  /// 派生内容里的片段总数。
+  final PlatformInt64 totalSegments;
+
+  /// 还没进索引的片段数（未索引 + 分词器版本过期）。
+  final PlatformInt64 pendingSegments;
+
+  /// 分词器版本过期、需要重建的片段数（已包含在 pending 里）。
+  final PlatformInt64 staleSegments;
+
+  /// 正文解析失败的材料数（这些材料没有片段可索引）。
+  final PlatformInt64 failedSources;
+
+  /// 已索引片段的正文字符总数，用来算索引体积的每字符代价。
+  final PlatformInt64 indexedChars;
+
+  /// 索引倒排表的行数。
+  final PlatformInt64 indexRows;
+
+  /// 索引里不同词项的个数。
+  final PlatformInt64 indexTerms;
+
+  /// 索引表实际占用的字节数（来自 dbstat）。读不到时是 0，并在 reasons 里说明。
+  final PlatformInt64 indexBytes;
+
+  /// 用户可读的原因说明。
+  final List<String> reasons;
+
+  const IndexStatus({
+    required this.coverage,
+    required this.keywordIndexReady,
+    required this.semanticIndexReady,
+    required this.tokenizerVersion,
+    this.modelVersion,
+    this.chunkerVersion,
+    required this.indexedSegments,
+    required this.totalSegments,
+    required this.pendingSegments,
+    required this.staleSegments,
+    required this.failedSources,
+    required this.indexedChars,
+    required this.indexRows,
+    required this.indexTerms,
+    required this.indexBytes,
+    required this.reasons,
+  });
+
+  @override
+  int get hashCode =>
+      coverage.hashCode ^
+      keywordIndexReady.hashCode ^
+      semanticIndexReady.hashCode ^
+      tokenizerVersion.hashCode ^
+      modelVersion.hashCode ^
+      chunkerVersion.hashCode ^
+      indexedSegments.hashCode ^
+      totalSegments.hashCode ^
+      pendingSegments.hashCode ^
+      staleSegments.hashCode ^
+      failedSources.hashCode ^
+      indexedChars.hashCode ^
+      indexRows.hashCode ^
+      indexTerms.hashCode ^
+      indexBytes.hashCode ^
+      reasons.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is IndexStatus &&
+          runtimeType == other.runtimeType &&
+          coverage == other.coverage &&
+          keywordIndexReady == other.keywordIndexReady &&
+          semanticIndexReady == other.semanticIndexReady &&
+          tokenizerVersion == other.tokenizerVersion &&
+          modelVersion == other.modelVersion &&
+          chunkerVersion == other.chunkerVersion &&
+          indexedSegments == other.indexedSegments &&
+          totalSegments == other.totalSegments &&
+          pendingSegments == other.pendingSegments &&
+          staleSegments == other.staleSegments &&
+          failedSources == other.failedSources &&
+          indexedChars == other.indexedChars &&
+          indexRows == other.indexRows &&
+          indexTerms == other.indexTerms &&
+          indexBytes == other.indexBytes &&
+          reasons == other.reasons;
 }
 
 /// 持久任务，契约第 2.7 节。
