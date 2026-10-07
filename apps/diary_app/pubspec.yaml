@@ -1,0 +1,29 @@
+name: unwritten_diary
+description: 不写日记的 Flutter 客户端（F0 演示版）
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.9.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  diary_api:
+    path: ../../packages/diary_api
+  diary_mock:
+    path: ../../packages/diary_mock
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/brand/app_icon.png
+  fonts:
+    - family: DiaryDisplay
+      fonts:
+        - asset: assets/fonts/DiaryDisplay-AppSubset.ttf
