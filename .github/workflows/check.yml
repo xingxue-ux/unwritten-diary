@@ -59,7 +59,9 @@ jobs:
       - name: diary_mock 是否存在
         id: mock
         run: |
-          if [ -f packages/diary_mock/pubspec.yaml ]; then
+          # 用绝对路径：这一步继承了任务级 working-directory（packages/diary_api），
+          # 相对路径会去 diary_api 里找 diary_mock，永远找不到。
+          if [ -f "$GITHUB_WORKSPACE/packages/diary_mock/pubspec.yaml" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
@@ -92,7 +94,7 @@ jobs:
       - name: 应用目录是否存在
         id: app
         run: |
-          if [ -f apps/diary_app/pubspec.yaml ]; then
+          if [ -f "$GITHUB_WORKSPACE/apps/diary_app/pubspec.yaml" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
