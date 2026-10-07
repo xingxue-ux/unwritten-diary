@@ -82,9 +82,8 @@ jobs:
     name: flutter
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: apps/diary_app
+    # 不用任务级 defaults.working-directory：它同样作用于下面那条存在性判断，
+    # 目录不存在时判断本身就会因为工作目录不存在而失败（第一次跑就是这样红的）。
     steps:
       - name: 检出仓库
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -108,12 +107,15 @@ jobs:
           cache: true
       - name: 安装依赖
         if: steps.app.outputs.present == 'true'
+        working-directory: apps/diary_app
         run: flutter pub get
       - name: 静态分析
         if: steps.app.outputs.present == 'true'
+        working-directory: apps/diary_app
         run: flutter analyze --fatal-infos
       - name: 组件测试
         if: steps.app.outputs.present == 'true'
+        working-directory: apps/diary_app
         run: flutter test
 
   rust:
