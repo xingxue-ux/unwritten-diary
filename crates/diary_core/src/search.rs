@@ -257,6 +257,10 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
 
     // 索引表实际占用的页。`dbstat` 是 SQLite 的调试用虚表，本仓库的 bundled
     // 构建开了它；读不到就如实报 0 并在 reasons 里说明，不编一个数出来。
+    //
+    // **这个数字永远是整库的**：dbstat 按表/索引汇总页数，页在来源之间是共享的，
+    // 没法按 source_scope 拆分。范围查询照样给出整库值，但会在 reasons 里写明，
+    // 免得前端把整库大小当成某个来源的索引大小（审查就是这么发现的）。
     let index_bytes = {
         let sql = "SELECT COALESCE(SUM(pgsize), 0) FROM dbstat WHERE name IN \
                    ('search_docs', 'search_grams', 'sqlite_autoindex_search_docs_1')";
@@ -300,6 +304,10 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
     }
     if !dbstat_available {
         reasons.push("这个构建读不到索引占用（dbstat 不可用），index_bytes 报 0".to_owned());
+    } else if source_scope.is_some() {
+        reasons.push(
+            "index_bytes 是整库索引占用：dbstat 只能按表统计，无法按来源拆分".to_owned(),
+        );
     }
     // 语义索引还没接：如实写清楚，而不是让前端以为「索引已就绪」包含它。
     reasons.push("语义索引尚未接入（见 issue #32）：当前只有关键词索引".to_owned());

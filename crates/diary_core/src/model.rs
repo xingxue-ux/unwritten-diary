@@ -847,7 +847,11 @@ pub struct IndexStatus {
     pub index_rows: i64,
     /// 索引里不同词项的个数。
     pub index_terms: i64,
-    /// 索引表实际占用的字节数（来自 dbstat）。读不到时是 0，并在 reasons 里说明。
+    /// **整库**索引表实际占用的字节数（来自 dbstat）。
+    ///
+    /// 它不随 `source_scope` 变化：dbstat 按表汇总页数，页在来源之间共享，拆不出来。
+    /// 范围查询里它仍是整库值，并在 `reasons` 里写明。读不到 dbstat 时是 0，同样在
+    /// `reasons` 里说明。
     pub index_bytes: i64,
     /// 用户可读的原因说明。
     pub reasons: Vec<String>,

@@ -422,6 +422,16 @@ fn scope_filters_status_and_empty_scope_means_nothing() {
     assert_eq!(only_first.total_segments, 2);
     assert_eq!(only_first.indexed_segments, 2);
     assert_eq!(only_first.coverage, Coverage::Complete);
+    // 单来源同样只给整库占用，且说清楚——不能把整库大小当成这个来源的。
+    assert_eq!(
+        only_first.index_bytes, all.index_bytes,
+        "index_bytes 是整库值，不该随来源范围变化"
+    );
+    assert!(
+        only_first.reasons.iter().any(|reason| reason.contains("整库")),
+        "单来源查询也必须说明 index_bytes 是整库值：{:?}",
+        only_first.reasons
+    );
 
     let only_second = core
         .index_status(Some(std::slice::from_ref(&second)))
@@ -434,6 +444,17 @@ fn scope_filters_status_and_empty_scope_means_nothing() {
     assert_eq!(none.total_segments, 0);
     assert_eq!(none.index_rows, 0);
     assert_eq!(none.coverage, Coverage::Unavailable);
+    // index_bytes 不随范围变化：它是整库占用（dbstat 只能按表统计），
+    // 所以这里必须 >0，并且 reasons 里要说明，免得前端误当成「这个范围的大小」。
+    assert!(
+        none.index_bytes > 0,
+        "库里已有索引，整库占用不该因为范围为空就变成 0"
+    );
+    assert!(
+        none.reasons.iter().any(|reason| reason.contains("整库")),
+        "范围查询必须说明 index_bytes 是整库值：{:?}",
+        none.reasons
+    );
 
     // 不该出现的来源 ID 也不会退化成全部。
     let unknown = core
