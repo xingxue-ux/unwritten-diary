@@ -23,12 +23,16 @@ mod search;
 // 没有模型时这条命令会直接报错，不进 CI。
 #[cfg(feature = "search")]
 mod semantic_quality;
+// 混合检索（RRF）的量测与阈值扫描，同样需要真模型。
+#[cfg(feature = "search")]
+mod hybrid_quality;
 
 use anyhow::Result;
 
 fn usage() -> &'static str {
     "用法：\n  diary_probe short-word-search [片段数，默认 20000]\n  diary_probe quality-set（读 tests/quality/search_quality_set.json，可用 DIARY_QUALITY_SET 覆盖）
-  diary_probe semantic-quality（真模型：语义召回 + pooling×前缀四组 + f32/int8，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）\n  diary_probe plugin-runtime\n  diary_probe vector-model（需要 --features model 与本地权重）\n  diary_probe all [片段数]"
+  diary_probe semantic-quality（真模型：语义召回 + pooling×前缀四组 + f32/int8，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）
+  diary_probe hybrid-quality（真模型：三类对照 + 阈值扫描 + matchedBy 分布，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）\n  diary_probe plugin-runtime\n  diary_probe vector-model（需要 --features model 与本地权重）\n  diary_probe all [片段数]"
 }
 
 /// 只在需要检索的构建里解析片段数，否则 plugin-only 构建会报未使用变量。
@@ -67,6 +71,12 @@ fn main() -> Result<()> {
         "semantic-quality" => {
             #[cfg(feature = "search")]
             semantic_quality::run()?;
+            #[cfg(not(feature = "search"))]
+            anyhow::bail!("这个构建没有启用 search feature（尝试 cargo run -p diary_probe --features search）");
+        }
+        "hybrid-quality" => {
+            #[cfg(feature = "search")]
+            hybrid_quality::run()?;
             #[cfg(not(feature = "search"))]
             anyhow::bail!("这个构建没有启用 search feature（尝试 cargo run -p diary_probe --features search）");
         }

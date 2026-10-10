@@ -513,6 +513,28 @@ fn cosine(left: &[f32], right: &[f32]) -> f32 {
     }
 }
 
+/// 融合/量测用：这一篇的**证据正文**的稳定哈希（与 `materialize` 取摘录用的是同一段
+/// 正文：来源篇 = span 基准正文，记录文字 = `draft_text`）。
+///
+/// 混合检索的同分兜底要一个**只由内容决定**的键（#57 的教训：`chunk_id` / `source_id`
+/// 里有每库不同的 v7 UUID）。正文已经不在了（派生内容被重提取删掉）时返回 `None`，
+/// 那一篇本来也materialize 不出来。
+pub(crate) fn content_key(core: &Core, candidate: &SemanticCandidate) -> Result<Option<String>> {
+    let text = if candidate.source_revision_id.is_empty() {
+        core.conn
+            .query_row(
+                "SELECT draft_text FROM captures WHERE id = ?1",
+                params![candidate.capture_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+    } else {
+        chunks::source_piece_text(&core.conn, &candidate.source_id, &candidate.source_revision_id)?
+            .map(|piece| piece.text)
+    };
+    Ok(text.map(|value| crate::support::content_hash(&value)))
+}
+
 /// 把一页候选变成命中。整段正文只在这一步取，按页取。
 ///
 /// 摘录与定位取**该篇自己那一段**（`start_char` / `end_char`），不是整块拼接文本。
