@@ -461,21 +461,28 @@ pub(crate) fn candidates(
         });
     }
 
-    // 分数从高到低；同分按日期近到远，再按**内容**决定的键（`chunk_id` 是内容的
-    // 函数 + 段序号）。
+    // 分数从高到低；同分按日期近到远，再按**真正由内容决定**的键：篇内区间与段序号。
     //
-    // 为什么最后两道不能是 `group_id`：篇标识是 `src_`/`cap_` 前缀的 v7 UUID，
-    // 每次建库都不一样。拿它当同分时的顺序键，会在「两块文本完全相同、分数一样」
-    // 时给出**每次都不一样**的排名——同一份数据反复跑质量集会看到会飘的数字。
-    // `chunk_id` 是内容哈希、段序号是打包结果，两者都只由内容决定。
+    // 为什么同分时**不能**先比 `chunk_id`（issue #57）：`chunk_id` 的哈希输入里有
+    // 篇标识（`src_`/`cap_` 前缀的 v7 UUID），而篇标识每个库都不一样。于是**同一份
+    // 内容重新建一遍库就会换一批 chunk_id**，两个同分块的相对大小也就跟着抛硬币——
+    // 同一篇的一块 A 与一块 B 得分一样时，谁当证据在两次建库之间会变，用户看到的
+    // 摘录跟着变。`start_char` / `end_char` 是篇内区间（块切法的函数），
+    // `span_ordinal` 是块内位置，三者都只由内容与切块规则决定，跨库稳定。
+    //
+    // `chunk_id` 只留作最后的**全序兜底**：只有两条候选的（日期、篇内区间、段序号）
+    // 都完全相同才会走到它——那时两条命中的内容已经一模一样，顺序不影响用户看到什么。
+    // 同分规则的契约写在 `docs/architecture/m2-向量索引与换代.md` 的「消费契约」里。
     scored.sort_by(|left, right| {
         right
             .score
             .partial_cmp(&left.score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| right.day_key.cmp(&left.day_key))
-            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+            .then_with(|| left.start_char.cmp(&right.start_char))
+            .then_with(|| left.end_char.cmp(&right.end_char))
             .then_with(|| left.span_ordinal.cmp(&right.span_ordinal))
+            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
     });
 
     // 折叠：同一篇只留第一条（也就是得分最高的那块）。

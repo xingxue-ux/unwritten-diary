@@ -620,6 +620,25 @@ fn semantic_hits_are_per_piece_and_snippets_come_from_that_pieces_span() {
     assert_eq!(capture_hit.locator, None, "记录文字没有原件可定位");
 }
 
+/// 那篇「被切成两块、两块都含失眠」的长文（issue #57 的同分场景）。
+///
+/// 块边界只由正文与冻结的切块规则决定：切出来两块，span 分别是 `[0, 390)` 与
+/// `[343, 731)`（48 字重叠），所以两块都含「失眠」→ 桩给两块同一个单位向量 →
+/// 两块得分**完全相同**。
+fn long_piece_with_insomnia() -> String {
+    let mut text = String::new();
+    for index in 0..24 {
+        if index == 12 {
+            text.push_str("第12段 ★：这一段说的是连续几天失眠，凌晨两点还醒着。\n");
+        } else {
+            text.push_str(&format!(
+                "第{index}段 ★：今天天气不错，路上人很多，顺便买了点水果回家。\n"
+            ));
+        }
+    }
+    text
+}
+
 /// 同一篇有多个块命中时**折叠成一条**，取得分最高的块当证据。
 #[test]
 fn multiple_chunks_of_one_piece_fold_into_a_single_hit() {
@@ -634,16 +653,7 @@ fn multiple_chunks_of_one_piece_fold_into_a_single_hit() {
     ));
 
     // 一篇超过上限的长来源：篇内按段尾切，切成多块。
-    let mut text = String::new();
-    for index in 0..24 {
-        if index == 12 {
-            text.push_str("第12段 ★：这一段说的是连续几天失眠，凌晨两点还醒着。\n");
-        } else {
-            text.push_str(&format!(
-                "第{index}段 ★：今天天气不错，路上人很多，顺便买了点水果回家。\n"
-            ));
-        }
-    }
+    let text = long_piece_with_insomnia();
     let capture_id = write_capture(&mut core, at(2026, 9, 20), "", "op");
     let source_id = import_and_extract(&mut core, &capture_id, "长文.txt", &text, "op-mat");
     // 另一篇短正文，让结果里不止一篇。
@@ -684,6 +694,119 @@ fn multiple_chunks_of_one_piece_fold_into_a_single_hit() {
     assert!(
         !snippet.contains("快递"),
         "不能把另一篇（短正文）的文本当这一篇的摘录：{snippet:?}"
+    );
+}
+
+/// **两块同分**时当证据的那一块必须固定：同一份内容、同一个查询，摘录不能变。
+///
+/// 回归 issue [#57](https://github.com/xingxue-ux/unwritten-diary/issues/57)。原来的
+/// 排序键在同分时先比 `chunk_id`，而 `chunk_id` 的哈希输入里有**篇标识**（`src_`/`cap_`
+/// 前缀的 v7 UUID）——每个库都不一样。于是两个同分块的相对大小跟着抛硬币：同一篇的
+/// A、B 两块得分一样时，跨进程/跨建库给出的摘录会变（测试红绿交替）。
+///
+/// 为什么必须建**多份库**：块 id 一旦写进某个库就不再变了，同一个库里反复建索引只会
+/// 得到同一个赢家。跨进程红绿交替的根是「同一份内容 + 不同的篇 id」，所以这里在同一个
+/// 进程里建多份独立的库（每轮 `import` 都生成新的篇 id）来复现它——12 轮里只要有一轮
+/// 的证据与别轮不同就说明排序还在抛硬币。
+#[test]
+fn equal_score_evidence_is_the_same_across_libraries() {
+    // 12 份库：旧逻辑下每份都是一次独立抛硬币，全对的概率是 2^-11。
+    const ROUNDS: usize = 12;
+    // 每轮留下的证据：摘录 + 定位里的文字区间。摘录取该 span 起点起的若干字，所以
+    // 它变了就是「当证据的块」变了。**不**比整个 `locator`：它还带 `source_revision_id`，
+    // 那本身就是每份库都不一样的 UUID，与这一次要钉的东西无关。
+    let mut evidence: Vec<(Option<String>, Option<i64>, Option<i64>)> = Vec::new();
+    let mut spans: Vec<(i64, i64)> = Vec::new();
+
+    for round in 0..ROUNDS {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+        let mut core = new_core(dir.path());
+        let counters = Arc::new(Counters::default());
+        core.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+
+        let text = long_piece_with_insomnia();
+        let capture_id = write_capture(&mut core, at(2026, 9, 20), "", "op");
+        let source_id =
+            import_and_extract(&mut core, &capture_id, "长文.txt", &text, &format!("mat{round}"));
+        let built = core.build_semantic_index(None).unwrap();
+        assert_eq!(
+            built.total_chunks, 2,
+            "前提（第 {round} 轮）：这篇长文在篇内被切成两块"
+        );
+
+        // 前提：两块都含查询词，桩才会给两块同一个单位向量 → 两块得分完全相同。
+        let conn = open(&path);
+        let with_word = count(
+            &conn,
+            "SELECT COUNT(*) FROM text_chunks WHERE text LIKE '%失眠%'",
+            "text_chunks",
+        );
+        assert_eq!(
+            with_word, 2,
+            "前提（第 {round} 轮）：两块都含「失眠」，得分才会完全相同"
+        );
+        let round_spans: Vec<(i64, i64)> = {
+            let mut statement = conn
+                .prepare("SELECT start_char, end_char FROM chunk_spans ORDER BY start_char")
+                .unwrap();
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(round_spans.len(), 2, "两块各一段");
+        assert_ne!(
+            round_spans[0], round_spans[1],
+            "前提（第 {round} 轮）：两块是不同的 span，才谈得上「谁当证据」"
+        );
+        if spans.is_empty() {
+            spans = round_spans.clone();
+        }
+        assert_eq!(
+            round_spans, spans,
+            "前提：块边界是内容的函数，每份库都该一样"
+        );
+        drop(conn);
+
+        // 同一个库里再建一代（内容没变）：证据也不该变。
+        let first = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+        let first_hit = hit_of(&first, &source_id);
+        core.build_semantic_index(None).unwrap();
+        let second = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+        let second_hit = hit_of(&second, &source_id);
+        assert_eq!(
+            first_hit.snippet, second_hit.snippet,
+            "第 {round} 轮：同一个库换一代，证据不该变"
+        );
+
+        evidence.push((
+            first_hit.snippet.clone(),
+            first_hit.locator.as_ref().and_then(|locator| locator.text_start),
+            first_hit.locator.as_ref().and_then(|locator| locator.text_end),
+        ));
+    }
+
+    // 决定性断言：所有库当证据的 span 必须完全一样。
+    for (round, entry) in evidence.iter().enumerate() {
+        assert_eq!(
+            entry, &evidence[0],
+            "第 {round} 份库给出的证据与第 0 份不同：{:?} vs {:?}（两块同分，兜底顺序必须由内容决定）",
+            entry, evidence[0]
+        );
+    }
+    // 兜底顺序的契约（见文档「消费契约」）：同分时取**篇内区间起点最靠前**的那一块。
+    // 两块里起点最小的是 0，它的摘录从篇首开始；另一块（起点 343）的摘录带前导省略号。
+    assert_eq!(spans[0].0, 0, "篇内起点最小的那一块从 0 开始");
+    assert!(
+        evidence[0]
+            .0
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("第0段 ★："),
+        "同分时要稳定地留下篇内起点最靠前的那一块，实际摘录：{:?}",
+        evidence[0].0
     );
 }
 
