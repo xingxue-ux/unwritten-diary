@@ -123,7 +123,7 @@ impl Extractor for PlainTextExtractor {
 
     fn extract(&self, input: &ExtractionInput<'_>) -> Result<ExtractionOutcome> {
         let (text, warnings, truncated) = decode_text_file(input.path)?;
-        let mut outcome = paragraphs_to_outcome(input, &text)?;
+        let mut outcome = paragraphs_to_outcome(input.source_revision_id, &text)?;
         outcome.warnings.extend(warnings);
         if truncated {
             outcome.coverage = Coverage::Partial;
@@ -155,7 +155,7 @@ impl Extractor for MarkdownExtractor {
 
     fn extract(&self, input: &ExtractionInput<'_>) -> Result<ExtractionOutcome> {
         let (text, warnings, _) = decode_text_file(input.path)?;
-        let mut outcome = paragraphs_to_outcome(input, &text)?;
+        let mut outcome = paragraphs_to_outcome(input.source_revision_id, &text)?;
         outcome.warnings.extend(warnings);
         // Markdown 保留原文：标题、列表这些标记本身就是用户写下的内容。
         outcome.coverage_reason = Some("保留 Markdown 原文，未剥离标记".to_owned());
@@ -210,7 +210,11 @@ fn sniff_bom(buffer: &[u8]) -> Option<(&'static encoding_rs::Encoding, usize)> {
 }
 
 /// 按空行切段，并给出每个段落的字符区间（Unicode 标量值计数，左闭右开）。
-fn paragraphs_to_outcome(input: &ExtractionInput<'_>, text: &str) -> Result<ExtractionOutcome> {
+///
+/// 只收 `source_revision_id` 而不是整个 `ExtractionInput`：切段这一步只用到修订号
+/// （locator 要带它），不需要原件句柄。纯文本修订（没有原件）也要用同一套切段规则，
+/// 所以这里不能依赖「一定有 Path」。
+fn paragraphs_to_outcome(source_revision_id: &str, text: &str) -> Result<ExtractionOutcome> {
     let mut segments = Vec::new();
     let mut current = String::new();
     let mut start_char = 0_usize;
@@ -233,7 +237,7 @@ fn paragraphs_to_outcome(input: &ExtractionInput<'_>, text: &str) -> Result<Extr
             ordinal: *ordinal,
             text: trimmed.to_owned(),
             locator: SourceLocator::text_range(
-                input.source_revision_id,
+                source_revision_id,
                 start_char as i64,
                 end as i64,
             ),
@@ -595,31 +599,82 @@ impl Extractor for UnsupportedExtractor {
 
 // ------------------------------------------------------------------ 服务
 
+/// 纯文本修订（`revise_text` 造出来、没有原件的修订）用的提取器标识。
+///
+/// 它**不实现 `Extractor`**：那个接口的输入是「一个只读的原件句柄」，而这条路径
+/// 根本没有原件——正文就存在 `source_revisions.text` 里。硬塞一个假的 Path 进去
+/// 只会让「原件」这个概念在代码里变得不可信。
+pub const TEXT_DIRECT_EXTRACTOR_ID: &str = "text_direct";
+
+/// `TEXT_DIRECT_EXTRACTOR_ID` 的版本：切段规则或正文归一化变了就要改它。
+///
+/// 诚实说明：目前**没有**任何路径按 `extractor_version` 判断派生内容过期（`status`
+/// 的 `stale_segments` 看的是 `tokenizer_version`），这个字段现在只进库、可审计。
+/// 留着它对将来「提取器升级要重跑」是必需的，但不能让人以为改了它就自动重跑了。
+pub const TEXT_DIRECT_EXTRACTOR_VERSION: &str = "1";
+
+/// 这个修订是否已经有派生内容。
+///
+/// 用来支持**幂等重试的自愈**：`revise_text` 先存修订、再提取，如果提取那一步失败，
+/// 调用方拿同一条 `operation_id` 重试时会命中回执直接返回——那时要用这个判断补提取，
+/// 否则「改完搜不到」会一直留着。
+pub(crate) fn has_content(conn: &Connection, source_revision_id: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM extracted_contents WHERE source_revision_id = ?1",
+        params![source_revision_id],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
 /// 对某个来源修订跑一次提取，并把结果写进派生内容表。
 ///
 /// 可重建：先删掉这个修订的旧派生内容再写新的，原件一个字节都不动。
+///
+/// 两条输入通路：
+/// 1. **有原件**（导入的文件、录音）：按 mime 选提取器，从文件里解析正文；
+/// 2. **没有原件但有 `text`**（`revise_text` 改过的正文）：正文就是内容本身，
+///    没有解析这一步，直接按同一套切段规则产出 `complete` 的派生内容。
+///    这条路是「改过的正文当成新的一篇」的依据：新修订的正文得先进索引，
+///    旧修订的正文才谈得上退出检索（见 `docs/architecture/m2-修订与检索可见性.md`）。
 pub(crate) fn extract_source_revision(
     core: &mut Core,
     source_ref: &str,
 ) -> Result<ExtractedContent> {
-    let root = core.root_dir()?.to_path_buf();
     // 调用方给来源 id 或修订 id 都行：给来源就取它当前的修订。
     let source_revision_id = resolve_source_ref(&core.conn, source_ref)?
         .map(|(_, revision_id)| revision_id)
         .filter(|revision_id| !revision_id.is_empty())
         .unwrap_or_else(|| source_ref.to_owned());
     let source_revision_id = source_revision_id.as_str();
-    let (source_id, asset_id, mime, name, object_ref) =
+    let (source_id, asset_id, mime, name, object_ref, revision_text) =
         load_revision_context(&core.conn, source_revision_id)?;
 
     let path = match object_ref {
-        Some(object_ref) => root.join(object_ref),
+        // 只有这条通路需要文件系统：**根目录要到现在才取**。纯文本修订没有任何原件，
+        // 内存库（没有文件系统根目录）也必须能提取——否则「改正文」这种不碰文件的
+        // 操作会被一个与它无关的前提卡住。
+        Some(object_ref) => core.root_dir()?.join(object_ref),
+        // 没有原件：只有「修订自己带着正文」才走得通。空白文字仍然是错——那是
+        // 「既没有原件、也没有正文」，不能悄悄产出一份空内容让它看起来像提过了。
         None => {
-            return Err(CoreError::InvalidState {
-                entity: "来源修订",
-                id: source_revision_id.to_owned(),
-                state: "没有关联原件，无法提取".to_owned(),
-            })
+            let body = revision_text.unwrap_or_default();
+            if body.trim().is_empty() {
+                return Err(CoreError::InvalidState {
+                    entity: "来源修订",
+                    id: source_revision_id.to_owned(),
+                    state: "没有关联原件，也没有正文文字，无法提取".to_owned(),
+                });
+            }
+            let outcome = paragraphs_to_outcome(source_revision_id, &body)?;
+            return persist(
+                core,
+                &source_id,
+                source_revision_id,
+                TEXT_DIRECT_EXTRACTOR_ID,
+                TEXT_DIRECT_EXTRACTOR_VERSION,
+                outcome,
+            );
         }
     };
     if !path.is_file() {
@@ -656,12 +711,22 @@ pub(crate) fn extract_source_revision(
             warnings: Vec::new(),
         },
     };
-    persist(core, &input, extractor.id(), extractor.version(), outcome)
+    persist(
+        core,
+        &source_id,
+        source_revision_id,
+        extractor.id(),
+        extractor.version(),
+        outcome,
+    )
 }
 
+/// 这里只收来源与修订 id，不收 `ExtractionInput`：纯文本修订那条路根本没有原件，
+/// 却要和「有原件」那条路写进同一张表、共用同一套重建语义。
 fn persist(
     core: &mut Core,
-    input: &ExtractionInput<'_>,
+    source_id: &str,
+    source_revision_id: &str,
     extractor_id: &str,
     extractor_version: &str,
     outcome: ExtractionOutcome,
@@ -669,8 +734,8 @@ fn persist(
     let now = support::now();
     let content = ExtractedContent {
         id: support::new_id("ext"),
-        source_id: input.source_id.to_owned(),
-        source_revision_id: input.source_revision_id.to_owned(),
+        source_id: source_id.to_owned(),
+        source_revision_id: source_revision_id.to_owned(),
         extractor_id: extractor_id.to_owned(),
         extractor_version: extractor_version.to_owned(),
         text: outcome.text,
@@ -911,14 +976,26 @@ fn resolve_source_ref(conn: &Connection, source_ref: &str) -> Result<Option<(Str
     Ok(by_revision)
 }
 
+/// 一次提取要用到的修订上下文：来源 id、资产 id、mime、原件名、原件的对象键、
+/// 修订自己的正文。
+///
+/// 拎出类型别名而不是把六元组写在签名里：它超过 clippy 的复杂度阈值，而且下面按位置
+/// 取用时，有个名字更清楚哪一项是什么。
+type RevisionContext = (String, String, String, String, Option<String>, Option<String>);
+
+/// 读一次提取要用到的修订上下文。
+///
+/// 最后两项分别是**原件的对象键**与**修订自己的正文**：`revise_text` 造出来的修订
+/// 没有原件、只有正文（`text`），而导入/录音造出来的修订反过来。调用方按
+/// 「有原件就解析原件、没有原件才用正文」的顺序处理，两者不会同时生效。
 fn load_revision_context(
     conn: &Connection,
     revision_id: &str,
-) -> Result<(String, String, String, String, Option<String>)> {
+) -> Result<RevisionContext> {
     let row = conn
         .query_row(
             "SELECT r.source_id, COALESCE(r.asset_id, ''), COALESCE(a.detected_mime, ''), \
-             COALESCE(a.original_name, ''), a.object_ref \
+             COALESCE(a.original_name, ''), a.object_ref, r.text \
              FROM source_revisions r LEFT JOIN assets a ON a.id = r.asset_id \
              WHERE r.revision_id = ?1",
             params![revision_id],
@@ -929,6 +1006,7 @@ fn load_revision_context(
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             },
         )
@@ -937,7 +1015,7 @@ fn load_revision_context(
             entity: "来源修订",
             id: revision_id.to_owned(),
         })?;
-    Ok((row.0, row.1, row.2, row.3, row.4))
+    Ok((row.0, row.1, row.2, row.3, row.4, row.5))
 }
 
 fn load_segments(conn: &Connection, content_id: &str) -> Result<Vec<ExtractedSegment>> {
