@@ -16,6 +16,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
@@ -25,6 +26,34 @@ use tokenizers::Tokenizer;
 
 /// bge-small-zh-v1.5 的向量维度。
 const EXPECTED_DIM: usize = 512;
+
+/// 进程级单例：模型 session 与分词器只建一次，**到进程结束都不释放**。
+///
+/// 为什么「不释放」是正确做法，而不是这里偷懒：ONNX Runtime 在**退出阶段**有自己
+/// 的全局收尾（库内部的静态析构 / `atexit`）。如果我们在退出前释放了 session，
+/// 它随后会在已经被拆掉的内部状态上跑收尾——桌面表现为「全部输出之后 SIGSEGV
+/// （退出码 139）」，Android 模拟器上更直白：`FORTIFY: pthread_mutex_lock called
+/// on a destroyed mutex` 之后 abort。
+///
+/// 实测排除了三种猜测（记录在 `docs/architecture/M0-技术验证.md` 3.3）：
+///
+/// | 做法 | 退出码 |
+/// |---|---|
+/// | 只初始化环境、不建 session | 0 |
+/// | 建 session 后正常析构 | 139 |
+/// | 自己再开一次动态库、把引用计数钉住（防卸载） | **仍然 139** |
+/// | session 放进 `static`（Rust 不跑 static 的析构） | **0** |
+///
+/// 所以问题不在「动态库被卸载」，而在「session 被释放后 ORT 的退出收尾」。
+/// 放进 `OnceLock` 同时满足两件事：模型只加载一次（省掉每次 273 ms 的加载），
+/// 生命周期天然到进程结束。退出时由内核回收——这不是漏内存，是刻意不释放。
+static EMBEDDER: OnceLock<Mutex<Model>> = OnceLock::new();
+
+/// 进程级的模型资源：分词器 + ONNX session。
+struct Model {
+    session: Session,
+    tokenizer: Tokenizer,
+}
 
 /// 只在第一次前向时打印一次输出形状，避免刷屏。
 static SHAPE_PRINTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -90,8 +119,9 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// 跑一次前向，返回句向量（mean pooling + L2 归一化）。
-fn embed(session: &mut Session, tokenizer: &Tokenizer, text: &str) -> Result<Vec<f32>> {
-    let encoding = tokenizer
+fn embed(model: &mut Model, text: &str) -> Result<Vec<f32>> {
+    let encoding = model
+        .tokenizer
         .encode(text, true)
         .map_err(|err| anyhow::anyhow!("分词失败：{err}"))?;
     let seq = encoding.get_ids().len();
@@ -108,7 +138,7 @@ fn embed(session: &mut Session, tokenizer: &Tokenizer, text: &str) -> Result<Vec
         "attention_mask" => Tensor::from_array(([1_i64, seq as i64], mask.clone()))?,
         "token_type_ids" => Tensor::from_array(([1_i64, seq as i64], types))?,
     ];
-    let outputs = session.run(inputs)?;
+    let outputs = model.session.run(inputs)?;
     let (shape, data) = outputs[0].try_extract_tensor::<f32>()?;
 
     if data.len() % seq != 0 {
@@ -173,19 +203,37 @@ pub fn run() -> Result<()> {
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|err| anyhow::anyhow!("读取分词器失败：{err}"))?;
 
+    // 显式初始化 ONNX Runtime 环境：路径由调用方给（打包时就是我们自己带的那份
+    // 动态库），而不是让 ort 在第一次建 session 时懒加载。
+    let dylib = std::env::var("ORT_DYLIB_PATH")
+        .context("需要 ORT_DYLIB_PATH 指向 libonnxruntime.so")?;
+    let committed = ort::init_from(&dylib)
+        .map_err(|err| anyhow::anyhow!("加载 ONNX Runtime 失败（{dylib}）：{err}"))?
+        .commit();
+    if !committed {
+        bail!("ONNX Runtime 环境已经被初始化过（这个进程里不该发生）");
+    }
+
     let load_start = Instant::now();
-    let mut session = Session::builder()?
-        .commit_from_file(&model_path)
-        .context("加载 ONNX 模型失败")?;
+    if EMBEDDER.get().is_none() {
+        let session = Session::builder()?
+            .commit_from_file(&model_path)
+            .context("加载 ONNX 模型失败")?;
+        // 放进 static：只建一次，而且**到进程结束都不释放**（原因见 EMBEDDER 的文档）。
+        let _ = EMBEDDER.set(Mutex::new(Model { session, tokenizer }));
+    }
+    let embedder = EMBEDDER.get().expect("上面刚设置过（或之前已经设置过）");
+    let mut model = embedder.lock().expect("模型互斥量中毒");
     let load_ms = load_start.elapsed().as_secs_f64() * 1000.0;
-    let input_names: Vec<String> = session
+    let input_names: Vec<String> = model
+        .session
         .inputs()
         .iter()
         .map(|input| input.name().to_owned())
         .collect();
     println!("模型加载：{load_ms:.0} ms · 输入张量 {input_names:?}");
 
-    let warmed = embed(&mut session, &tokenizer, "预热")?;
+    let warmed = embed(&mut model, "预热")?;
     let rss_after_load = peak_rss_mib();
     println!("向量维度：{}", warmed.len());
 
@@ -194,7 +242,7 @@ pub fn run() -> Result<()> {
     let mut samples = Vec::new();
     for _ in 0..20 {
         let start = Instant::now();
-        let _ = embed(&mut session, &tokenizer, short)?;
+        let _ = embed(&mut model, short)?;
         samples.push(start.elapsed().as_secs_f64() * 1000.0);
     }
     let short_median = median(&mut samples);
@@ -204,11 +252,12 @@ pub fn run() -> Result<()> {
     let mut samples = Vec::new();
     for _ in 0..10 {
         let start = Instant::now();
-        let _ = embed(&mut session, &tokenizer, &long_text)?;
+        let _ = embed(&mut model, &long_text)?;
         samples.push(start.elapsed().as_secs_f64() * 1000.0);
     }
     let long_median = median(&mut samples);
-    let long_tokens = tokenizer
+    let long_tokens = model
+        .tokenizer
         .encode(long_text.as_str(), true)
         .map_err(|err| anyhow::anyhow!("分词失败：{err}"))?
         .get_ids()
@@ -218,7 +267,7 @@ pub fn run() -> Result<()> {
     let batch_start = Instant::now();
     for index in 0..32 {
         let text = format!("第{index}条待索引的日记片段，内容用于测量吞吐。");
-        let _ = embed(&mut session, &tokenizer, &text)?;
+        let _ = embed(&mut model, &text)?;
     }
     let batch_total = batch_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -244,10 +293,10 @@ pub fn run() -> Result<()> {
     println!("\n短查询质量（余弦相似度，期望第一句排第一）");
     let mut passed = 0;
     for (query, candidates) in QUALITY_CASES {
-        let query_vec = embed(&mut session, &tokenizer, query)?;
+        let query_vec = embed(&mut model, query)?;
         let mut scored: Vec<(f32, &str)> = Vec::new();
         for candidate in candidates {
-            let vector = embed(&mut session, &tokenizer, candidate)?;
+            let vector = embed(&mut model, candidate)?;
             scored.push((cosine(&query_vec, &vector), candidate));
         }
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).expect("分数不是 NaN"));
@@ -276,15 +325,15 @@ pub fn run() -> Result<()> {
         std::env::consts::OS,
         std::env::consts::ARCH
     );
-    println!("  - 进程退出阶段可能崩溃（见 docs/architecture/M0-技术验证.md 3.3 与 issue #17），测量在崩溃前已完成。");
     println!("  - 没有测批量（padding 后一次前向）与多线程配置，实测的是单序列逐条推理。");
+    println!("  - 退出阶段不再崩溃（#17 已解决）：桌面靠进程级单例（退出不释放），");
+    println!("    Android 还要跳过 C 运行时的退出收尾（libc::_exit，见 docs/architecture/M0-技术验证.md 3.3）。");
     if passed < QUALITY_CASES.len() {
         bail!("有查询排序错误，说明预处理或 pooling 可能不对");
     }
 
-    // ort 在 load-dynamic 模式下，进程退出阶段会 SIGSEGV：动态库的卸载与 ONNX Runtime
-    // 自身的析构顺序冲突（退出码 139，且发生在全部输出之后）。探针泄漏 session 来跳过
-    // 析构，避免把噪音当成失败。**真实集成前必须解决这个问题**，不能照抄这段。
-    std::mem::forget(session);
+    // 这里**不需要**任何收尾：模型资源在 `EMBEDDER` 这个 static 里，生命周期到
+    // 进程结束。会话释放与 ONNX Runtime 退出收尾的冲突已解决——见 EMBEDDER 的
+    // 文档与 `docs/architecture/M0-技术验证.md` 3.3。
     Ok(())
 }

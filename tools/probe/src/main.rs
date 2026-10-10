@@ -70,5 +70,28 @@ fn main() -> Result<()> {
             std::process::exit(2);
         }
     }
+
+    // Android 上**必须**跳过 C 运行时的退出收尾（`exit()` → `__cxa_finalize`）。
+    //
+    // 原因见 docs/architecture/M0-技术验证.md 3.3：libonnxruntime.so 自己注册的
+    // 静态析构会在退出时去锁一个已经销毁的 mutex，于是 `FORTIFY: pthread_mutex_lock
+    // called on a destroyed mutex` 之后 SIGABRT（退出码 134）。这条路径跟 Rust 侧
+    // 释放不释放无关（tombstone 停在 `__cxa_finalize → libonnxruntime.so`），所以
+    // 「资源放进 static 不释放」挡不住它——桌面那条路径一挡就好了，Android 这条
+    // 只能不让收尾跑。`libc::_exit` 直接走系统调用退出，不跑 atexit / 静态析构；
+    // 所以要**先**把标准输出刷干净，否则最后几行会丢。
+    //
+    // 产品那边不需要这个：Android 回收应用进程用 SIGKILL，本来就不跑这些析构；
+    // 只有「会被当成 CLI 跑、要求退出码」的入口（探针、测试）需要这一步。
+    #[cfg(target_os = "android")]
+    {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        // SAFETY: `_exit` 是 async-signal-safe 的进程退出，不返回。
+        unsafe { libc::_exit(0) }
+    }
+
+    #[cfg(not(target_os = "android"))]
     Ok(())
 }

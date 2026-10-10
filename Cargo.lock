@@ -555,6 +555,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "jieba-rs",
+ "libc",
  "ort",
  "rusqlite",
  "tokenizers",
