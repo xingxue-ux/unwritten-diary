@@ -2,7 +2,8 @@
 //!
 //! 已落地：记录路径（B1a）、原件文件库与导入（B1b）、录音与队列（B1c）、
 //! 提取与来源定位（B2）、关键词索引与覆盖状态（B3a）、检索会话 `search.*`（B3b）、
-//! 用户自己写的文字进检索（B3d）。向量与混合排序还没有。
+//! 用户自己写的文字进检索（B3d）、文本块与真实向量（B3c-2）。
+//! 还没有：混合排序（#51，B3c-3）。
 //!
 //! 三条硬性约束贯穿本 crate：
 //! 1. **不丢已确认的记录**：写入落在同一个事务里，事务提交后才返回 durable。
@@ -13,7 +14,11 @@
 
 mod assets;
 mod chunker;
+mod chunks;
 mod error;
+/// 本地向量模型接入（B3c-2）。公开是为了让测试与 `tools/probe` 能显式注入 stub 或
+/// 指定模型包——这是给测试/量测的入口，不是让产品代码去直接碰 ORT。
+pub mod embedding;
 mod extractors;
 mod jobs;
 /// 数据对象。公开是为了让桥接层的 codegen 能扫描它们（见 flutter_rust_bridge.yaml）。
@@ -22,6 +27,7 @@ mod recordings;
 mod schema;
 mod search;
 mod search_session;
+mod semantic;
 mod support;
 
 pub use assets::ImportRequest;
@@ -44,8 +50,14 @@ pub use chunker::{
     chunks_for, pack_pieces, Chunk, ChunkSpan, Piece, CHUNKER_VERSION, CHUNK_OVERLAP_CHARS,
     MAX_CHUNK_CHARS,
 };
+pub use embedding::{
+    bytes_to_vector, config_from_env, load as load_embedder, text_hash_vector, vector_bytes,
+    EmbedOptions, Embedder, EmbeddingConfig, EnvEmbedding, OrtEmbedder, Pooling, DEFAULT_POOLING,
+    DEFAULT_QUERY_INSTRUCTION, EXPECTED_DIMS, MODEL_ID, QUERY_INSTRUCTION,
+};
 pub use schema::SCHEMA_VERSION;
 pub use search::TOKENIZER_VERSION;
+pub use semantic::SemanticBuildReport;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -74,6 +86,10 @@ pub struct Core {
     leases: HashMap<String, assets::LeaseRecord>,
     /// 检索会话，内存态：它记录的是「这一次查询的翻页与失效判断」，不是业务数据。
     search_sessions: HashMap<String, search_session::SearchSessionState>,
+    /// 语义这一路的运行时状态：模型配置 + 懒加载的嵌入器（进程级单例）。
+    ///
+    /// `Core::open` 只读环境变量与 stat 文件，**不建 ORT 会话**——启动不做重活。
+    semantic: semantic::SemanticRuntime,
 }
 
 /// 一行的原始形态：先取出来，再按业务语义解析，避免把解析错误塞进 SQL 层。
@@ -125,6 +141,7 @@ impl Core {
             root,
             leases: HashMap::new(),
             search_sessions: HashMap::new(),
+            semantic: semantic::SemanticRuntime::from_env(),
         })
     }
 
@@ -693,6 +710,62 @@ impl Core {
     /// 让覆盖状态与增量索引有个可靠的校准方式（任务化见 issue #31）。
     pub fn rebuild_keyword_index(&mut self, source_scope: Option<&[String]>) -> Result<i64> {
         search::rebuild(self, source_scope)
+    }
+
+    // ------------------------------------------------------------ 文本块
+
+    /// 重建文本块；`source_scope` 为空表示整个资料库。
+    ///
+    /// 块是**语义检索的载体**，不是用户看到的东西：用户看到的仍然以「篇」为单位。
+    /// 它跟关键词索引是两条独立的路：调用它不影响 `coverage` / `keyword_index_ready`，
+    /// 反过来也一样。真正的向量由 `build_semantic_index` 算。
+    ///
+    /// 返回写进库的块数（**不是篇数**：一块可能由同一天的几篇拼成）。范围语义与
+    /// `rebuild_keyword_index` 一致：`Some([])` 是「什么都不看」，得到 0 块。
+    ///
+    /// 重打包的单位是日子而不是记录，理由见 `chunks::rebuild` 的说明：分块规则按
+    /// `day_key` 合块，只重算范围内的那几篇会让同一份内容有两种块边界。
+    ///
+    /// 整库重建是重活，产品路径上它应当是可取消的任务；这一片先提供同步入口
+    /// （任务化见 B5 / issue #32 的待办）。
+    pub fn rebuild_text_chunks(&mut self, source_scope: Option<&[String]>) -> Result<i64> {
+        chunks::rebuild(self, source_scope)
+    }
+
+    /// 建语义索引：重建块 → 开新代次 → 复用/补算向量 → 原子切换。
+    ///
+    /// 具体顺序与理由见 `semantic` 模块的说明与
+    /// `docs/architecture/m2-向量索引与换代.md`。三个要点：
+    ///
+    /// - **模型缺失/加载失败时返回诚实的错误，并且不改任何状态**（连块都不重建）。
+    ///   想确认「语义这一路现在能不能跑」，看 `index_status().semantic_index_ready`
+    ///   与 `reasons`；
+    /// - **没变的块不重复算**：块 id 是内容的函数，重建保住 id，于是新代次里口径一致
+    ///   的向量从旧代次整批复制，只有真的变了/新来的块才走模型；
+    /// - **换代期间关键词检索照旧**：块与向量不碰关键词那几张表。
+    ///
+    /// `source_scope` 与 `rebuild_text_chunks` 同义；`Some([])` 是「什么都不看」，
+    /// 直接返回、什么都不做。**注意**：代次是全局的，所以这个入口总是把**块表里所有
+    /// 块**在新代次里补齐（范围只决定重算了哪些块），否则切过去会让范围外的块失去
+    /// 生效向量。代价见文档「没有做到的」。
+    pub fn build_semantic_index(
+        &mut self,
+        source_scope: Option<&[String]>,
+    ) -> Result<SemanticBuildReport> {
+        semantic::build(self, source_scope)
+    }
+
+    /// 量测用：语义检索按篇折叠后的 `(篇标识, 余弦分数)`，分数从高到低。
+    ///
+    /// 产品路径不读它（`SearchHit` 上没有 score 字段）；它给质量集量测讨论
+    /// 「语义会不会对没有答案的查询乱报」「要不要设分数阈值」用，与 `search.start`
+    /// 的语义路共用同一段候选与折叠逻辑。
+    pub fn semantic_ranking(
+        &mut self,
+        query: &str,
+        filters: &SearchFilters,
+    ) -> Result<Vec<(String, f32)>> {
+        semantic::ranking(self, query, filters)
     }
 
     /// 关键词检索候选：命中**派生片段**的 ID，按索引写入顺序。

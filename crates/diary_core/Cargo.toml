@@ -20,6 +20,14 @@ zip.workspace = true
 quick-xml.workspace = true
 pdf-extract.workspace = true
 jieba-rs.workspace = true
+# 本地向量模型（B3c-2）：bge-small-zh-v1.5 ONNX + 分词器。
+#
+# 与探针同一个版本、同一套特性：`load-dynamic` 让 ONNX Runtime 在**运行时**才加载，
+# 构建期不下载二进制、不链接 .so——所以没有模型、没有 ORT 的 CI 机器照样能编过。
+# 依赖本身是**非可选**的：真实实现要参与 workspace 的 clippy/test 编译，否则
+# 「CI 里能编过」就成了空话（CI 不跑它，只跑注入 stub 的换代逻辑）。
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "std"] }
+tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
 
 [dev-dependencies]
 tempfile = "3"
