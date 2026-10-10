@@ -97,7 +97,7 @@ class CaptureController extends ChangeNotifier {
         ? SavePhase.saved
         : SavePhase.editing;
     _debounce?.cancel();
-    if (value.trim().isNotEmpty &&
+    if ((value.trim().isNotEmpty || _draft != null) &&
         (value != _savedText || _pendingSave != null)) {
       _debounce = Timer(autoSaveDelay, saveNow);
     }
@@ -106,7 +106,7 @@ class CaptureController extends ChangeNotifier {
 
   Future<bool> saveNow() async {
     _debounce?.cancel();
-    if (_disposed || text.trim().isEmpty) return false;
+    if (_disposed || (text.trim().isEmpty && _draft == null)) return false;
     while (!_disposed) {
       final current = _saving;
       if (current != null) {

@@ -1,17 +1,19 @@
 import 'package:diary_api/diary_api.dart';
-import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter/material.dart';
 
+import 'src/app_services.dart';
 import 'src/experience_shell.dart';
 import 'src/sketch_ui.dart';
 import 'src/theme.dart';
 
-void main() => runApp(DiaryApp(api: MockDiaryApi(), demoMode: true));
+void main() => runApp(const DiaryApp());
 
 class DiaryApp extends StatelessWidget {
-  const DiaryApp({super.key, required this.api, required this.demoMode});
+  const DiaryApp({super.key, this.api, this.demoMode = false});
 
-  final DiaryApi api;
+  /// Tests and the deliberate preview can inject a mock. Normal startup uses
+  /// the persistent Rust library through [createProductionDiaryApi].
+  final DiaryApi? api;
   final bool demoMode;
 
   @override
@@ -25,7 +27,7 @@ class DiaryApp extends StatelessWidget {
 
 class _BootGate extends StatefulWidget {
   const _BootGate({required this.api, required this.demoMode});
-  final DiaryApi api;
+  final DiaryApi? api;
   final bool demoMode;
 
   @override
@@ -33,7 +35,7 @@ class _BootGate extends StatefulWidget {
 }
 
 class _BootGateState extends State<_BootGate> {
-  late Future<CoreSnapshot> _opening;
+  late Future<({DiaryApi api, CoreSnapshot snapshot})> _opening;
 
   @override
   void initState() {
@@ -41,8 +43,9 @@ class _BootGateState extends State<_BootGate> {
     _opening = _open();
   }
 
-  Future<CoreSnapshot> _open() async {
-    final snapshot = await widget.api.open();
+  Future<({DiaryApi api, CoreSnapshot snapshot})> _open() async {
+    final api = widget.api ?? await createProductionDiaryApi();
+    final snapshot = await api.open();
     final appMajor = int.tryParse(kApiVersion.split('.').first);
     final coreMajor = int.tryParse(
       snapshot.coreInfo.apiVersion.split('.').first,
@@ -61,25 +64,31 @@ class _BootGateState extends State<_BootGate> {
     )) {
       throw _CoreUnavailable('资料库缺少记录所需能力，请更新核心后再打开。');
     }
-    return snapshot;
+    return (api: api, snapshot: snapshot);
   }
 
   @override
-  Widget build(BuildContext context) => FutureBuilder<CoreSnapshot>(
+  Widget build(BuildContext context) =>
+      FutureBuilder<({DiaryApi api, CoreSnapshot snapshot})>(
     future: _opening,
     builder: (context, result) {
       if (result.hasData) {
-        return ExperienceShell(api: widget.api, demoMode: widget.demoMode);
+        return ExperienceShell(
+          api: result.data!.api,
+          demoMode: widget.demoMode,
+        );
       }
       if (result.hasError) {
         final failure = result.error;
         final message = switch (failure) {
           _CoreUnavailable(:final message) => message,
+          ProductionCoreUnavailable(:final message) => message,
           DiaryException(:final message) => message,
           _ => '资料库暂时没能打开，请稍后再试。',
         };
         final retryable = switch (failure) {
           _CoreUnavailable() => false,
+          ProductionCoreUnavailable() => false,
           DiaryException(:final retryable) => retryable,
           _ => true,
         };

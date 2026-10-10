@@ -71,6 +71,48 @@ Future<void> openApp(WidgetTester tester, MockDiaryApi api) async {
 }
 
 void main() {
+  testWidgets('real mode reads saved records and hides preview material', (
+    tester,
+  ) async {
+    final api = MockDiaryApi();
+    await api.open();
+    final draft = await api.createDraft(operationId: 'seed-create');
+    final saved = await api.saveDraft(
+      id: draft.id,
+      text: '重启后仍能看到的文字。',
+      expectedRevision: draft.revision,
+      operationId: 'seed-save',
+    );
+    await api.commit(
+      id: draft.id,
+      expectedRevision: saved.revision,
+      operationId: 'seed-commit',
+    );
+
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('片段').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('重启后仍能看到的文字。'), findsOneWidget);
+    expect(find.text('花店门口的片刻'), findsNothing);
+    expect(find.text('傍晚的街角'), findsNothing);
+  });
+
+  testWidgets('backgrounding immediately flushes an edited draft', (
+    tester,
+  ) async {
+    final api = MockDiaryApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('capture-editor')), '切到后台前写的字');
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pumpAndSettle();
+
+    final captures = (await api.listCaptures()).captures;
+    expect(captures.single.draftText, '切到后台前写的字');
+  });
+
   testWidgets(
     'record page opens immediately and committed text appears in timeline',
     (tester) async {

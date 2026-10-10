@@ -166,6 +166,19 @@ void main() {
     controller.dispose();
   });
 
+  test('clearing a saved draft is persisted before leaving the editor', () async {
+    final api = MockDiaryApi();
+    final controller = CaptureController(api);
+    await controller.initialize();
+    controller.updateText('决定重新写');
+    expect(await controller.saveNow(), isTrue);
+
+    controller.updateText('');
+    expect(await controller.saveNow(), isTrue);
+    expect((await api.listCaptures()).captures.single.draftText, isEmpty);
+    controller.dispose();
+  });
+
   test(
     'commit retry reuses operationId after a lost acknowledgement',
     () async {

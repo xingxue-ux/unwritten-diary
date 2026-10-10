@@ -9,6 +9,10 @@ android {
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
+    // cargo-ndk writes ABI directories below this folder. Gradle packages the
+    // corresponding libdiary_bridge.so inside the APK/AAB.
+    sourceSets.getByName("main").jniLibs.srcDirs(file("../../../../target/android-jniLibs"))
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -36,6 +40,18 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+}
+
+val rustBridgeArm64 = file("../../../../target/android-jniLibs/arm64-v8a/libdiary_bridge.so")
+val verifyRustBridge by tasks.registering {
+    doLast {
+        if (!rustBridgeArm64.isFile) {
+            throw GradleException("Missing Android arm64 diary bridge: $rustBridgeArm64. Build it with cargo-ndk before making a release.")
+        }
+    }
+}
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    dependsOn(verifyRustBridge)
 }
 
 kotlin {
