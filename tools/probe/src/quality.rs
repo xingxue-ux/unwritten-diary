@@ -25,8 +25,8 @@ use std::time::Instant;
 use anyhow::{bail, Context, Result};
 use chrono::{NaiveDate, TimeZone, Utc};
 use diary_core::{
-    chunks_for, Core, CreateDraftInput, ImportManifest, ImportOrigin, ImportRequest, SearchFilters,
-    SearchMode, SearchRequest,
+    pack_pieces, Core, CreateDraftInput, ImportManifest, ImportOrigin, ImportRequest, Piece,
+    SearchFilters, SearchMode, SearchRequest,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -77,6 +77,8 @@ struct Filters {
 struct ChunkStats {
     chars: Vec<usize>,
     texts: Vec<String>,
+    /// 每块由几篇组成：>1 就是打包（同一天的多个短篇）。
+    pieces_per_chunk: Vec<usize>,
 }
 
 struct CaseOutcome {
@@ -187,12 +189,24 @@ fn run_case(case: &Case, chunk_stats: &mut ChunkStats) -> Result<CaseOutcome> {
                 .with_context(|| format!("case {}：导入之后应当有来源", case.id))?;
             core.extract_source(&source_id)?;
             source_ids.push(source_id);
+        }
 
-            // 分块统计（B3c-1 冻结的规则）：字符数分布，token 数另用真实分词器核。
-            for chunk in chunks_for(&source.text) {
-                chunk_stats.chars.push(chunk.text.chars().count());
-                chunk_stats.texts.push(chunk.text);
-            }
+        // 分块统计（B3c-1 冻结的规则）：**按打包路径**跑——同一 case 的短篇可能被
+        // 合进同一块，所以统计要按整份 case 的篇来算，不能逐来源算。
+        // token 数另用真实分词器核（核心不拉分词器进来）。
+        let pieces: Vec<Piece<'_>> = case
+            .sources
+            .iter()
+            .map(|source| Piece {
+                id: &source.name,
+                day_key: &source.day_key,
+                text: &source.text,
+            })
+            .collect();
+        for chunk in pack_pieces(&pieces) {
+            chunk_stats.chars.push(chunk.text.chars().count());
+            chunk_stats.pieces_per_chunk.push(chunk.spans.len());
+            chunk_stats.texts.push(chunk.text);
         }
         let _build_ms = build_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -401,6 +415,11 @@ fn report_chunking(stats: &ChunkStats) {
         diary_core::CHUNKER_VERSION,
         sorted.len(),
         total as f64 / sorted.len() as f64
+    );
+    let multi = stats.pieces_per_chunk.iter().filter(|count| **count > 1).count();
+    let most = stats.pieces_per_chunk.iter().copied().max().unwrap_or(0);
+    println!(
+        "  合块（同一天的多个短篇进一块）：{multi} 块含多篇，最多 {most} 篇；其余是单篇"
     );
     println!("  token 数要用真实分词器核（见 docs/architecture/m2-质量集与分块.md）");
 }

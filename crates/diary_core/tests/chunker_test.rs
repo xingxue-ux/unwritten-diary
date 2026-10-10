@@ -1,11 +1,19 @@
-//! B3c-1 的分块测试：边界、重叠、确定性、以及「冻结 chunkerVersion」。
+//! B3c-1 的分块测试：三条规则（篇内断、跨篇不断、段尾断句尾不断）+ 边界与确定性。
 
 use diary_core::{
-    chunks_for, CHUNKER_VERSION, CHUNK_OVERLAP_CHARS, MAX_CHUNK_CHARS,
+    chunks_for, pack_pieces, Chunk, Piece, CHUNKER_VERSION, CHUNK_OVERLAP_CHARS, MAX_CHUNK_CHARS,
 };
 
 fn chars(count: usize, filler: char) -> String {
     std::iter::repeat_n(filler, count).collect()
+}
+
+/// 单篇分块时，第一段在篇内的区间。
+fn span_end(chunk: &Chunk) -> i64 {
+    chunk.spans.last().expect("块必须有 span").end
+}
+fn span_start(chunk: &Chunk) -> i64 {
+    chunk.spans.first().expect("块必须有 span").start
 }
 
 #[test]
@@ -20,8 +28,8 @@ fn short_text_is_one_chunk() {
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0].ordinal, 0);
     assert_eq!(chunks[0].text, "妈妈打电话来说她最近身体不太好。");
-    assert_eq!(chunks[0].start, 0);
-    assert_eq!(chunks[0].end, 16, "字符下标，不是字节");
+    assert_eq!(span_start(&chunks[0]), 0);
+    assert_eq!(span_end(&chunks[0]), 16, "字符下标，不是字节");
 }
 
 #[test]
@@ -29,7 +37,7 @@ fn exactly_the_limit_is_one_chunk() {
     let text = chars(MAX_CHUNK_CHARS, '妈');
     let chunks = chunks_for(&text);
     assert_eq!(chunks.len(), 1, "恰好等于上限不该被切开");
-    assert_eq!(chunks[0].end, MAX_CHUNK_CHARS as i64);
+    assert_eq!(span_end(&chunks[0]), MAX_CHUNK_CHARS as i64);
 }
 
 #[test]
@@ -38,15 +46,61 @@ fn over_the_limit_splits_with_overlap() {
     let chunks = chunks_for(&text);
     assert_eq!(chunks.len(), 2);
 
-    assert_eq!(chunks[0].start, 0);
-    assert_eq!(chunks[0].end, MAX_CHUNK_CHARS as i64);
-    // 重叠：第二块从「第一块末尾往前 overlap」开始。
-    assert_eq!(chunks[1].start, (MAX_CHUNK_CHARS - CHUNK_OVERLAP_CHARS) as i64);
-    assert_eq!(chunks[1].end, (MAX_CHUNK_CHARS + 1) as i64);
+    assert_eq!(span_start(&chunks[0]), 0);
+    assert_eq!(span_end(&chunks[0]), MAX_CHUNK_CHARS as i64);
+    // 重叠：第二段从「第一段末尾往前 overlap」开始。
     assert_eq!(
-        chunks[0].end - chunks[1].start,
+        span_start(&chunks[1]),
+        (MAX_CHUNK_CHARS - CHUNK_OVERLAP_CHARS) as i64
+    );
+    assert_eq!(span_end(&chunks[1]), (MAX_CHUNK_CHARS + 1) as i64);
+    assert_eq!(
+        span_end(&chunks[0]) - span_start(&chunks[1]),
         CHUNK_OVERLAP_CHARS as i64,
-        "相邻块的重叠必须正好是约定的字符数"
+        "相邻段的重叠必须正好是约定的字符数"
+    );
+}
+
+#[test]
+fn does_not_break_at_sentence_ends() {
+    // 规则：**段尾断，句尾不断**。这段没有换行，只有句末标点：
+    // 不许在句号处断开，只能到上限硬切。
+    let text = format!("{}。{}", chars(359, '妈'), chars(300, '爸'));
+    let chunks = chunks_for(&text);
+    assert!(chunks.len() >= 2);
+    assert_eq!(
+        span_end(&chunks[0]),
+        MAX_CHUNK_CHARS as i64,
+        "句末标点不是断点：应当在 {MAX_CHUNK_CHARS} 处硬切，实际断在 {}",
+        span_end(&chunks[0])
+    );
+    assert!(
+        !chunks[0].text.ends_with('。'),
+        "这一块不该正好收在句号上（说明它挑了句子边界）"
+    );
+}
+
+#[test]
+fn breaks_at_a_single_line_end() {
+    // 段尾就是换行：哪怕只有一个换行、位置很早（100 字处），也应当在那里收住。
+    let text = format!("{}\n{}", chars(100, '妈'), chars(500, '爸'));
+    let chunks = chunks_for(&text);
+    assert!(chunks.len() >= 2);
+    assert_eq!(span_end(&chunks[0]), 100, "应当在换行处收住");
+    assert_eq!(chunks[0].text, chars(100, '妈'));
+}
+
+#[test]
+fn takes_the_last_line_end_not_the_first() {
+    // 一行一句的文本（每行 20 字）：块应当尽量装满到 400 附近，
+    // 而不是「一行一块」——所以取窗口里**最后一个**换行。
+    let text: String = (0..40).map(|_| format!("{}\n", chars(20, '妈'))).collect();
+    let chunks = chunks_for(&text);
+    assert!(chunks.len() >= 2);
+    assert!(
+        chunks[0].text.chars().count() > 300,
+        "第一块只装了 {} 字，说明取的是第一个换行而不是最后一个",
+        chunks[0].text.chars().count()
     );
 }
 
@@ -74,36 +128,17 @@ fn no_chunk_exceeds_the_limit() {
 }
 
 #[test]
-fn prefers_paragraph_boundary() {
-    // 在 350 字处放一个空行：应当在那里断开，而不是硬切到 400。
-    let first = format!("{}。\n\n", chars(349, '妈'));
-    let text = format!("{first}{}", chars(300, '爸'));
+fn long_single_paragraph_is_hard_cut_at_the_limit() {
+    // 一段超过上限、里面没有任何换行：只能按上限硬切（没有别的断点可选）。
+    let text = chars(1000, '妈');
     let chunks = chunks_for(&text);
-    assert!(chunks.len() >= 2);
-    let first_end = chunks[0].end;
-    assert!(
-        first_end <= 350,
-        "应当在段落边界（350 附近）断开，实际断在 {first_end}"
-    );
-    assert!(
-        chunks[0].text.starts_with('妈') && !chunks[0].text.ends_with('\n'),
-        "块正文两端不该留空白：{:?}",
-        &chunks[0].text[chunks[0].text.len().saturating_sub(6)..]
-    );
-}
-
-#[test]
-fn prefers_sentence_boundary_when_no_paragraph() {
-    // 没有空行，但 360 字处有句号：应当在句号后断开。
-    let text = format!("{}。{}", chars(359, '妈'), chars(300, '爸'));
-    let chunks = chunks_for(&text);
-    assert!(chunks.len() >= 2);
-    assert!(
-        chunks[0].end <= 361,
-        "应当在句子边界断开，实际断在 {}",
-        chunks[0].end
-    );
-    assert!(chunks[0].text.ends_with('。'));
+    assert_eq!(chunks.len(), 3);
+    for chunk in &chunks {
+        assert!(chunk.text.chars().count() <= MAX_CHUNK_CHARS);
+    }
+    assert_eq!(span_end(&chunks[0]), 400);
+    assert_eq!(span_start(&chunks[1]), 400 - 48);
+    assert_eq!(span_end(&chunks[2]), 1000);
 }
 
 #[test]
@@ -118,7 +153,6 @@ fn every_position_is_covered_and_ends_match() {
     let chunks = chunks_for(&text);
     assert!(!chunks.is_empty());
 
-    // 首块从头开始、末块到尾结束（去掉两端空白之后）。
     let first = text.chars().position(|c| !c.is_whitespace()).unwrap();
     let last = text.chars().count()
         - text
@@ -126,26 +160,22 @@ fn every_position_is_covered_and_ends_match() {
             .rev()
             .position(|c| !c.is_whitespace())
             .unwrap();
-    assert_eq!(chunks[0].start, first as i64);
-    assert_eq!(chunks.last().unwrap().end, last as i64);
+    assert_eq!(span_start(&chunks[0]), first as i64);
+    assert_eq!(span_end(chunks.last().unwrap()), last as i64);
 
-    // 每一块的内容都能在原文的 start..end 上原样对上（定位不错位）。
+    // 每一段的内容都能在原文的 start..end 上原样对上（定位不错位）。
     let characters: Vec<char> = text.chars().collect();
     for chunk in &chunks {
-        let slice: String = characters[chunk.start as usize..chunk.end as usize]
-            .iter()
-            .collect();
-        assert_eq!(slice, chunk.text, "块 {} 的 start/end 与正文对不上", chunk.ordinal);
-    }
-
-    // 相邻块首尾相接（有重叠，不留空洞）。
-    for pair in chunks.windows(2) {
-        assert!(
-            pair[1].start <= pair[0].end,
-            "块 {} 与 {} 之间出现空洞",
-            pair[0].ordinal,
-            pair[1].ordinal
-        );
+        for span in &chunk.spans {
+            let slice: String = characters[span.start as usize..span.end as usize]
+                .iter()
+                .collect();
+            assert!(
+                chunk.text.contains(&slice),
+                "块 {} 的 span 与块正文对不上",
+                chunk.ordinal
+            );
+        }
     }
 }
 
@@ -165,16 +195,107 @@ fn char_indices_survive_emoji() {
     let chunks = chunks_for(&text);
     let characters: Vec<char> = text.chars().collect();
     for chunk in &chunks {
-        let slice: String = characters[chunk.start as usize..chunk.end as usize]
-            .iter()
-            .collect();
-        assert_eq!(slice, chunk.text);
+        for span in &chunk.spans {
+            let slice: String = characters[span.start as usize..span.end as usize]
+                .iter()
+                .collect();
+            assert!(chunk.text.contains(&slice));
+        }
     }
+}
+
+// ---------------------------------------------------------------- 打包（跨篇）
+
+#[test]
+fn packs_short_pieces_on_the_same_day() {
+    // 「短时间跨度内的多个短篇可以放到一块里」：同一天的三篇短文合成一块。
+    let (a, b, c) = (chars(50, '甲'), chars(50, '乙'), chars(50, '丙'));
+    let pieces = vec![
+        Piece { id: "a", day_key: "2026-09-20", text: &a },
+        Piece { id: "b", day_key: "2026-09-20", text: &b },
+        Piece { id: "c", day_key: "2026-09-20", text: &c },
+    ];
+    let chunks = pack_pieces(&pieces);
+    assert_eq!(chunks.len(), 1, "三篇短文应当合成一块");
+    assert_eq!(chunks[0].spans.len(), 3, "三篇各占一个 span");
+    assert_eq!(
+        chunks[0]
+            .spans
+            .iter()
+            .map(|span| span.piece_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "b", "c"],
+        "span 顺序与传入顺序一致（调用方按时间排）"
+    );
+    assert_eq!(chunks[0].text.chars().count(), 50 * 3 + 2 * 2, "含两处分隔");
+}
+
+#[test]
+fn does_not_pack_across_days() {
+    let (a, b) = (chars(50, '甲'), chars(50, '乙'));
+    let pieces = vec![
+        Piece { id: "a", day_key: "2026-09-20", text: &a },
+        Piece { id: "b", day_key: "2026-09-21", text: &b },
+    ];
+    let chunks = pack_pieces(&pieces);
+    assert_eq!(chunks.len(), 2, "跨天不合并");
+    assert_eq!(chunks[0].spans[0].piece_id, "a");
+    assert_eq!(chunks[1].spans[0].piece_id, "b");
+}
+
+#[test]
+fn keeps_a_piece_whole_instead_of_splitting_it_to_fit() {
+    // 跨篇不断：380 字的甲 + 50 字的乙，乙放不进第一块（380+2+50 > 400）——
+    // 这时让乙另起一块，**不**把甲切开去凑。
+    let first = chars(380, '甲');
+    let second = chars(50, '乙');
+    let pieces = vec![
+        Piece { id: "a", day_key: "2026-09-20", text: &first },
+        Piece { id: "b", day_key: "2026-09-20", text: &second },
+    ];
+    let chunks = pack_pieces(&pieces);
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].text, first, "甲应当整篇在第一块里");
+    assert_eq!(chunks[1].text, second, "乙整篇在第二块里，没有被切");
+}
+
+#[test]
+fn a_long_piece_is_split_within_itself_only() {
+    // 一篇 1000 字（自己超限）+ 同一篇后面的 50 字短篇：
+    // 长的那篇在**篇内**切成多块，短篇自己一块，互不混装。
+    let long = chars(1000, '甲');
+    let short = chars(50, '乙');
+    let pieces = vec![
+        Piece { id: "long", day_key: "2026-09-20", text: &long },
+        Piece { id: "short", day_key: "2026-09-20", text: &short },
+    ];
+    let chunks = pack_pieces(&pieces);
+    assert_eq!(chunks.len(), 4, "1000 字切成 3 块 + 短篇 1 块");
+    for chunk in &chunks[..3] {
+        assert_eq!(chunk.spans.len(), 1);
+        assert_eq!(chunk.spans[0].piece_id, "long");
+    }
+    assert_eq!(chunks[3].spans.len(), 1);
+    assert_eq!(chunks[3].spans[0].piece_id, "short");
+    assert_eq!(chunks[3].text, short);
+}
+
+#[test]
+fn skips_blank_pieces() {
+    let pieces = vec![
+        Piece { id: "blank", day_key: "2026-09-20", text: "   \n\n  " },
+        Piece { id: "real", day_key: "2026-09-20", text: "妈妈打电话来。" },
+    ];
+    let chunks = pack_pieces(&pieces);
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].spans.len(), 1, "空白的那篇不该产生 span");
+    assert_eq!(chunks[0].spans[0].piece_id, "real");
+    assert_eq!(chunks[0].text, "妈妈打电话来。");
 }
 
 #[test]
 fn chunker_version_is_frozen() {
     // 这个断言故意写死字符串：改分块逻辑或常量时，必须**同时**改版本号，
     // 让索引状态里的 chunkerVersion 能识别出「库里的是旧块」。
-    assert_eq!(CHUNKER_VERSION, "chunker-1-char400-overlap48");
+    assert_eq!(CHUNKER_VERSION, "chunker-1-packday-line400-overlap48");
 }

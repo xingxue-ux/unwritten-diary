@@ -896,6 +896,34 @@
         "fromDayKey": null,
         "toDayKey": null
       }
+    },
+    {
+      "id": "kw-11",
+      "category": "keyword_only",
+      "query": "薄荷",
+      "expectedSourceIndex": 0,
+      "expectedContains": "阳台上那盆薄荷长疯了",
+      "sources": [
+        {
+          "name": "薄荷.txt",
+          "dayKey": "2026-10-02",
+          "text": "阳台上那盆薄荷长疯了，掐了几片泡水。\n\n香味比买来的浓。"
+        },
+        {
+          "name": "快递.txt",
+          "dayKey": "2026-10-02",
+          "text": "取了个快递，是上个月买的笔。\n\n顺手把门口的纸箱拆了。"
+        },
+        {
+          "name": "晚饭.txt",
+          "dayKey": "2026-10-02",
+          "text": "晚饭煮了面，放了点青菜。\n\n吃完把厨房擦了一遍。"
+        }
+      ],
+      "filters": {
+        "fromDayKey": null,
+        "toDayKey": null
+      }
     }
   ]
 }
