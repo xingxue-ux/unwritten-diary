@@ -1,27 +1,28 @@
 {
   "modelId": "bge-small-zh-v1.5",
-  "status": "M0 候选，尚未冻结为默认模型",
+  "status": "发布包用**我们自己从上游 MIT 权重导出的**那一份（见 files）",
   "note": "任务书 5.1 节要求记录 modelId、revision、哈希、许可证、tokenizer、最大输入长度、pooling、归一化、查询前缀、维度与量化格式。这里是 M0 实测所用的那一份。",
   "source": {
-    "onnxRepository": "Xenova/bge-small-zh-v1.5",
-    "onnxRevision": "75c43b069aac4d136ba6bc1122f995fedcfd2781",
+    "onnxRepository": "（不再使用第三方转换产物，见 licenseEvidence）",
+    "onnxRevision": "—",
     "upstreamRepository": "BAAI/bge-small-zh-v1.5",
     "upstreamRevision": "7999e1d3359715c523056ef9478215996d62a620",
-    "upstreamLicense": "MIT"
+    "upstreamLicense": "MIT",
+    "onnxProducedBy": "tools/model-export/export_bge_small_zh.py（本仓库）"
   },
-  "licenseCaveat": "原模型仓库声明 MIT；提供 ONNX 转换文件的 Xenova 仓库在 HuggingFace API 上**没有声明 license 字段**。再分发前必须向转换仓库或作者确认授权，不能把上游的 MIT 直接当成转换产物的授权。这条未解决前不要把模型打进发布包。",
   "files": [
     {
       "path": "model_quantized.onnx",
-      "bytes": 24010842,
-      "sha256": "15b717c382bcb518ba457b93ea6850ede7f4f1cd8937454aa06972366cd19bcc",
-      "format": "ONNX，INT8 量化"
+      "bytes": 23830209,
+      "sha256": "d44978e451a0b4e0c561b8c6bb2cfaf5aac734f2729359aae46e1db893499f43",
+      "format": "ONNX，INT8 动态量化（QInt8）",
+      "producedBy": "tools/model-export/export_bge_small_zh.py（opset 17）"
     },
     {
       "path": "tokenizer.json",
       "bytes": 439125,
       "sha256": "48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26",
-      "format": "HuggingFace tokenizers，BERT WordPiece"
+      "format": "HuggingFace tokenizers，BERT WordPiece（取自上游仓库，与第三方产物里的这一份完全相同）"
     }
   ],
   "embedding": {
@@ -32,8 +33,10 @@
     "maxInputTokens": "未验证。实测长文本样例为 482 token。上限与截断策略需要按模型文档确认并写入本文件"
   },
   "fetch": {
-    "command": "curl -fL -o models/bge-small-zh-v1.5/model_quantized.onnx https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/onnx/model_quantized.onnx && curl -fL -o models/bge-small-zh-v1.5/tokenizer.json https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/tokenizer.json",
-    "verify": "sha256sum models/bge-small-zh-v1.5/* 必须与上面的 sha256 一致"
+    "command": "python3 tools/model-export/export_bge_small_zh.py --out models/bge-small-zh-v1.5-ours",
+    "note": "需要 torch / transformers / onnx / onnxruntime / onnxscript；实际版本与产物哈希写在 models/bge-small-zh-v1.5-ours/export-info.json",
+    "verify": "sha256sum models/bge-small-zh-v1.5-ours/model_quantized.onnx models/bge-small-zh-v1.5-ours/tokenizer.json 必须与 files 里的值一致",
+    "localQuirk": "本机 NO_PROXY 里含 IPv6 括号写法（[::1]）时，httpx 解析会失败（Invalid port）；下载前把 NO_PROXY/no_proxy 清成简单列表即可"
   },
   "measured": {
     "where": "WSL2 x86_64 主机，ONNX Runtime 1.22.0 CPU，单线程配置未调整",
@@ -43,6 +46,58 @@
     "longTextTokens": 482,
     "perItemMsSequential": 3.6,
     "peakRssDeltaMiB": 69,
-    "detail": "见 docs/architecture/M0-技术验证.md"
+    "detail": "见 docs/architecture/M0-技术验证.md",
+    "artifact": "上面 files 里我们自己导出的那一份（2026-10-10 复测）；更早的数字来自 m0Artifact",
+    "ourArtifactHostNumbers": {
+      "where": "WSL2 x86_64 主机，ONNX Runtime 1.22.0 CPU",
+      "shortMedianMs": 3.6,
+      "long482TokenMedianMs": 52.6,
+      "perItem32Ms": 2.2,
+      "peakDeltaMiB": 73,
+      "quality": "3/3 排序正确；与脚本自检两条独立路径的余弦差 ≤0.003",
+      "caveat": "与 3.1 节基线同量级但耗时有波动（机器负载），不作为新基线；量化方式不同，余弦与第三方产物不同（0.630/0.552/0.702 对 0.640/0.502/0.659），但排序都正确"
+    }
+  },
+  "license": {
+    "upstream": "MIT（BAAI/bge-small-zh-v1.5）",
+    "ourOnnxArtifacts": "派生自上游 MIT 权重，由本仓库脚本导出；随发布包保留 MIT 全文与来源说明",
+    "licenseFile": "models/manifest/bge-small-zh-v1.5-LICENSE-MIT.txt",
+    "thirdPartyConversion": "不使用"
+  },
+  "licenseEvidence": {
+    "结论": "不再分发第三方转换产物；改用自己从上游 MIT 权重导出的 ONNX（issue #18）",
+    "核对日期": "2026-10-10",
+    "上游": {
+      "url": "https://huggingface.co/api/models/BAAI/bge-small-zh-v1.5",
+      "事实": "cardData.license = mit，tags 含 license:mit；仓库文件里**没有 ONNX**（只有 safetensors/pytorch/分词器）"
+    },
+    "第三方转换产物": {
+      "url": "https://huggingface.co/api/models/Xenova/bge-small-zh-v1.5",
+      "事实": "cardData 只有 base_model 与 library_name，**没有 license 字段**；tags 里也没有 license:*；仓库文件列表里没有 LICENSE 文件",
+      "结论": "拿不到再分发授权，因此不采用。它的哈希只作为 M0 历史记录保留在 m0Artifact 里"
+    },
+    "自己导出": {
+      "脚本": "tools/model-export/export_bge_small_zh.py",
+      "上游revision": "7999e1d3359715c523056ef9478215996d62a620（与 source.upstreamRevision 一致）",
+      "工具版本与哈希": "models/bge-small-zh-v1.5-ours/export-info.json"
+    },
+    "范围说明": "以上是工程判断与可核对的事实记录，不构成法律意见；发布前若有疑问按 M5 清单再核一次"
+  },
+  "m0Artifact": {
+    "note": "M0 技术验证当时用的是这份第三方转换产物，哈希留作历史记录；**不再分发**",
+    "repository": "Xenova/bge-small-zh-v1.5",
+    "revision": "75c43b069aac4d136ba6bc1122f995fedcfd2781",
+    "files": [
+      {
+        "path": "model_quantized.onnx",
+        "bytes": 24010842,
+        "sha256": "15b717c382bcb518ba457b93ea6850ede7f4f1cd8937454aa06972366cd19bcc"
+      },
+      {
+        "path": "tokenizer.json",
+        "bytes": 439125,
+        "sha256": "48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26"
+      }
+    ]
   }
 }

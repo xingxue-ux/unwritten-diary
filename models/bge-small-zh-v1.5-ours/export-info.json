@@ -1,0 +1,23 @@
+{
+  "upstreamRepository": "BAAI/bge-small-zh-v1.5",
+  "upstreamRevision": "7999e1d3359715c523056ef9478215996d62a620",
+  "tools": {
+    "torch": "2.14.1+cu130",
+    "transformers": "5.19.0"
+  },
+  "opset": 17,
+  "quantization": {
+    "weightType": "QInt8",
+    "dynamic": true
+  },
+  "files": {
+    "model_quantized.onnx": {
+      "bytes": 23830209,
+      "sha256": "d44978e451a0b4e0c561b8c6bb2cfaf5aac734f2729359aae46e1db893499f43"
+    },
+    "tokenizer.json": {
+      "bytes": 439125,
+      "sha256": "48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26"
+    }
+  }
+}
