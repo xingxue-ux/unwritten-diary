@@ -25,7 +25,8 @@ mod support;
 
 pub use assets::ImportRequest;
 pub use extractors::{
-    builtin_extractors, ExtractionInput, ExtractionOutcome, Extractor,
+    builtin_extractors, ExtractionInput, ExtractionOutcome, Extractor, TEXT_DIRECT_EXTRACTOR_ID,
+    TEXT_DIRECT_EXTRACTOR_VERSION,
 };
 pub use error::{CoreError, ErrorCode, Result};
 pub use model::{
@@ -418,7 +419,12 @@ impl Core {
             text,
         ]);
         if let Some(json) = self.receipt("revise_text", &fingerprint, operation_id)? {
-            return Ok(serde_json::from_str(&json)?);
+            let revision: SourceRevision = serde_json::from_str(&json)?;
+            // 幂等重试的自愈：修订上次已经写好了，但派生内容可能没写成（提取那一步失败）。
+            // 不补的话，这条来源的正文会永远搜不到——而「改完就能搜到新正文」是这一片的
+            // 首要保证。
+            self.ensure_extracted(&revision.revision_id)?;
+            return Ok(revision);
         }
 
         let (capture_id, parent_revision_id) = load_source_item(&self.conn, source_id)?;
@@ -432,6 +438,20 @@ impl Core {
                 state: capture.state.wire().to_owned(),
             });
         }
+
+        // 记录自己的文字（`captures.draft_text`）与「这一篇的上一版」可能是**同一段文字
+        // 的两种存法**：提交时会把 `draft_text` 复制成一条 text 修订。改正文如果只改
+        // 修订、不动 `draft_text`，记录文字那一路（B3d 已索引）就仍然能搜到**旧正文**，
+        // 而决策是「用户在搜索里直接看不到旧正文」。
+        //
+        // 只在两者确实相同时也是同一段文字时才同步：不同就说明这条记录的文字另有出处
+        // （比如记录文字后来又编辑过），不能替它下结论。
+        let sync_draft = match parent_revision_id.as_deref() {
+            Some(parent) => {
+                load_revision_text(&self.conn, parent)?.as_deref() == Some(capture.draft_text.as_str())
+            }
+            None => false,
+        };
 
         let now = support::now();
         let revision = SourceRevision {
@@ -466,6 +486,20 @@ impl Core {
             "UPDATE captures SET revision = ?1, updated_at = ?2 WHERE id = ?3",
             params![new_revision, support::to_iso(now), capture.id],
         )?;
+        if sync_draft {
+            tx.execute(
+                "UPDATE captures SET draft_text = ?1 WHERE id = ?2",
+                params![text, capture.id],
+            )?;
+            // 同事务里刷新记录文字的索引（它会推进索引代次，进行中的会话因此失效）。
+            search::index_capture(
+                &tx,
+                search::CaptureInput {
+                    capture_id: &capture.id,
+                    text,
+                },
+            )?;
+        }
         store_receipt(
             &tx,
             operation_id,
@@ -475,7 +509,30 @@ impl Core {
         )?;
         insert_event(&tx, EventType::CaptureChanged, &capture.id, new_revision)?;
         tx.commit()?;
+
+        // 改完立刻产出派生内容。否则在新修订被提取之前，这条来源的正文在默认搜索里会
+        // **完全消失**（旧修订已不是当前修订，新修订还没有派生内容）——改正文是高频操作，
+        // 留这个窗口不行。纯文本提取不碰任何文件（正文就在库里），代价很小。
+        //
+        // 空白正文不试提取：那是「这段话被删空了」的正常状态，不是失败——提取器对空正文
+        // 仍然报错（那是有意的，见 `blank_text_revision_is_still_an_error`），但那该由
+        // 显式调用 `sources.extract` 的人看到，不该让 `revise_text` 变成「存了却报错」。
+        //
+        // 非空白正文的提取失败不静默吞掉：修订已经保存，错误如实报给调用方；他拿同一条
+        // operationId 重试会走上面的自愈路径，或者显式调 `sources.extract`。
+        if !text.trim().is_empty() {
+            crate::extractors::extract_source_revision(self, &revision.revision_id)?;
+        }
         Ok(revision)
+    }
+
+    /// 修订已经有派生内容就什么都不做；没有就提取一次（幂等重试的自愈用）。
+    fn ensure_extracted(&mut self, source_revision_id: &str) -> Result<()> {
+        if crate::extractors::has_content(&self.conn, source_revision_id)? {
+            return Ok(());
+        }
+        crate::extractors::extract_source_revision(self, source_revision_id)?;
+        Ok(())
     }
 
     // ------------------------------------------------------------ 读取
@@ -666,6 +723,24 @@ impl Core {
     /// 读取某个来源当前版本的派生内容；没提取过时返回 None。
     pub fn extracted_content(&self, source_id: &str) -> Result<Option<ExtractedContent>> {
         extractors::extracted_content(self, source_id)
+    }
+
+    /// 取某个来源**当前修订的父修订**（上一版正文），供界面「看原正文」用。
+    ///
+    /// 只给两版正文，**不算 diff**：怎么呈现差异是前端的事（见
+    /// `docs/architecture/m2-修订与检索可见性.md`）。
+    ///
+    /// 三种情况都返回 `None`，它们对调用方是同一件事——「这篇没有上一版」：
+    /// - 来源不存在，或它的 `current_revision_id` 是空的；
+    /// - 当前修订就是第一版（`parent_revision_id` 为空）；
+    /// - 父修订 id 悬空（数据坏了）。这时给不出正文，如实当「没有」，
+    ///   比编一个空修订出来好。
+    ///
+    /// 要看清楚父修订可能是**原件型**修订（导入的文件、录音）：它的 `text` 是空的、
+    /// `asset_id` 有值，正文要从它的派生内容里取。契约侧怎么把这一层包给前端，
+    /// 留给 #55。
+    pub fn previous_source_revision(&self, source_id: &str) -> Result<Option<SourceRevision>> {
+        previous_source_revision(&self.conn, source_id)
     }
 
     /// 把 sourceRef + locator 解析成前端可打开的原件与可用性。
@@ -952,6 +1027,61 @@ fn insert_event(
     Ok(())
 }
 
+/// `previous_source_revision` 查到的一行，解析前先按位置取出来。
+type RawSourceRevision = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+);
+
+/// 读「当前修订的父修订」，一次查询取完。
+///
+/// 两次 `JOIN`（而不是先查 current、再查 parent 的两条语句）让所有「没有上一版」的
+/// 情况自然退化成「查不到行」：来源不在、`current_revision_id` 为空、
+/// `parent_revision_id` 为空、父修订悬空——一个 `None` 全包了，没有分支要维护。
+fn previous_source_revision(conn: &Connection, source_id: &str) -> Result<Option<SourceRevision>> {
+    let row: Option<RawSourceRevision> = conn
+        .query_row(
+            "SELECT p.revision_id, p.source_id, p.parent_revision_id, p.text, p.asset_id, \
+             p.author_type, p.occurred_at \
+             FROM source_items i \
+             JOIN source_revisions cur ON cur.revision_id = i.current_revision_id \
+             JOIN source_revisions p ON p.revision_id = cur.parent_revision_id \
+             WHERE i.source_id = ?1",
+            params![source_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    Ok(Some(SourceRevision {
+        revision_id: row.0,
+        source_id: row.1,
+        parent_revision_id: row.2,
+        text: row.3,
+        asset_id: row.4,
+        author_type: AuthorType::from_wire(&row.5).ok_or_else(|| CoreError::CorruptedData {
+            message: format!("未知作者类型：{}", row.5),
+        })?,
+        occurred_at: support::parse_iso(&row.6)?,
+    }))
+}
+
 fn load_source_item(conn: &Connection, source_id: &str) -> Result<(String, Option<String>)> {
     conn.query_row(
         "SELECT capture_id, current_revision_id FROM source_items WHERE source_id = ?1",
@@ -963,6 +1093,20 @@ fn load_source_item(conn: &Connection, source_id: &str) -> Result<(String, Optio
         entity: "来源",
         id: source_id.to_owned(),
     })
+}
+
+/// 读某个修订的正文（没有正文就是 `None`）。
+///
+/// 只用在「判断上一篇是不是同一段文字」这种比较上，不做对外读取接口。
+fn load_revision_text(conn: &Connection, revision_id: &str) -> Result<Option<String>> {
+    let text: Option<Option<String>> = conn
+        .query_row(
+            "SELECT text FROM source_revisions WHERE revision_id = ?1",
+            params![revision_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(text.flatten())
 }
 
 fn load_capture(conn: &Connection, capture_id: &str) -> Result<Capture> {

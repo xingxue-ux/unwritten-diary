@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use diary_core::{
     Capture, CapturePage, CommitResult, Core, CoreError, DomainEvent, DraftSaveResult,
     ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job,
-    JobState, SearchRequest, SearchSnapshot, SourceLocation, SourceLocator,
+    JobState, SearchRequest, SearchSnapshot, SourceLocation, SourceLocator, SourceRevision,
 };
 use flutter_rust_bridge::frb;
 
@@ -220,6 +220,35 @@ impl BridgeSession {
         Ok(core.extracted_content(&source_id)?)
     }
 
+    /// 修改某一篇来源的原始文字：新建一个修订，旧修订保留。
+    ///
+    /// 契约第 4.1 节 `sources.reviseText`。**改完必须再跑一次 `extract_source`**，
+    /// 新修订才会进索引——这一步不自动做（提取有自己的失败与重试语义，见
+    /// `docs/architecture/m2-修订与检索可见性.md`）。
+    pub fn revise_text(
+        &self,
+        source_id: String,
+        text: String,
+        expected_revision: i64,
+        operation_id: String,
+    ) -> Result<SourceRevision, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.revise_text(&source_id, &text, expected_revision, &operation_id)?)
+    }
+
+    /// 取某个来源**当前修订的父修订**（上一版正文），供界面「看原正文」用。
+    ///
+    /// 没有上一版时返回空。返回的是修订，不是 diff：差在哪由前端算。
+    /// 父修订可能是原件型修订（`text` 为空、`asset_id` 有值），前端要按这个分支
+    /// 决定是显示文字还是提供「打开原件」。
+    pub fn previous_source_revision(
+        &self,
+        source_id: String,
+    ) -> Result<Option<SourceRevision>, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.previous_source_revision(&source_id)?)
+    }
+
     /// 把 sourceRef + locator 解析成可打开的原件与可用性。
     pub fn locate_source(
         &self,
@@ -361,6 +390,8 @@ fn wired_capabilities() -> Vec<String> {
         "imports.status",
         "sources.extract",
         "sources.extractedContent",
+        "sources.reviseText",
+        "sources.previousRevision",
         "sources.locate",
         "indexes.status",
         "search.start",

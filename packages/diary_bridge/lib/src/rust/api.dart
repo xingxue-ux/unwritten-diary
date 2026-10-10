@@ -97,6 +97,25 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
+  /// 取某个来源**当前修订的父修订**（上一版正文），供界面「看原正文」用。
+  ///
+  /// 没有上一版时返回空。返回的是修订，不是 diff：差在哪由前端算。
+  /// 父修订可能是原件型修订（`text` 为空、`asset_id` 有值），前端要按这个分支
+  /// 决定是显示文字还是提供「打开原件」。
+  Future<SourceRevision?> previousSourceRevision({required String sourceId});
+
+  /// 修改某一篇来源的原始文字：新建一个修订，旧修订保留。
+  ///
+  /// 契约第 4.1 节 `sources.reviseText`。**改完必须再跑一次 `extract_source`**，
+  /// 新修订才会进索引——这一步不自动做（提取有自己的失败与重试语义，见
+  /// `docs/architecture/m2-修订与检索可见性.md`）。
+  Future<SourceRevision> reviseText({
+    required String sourceId,
+    required String text,
+    required PlatformInt64 expectedRevision,
+    required String operationId,
+  });
+
   /// 保存草稿。只有核心确认落盘后才返回 `durable = true`。
   Future<DraftSaveResult> saveDraft({
     required String captureId,
