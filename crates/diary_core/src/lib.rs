@@ -2,8 +2,8 @@
 //!
 //! 已落地：记录路径（B1a）、原件文件库与导入（B1b）、录音与队列（B1c）、
 //! 提取与来源定位（B2）、关键词索引与覆盖状态（B3a）、检索会话 `search.*`（B3b）、
-//! 用户自己写的文字进检索（B3d）、文本块与真实向量（B3c-2）。
-//! 还没有：混合排序（#51，B3c-3）。
+//! 用户自己写的文字进检索（B3d）、文本块与真实向量（B3c-2）、
+//! 混合检索 RRF（#51，B3c-3）。
 //!
 //! 三条硬性约束贯穿本 crate：
 //! 1. **不丢已确认的记录**：写入落在同一个事务里，事务提交后才返回 durable。
@@ -58,6 +58,7 @@ pub use embedding::{
 pub use schema::SCHEMA_VERSION;
 pub use search::TOKENIZER_VERSION;
 pub use semantic::SemanticBuildReport;
+pub use search_session::{HYBRID_FUSION_VERSION, HYBRID_SEMANTIC_MIN_SCORE};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -90,6 +91,9 @@ pub struct Core {
     ///
     /// `Core::open` 只读环境变量与 stat 文件，**不建 ORT 会话**——启动不做重活。
     semantic: semantic::SemanticRuntime,
+    /// 混合检索的语义证据门槛。产品默认是 `HYBRID_SEMANTIC_MIN_SCORE`；量测与测试
+    /// 可以临时改它来扫曲线（见 `set_hybrid_min_score_for_test`）。
+    hybrid_min_score: f32,
 }
 
 /// 一行的原始形态：先取出来，再按业务语义解析，避免把解析错误塞进 SQL 层。
@@ -142,6 +146,7 @@ impl Core {
             leases: HashMap::new(),
             search_sessions: HashMap::new(),
             semantic: semantic::SemanticRuntime::from_env(),
+            hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
         })
     }
 
@@ -167,6 +172,16 @@ impl Core {
     pub fn set_page_limit_for_test(&self, pages: i64) -> Result<()> {
         self.conn.pragma_update(None, "max_page_count", pages)?;
         Ok(())
+    }
+
+    /// 仅供量测/测试：改混合检索的语义证据门槛。
+    ///
+    /// 阈值扫描必须走**同一条产品路径**（`start_search(mode = hybrid)` + 真融合），
+    /// 而不是在探针里另写一套融合——否则量到的曲线不是线上跑的那条。产品代码不调它；
+    /// 默认值仍是 `HYBRID_SEMANTIC_MIN_SCORE` 那个可审计常量。
+    #[doc(hidden)]
+    pub fn set_hybrid_min_score_for_test(&mut self, value: f32) {
+        self.hybrid_min_score = value;
     }
 
     // ------------------------------------------------------------ 记录路径

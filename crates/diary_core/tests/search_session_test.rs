@@ -244,7 +244,7 @@ fn cancel_stops_paging_but_keeps_the_snapshot_readable() {
 }
 
 #[test]
-fn empty_query_and_unimplemented_modes_say_so() {
+fn empty_query_and_degraded_modes_say_so() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = new_core(dir.path());
     add_material(
@@ -272,8 +272,8 @@ fn empty_query_and_unimplemented_modes_say_so() {
         downgraded
             .warnings
             .iter()
-            .any(|warning| warning.contains("关键词")),
-        "语义/混合还没接，必须如实说降级到关键词：{:?}",
+            .any(|warning| warning.contains("混合检索退化为关键词")),
+        "没有模型时混合必须如实说退化为关键词（#51）：{:?}",
         downgraded.warnings
     );
     assert!(
