@@ -818,10 +818,18 @@ pub struct SourceLocation {
 
 /// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
 ///
-/// 核心只建关键词索引，所以 `semantic_index_ready` 恒为 false、
-/// `model_version` 恒为空——照实说，而不是留一个看起来「都就绪」的默认值。
-/// 数字的单位不完全一样：片段（`*_segments`）、记录数（`*_captures`）、
-/// 材料数（`failed_sources`）各自的名字里写清楚，避免前端把它们相加。
+/// 这个状态把两条路分开报：**关键词这一路**（`coverage`、`keyword_index_ready`、
+/// 各种 `*_segments` / `*_captures`）已经能跑；**语义这一路**
+/// （`semantic_index_ready`、`model_version`、`total_chunks` / `embedded_chunks`）
+/// 这一片只有存储、没有模型，所以照实说「没就绪」，而不是留一个看起来「都就绪」的
+/// 默认值。
+///
+/// 两条路**不共用一个 `coverage`**：`coverage` 仍然只描述关键词索引的覆盖程度。
+/// 语义的覆盖程度要等模型接进来、有了「生效代次里的向量覆盖了多少块」这个数字之后
+/// 才谈得上；现在拿块的多少去改 `coverage` 只会让前端「能不能搜」的判断失真。
+///
+/// 数字的单位不完全一样：片段（`*_segments`）、记录数（`*_captures`）、材料数
+/// （`failed_sources`）、块数（`*_chunks`）各自的名字里写清楚，避免前端把它们相加。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexStatus {
     pub coverage: Coverage,
@@ -829,8 +837,23 @@ pub struct IndexStatus {
     pub semantic_index_ready: bool,
     /// 建索引时用的分词器版本；与库里行不一致的片段或记录文字会被算成待重建。
     pub tokenizer_version: String,
+    /// 语义索引用的模型版本。这一片没有接模型，恒为 `None`。
     pub model_version: Option<String>,
+    /// 切块规则版本（`chunker::CHUNKER_VERSION`）。
+    ///
+    /// B3c-1 里它还是 `None`（那时没有任何块进索引）；从这一片起块真的进库了，所以
+    /// 它有值。库里块的 `chunker_version` 与它不一致，就说明块要按新规则重算。
     pub chunker_version: Option<String>,
+    /// 范围内的文本块数（`text_chunks`）。
+    ///
+    /// 范围语义与关键词那一路一致：一条记录属于范围，当且仅当它拥有范围内的来源；
+    /// 空白范围是「什么都不看」，得到 0。单位是块数，不是篇数——一块可能含多篇。
+    pub total_chunks: i64,
+    /// 其中有**当前生效代次**向量的块数（`chunk_vectors.generation = active_generation`）。
+    ///
+    /// 它是 `total_chunks` 的下界：两者相等才谈得上「语义索引覆盖完了」。这一片还没有
+    /// 模型、没有任何一代向量生效，所以恒为 0（不是「碰巧是 0」，是没有可算的模型）。
+    pub embedded_chunks: i64,
     /// 已进关键词索引的片段数。
     pub indexed_segments: i64,
     /// 派生内容里的片段总数。

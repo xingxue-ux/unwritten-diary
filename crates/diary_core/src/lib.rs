@@ -2,7 +2,8 @@
 //!
 //! 已落地：记录路径（B1a）、原件文件库与导入（B1b）、录音与队列（B1c）、
 //! 提取与来源定位（B2）、关键词索引与覆盖状态（B3a）、检索会话 `search.*`（B3b）、
-//! 用户自己写的文字进检索（B3d）。向量与混合排序还没有。
+//! 用户自己写的文字进检索（B3d）、文本块的存储与换代结构（B3c-2 前半）。
+//! 还没有：向量本身（不接模型）、语义与混合排序。
 //!
 //! 三条硬性约束贯穿本 crate：
 //! 1. **不丢已确认的记录**：写入落在同一个事务里，事务提交后才返回 durable。
@@ -13,6 +14,7 @@
 
 mod assets;
 mod chunker;
+mod chunks;
 mod error;
 mod extractors;
 mod jobs;
@@ -693,6 +695,26 @@ impl Core {
     /// 让覆盖状态与增量索引有个可靠的校准方式（任务化见 issue #31）。
     pub fn rebuild_keyword_index(&mut self, source_scope: Option<&[String]>) -> Result<i64> {
         search::rebuild(self, source_scope)
+    }
+
+    // ------------------------------------------------------------ 文本块
+
+    /// 重建文本块；`source_scope` 为空表示整个资料库。
+    ///
+    /// 块是**语义检索的载体**，不是用户看到的东西：用户看到的仍然以「篇」为单位。
+    /// 这一片只产块、不算向量，所以它跟关键词索引是两条独立的路：调用它不影响
+    /// `coverage` / `keyword_index_ready`，反过来也一样。
+    ///
+    /// 返回写进库的块数（**不是篇数**：一块可能由同一天的几篇拼成）。范围语义与
+    /// `rebuild_keyword_index` 一致：`Some([])` 是「什么都不看」，得到 0 块。
+    ///
+    /// 重打包的单位是日子而不是记录，理由见 `chunks::rebuild` 的说明：分块规则按
+    /// `day_key` 合块，只重算范围内的那几篇会让同一份内容有两种块边界。
+    ///
+    /// 整库重建是重活，产品路径上它应当是可取消的任务；这一片先提供同步入口
+    /// （任务化与向量构建一起做，见 issue #32 的后一半）。
+    pub fn rebuild_text_chunks(&mut self, source_scope: Option<&[String]>) -> Result<i64> {
+        chunks::rebuild(self, source_scope)
     }
 
     /// 关键词检索候选：命中**派生片段**的 ID，按索引写入顺序。

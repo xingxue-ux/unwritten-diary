@@ -2859,8 +2859,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   IndexStatus dco_decode_index_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 18)
-      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
+    if (arr.length != 20)
+      throw Exception('unexpected arr length: expect 20 but see ${arr.length}');
     return IndexStatus(
       coverage: dco_decode_coverage(arr[0]),
       keywordIndexReady: dco_decode_bool(arr[1]),
@@ -2868,18 +2868,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       tokenizerVersion: dco_decode_String(arr[3]),
       modelVersion: dco_decode_opt_String(arr[4]),
       chunkerVersion: dco_decode_opt_String(arr[5]),
-      indexedSegments: dco_decode_i_64(arr[6]),
-      totalSegments: dco_decode_i_64(arr[7]),
-      pendingSegments: dco_decode_i_64(arr[8]),
-      staleSegments: dco_decode_i_64(arr[9]),
-      indexedCaptures: dco_decode_i_64(arr[10]),
-      totalCaptures: dco_decode_i_64(arr[11]),
-      failedSources: dco_decode_i_64(arr[12]),
-      indexedChars: dco_decode_i_64(arr[13]),
-      indexRows: dco_decode_i_64(arr[14]),
-      indexTerms: dco_decode_i_64(arr[15]),
-      indexBytes: dco_decode_i_64(arr[16]),
-      reasons: dco_decode_list_String(arr[17]),
+      totalChunks: dco_decode_i_64(arr[6]),
+      embeddedChunks: dco_decode_i_64(arr[7]),
+      indexedSegments: dco_decode_i_64(arr[8]),
+      totalSegments: dco_decode_i_64(arr[9]),
+      pendingSegments: dco_decode_i_64(arr[10]),
+      staleSegments: dco_decode_i_64(arr[11]),
+      indexedCaptures: dco_decode_i_64(arr[12]),
+      totalCaptures: dco_decode_i_64(arr[13]),
+      failedSources: dco_decode_i_64(arr[14]),
+      indexedChars: dco_decode_i_64(arr[15]),
+      indexRows: dco_decode_i_64(arr[16]),
+      indexTerms: dco_decode_i_64(arr[17]),
+      indexBytes: dco_decode_i_64(arr[18]),
+      reasons: dco_decode_list_String(arr[19]),
     );
   }
 
@@ -3886,6 +3888,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_tokenizerVersion = sse_decode_String(deserializer);
     var var_modelVersion = sse_decode_opt_String(deserializer);
     var var_chunkerVersion = sse_decode_opt_String(deserializer);
+    var var_totalChunks = sse_decode_i_64(deserializer);
+    var var_embeddedChunks = sse_decode_i_64(deserializer);
     var var_indexedSegments = sse_decode_i_64(deserializer);
     var var_totalSegments = sse_decode_i_64(deserializer);
     var var_pendingSegments = sse_decode_i_64(deserializer);
@@ -3905,6 +3909,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       tokenizerVersion: var_tokenizerVersion,
       modelVersion: var_modelVersion,
       chunkerVersion: var_chunkerVersion,
+      totalChunks: var_totalChunks,
+      embeddedChunks: var_embeddedChunks,
       indexedSegments: var_indexedSegments,
       totalSegments: var_totalSegments,
       pendingSegments: var_pendingSegments,
@@ -5162,6 +5168,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.tokenizerVersion, serializer);
     sse_encode_opt_String(self.modelVersion, serializer);
     sse_encode_opt_String(self.chunkerVersion, serializer);
+    sse_encode_i_64(self.totalChunks, serializer);
+    sse_encode_i_64(self.embeddedChunks, serializer);
     sse_encode_i_64(self.indexedSegments, serializer);
     sse_encode_i_64(self.totalSegments, serializer);
     sse_encode_i_64(self.pendingSegments, serializer);

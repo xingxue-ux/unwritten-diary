@@ -2681,6 +2681,8 @@ const _: fn() = || {
         let _: String = IndexStatus.tokenizer_version;
         let _: Option<String> = IndexStatus.model_version;
         let _: Option<String> = IndexStatus.chunker_version;
+        let _: i64 = IndexStatus.total_chunks;
+        let _: i64 = IndexStatus.embedded_chunks;
         let _: i64 = IndexStatus.indexed_segments;
         let _: i64 = IndexStatus.total_segments;
         let _: i64 = IndexStatus.pending_segments;
@@ -3205,6 +3207,8 @@ impl SseDecode for diary_core::model::IndexStatus {
         let mut var_tokenizerVersion = <String>::sse_decode(deserializer);
         let mut var_modelVersion = <Option<String>>::sse_decode(deserializer);
         let mut var_chunkerVersion = <Option<String>>::sse_decode(deserializer);
+        let mut var_totalChunks = <i64>::sse_decode(deserializer);
+        let mut var_embeddedChunks = <i64>::sse_decode(deserializer);
         let mut var_indexedSegments = <i64>::sse_decode(deserializer);
         let mut var_totalSegments = <i64>::sse_decode(deserializer);
         let mut var_pendingSegments = <i64>::sse_decode(deserializer);
@@ -3224,6 +3228,8 @@ impl SseDecode for diary_core::model::IndexStatus {
             tokenizer_version: var_tokenizerVersion,
             model_version: var_modelVersion,
             chunker_version: var_chunkerVersion,
+            total_chunks: var_totalChunks,
+            embedded_chunks: var_embeddedChunks,
             indexed_segments: var_indexedSegments,
             total_segments: var_totalSegments,
             pending_segments: var_pendingSegments,
@@ -4719,6 +4725,8 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::IndexStatus
             self.0.tokenizer_version.into_into_dart().into_dart(),
             self.0.model_version.into_into_dart().into_dart(),
             self.0.chunker_version.into_into_dart().into_dart(),
+            self.0.total_chunks.into_into_dart().into_dart(),
+            self.0.embedded_chunks.into_into_dart().into_dart(),
             self.0.indexed_segments.into_into_dart().into_dart(),
             self.0.total_segments.into_into_dart().into_dart(),
             self.0.pending_segments.into_into_dart().into_dart(),
@@ -5639,6 +5647,8 @@ impl SseEncode for diary_core::model::IndexStatus {
         <String>::sse_encode(self.tokenizer_version, serializer);
         <Option<String>>::sse_encode(self.model_version, serializer);
         <Option<String>>::sse_encode(self.chunker_version, serializer);
+        <i64>::sse_encode(self.total_chunks, serializer);
+        <i64>::sse_encode(self.embedded_chunks, serializer);
         <i64>::sse_encode(self.indexed_segments, serializer);
         <i64>::sse_encode(self.total_segments, serializer);
         <i64>::sse_encode(self.pending_segments, serializer);

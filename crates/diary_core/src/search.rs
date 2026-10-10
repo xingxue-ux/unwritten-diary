@@ -480,6 +480,20 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
         Coverage::Partial
     };
 
+    // ------------------------------------------------------------ 语义这一路
+    //
+    // 这一片（B3c-2 前半）只建了块与向量的存储结构，**没有接模型**，所以没有任何
+    // 一代向量被算出来。状态要如实报「未就绪」，而不是让前端以为「索引已就绪」
+    // 包含语义那一路。
+    let (active_generation, _building_generation) = crate::chunks::generations(core)?;
+    let chunk_counts = crate::chunks::counts(core, source_scope)?;
+    // 「就绪」不是写死的 false：它要求有一代向量在服务，并且这一代把范围内的块都
+    // 覆盖了。现在 `active_generation` 必然为空（没有模型），所以它是 false；
+    // 将来某一代被激活，这个判断会自己跟上，不需要回来改这里。
+    let semantic_index_ready = active_generation.is_some()
+        && chunk_counts.total > 0
+        && chunk_counts.embedded == chunk_counts.total;
+
     let mut reasons = Vec::new();
     if total_segments == 0 && total_captures == 0 {
         reasons.push(if failed_sources > 0 {
@@ -511,16 +525,46 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
             "index_bytes 是整库索引占用：dbstat 只能按表统计，无法按来源拆分".to_owned(),
         );
     }
-    // 语义索引还没接：如实写清楚，而不是让前端以为「索引已就绪」包含它。
-    reasons.push("语义索引尚未接入（见 issue #32）：当前只有关键词索引".to_owned());
+    // 语义索引这一路：只有**真的没就绪**时才说一句原因，而且判断依据是库里的状态
+    // （生效代次 + 块的向量覆盖），不是写死的常量文案——将来某一代被激活之后，
+    // 第一句会自然消失，换成真正剩下的那个问题。这一片没有模型，所以生效代次必然是
+    // 空的，只会走到第一句；「还没有接模型」写在括号里当原因，而不是当成永远成立的
+    // 事实。三段与上面 `semantic_index_ready` 的取值**严格互补**：就绪时没有原因，
+    // 有原因时一定不就绪。
+    let semantic_reason = if active_generation.is_none() {
+        Some(
+            "语义索引未就绪：还没有生效的向量代次（这一片还没有接模型），当前只有关键词索引"
+                .to_owned(),
+        )
+    } else if chunk_counts.total == 0 {
+        // 有生效代次却没有任何块：要么还没重建过块，要么范围内的内容本来就没有正文。
+        Some("语义索引未就绪：范围内还没有文本块".to_owned())
+    } else if chunk_counts.embedded < chunk_counts.total {
+        // 换代中间态：新代次还没写满。这时候旧代次可能还在服务，但覆盖已经不完整。
+        Some(format!(
+            "语义索引未就绪：生效代次只覆盖了 {} 块里的 {} 块",
+            chunk_counts.total, chunk_counts.embedded
+        ))
+    } else {
+        None
+    };
+    if let Some(reason) = semantic_reason {
+        reasons.push(reason);
+    }
 
     Ok(IndexStatus {
         coverage,
         keyword_index_ready,
-        semantic_index_ready: false,
+        semantic_index_ready,
         tokenizer_version: TOKENIZER_VERSION.to_owned(),
+        // 这一片没有模型可报：等模型接进来，这里要改成读生效代次那一批
+        // `chunk_vectors.model_version`，而不是继续写 None。
         model_version: None,
-        chunker_version: None,
+        // 块真的进库了（B3c-1 的文档承诺过「接进索引之后才该有值」），所以从这一片起
+        // 它有值：库里块的 `chunker_version` 与它不一致，就说明块要按新规则重算。
+        chunker_version: Some(crate::chunker::CHUNKER_VERSION.to_owned()),
+        total_chunks: chunk_counts.total,
+        embedded_chunks: chunk_counts.embedded,
         indexed_segments,
         total_segments,
         pending_segments,
@@ -637,7 +681,8 @@ fn candidate_filter(query: &str) -> Option<(String, String)> {
     Some((filter, needle))
 }
 
-fn placeholders(count: usize) -> String {
+/// SQL 里的 `?` 占位符串。文本块那一路也要按同一套规则拼范围过滤，所以对 crate 可见。
+pub(crate) fn placeholders(count: usize) -> String {
     std::iter::repeat_n("?", count).collect::<Vec<_>>().join(", ")
 }
 
