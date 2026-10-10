@@ -9,7 +9,7 @@ publish.workspace = true
 [features]
 default = ["search", "plugin"]
 # 检索实验需要 bundled SQLite（C 代码）与 jieba 词典。
-search = ["dep:rusqlite", "dep:jieba-rs"]
+search = ["dep:diary_core", "dep:chrono", "dep:rusqlite", "dep:jieba-rs", "dep:serde", "dep:serde_json", "dep:sha2"]
 # 插件实验是纯 Rust，可以只用它做 Android 交叉编译检查，不必拉进 C 工具链。
 plugin = ["dep:wasmi", "dep:wat"]
 # 向量模型验证要下载 ONNX Runtime 与权重，不进 CI。
@@ -19,11 +19,17 @@ model = ["dep:ort", "dep:tokenizers"]
 
 [dependencies]
 anyhow = "1.0.104"
+# 质量集量测要走真实核心（建库/导入/提取/start_search），不是自己拼 SQL。
+diary_core = { path = "../../crates/diary_core", optional = true }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"], optional = true }
 # 只在 Android 上直接用它调 `_exit`（跳过 libonnxruntime 那串会 abort 的退出收尾）。
 libc = "0.2"
 jieba-rs = { version = "0.11.0", optional = true }
 ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "std"], optional = true }
 rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
 tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"], optional = true }
 wasmi = { version = "2.0.0", optional = true }
 wat = { version = "1.259.0", optional = true }

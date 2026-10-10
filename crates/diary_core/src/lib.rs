@@ -12,6 +12,7 @@
 //!    绝不静默覆盖用户内容。
 
 mod assets;
+mod chunker;
 mod error;
 mod extractors;
 mod jobs;
@@ -38,6 +39,10 @@ pub use model::{
     RecordingSession, RecordingState, RecordingTicket, SegmentManifest, SegmentReceipt,
     SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
     SourceItem, SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
+};
+pub use chunker::{
+    chunks_for, pack_pieces, Chunk, ChunkSpan, Piece, CHUNKER_VERSION, CHUNK_OVERLAP_CHARS,
+    MAX_CHUNK_CHARS,
 };
 pub use schema::SCHEMA_VERSION;
 pub use search::TOKENIZER_VERSION;
