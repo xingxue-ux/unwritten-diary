@@ -30,7 +30,7 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{params, params_from_iter};
+use rusqlite::{params, params_from_iter, OptionalExtension};
 
 use crate::chunker::{pack_pieces, Piece, CHUNKER_VERSION};
 use crate::error::Result;
@@ -453,6 +453,123 @@ fn segment_text(tx: &rusqlite::Transaction<'_>, content_id: &str) -> Result<Stri
         .query_map(params![content_id], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows.join("\n"))
+}
+
+/// `extracted_segments` 一行的原始形态：先取出来再按业务语义拼装，避免把解析错误
+/// 塞进 SQL 层。
+type SegmentRow = (
+    String,
+    String,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<String>,
+);
+
+/// 一篇来源的正文 + 每个片段在其中的字符区间与定位。
+///
+/// 语义检索命中一篇时要「取该篇自己那一段」，所以既要知道篇内区间的基准（这里的
+/// `text`，与 `collect_pieces` 的拼法严格一致），也要知道这一段对应的原件定位
+/// （页码 / 时间码 / 图像区域）——那是 `extracted_segments` 上的权威值。
+pub(crate) struct PieceText {
+    pub text: String,
+    /// 每个片段：`(start, end, locator)`，`start`/`end` 是这一片段在 `text` 里的
+    /// 字符区间（排他），连接用的 `\n` 计入前一段之后的位置。
+    pub segments: Vec<(usize, usize, crate::model::SourceLocator)>,
+}
+
+/// 还原一篇来源的正文与片段定位。找不到对应派生内容时返回 `None`（这一篇没有正文）。
+///
+/// 与 `segment_text` 同一条拼法（按 `ordinal` 用 `\n` 连接），并且**必须**同一条：
+/// `chunk_spans.start_char` 就是在这个连接结果上的区间，换一种拼法区间就指错地方。
+pub(crate) fn source_piece_text(
+    conn: &rusqlite::Connection,
+    source_id: &str,
+    source_revision_id: &str,
+) -> Result<Option<PieceText>> {
+    use crate::model::{LocatorType, SourceLocator};
+
+    let content_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM extracted_contents WHERE source_id = ?1 AND source_revision_id = ?2 \
+             ORDER BY id LIMIT 1",
+            params![source_id, source_revision_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(content_id) = content_id else {
+        return Ok(None);
+    };
+
+    let rows: Vec<SegmentRow> = {
+        let mut statement = conn.prepare(
+            "SELECT text, locator_type, text_start, text_end, start_ms, end_ms, page_number, \
+                    block_id, rect_left, rect_top, rect_right, rect_bottom, asset_id \
+             FROM extracted_segments WHERE content_id = ?1 ORDER BY ordinal",
+        )?;
+        let rows = statement
+            .query_map(params![content_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    let mut text = String::new();
+    let mut segments = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        if index > 0 {
+            text.push('\n');
+        }
+        let start = text.chars().count();
+        text.push_str(&row.0);
+        let end = text.chars().count();
+        let rect = match (row.8, row.9, row.10, row.11) {
+            (Some(left), Some(top), Some(right), Some(bottom)) => Some([left, top, right, bottom]),
+            _ => None,
+        };
+        segments.push((
+            start,
+            end,
+            SourceLocator {
+                locator_type: LocatorType::from_wire(&row.1).unwrap_or(LocatorType::TextRange),
+                source_revision_id: source_revision_id.to_owned(),
+                text_start: row.2,
+                text_end: row.3,
+                start_ms: row.4,
+                end_ms: row.5,
+                page_number: row.6,
+                block_id: row.7.clone(),
+                rect,
+                asset_id: row.12.clone(),
+            },
+        ));
+    }
+    Ok(Some(PieceText { text, segments }))
 }
 
 /// 覆盖程度的强弱：`unavailable` < `metadata_only` < `partial` < `complete`。

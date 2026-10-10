@@ -819,14 +819,14 @@ pub struct SourceLocation {
 /// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
 ///
 /// 这个状态把两条路分开报：**关键词这一路**（`coverage`、`keyword_index_ready`、
-/// 各种 `*_segments` / `*_captures`）已经能跑；**语义这一路**
-/// （`semantic_index_ready`、`model_version`、`total_chunks` / `embedded_chunks`）
-/// 这一片只有存储、没有模型，所以照实说「没就绪」，而不是留一个看起来「都就绪」的
-/// 默认值。
+/// 各种 `*_segments` / `*_captures`）与**语义这一路**（`semantic_index_ready`、
+/// `model_version`、`total_chunks` / `embedded_chunks`）。语义这一路的每个数字都是
+/// **算出来的真值**：没有一代向量生效时 `model_version` 是 `None` 而不是一个假装
+/// 的字符串，`semantic_index_ready` 要求生效代次真的覆盖了范围内的每一块。
 ///
 /// 两条路**不共用一个 `coverage`**：`coverage` 仍然只描述关键词索引的覆盖程度。
-/// 语义的覆盖程度要等模型接进来、有了「生效代次里的向量覆盖了多少块」这个数字之后
-/// 才谈得上；现在拿块的多少去改 `coverage` 只会让前端「能不能搜」的判断失真。
+/// 在检索会话里，`semantic` 模式的 `index_coverage` 才按语义那一路的覆盖算
+/// （见 `search_session`）。
 ///
 /// 数字的单位不完全一样：片段（`*_segments`）、记录数（`*_captures`）、材料数
 /// （`failed_sources`）、块数（`*_chunks`）各自的名字里写清楚，避免前端把它们相加。
@@ -837,7 +837,8 @@ pub struct IndexStatus {
     pub semantic_index_ready: bool,
     /// 建索引时用的分词器版本；与库里行不一致的片段或记录文字会被算成待重建。
     pub tokenizer_version: String,
-    /// 语义索引用的模型版本。这一片没有接模型，恒为 `None`。
+    /// 语义索引用的模型版本：**生效代次那一批** `chunk_vectors.model_version`
+    /// （含模型文件的 sha256 前缀）。没有生效代次时是 `None`——那是库里的真值。
     pub model_version: Option<String>,
     /// 切块规则版本（`chunker::CHUNKER_VERSION`）。
     ///
@@ -851,8 +852,8 @@ pub struct IndexStatus {
     pub total_chunks: i64,
     /// 其中有**当前生效代次**向量的块数（`chunk_vectors.generation = active_generation`）。
     ///
-    /// 它是 `total_chunks` 的下界：两者相等才谈得上「语义索引覆盖完了」。这一片还没有
-    /// 模型、没有任何一代向量生效，所以恒为 0（不是「碰巧是 0」，是没有可算的模型）。
+    /// 它是 `total_chunks` 的下界：两者相等才谈得上「语义索引覆盖完了」。没有模型、
+    /// 或还没建过语义索引时是 0——那是算出来的（没有可算的代次），不是写死的。
     pub embedded_chunks: i64,
     /// 已进关键词索引的片段数。
     pub indexed_segments: i64,
@@ -882,6 +883,10 @@ pub struct IndexStatus {
     pub index_terms: i64,
     /// **整库**索引表实际占用的字节数（来自 dbstat）。
     ///
+    /// 它把**两条路的表都算进去**：关键词那几张（`search_*`）+ 块与向量
+    /// （`text_chunks` / `chunk_spans` / `chunk_vectors` / `index_meta` 及它们的索引）。
+    /// 只算关键词那几张会把占用低估一大块——512 维 f32 向量是每块约 2 KiB。
+    ///
     /// 它不随 `source_scope` 变化：dbstat 按表汇总页数，页在来源之间共享，拆不出来。
     /// 范围查询里它仍是整库值，并在 `reasons` 里写明。读不到 dbstat 时是 0，同样在
     /// `reasons` 里说明。
@@ -890,7 +895,8 @@ pub struct IndexStatus {
     pub reasons: Vec<String>,
 }
 
-/// 检索模式，契约第 2.6 节。这一片只实现 `Keyword`。
+/// 检索模式，契约第 2.6 节。`Keyword` 与 `Semantic` 都实现了；`Hybrid` 留给
+/// #51（B3c-3），现在如实降级到关键词并给提示（不假装跑过混合）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchMode {
@@ -952,7 +958,8 @@ impl SearchPhase {
     }
 }
 
-/// 一条命中是靠什么匹配上的，契约第 2.6 节。这一片只产出 `Keyword`。
+/// 一条命中是靠什么匹配上的，契约第 2.6 节。关键词那一路全是 `Keyword`；
+/// 语义那一路全是 `Semantic`（混合两路合并是 #51）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchedBy {

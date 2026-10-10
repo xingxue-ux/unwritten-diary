@@ -20,6 +20,7 @@ use crate::model::{
     SearchSnapshot, SourceKind, TextRange,
 };
 use crate::search;
+use crate::semantic;
 use crate::support;
 use crate::Core;
 
@@ -29,24 +30,36 @@ const MAX_PAGE_SIZE: i64 = 100;
 /// 摘录窗口：命中位置前后各留这么多字符。
 const SNIPPET_PADDING: usize = 24;
 
-/// 索引指纹：索引代次。会话期间有人写过索引，它就会变，快照随即作废。
+/// 索引指纹：关键词索引代次 + 语义生效代次。会话期间有人写过索引、或语义索引
+/// 换了一代，它就会变，快照随即作废。
 ///
-/// 原先是「`search_docs` 的行数 + `doc_id` 之和」。那两个值在**重建同一个片段**
-/// 时不会变：`index_segment` 先删后插，而 `doc_id` 是不带 `AUTOINCREMENT` 的
-/// `INTEGER PRIMARY KEY`，SQLite 会把刚删掉的最大 rowid 再分配出去。于是正文与
-/// 词项都换了，指纹却一样，旧会话不会报过期，会把新正文套进旧查询结果（审查发现
-/// 的就是这一条）。代次是显式递增的，和行数、id 分配策略都无关。
-type IndexFingerprint = i64;
+/// 原来只有关键词那一个代次。语义这一路要跟着生效代次走：一代向量被切走之后，
+/// 会话手里的「块 → 篇」排序已经过期，旧结果不该继续糊在新界面上。
+/// 关键词会话不看语义代次，语义修改不会无谓地打断关键词翻页。
+type IndexFingerprint = (i64, Option<i64>);
+
+/// 会话里一条命中的引用。两条路的「一条结果」不是同一种东西：
+///
+/// - 关键词：一个索引文档（派生片段 / 记录文字），正文按页现取；
+/// - 语义：**一篇**（消费契约要求按篇上报），证据块与篇内区间一起记着。
+///
+/// 会话里只存引用，正文仍然按页现取。
+#[derive(Debug, Clone)]
+pub(crate) enum RankedRef {
+    Keyword(search::DocRef),
+    Semantic(semantic::SemanticCandidate),
+}
+
 /// 一个检索会话的内存状态。
 pub(crate) struct SearchSessionState {
     session_id: String,
     query_revision: i64,
     request: SearchRequest,
-    /// 命中的索引文档引用（带来源），已按排序规则排好。只存引用：整段正文按页
-    /// 现取，别把几万条正文常驻内存。引用带来源是因为两张表的 `doc_id` 会撞号。
-    ordered: Vec<search::DocRef>,
+    /// 命中的引用，已按各自的排序规则排好。只存引用：整段正文按页现取，别把几万条
+    /// 正文常驻内存。关键词的引用带来源是因为两张表的 `doc_id` 会撞号。
+    ordered: Vec<RankedRef>,
     /// 上一页返回的引用，`search.snapshot` 要能原样再给一次。
-    last_page: Vec<search::DocRef>,
+    last_page: Vec<RankedRef>,
     /// 下一页的游标；没有下一页时为 None。
     next_cursor: Option<String>,
     fingerprint: IndexFingerprint,
@@ -65,40 +78,33 @@ pub(crate) fn start(
     let needle = request.query.trim().to_lowercase();
     let mut warnings = Vec::new();
 
-    if request.mode != SearchMode::Keyword {
-        // 语义与混合还没接：如实降级到关键词，并说清楚，而不是假装按混合跑了。
-        warnings.push(format!(
-            "当前只实现了关键词检索，这次按关键词执行（请求的是 {}）",
-            request.mode.wire()
-        ));
+    if request.mode == SearchMode::Hybrid {
+        // 混合检索是 #51（B3c-3）。**如实降级**到关键词并说清楚——假装按混合跑了、
+        // 却不出分数，是骗人。纯语义（`Semantic`）不再降级：它真的跑语义那一路。
+        warnings.push(
+            "混合检索还没实现（#51），这次按关键词执行；语义那一路可以单独用 semantic 模式"
+                .to_owned(),
+        );
     }
     if request.filters.include_old_diary_versions {
         warnings.push("日记历史版本还没有进索引，这个开关暂时没有效果".to_owned());
     }
 
-    let ordered = if needle.is_empty() {
-        warnings.push("查询是空的，没有可匹配的内容".to_owned());
-        Vec::new()
+    let (ordered, index_coverage, phase) = if request.mode == SearchMode::Semantic {
+        semantic_search(
+            core,
+            &request,
+            &needle,
+            page_size,
+            &mut warnings,
+        )?
     } else {
-        search::ranked_matches(core, &needle, &request.filters)?
-            .into_iter()
-            .map(|row| row.doc)
-            .collect()
+        keyword_search(core, &request, &needle, page_size, &mut warnings)?
     };
-
-    let index_coverage = index_coverage(core)?;
-    if index_coverage != Coverage::Complete {
-        warnings.push("索引还没有覆盖全部内容，结果可能不完整".to_owned());
-    }
 
     let session_id = support::new_id("search");
-    let fingerprint = fingerprint(core)?;
+    let fingerprint = fingerprint(core, request.mode)?;
     let (last_page, next_cursor) = page_window(&session_id, &ordered, 0, page_size);
-    let phase = if next_cursor.is_none() {
-        SearchPhase::Done
-    } else {
-        SearchPhase::KeywordReady
-    };
 
     let state = SearchSessionState {
         session_id: session_id.clone(),
@@ -121,6 +127,98 @@ pub(crate) fn start(
     let snapshot = materialize(core, &state, &state.last_page)?;
     core.search_sessions_mut().insert(session_id, state);
     Ok(snapshot)
+}
+
+/// 关键词那一路：候选 → 引用 → 覆盖状态。阶段值沿用原来的口径（还有下一页时
+/// `keyword_ready`，否则 `done`）。
+fn keyword_search(
+    core: &Core,
+    request: &SearchRequest,
+    needle: &str,
+    page_size: i64,
+    warnings: &mut Vec<String>,
+) -> Result<(Vec<RankedRef>, Coverage, SearchPhase)> {
+    let ordered: Vec<RankedRef> = if needle.is_empty() {
+        warnings.push("查询是空的，没有可匹配的内容".to_owned());
+        Vec::new()
+    } else {
+        search::ranked_matches(core, needle, &request.filters)?
+            .into_iter()
+            .map(|row| RankedRef::Keyword(row.doc))
+            .collect()
+    };
+    let coverage = index_coverage(core)?;
+    if coverage != Coverage::Complete {
+        warnings.push("索引还没有覆盖全部内容，结果可能不完整".to_owned());
+    }
+    let phase = if ordered.len() > page_size as usize {
+        SearchPhase::KeywordReady
+    } else {
+        SearchPhase::Done
+    };
+    Ok((ordered, coverage, phase))
+}
+
+/// 语义那一路。契约要求**不静默降级**：模型缺失或没有生效代次时返回**空结果 +
+/// 明确警告**，而不是拿关键词结果冒充「语义」。
+///
+/// 语义结果是一次算完的（没有「后面还会更好」的阶段），所以 `phase` 恒为 `done`；
+/// 翻页由 `cursor` 表达，不由 `phase` 表达。
+fn semantic_search(
+    core: &mut Core,
+    request: &SearchRequest,
+    needle: &str,
+    _page_size: i64,
+    warnings: &mut Vec<String>,
+) -> Result<(Vec<RankedRef>, Coverage, SearchPhase)> {
+    if needle.is_empty() {
+        warnings.push("查询是空的，没有可匹配的内容".to_owned());
+        return Ok((Vec::new(), semantic_coverage(core, &request.filters)?, SearchPhase::Done));
+    }
+    let coverage = semantic_coverage(core, &request.filters)?;
+    if semantic::active_generation(core)?.is_none() {
+        warnings.push(
+            "语义索引还没有生效的代次：先跑一次 build_semantic_index；这次没有结果\
+             （没有退化成关键词，那会让「语义」这个标签撒谎）"
+                .to_owned(),
+        );
+        return Ok((Vec::new(), coverage, SearchPhase::Done));
+    }
+    // 模型/运行库拿不到时也是**空结果 + 诚实的原因**，不降级。
+    let embedder = match core.embedder() {
+        Ok(embedder) => embedder,
+        Err(error) => {
+            warnings.push(format!(
+                "语义检索不可用：{error}；这次没有结果（没有退化成关键词）"
+            ));
+            return Ok((Vec::new(), coverage, SearchPhase::Done));
+        }
+    };
+    let candidates = semantic::candidates(core, &*embedder, needle, &request.filters)?;
+    if candidates.is_empty() {
+        // 「没有结果」就要说「没有结果」，不要伪装成「没有内容」。
+        warnings.push("语义检索没有找到相近的内容".to_owned());
+    }
+    if coverage != Coverage::Complete {
+        warnings.push("语义索引还没有覆盖全部内容，结果可能不完整".to_owned());
+    }
+    let ordered = candidates.into_iter().map(RankedRef::Semantic).collect();
+    Ok((ordered, coverage, SearchPhase::Done))
+}
+
+/// 语义那一路的覆盖程度：没有生效代次或没有块是 `unavailable`，生效代次没覆盖
+/// 完范围内的块是 `partial`，否则 `complete`。
+fn semantic_coverage(core: &Core, filters: &SearchFilters) -> Result<Coverage> {
+    let scope = filters.source_scope.as_deref();
+    let counts = crate::chunks::counts(core, scope)?;
+    if semantic::active_generation(core)?.is_none() || counts.total == 0 {
+        return Ok(Coverage::Unavailable);
+    }
+    Ok(if counts.embedded == counts.total {
+        Coverage::Complete
+    } else {
+        Coverage::Partial
+    })
 }
 
 pub(crate) fn next_page(
@@ -182,11 +280,7 @@ pub(crate) fn next_page(
         );
         state.last_page = page;
         state.next_cursor = cursor;
-        state.phase = if state.next_cursor.is_none() {
-            SearchPhase::Done
-        } else {
-            SearchPhase::KeywordReady
-        };
+        state.phase = phase_after_page(state.request.mode, state.next_cursor.is_none());
         materialize(core, &state, &state.last_page)
     })();
 
@@ -226,7 +320,7 @@ pub(crate) fn cancel(core: &mut Core, session_id: &str) -> Result<SearchSnapshot
 // ------------------------------------------------------------ 内部
 
 fn ensure_fresh(core: &Core, state: &SearchSessionState) -> Result<()> {
-    if fingerprint(core)? != state.fingerprint {
+    if fingerprint(core, state.request.mode)? != state.fingerprint {
         return Err(CoreError::SearchExpired {
             reason: "索引在这次查询期间变了，快照已失效；请重新发起查询".to_owned(),
         });
@@ -234,8 +328,26 @@ fn ensure_fresh(core: &Core, state: &SearchSessionState) -> Result<()> {
     Ok(())
 }
 
-fn fingerprint(core: &Core) -> Result<IndexFingerprint> {
-    search::index_epoch(core)}
+/// 关键词会话的指纹是关键词代次；语义会话还要带上生效的向量代次——切了一代之后
+/// 旧的「块 → 篇」排序已经过期。关键词会话**不看**语义代次：向量换代不该无谓地
+/// 打断正在翻页的关键词查询。
+fn fingerprint(core: &Core, mode: SearchMode) -> Result<IndexFingerprint> {
+    let epoch = search::index_epoch(core)?;
+    if mode == SearchMode::Semantic {
+        Ok((epoch, semantic::active_generation(core)?))
+    } else {
+        Ok((epoch, None))
+    }
+}
+
+/// 一页之后该报什么阶段。语义没有「后面还会更好」的阶段，恒为 `done`。
+fn phase_after_page(mode: SearchMode, is_last_page: bool) -> SearchPhase {
+    if is_last_page || mode == SearchMode::Semantic {
+        SearchPhase::Done
+    } else {
+        SearchPhase::KeywordReady
+    }
+}
 
 /// 索引覆盖：复用 `indexes.status` 的口径，但只关心「能不能搜」。
 fn index_coverage(core: &Core) -> Result<Coverage> {
@@ -243,12 +355,12 @@ fn index_coverage(core: &Core) -> Result<Coverage> {
 }
 
 /// 取一页与下一页游标。越界或空结果时下一页游标是 None。
-fn page_window(
+fn page_window<T: Clone>(
     session_id: &str,
-    ordered: &[search::DocRef],
+    ordered: &[T],
     start: usize,
     page_size: i64,
-) -> (Vec<search::DocRef>, Option<String>) {
+) -> (Vec<T>, Option<String>) {
     if start >= ordered.len() {
         return (Vec::new(), None);
     }
@@ -291,27 +403,65 @@ fn parse_offset(cursor: &str) -> Result<usize> {
 ///
 /// 页是**显式传入**的（而不是只读 `state.last_page`）：末页之后再翻要能给出空页，
 /// 又不该把会话里「当前这一页」改掉——`search.snapshot` 还要能原样再给一次。
-/// 两路分两次取（两张表的 `doc_id` 各自从 1 开始，一条 UNION 就分不清来源），
-/// 取完按原顺序合并：先后只由排序键决定，不受「哪条 SQL 先返回」影响。
+///
+/// 关键词那一路两路分两次取（两张表的 `doc_id` 各自从 1 开始，一条 UNION 就分不清
+/// 来源），取完按原顺序合并；语义那一路按篇出结果，摘录与定位取该篇自己那一段。
 fn materialize(
     core: &Core,
     state: &SearchSessionState,
-    page: &[search::DocRef],
+    page: &[RankedRef],
 ) -> Result<SearchSnapshot> {
+    let results = if state.request.mode == SearchMode::Semantic {
+        let candidates: Vec<semantic::SemanticCandidate> = page
+            .iter()
+            .filter_map(|reference| match reference {
+                RankedRef::Semantic(candidate) => Some(candidate.clone()),
+                RankedRef::Keyword(_) => None,
+            })
+            .collect();
+        semantic::materialize(core, &candidates)?
+    } else {
+        materialize_keyword(core, state, page)?
+    };
+
+    Ok(SearchSnapshot {
+        session_id: state.session_id.clone(),
+        query_revision: state.query_revision,
+        phase: state.phase,
+        results,
+        cursor: state.next_cursor.clone(),
+        index_coverage: state.index_coverage,
+        warnings: state.warnings.clone(),
+    })
+}
+
+/// 关键词那一路的命中实体化。
+fn materialize_keyword(
+    core: &Core,
+    state: &SearchSessionState,
+    page: &[RankedRef],
+) -> Result<Vec<SearchHit>> {
     let needle = state.request.query.trim().to_lowercase();
+    let refs: Vec<search::DocRef> = page
+        .iter()
+        .filter_map(|reference| match reference {
+            RankedRef::Keyword(doc) => Some(*doc),
+            RankedRef::Semantic(_) => None,
+        })
+        .collect();
     // 两路分开取：两张表的 doc_id 各自从 1 开始，一条 UNION 就分不清来源。
-    let mut segments: HashMap<search::DocRef, _> = search::load_page(core, page)?
+    let mut segments: HashMap<search::DocRef, _> = search::load_page(core, &refs)?
         .into_iter()
         .map(|row| (row.doc, row))
         .collect();
-    let mut captures: HashMap<search::DocRef, _> = search::load_capture_page(core, page)?
+    let mut captures: HashMap<search::DocRef, _> = search::load_capture_page(core, &refs)?
         .into_iter()
         .map(|row| (row.doc, row))
         .collect();
 
     // 按传入的顺序合并：先后只由排序键决定，不受「哪条 SQL 先返回」影响。
-    let mut results = Vec::with_capacity(page.len());
-    for doc in page {
+    let mut results = Vec::with_capacity(refs.len());
+    for doc in &refs {
         if let Some(row) = segments.remove(doc) {
             let (snippet, highlights) = snippet_of(&row.text, &needle);
             results.push(SearchHit {
@@ -349,16 +499,7 @@ fn materialize(
             });
         }
     }
-
-    Ok(SearchSnapshot {
-        session_id: state.session_id.clone(),
-        query_revision: state.query_revision,
-        phase: state.phase,
-        results,
-        cursor: state.next_cursor.clone(),
-        index_coverage: state.index_coverage,
-        warnings: state.warnings.clone(),
-    })
+    Ok(results)
 }
 
 /// 命中附近的摘录与高亮。高亮下标**相对摘录**，不是相对整段正文。

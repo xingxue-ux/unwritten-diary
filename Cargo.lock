@@ -537,6 +537,7 @@ dependencies = [
  "chrono",
  "encoding_rs",
  "jieba-rs",
+ "ort",
  "pdf-extract",
  "quick-xml",
  "rusqlite",
@@ -545,6 +546,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+ "tokenizers",
  "uuid",
  "zip",
 ]

@@ -496,13 +496,18 @@ fn index_survives_reopen() {
 /// 10 万片段实测：**不进 CI**（要几十秒），手动跑：
 ///
 /// ```bash
-/// cargo test --release -p diary_core --test search_test -- --ignored --nocapture 十万
+/// cargo test --release -p diary_core --test search_test -- --ignored --nocapture \
+///     hundred_thousand_segments_measurement
 /// ```
+///
+/// 过滤串是**测试函数名**，不是文档里的中文说法。写成一个匹配不到的名字（比如
+/// `十万`）不会报错——它会「跑 0 个测试、退出码 0」，看着像通过。过滤按**子串**
+/// 匹配，所以写全名最稳。
 ///
 /// 数字与结论记在 `docs/architecture/m1-关键词索引.md`。这一段刻意只打印与断言
 /// 召回，不隐藏构建耗时里包含文件写盘与提取的部分——那是产品里真实发生的代价。
 #[test]
-#[ignore = "10 万片段实测：手动跑，见文档里的复现命令"]
+#[ignore = "10 万片段实测：手动跑，见文档里的复现命令（过滤串要用函数名 hundred_thousand_segments_measurement）"]
 fn hundred_thousand_segments_measurement() {
     const TOTAL: usize = 100_000;
     const FILES: usize = 4;

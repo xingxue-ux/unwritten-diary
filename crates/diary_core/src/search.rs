@@ -448,7 +448,11 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
         let sql = "SELECT COALESCE(SUM(pgsize), 0) FROM dbstat WHERE name IN \
                    ('search_docs', 'search_grams', 'sqlite_autoindex_search_docs_1', \
                     'search_capture_docs', 'search_capture_grams', \
-                    'sqlite_autoindex_search_capture_docs_1')";
+                    'sqlite_autoindex_search_capture_docs_1', \
+                    'text_chunks', 'idx_text_chunks_day', 'sqlite_autoindex_text_chunks_1', \
+                    'chunk_spans', 'idx_chunk_spans_source', 'idx_chunk_spans_capture', \
+                    'idx_chunk_spans_revision', 'sqlite_autoindex_chunk_spans_1', \
+                    'chunk_vectors', 'sqlite_autoindex_chunk_vectors_1', 'index_meta')";
         core.conn
             .query_row(sql, [], |row| row.get::<_, i64>(0))
             .unwrap_or_default()
@@ -482,17 +486,16 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
 
     // ------------------------------------------------------------ 语义这一路
     //
-    // 这一片（B3c-2 前半）只建了块与向量的存储结构，**没有接模型**，所以没有任何
-    // 一代向量被算出来。状态要如实报「未就绪」，而不是让前端以为「索引已就绪」
-    // 包含语义那一路。
+    // 语义这一路的数字全部**算出来**：生效代次、块数与其中有这一代向量的块数、
+    // 生效代次那一批向量的 `model_version`。没有向量时 `model_version` 是 `None`
+    // ——那是「库里的真值」，不是「这一片还没接模型」这种会被时间打脸的话。
     let (active_generation, _building_generation) = crate::chunks::generations(core)?;
     let chunk_counts = crate::chunks::counts(core, source_scope)?;
-    // 「就绪」不是写死的 false：它要求有一代向量在服务，并且这一代把范围内的块都
-    // 覆盖了。现在 `active_generation` 必然为空（没有模型），所以它是 false；
-    // 将来某一代被激活，这个判断会自己跟上，不需要回来改这里。
+    // 「就绪」要求有一代向量在服务，并且这一代把范围内的块都覆盖了。
     let semantic_index_ready = active_generation.is_some()
         && chunk_counts.total > 0
         && chunk_counts.embedded == chunk_counts.total;
+    let model_version = crate::semantic::model_version(core)?;
 
     let mut reasons = Vec::new();
     if total_segments == 0 && total_captures == 0 {
@@ -526,16 +529,28 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
         );
     }
     // 语义索引这一路：只有**真的没就绪**时才说一句原因，而且判断依据是库里的状态
-    // （生效代次 + 块的向量覆盖），不是写死的常量文案——将来某一代被激活之后，
-    // 第一句会自然消失，换成真正剩下的那个问题。这一片没有模型，所以生效代次必然是
-    // 空的，只会走到第一句；「还没有接模型」写在括号里当原因，而不是当成永远成立的
-    // 事实。三段与上面 `semantic_index_ready` 的取值**严格互补**：就绪时没有原因，
+    // （生效代次 + 块的向量覆盖）加上**模型的真实可用性**，不是写死的常量文案。
+    //
+    // 「模型加载失败」与「还没有配置模型」是**两件事**，前者必须把失败原因原样说出来
+    // ——把错误盖成「未就绪」等于骗人（见 `embedding` 模块的说明）。
+    // 四段与上面 `semantic_index_ready` 的取值**严格互补**：就绪时没有原因，
     // 有原因时一定不就绪。
     let semantic_reason = if active_generation.is_none() {
-        Some(
-            "语义索引未就绪：还没有生效的向量代次（这一片还没有接模型），当前只有关键词索引"
-                .to_owned(),
-        )
+        match core.embedder_readiness() {
+            crate::semantic::EmbedderReadiness::NotConfigured => Some(
+                "语义索引未就绪：还没有配置本地模型（DIARY_MODEL_DIR / DIARY_ORT_DYLIB），\
+                 当前只有关键词索引"
+                    .to_owned(),
+            ),
+            crate::semantic::EmbedderReadiness::Failed(reason) => Some(format!(
+                "语义索引未就绪：本地模型不可用（{reason}）"
+            )),
+            crate::semantic::EmbedderReadiness::Configured
+            | crate::semantic::EmbedderReadiness::Ready => Some(
+                "语义索引未就绪：还没有生效的向量代次（模型已就绪，等一次 build_semantic_index）"
+                    .to_owned(),
+            ),
+        }
     } else if chunk_counts.total == 0 {
         // 有生效代次却没有任何块：要么还没重建过块，要么范围内的内容本来就没有正文。
         Some("语义索引未就绪：范围内还没有文本块".to_owned())
@@ -557,9 +572,8 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
         keyword_index_ready,
         semantic_index_ready,
         tokenizer_version: TOKENIZER_VERSION.to_owned(),
-        // 这一片没有模型可报：等模型接进来，这里要改成读生效代次那一批
-        // `chunk_vectors.model_version`，而不是继续写 None。
-        model_version: None,
+        // 生效代次那一批 `chunk_vectors.model_version`（算出来的真值）。
+        model_version,
         // 块真的进库了（B3c-1 的文档承诺过「接进索引之后才该有值」），所以从这一片起
         // 它有值：库里块的 `chunker_version` 与它不一致，就说明块要按新规则重算。
         chunker_version: Some(crate::chunker::CHUNKER_VERSION.to_owned()),

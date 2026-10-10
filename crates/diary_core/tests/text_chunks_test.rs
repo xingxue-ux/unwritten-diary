@@ -741,7 +741,11 @@ fn status_follows_the_active_generation() {
         "就绪之后不能再说自己未就绪：{:?}",
         ready.reasons
     );
-    assert_eq!(ready.model_version, None, "model_version 还没接：这一片没有模型");
+    assert_eq!(
+        ready.model_version.as_deref(),
+        Some("test-model"),
+        "model_version 是生效代次那一批向量的真值，不再恒为 None"
+    );
 
     // 换代中间态：生效代次只覆盖了一部分。这时不能报就绪，而且要说清剩下多少——
     // 换成「真正剩下的那个问题」，而不是继续念「没有模型」。
