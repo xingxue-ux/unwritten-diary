@@ -262,12 +262,12 @@ pub(crate) fn finish(
         ],
     )?;
     // 导入完成就排一个提取任务，和资产写在同一个事务里。
+    // `job.changed` 由队列在入队时发（`jobs::enqueue_in_tx`），这里不重复发。
     let extract_job = crate::model::NewJob::new("extract", crate::model::JobPriority::BackgroundExtract)
         .targeting(vec![revision_id.clone()])
         .with_snapshot(actual_sha.clone());
-    let queued = crate::jobs::enqueue_in_tx(&tx, extract_job)?;
+    crate::jobs::enqueue_in_tx(&tx, extract_job)?;
     crate::insert_event(&tx, EventType::AssetChanged, &asset_id, 1)?;
-    crate::insert_event(&tx, EventType::JobChanged, &queued.id, 1)?;
     crate::insert_event(
         &tx,
         EventType::CaptureChanged,

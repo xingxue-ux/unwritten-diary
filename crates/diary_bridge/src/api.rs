@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use diary_core::{
     Capture, CapturePage, CommitResult, Core, CoreError, DomainEvent, DraftSaveResult,
     ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job,
-    JobState, SearchRequest, SearchSnapshot, SourceLocation, SourceLocator,
+    JobState, JobStatus, SearchRequest, SearchSnapshot, SourceLocation, SourceLocator,
 };
 use flutter_rust_bridge::frb;
 
@@ -294,6 +294,14 @@ impl BridgeSession {
         Ok(core.get_job(&job_id)?)
     }
 
+    /// 任务面板状态：各状态计数、到期积压、下次唤醒与最近错误。
+    ///
+    /// 最近错误只有 kind + 错误码 + 时间（外加不透明的任务 ID），**没有用户内容**。
+    pub fn job_status(&self) -> Result<JobStatus, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.job_status()?)
+    }
+
     /// 建议的下次唤醒时刻；没有待办时为空。
     pub fn next_wakeup(&self) -> Result<Option<DateTime<Utc>>, BridgeError> {
         let core = self.lock()?;
@@ -369,6 +377,7 @@ fn wired_capabilities() -> Vec<String> {
         "search.cancel",
         "jobs.list",
         "jobs.get",
+        "jobs.status",
         "jobs.nextWakeup",
         "core.events",
     ]

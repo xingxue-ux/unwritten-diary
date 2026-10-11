@@ -57,6 +57,8 @@ void main() {
     expect(info.capabilities, contains('indexes.status'));
     // 检索会话在 B3b 接上了。
     expect(info.capabilities, contains('search.start'));
+    // B5 的任务状态摘要接上了。
+    expect(info.capabilities, contains('jobs.status'));
     // 诚实的能力声明：还没接的不该出现在清单里。
     expect(info.capabilities, isNot(contains('diary.generate')));
     expect(info.recovery.pendingJobs, 0);
@@ -177,6 +179,20 @@ void main() {
     final empty = await session.indexStatus(sourceScope: <String>[]);
     expect(empty.totalSegments, 0);
     expect(empty.coverage, Coverage.unavailable);
+  });
+
+  test('任务状态摘要能读到，且最近错误不带用户内容', () async {
+    final status = await session.jobStatus();
+    // 上一条用例导入时排下的 extract 任务还留在队列里，而且入队即到期。
+    expect(status.queued, greaterThanOrEqualTo(1));
+    expect(status.dueBacklog, greaterThanOrEqualTo(1));
+    expect(status.nextWakeup, isNotNull);
+    // 最近错误只有 kind + 错误码 + 时间（外加不透明的任务 ID），没有正文/路径。
+    for (final error in status.recentErrors) {
+      expect(error.kind, isNotEmpty);
+      expect(error.errorCode, isNotEmpty);
+      expect(error.jobId, isNotEmpty);
+    }
   });
 
   test('待办任务超过 200 时，恢复摘要仍报真实数字', () async {

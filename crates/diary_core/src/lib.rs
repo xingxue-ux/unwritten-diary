@@ -32,8 +32,8 @@ pub use model::{
     Asset, AssetLease, AssetStorageState, AuthorType, Capture, CapturePage, CaptureState,
     CommitResult, DomainEvent, DraftSaveResult, EventType, ImportManifest, ImportOrigin,
     Coverage, ExtractedContent, ExtractedSegment, ImportState, ImportStatus, ImportTicket,
-    IndexStatus, Job, JobPriority, JobProgress, JobState, LocatorType, NativeRecordingStatus,
-    NewJob,
+    IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress, JobRunSummary, JobState,
+    JobStatus, LocatorType, NativeRecordingStatus, NewJob,
     MatchedBy, ProcessingStatus, ProcessingSummary, RecordingFinalizeResult, RecordingRecovery,
     RecordingSession, RecordingState, RecordingTicket, SegmentManifest, SegmentReceipt,
     SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
@@ -311,6 +311,11 @@ impl Core {
             parts.push(job.kind.clone());
             parts.push(job.priority.value().to_string());
             parts.push(job.target_ids.join(","));
+            // 快照、额度与首次到期时刻也是任务规格的一部分：同一个 operationId
+            // 换了其中任何一个都算「换了内容」，必须报幂等冲突而不是静默返回旧结果。
+            parts.push(job.input_snapshot_hash.clone().unwrap_or_default());
+            parts.push(job.max_attempts.to_string());
+            parts.push(job.next_attempt_at.map(support::to_iso).unwrap_or_default());
         }
         let fingerprint =
             support::fingerprint(&parts.iter().map(String::as_str).collect::<Vec<_>>());
@@ -379,9 +384,9 @@ impl Core {
         )?;
 
         // 任务与提交同一个事务：要么都成，要么都不成。
-        let mut queued_job_ids = Vec::new();
+        // `job.changed` 由队列自己在入队时发（`jobs::enqueue_in_tx`），这里不重复发。
         for job in jobs_to_queue {
-            queued_job_ids.push(jobs::enqueue_in_tx(&tx, job.clone())?.id);
+            jobs::enqueue_in_tx(&tx, job.clone())?;
         }
 
         let result = CommitResult {
@@ -396,9 +401,6 @@ impl Core {
             &serde_json::to_string(&result)?,
         )?;
         insert_event(&tx, EventType::CaptureChanged, &capture.id, new_revision)?;
-        for job_id in &queued_job_ids {
-            insert_event(&tx, EventType::JobChanged, job_id, 1)?;
-        }
         tx.commit()?;
         Ok(result)
     }
@@ -609,16 +611,30 @@ impl Core {
         jobs::count(self, states)
     }
 
-    /// 领取下一个到期任务：优先级高的先跑。执行本身属于后面的切片。
+    /// 领取下一个到期任务：优先级高的先跑。执行走 `run_due_jobs`。
     pub fn claim_next_due_job(&mut self, now: DateTime<Utc>) -> Result<Option<Job>> {
         jobs::claim_next_due(self, now)
+    }
+
+    /// 跑到期任务：领取 → 按 `kind` 执行 → 落结果（成功 / 退避重试 / 已放弃）。
+    ///
+    /// - `now` 是本次运行的开始时刻，也是「补做」判定的分界；
+    /// - `limit` 是本次最多跑几个任务，**0 表示一个都不跑**；被截住的到期任务
+    ///   留在队列里，数量如实报进 `JobRunSummary::due_backlog`；
+    /// - 运行开始会先回收上一次没跑完（`running`）的任务（进程被杀/断电时留下的），
+    ///   否则它们会被永远跳过；
+    /// - 没有执行者的 `kind` 不会静默成功：进「已放弃」+ `no_handler`。
+    ///
+    /// 口径与不谎报的理由见 `docs/architecture/m4-任务调度与补做.md`。
+    pub fn run_due_jobs(&mut self, now: DateTime<Utc>, limit: usize) -> Result<JobRunSummary> {
+        jobs::run_due(self, now, limit)
     }
 
     pub fn complete_job(&mut self, job_id: &str) -> Result<Job> {
         jobs::complete(self, job_id)
     }
 
-    /// 任务失败：还有额度就退避重试，用完了进 failed。
+    /// 任务失败：还有额度就退避重试，用完了进 failed（「已放弃」）。
     pub fn fail_job(
         &mut self,
         job_id: &str,
@@ -629,9 +645,19 @@ impl Core {
         jobs::fail(self, job_id, error_code, message, now)
     }
 
-    /// 手动重试。额度用完了会多给一次机会，并如实记录。
-    pub fn retry_job(&mut self, job_id: &str, operation_id: &str) -> Result<Job> {
-        jobs::retry(self, job_id, operation_id)
+    /// 人工重试：把「已放弃」（failed）的任务清零重来（`attempt_count = 0`、
+    /// `next_attempt_at` 清空、错误码清掉），并发出 `job.changed`。
+    ///
+    /// `job_attempts` 里的历史不删：编号跨人工重试累计，才回答得了
+    /// 「为什么重试了五次」。
+    pub fn retry_job(&mut self, job_id: &str) -> Result<Job> {
+        jobs::retry(self, job_id)
+    }
+
+    /// 带 operationId 的幂等重试（契约 `jobs.retry`）。语义与 `retry_job` 相同，
+    /// 只是同一个 operationId 重复调用返回第一次的结果。
+    pub fn retry_job_idempotent(&mut self, job_id: &str, operation_id: &str) -> Result<Job> {
+        jobs::retry_idempotent(self, job_id, operation_id)
     }
 
     /// 取消任务。取消不删除任何原件。
@@ -642,6 +668,14 @@ impl Core {
     /// 建议的下次唤醒时刻；没有待办时为 None。
     pub fn next_wakeup(&self) -> Result<Option<DateTime<Utc>>> {
         jobs::next_wakeup(self)
+    }
+
+    /// 任务面板状态：各状态计数、到期积压、下次唤醒与最近错误。
+    ///
+    /// 最近错误**只带 kind + 错误码 + 时间**（外加不透明的任务 ID 供人工重试定位），
+    /// 不带任何用户内容。
+    pub fn job_status(&self) -> Result<JobStatus> {
+        jobs::status(self)
     }
 
     /// 记录一个需处理的问题已展示过，避免每次重开重复通知。

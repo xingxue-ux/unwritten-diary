@@ -64,6 +64,11 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 核心信息与恢复摘要。
   Future<LibraryInfo> info();
 
+  /// 任务面板状态：各状态计数、到期积压、下次唤醒与最近错误。
+  ///
+  /// 最近错误只有 kind + 错误码 + 时间（外加不透明的任务 ID），**没有用户内容**。
+  Future<JobStatus> jobStatus();
+
   /// 分页读取记录。cursor 对调用方不透明。
   Future<CapturePage> listCaptures({
     String? dayKey,

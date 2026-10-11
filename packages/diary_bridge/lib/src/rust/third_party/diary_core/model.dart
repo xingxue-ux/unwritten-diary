@@ -7,9 +7,9 @@ import '../../frb_generated.dart';
 import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NativeRecordingStatus`, `NewJob`, `RecordingFinalizeResult`, `RecordingRecovery`, `RecordingSession`, `RecordingTicket`, `SegmentManifest`, `SegmentReceipt`, `SourceItem`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
-// These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `targeting`, `with_snapshot`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `JobRunSummary`, `NativeRecordingStatus`, `NewJob`, `RecordingFinalizeResult`, `RecordingRecovery`, `RecordingSession`, `RecordingTicket`, `SegmentManifest`, `SegmentReceipt`, `SourceItem`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
 
 /// 资产在文件库中的状态，契约第 2.3 节。
 enum AssetStorageState {
@@ -695,6 +695,50 @@ class Job {
           updatedAt == other.updatedAt;
 }
 
+/// 任务面板里的一行最近错误。
+///
+/// **只带错误码与时间，不带任何用户内容**：`job_attempts.message` 里可能有文件
+/// 路径或原始报错，那是排查用的，故意不往外给。`job_id` 是不透明 ID，供人工重试
+/// 时定位，不是用户内容。
+class JobErrorSummary {
+  final String jobId;
+  final String kind;
+  final String errorCode;
+
+  /// 这个错误最后一次出现的时刻（任务的 `updated_at`）。
+  final DateTime occurredAt;
+
+  /// 是否已经放弃自动重试、在等用户处理。
+  final bool requiresUserAction;
+
+  const JobErrorSummary({
+    required this.jobId,
+    required this.kind,
+    required this.errorCode,
+    required this.occurredAt,
+    required this.requiresUserAction,
+  });
+
+  @override
+  int get hashCode =>
+      jobId.hashCode ^
+      kind.hashCode ^
+      errorCode.hashCode ^
+      occurredAt.hashCode ^
+      requiresUserAction.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is JobErrorSummary &&
+          runtimeType == other.runtimeType &&
+          jobId == other.jobId &&
+          kind == other.kind &&
+          errorCode == other.errorCode &&
+          occurredAt == other.occurredAt &&
+          requiresUserAction == other.requiresUserAction;
+}
+
 /// 任务优先级，任务书 7.1 节。数字越大越先做。
 enum JobPriority {
   /// 保存与录音片段登记最高。
@@ -748,6 +792,83 @@ enum JobState {
 
   Future<void> wire() =>
       RustLib.instance.api.diaryCoreModelJobStateWire(that: this);
+}
+
+/// 任务状态摘要，任务面板用。
+///
+/// `indexes.status` 只报索引覆盖，不报任务数；「排队中/进行中/失败可重试/已放弃」
+/// 这些数字由这里给。
+class JobStatus {
+  final PlatformInt64 queued;
+  final PlatformInt64 running;
+  final PlatformInt64 retryWait;
+  final PlatformInt64 waitingConfiguration;
+  final PlatformInt64 waitingDependency;
+  final PlatformInt64 waitingNetwork;
+
+  /// 「已放弃」：尝试用完或没有处理器，等用户决定要不要重试。
+  final PlatformInt64 failed;
+  final PlatformInt64 cancelled;
+  final PlatformInt64 succeeded;
+
+  /// 到期积压：现在就该跑、但还没跑的任务数（含退避已经到点的重试）。
+  ///
+  /// 与 `queued + retry_wait` 的区别：后者包含排在未来、还没到点的任务。
+  final PlatformInt64 dueBacklog;
+
+  /// 建议的下次唤醒时刻；没有待办时为 None。
+  final DateTime? nextWakeup;
+
+  /// 最近错误，最新在前，最多 `jobs::RECENT_ERROR_LIMIT` 条。
+  final List<JobErrorSummary> recentErrors;
+
+  const JobStatus({
+    required this.queued,
+    required this.running,
+    required this.retryWait,
+    required this.waitingConfiguration,
+    required this.waitingDependency,
+    required this.waitingNetwork,
+    required this.failed,
+    required this.cancelled,
+    required this.succeeded,
+    required this.dueBacklog,
+    this.nextWakeup,
+    required this.recentErrors,
+  });
+
+  @override
+  int get hashCode =>
+      queued.hashCode ^
+      running.hashCode ^
+      retryWait.hashCode ^
+      waitingConfiguration.hashCode ^
+      waitingDependency.hashCode ^
+      waitingNetwork.hashCode ^
+      failed.hashCode ^
+      cancelled.hashCode ^
+      succeeded.hashCode ^
+      dueBacklog.hashCode ^
+      nextWakeup.hashCode ^
+      recentErrors.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is JobStatus &&
+          runtimeType == other.runtimeType &&
+          queued == other.queued &&
+          running == other.running &&
+          retryWait == other.retryWait &&
+          waitingConfiguration == other.waitingConfiguration &&
+          waitingDependency == other.waitingDependency &&
+          waitingNetwork == other.waitingNetwork &&
+          failed == other.failed &&
+          cancelled == other.cancelled &&
+          succeeded == other.succeeded &&
+          dueBacklog == other.dueBacklog &&
+          nextWakeup == other.nextWakeup &&
+          recentErrors == other.recentErrors;
 }
 
 /// 定位类型，契约第 2.4 节。
