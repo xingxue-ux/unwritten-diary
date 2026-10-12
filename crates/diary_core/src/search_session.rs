@@ -5,7 +5,11 @@
 //! 1. **旧查询的结果不能覆盖新查询**。核心按 `sessionId` + `queryRevision` 双校验；
 //!    会话不存在、或索引在会话期间变了，一律报 `search_expired` 让前端重新发起，
 //!    而不是把过期结果糊到新界面上。
-//! 2. **翻页绑定原会话**。游标里带着会话号，拿别的会话的游标来翻报 `cursor_expired`。
+//! 2. **翻页绑定原会话与结果代次**。游标里带着会话号与结果代次（generation），拿别的
+//!    会话的游标来翻报 `cursor_expired`；结果集被替换过（混合升级融合，代次递增）时，
+//!    **所有**升级前的游标也一律 `cursor_expired`，**不看偏移**——升级前第一页与升级后
+//!    第一页的偏移可能相同（`pageSize = 2` 时都是 2），只看偏移会放它们进来，把两个
+//!    阶段的结果拼在一起（乱序 / 重复 / 漏项）。
 //! 3. **取消只停止后续处理，不删任何原件**。取消后 `phase` 是 `cancelled`，
 //!    再翻页会被拒（`invalid_state`），但已经返回的结果仍然可读。
 //!
@@ -156,6 +160,12 @@ pub(crate) struct SearchSessionState {
     last_page: Vec<RankedRef>,
     /// 下一页的游标；没有下一页时为 None。
     next_cursor: Option<String>,
+    /// **结果代次**：会话内从 0 起，结果集被替换（混合升级融合重排）时递增。
+    ///
+    /// 游标里带着它。`pageSize = 2` 时，升级前的第一页游标与升级后的第一页游标偏移
+    /// 都是 2：只看偏移会认为「旧游标正指向升级后的第二页」，于是把关键词阶段与融合
+    /// 阶段的结果拼起来。代次一变，所有旧代次的游标都不再可用（`cursor_expired`）。
+    generation: i64,
     fingerprint: IndexFingerprint,
     phase: SearchPhase,
     /// 混合会话专有：融合到哪一步了。其余模式恒为 `Pending`（不读它）。
@@ -188,7 +198,7 @@ pub(crate) fn start(
 
     let session_id = support::new_id("search");
     let fingerprint = fingerprint(core, request.mode)?;
-    let (last_page, next_cursor) = page_window(&session_id, &ordered, 0, page_size);
+    let (last_page, next_cursor) = page_window(&session_id, 0, &ordered, 0, page_size);
 
     let state = SearchSessionState {
         session_id: session_id.clone(),
@@ -202,6 +212,7 @@ pub(crate) fn start(
         ordered,
         last_page,
         next_cursor,
+        generation: 0,
         fingerprint,
         phase,
         hybrid_upgrade: HybridUpgrade::Pending,
@@ -597,8 +608,9 @@ fn fuse_hybrid(
 /// - **同一会话**：沿用 `sessionId` / `queryRevision` / 游标机制，不新造一套；
 /// - **幂等**：已经融合过（或已经确认升不了级）就不再算，返回当前快照；
 /// - 升级后**从头**给融合结果：融合改变了顺序，原来「第几页」已经没有意义，所以
-///   游标重置为融合后第一章的游标（拿升级前的深页游标来翻会被 `cursor_expired`
-///   如实拒绝，而不是悄悄按新顺序返回一段对不上的结果）；
+///   游标重置为融合后第一章的游标，并**递增结果代次**——升级前发出的**所有**显式
+///   游标（含第一页那个与融合后第一页偏移相同的）都会 `cursor_expired`，而不是悄悄
+///   按新顺序返回一段对不上的结果；
 /// - 语义拿不出**可融合的证据**时**不声称** `hybrid_ready`：如实返回关键词结果、
 ///   阶段仍是 `keyword_ready`，并在 `warnings` 里说明「没有可融合的语义证据」；
 /// - 已取消的会话**不融合**：返回 `cancelled` 快照（取消就是取消）；
@@ -638,6 +650,8 @@ pub(crate) fn upgrade(core: &mut Core, session_id: &str) -> Result<SearchSnapsho
             return match hybrid_evidence(core)? {
                 Some(reason) => mark_unavailable(core, &mut state, reason),
                 None => {
+                    // 空查询：结果集本来就是空的，升级只是把阶段推到 Fused。这一代
+                    // 从未发出过游标（空结果不给游标），所以没必要递增代次。
                     state.hybrid_upgrade = HybridUpgrade::Fused;
                     state.phase = SearchPhase::HybridReady;
                     materialize(core, &state, &state.last_page)
@@ -660,8 +674,13 @@ pub(crate) fn upgrade(core: &mut Core, session_id: &str) -> Result<SearchSnapsho
         let fused = fuse_hybrid(core, &*embedder, &needle, &state.request.filters, &mut warnings)?;
         state.warnings = warnings;
         state.ordered = fused;
+        // 结果集被替换 → 代次递增。**所有**升级前发出的游标（哪怕第一页那个的偏移
+        // 与融合后第一页相同）从这里起都作废。幂等的重复调用在上面就短路了，走不到
+        // 这里，所以升级后发出的游标在再次升级之后仍然可用。
+        state.generation += 1;
         let (page, cursor) = page_window(
             &state.session_id,
+            state.generation,
             &state.ordered,
             0,
             state.request.page_size,
@@ -768,8 +787,21 @@ pub(crate) fn next_page(
     cursor: Option<&str>,
 ) -> Result<SearchSnapshot> {
     // 先把游标解出来再借用会话：借错了顺序就编译不过，顺便逼着校验游标归属。
-    let offset = match cursor {
-        Some(value) => parse_cursor(value, session_id)?,
+    // 格式与会话号在进会话之前就能判：拿一个不属于当前会话的游标来时，报的是
+    // `cursor_expired`，不该因为「会话恰好不存在」而变成另一种错误。
+    let parsed = match cursor {
+        Some(value) => {
+            let parsed = Cursor::parse(value)?;
+            if parsed.session_id != session_id {
+                return Err(CoreError::CursorExpired {
+                    reason: format!(
+                        "游标属于别的会话（{}），不能用来翻当前会话",
+                        parsed.session_id
+                    ),
+                });
+            }
+            Some(parsed)
+        }
         None => None,
     };
 
@@ -790,19 +822,33 @@ pub(crate) fn next_page(
         }
         ensure_fresh(core, &state)?;
 
-        let start = match offset {
-            // 显式游标：必须指向这一页之后，否则就是拿旧游标重翻。
-            Some(value) => {
-                let expected = state.next_cursor.as_deref().map(parse_offset).transpose()?;
-                if Some(value) != expected {
+        let start = match &parsed {
+            // 显式游标分两层校验：**代次 → 偏移边界**。
+            //
+            // 代次不一致一律 `cursor_expired`，**不看偏移**：升级前第一页与升级后
+            // 第一页的偏移可能相同（`pageSize = 2` 时都是 2），只看偏移会放它进来，
+            // 于是「关键词阶段的第一页 + 融合阶段的第二页」被拼在一起。
+            Some(parsed) => {
+                if parsed.generation != state.generation {
                     return Err(CoreError::CursorExpired {
                         reason: format!(
-                            "游标与当前进度对不上（会话 {}，收到 {}）",
-                            state.session_id, value
+                            "游标是结果集第 {} 代的，当前已是第 {} 代（升级替换过结果集）；\
+                             请用当前快照的游标翻页",
+                            parsed.generation, state.generation
                         ),
                     });
                 }
-                value
+                let expected = state.next_cursor.as_deref().map(parse_offset).transpose()?;
+                // 代次一致：必须指向这一页之后，否则就是拿旧游标重翻。
+                if Some(parsed.offset) != expected {
+                    return Err(CoreError::CursorExpired {
+                        reason: format!(
+                            "游标与当前进度对不上（会话 {}，收到 {}）",
+                            state.session_id, parsed.offset
+                        ),
+                    });
+                }
+                parsed.offset
             }
             None => match state.next_cursor.as_deref() {
                 Some(cursor) => parse_offset(cursor)?,
@@ -815,6 +861,7 @@ pub(crate) fn next_page(
 
         let (page, cursor) = page_window(
             &state.session_id,
+            state.generation,
             &state.ordered,
             start,
             state.request.page_size,
@@ -917,8 +964,11 @@ fn index_coverage(core: &Core) -> Result<Coverage> {
 }
 
 /// 取一页与下一页游标。越界或空结果时下一页游标是 None。
+///
+/// 游标里带上 `generation`：结果集被替换过（代次变了）时旧游标一律作废，不看偏移。
 fn page_window<T: Clone>(
     session_id: &str,
+    generation: i64,
     ordered: &[T],
     start: usize,
     page_size: i64,
@@ -929,36 +979,58 @@ fn page_window<T: Clone>(
     let end = (start + page_size as usize).min(ordered.len());
     let page = ordered[start..end].to_vec();
     let cursor = if end < ordered.len() {
-        Some(format!("{session_id}:{}", end))
+        Some(format!("{session_id}:{generation}:{end}"))
     } else {
         None
     };
     (page, cursor)
 }
 
-/// 游标是 `<sessionId>:<offset>`。会话号对不上就是 `cursor_expired`——
-/// 契约要求翻页绑定原会话，不能拿别的会话的游标接着翻。
-fn parse_cursor(value: &str, session_id: &str) -> Result<Option<usize>> {
-    let (owner, offset) = value.rsplit_once(':').ok_or_else(|| CoreError::CursorExpired {
-        reason: format!("游标格式不对：{value}"),
-    })?;
-    if owner != session_id {
-        return Err(CoreError::CursorExpired {
-            reason: format!("游标属于别的会话（{owner}），不能用来翻当前会话"),
-        });
-    }
-    Ok(Some(offset.parse::<usize>().map_err(|_| CoreError::CursorExpired {
-        reason: format!("游标里的位置不是数字：{value}"),
-    })?))
+/// 游标的**内部**格式：`<sessionId>:<generation>:<offset>`。
+///
+/// 对外它仍是**不透明字符串**（契约第 2 章「不透明 cursor」）：调用方只应把上一次
+/// 快照给的 `cursor` 原样回传，不该解析它。所以这条格式是核心的内部约定，不是契约
+/// 变更；契约里只在 `search.upgrade` 的保证里写「升级后的旧游标报 `cursor_expired`」。
+///
+/// - `sessionId`：翻页绑定原会话，对不上报 `cursor_expired`；
+/// - `generation`：结果代次，会话内从 0 起，结果集被替换（升级融合）时递增。
+///   与当前代次不一致 → `cursor_expired`，**不看偏移**；
+/// - `offset`：下一页从第几条（0 基）开始。代次一致时才校验它与当前进度一致。
+#[derive(Debug, Clone)]
+struct Cursor {
+    session_id: String,
+    generation: i64,
+    offset: usize,
 }
 
-fn parse_offset(cursor: &str) -> Result<usize> {
-    cursor
-        .rsplit_once(':')
-        .and_then(|(_, offset)| offset.parse::<usize>().ok())
-        .ok_or_else(|| CoreError::CursorExpired {
-            reason: format!("游标格式不对：{cursor}"),
+impl Cursor {
+    fn parse(value: &str) -> Result<Self> {
+        // 从右往左切两刀：会话号本身可能带冒号，代次与偏移不可能。
+        let mut parts = value.rsplitn(3, ':');
+        let offset = parts.next().unwrap_or_default();
+        let generation = parts.next();
+        let session_id = parts.next();
+        let (Some(generation), Some(session_id)) = (generation, session_id) else {
+            return Err(CoreError::CursorExpired {
+                reason: format!("游标格式不对：{value}"),
+            });
+        };
+        Ok(Self {
+            session_id: session_id.to_owned(),
+            generation: generation.parse::<i64>().map_err(|_| CoreError::CursorExpired {
+                reason: format!("游标里的代次不是数字：{value}"),
+            })?,
+            offset: offset.parse::<usize>().map_err(|_| CoreError::CursorExpired {
+                reason: format!("游标里的位置不是数字：{value}"),
+            })?,
         })
+    }
+}
+
+/// 会话自己发出去的游标（`state.next_cursor`）只取偏移。它总是当前代次的，
+/// 所以不必再过一遍归属 / 代次校验；解析失败说明内部状态坏了，如实报 `cursor_expired`。
+fn parse_offset(cursor: &str) -> Result<usize> {
+    Ok(Cursor::parse(cursor)?.offset)
 }
 
 /// 把这一页的引用变成命中对象。整段正文只在这一步取，按页取。

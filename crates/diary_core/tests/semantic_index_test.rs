@@ -938,9 +938,9 @@ fn semantic_sessions_page_expire_and_cancel_like_keyword_ones() {
         first_ids
     );
 
-    // 拿别的会话的游标来翻 → cursor_expired。
+    // 拿别的会话的游标来翻 → cursor_expired（用真游标，不是手拼的格式）。
     let other = search_mode(&mut core, "★", SearchMode::Semantic, 2);
-    let foreign = format!("{}:{}", other.session_id, 2);
+    let foreign = other.cursor.clone().expect("别的会话也有下一页");
     let error = core
         .search_next_page(&first.session_id, Some(&foreign))
         .unwrap_err();
@@ -1687,6 +1687,118 @@ fn hybrid_sessions_page_and_snapshot_like_keyword_ones() {
     let other = core.start_search(request(2), 2).unwrap();
     let error = core
         .search_next_page(&other.session_id, Some(&upgrade_cursor))
+        .unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::CursorExpired);
+}
+
+/// 评审（#71）指出的分页正确性 bug：`pageSize = 2` 时，升级前**第一页**的游标与
+/// 升级后第一页的游标偏移相同（都是 2）。老格式只带 `<sessionId>:<offset>`，只看
+/// 偏移的校验会放它进来、返回**融合结果的第二页**——界面若留着关键词阶段的第一页，
+/// 就会把两个阶段的结果拼起来（乱序 / 重复 / 漏项）。
+///
+/// 修法：游标带上**结果代次**（`<sessionId>:<generation>:<offset>`，会话内从 0 起，
+/// 结果集被替换时递增）。代次不一致一律 `cursor_expired`，**不看偏移**；代次一致才
+/// 校验偏移边界。这里的断言在撤掉代次校验时必须变红。
+#[test]
+fn hybrid_upgrade_expires_every_pre_upgrade_cursor_even_at_the_same_offset() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub_split(
+        &counters,
+        vec![("睡前", unit(0))],
+        vec![("睡前", unit(0))],
+    ));
+    // 五篇不同天、篇篇都含查询词：两路都中，融合结果 5 篇，每页 2 条 → 3 页。
+    for day in 1..=5 {
+        let capture = write_capture(&mut core, at(2026, 9, 10 + day), "", &format!("op{day}"));
+        import_and_extract(
+            &mut core,
+            &capture,
+            &format!("D{day}.txt"),
+            &format!("第{day}天睡前想了很多事情。\n"),
+            &format!("mat{day}"),
+        );
+    }
+    core.build_semantic_index(None).unwrap();
+
+    let all = hybrid_mode(&mut core, "睡前", 20);
+    assert_eq!(all.results.len(), 5, "前提：融合结果有 5 篇，每页 2 条");
+
+    // —— 升级前：第一页 + 深页各拿一个游标 ——
+    let first = core
+        .start_search(
+            SearchRequest {
+                query: "睡前".to_owned(),
+                mode: SearchMode::Hybrid,
+                filters: SearchFilters::default(),
+                page_size: 2,
+            },
+            7,
+        )
+        .unwrap();
+    assert_eq!(first.results.len(), 2);
+    let stale_first = first.cursor.clone().expect("升级前还有下一页");
+    let keyword_second = core
+        .search_next_page(&first.session_id, Some(&stale_first))
+        .unwrap();
+    let stale_deep = keyword_second.cursor.clone().expect("升级前还有更深的页");
+
+    // —— 升级：融合重排、从头给结果，结果集被替换 ——
+    let upgraded = core.upgrade_search_to_hybrid(&first.session_id).unwrap();
+    assert_eq!(upgraded.phase, SearchPhase::HybridReady);
+    assert_eq!(upgraded.results.len(), 2);
+    let fresh_cursor = upgraded.cursor.clone().expect("融合结果还有下一页");
+
+    // 评审场景：升级前**第一页**游标的偏移与融合后第一页相同，也必须过期。
+    let error = core
+        .search_next_page(&first.session_id, Some(&stale_first))
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        diary_core::ErrorCode::CursorExpired,
+        "升级前第一页的游标不能接着翻融合结果（哪怕偏移与融合后第一页相同）"
+    );
+
+    // 升级前的深页游标照旧过期（代次校验先于偏移校验）。
+    let error = core
+        .search_next_page(&first.session_id, Some(&stale_deep))
+        .unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::CursorExpired);
+
+    // —— 幂等升级不递增代次：升级后发出的游标在再次升级之后仍然可用 ——
+    assert_eq!(
+        core.upgrade_search_to_hybrid(&first.session_id).unwrap(),
+        upgraded,
+        "幂等升级返回同一份快照（同一代次、同一个第一页游标）"
+    );
+    let second = core
+        .search_next_page(&first.session_id, Some(&fresh_cursor))
+        .unwrap();
+    assert_eq!(second.results.len(), 2);
+    assert_eq!(second.phase, SearchPhase::HybridReady);
+    let second_cursor = second.cursor.clone().expect("还有最后一页");
+    // 翻到中途再升级一次：代次不能变，已经发出的第二页游标必须还能用。
+    let _ = core.upgrade_search_to_hybrid(&first.session_id).unwrap();
+    let third = core
+        .search_next_page(&first.session_id, Some(second_cursor.as_str()))
+        .unwrap();
+    assert_eq!(third.results.len(), 1);
+    assert!(third.cursor.is_none(), "末页没有下一页游标");
+    assert_eq!(third.phase, SearchPhase::Done, "翻完照旧 done");
+
+    // 升级后的游标逐页推进：拼起来 = 一次取全的融合结果，不漏不重。
+    let mut paged: Vec<SearchHit> = upgraded.results.clone();
+    paged.extend(second.results.clone());
+    paged.extend(third.results.clone());
+    assert_eq!(
+        paged, all.results,
+        "升级后的分页拼起来必须与「一次取全的融合结果」一致"
+    );
+
+    // 幂等升级之后旧代次的游标仍然过期：代次不会退回 0。
+    let error = core
+        .search_next_page(&first.session_id, Some(&stale_first))
         .unwrap_err();
     assert_eq!(error.code(), diary_core::ErrorCode::CursorExpired);
 }
