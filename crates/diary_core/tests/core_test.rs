@@ -281,6 +281,7 @@ fn error_codes_match_the_contract() {
     // 契约第 7 节的 wire 字符串不能悄悄改。
     assert_eq!(ErrorCode::NotFound.wire(), "not_found");
     assert_eq!(ErrorCode::InvalidState.wire(), "invalid_state");
+    assert_eq!(ErrorCode::InvalidArgument.wire(), "invalid_argument");
     assert_eq!(ErrorCode::RevisionConflict.wire(), "revision_conflict");
     assert_eq!(ErrorCode::IdempotencyConflict.wire(), "idempotency_conflict");
     assert_eq!(ErrorCode::StorageFull.wire(), "storage_full");

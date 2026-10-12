@@ -109,6 +109,21 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 决定是显示文字还是提供「打开原件」。
   Future<SourceRevision?> previousSourceRevision({required String sourceId});
 
+  /// 排一条关键词索引重建任务，契约第 4.4 节 `indexes.rebuild`。
+  ///
+  /// **异步**：只排任务并返回它（`targetIds` 为空表示整库），不做同步重建——同步
+  /// 重建会阻塞界面，而队列的退避、补做与依赖闸门已经就绪。`scope` 的编码见契约
+  /// 第 4.4 节：`all` 整库，`sources:<id>[,<id>]*` 指定来源（顺序无语义，空列表 /
+  /// 非法字符报 `invalid_argument`，不存在的来源报 `not_found`）。
+  ///
+  /// 幂等：同一个 `(scope, reason, operationId)` 重复调用返回同一条任务；同一个
+  /// operationId 换了 scope 或原因报 `idempotency_conflict`。
+  Future<Job> rebuildIndexes({
+    required String scope,
+    required String reason,
+    required String operationId,
+  });
+
   /// 修改某一篇来源的原始文字：新建一个修订，旧修订保留。
   ///
   /// 契约第 4.1 节 `sources.reviseText`。**改完必须再跑一次 `extract_source`**，
@@ -122,11 +137,20 @@ abstract class BridgeSession implements RustOpaqueInterface {
   });
 
   /// **跑一轮到期任务**（驱动），返回本轮摘要：跑了几条、成功/失败各几条、其中多少条是
-  /// **补做**（本轮领取时排期已过期）、还有多少到期未跑（被 `limit` 截住）、下一个唤醒时刻。
+  /// **补做**（本轮领取时排期已过期）、还有多少到期未跑（被预算/条数截住）、有多少在等
+  /// 依赖、下一个唤醒时刻，以及本次的唤醒来源。
   ///
-  /// 什么时候调用由平台层决定（#19：系统级唤醒 / 前台 / 退出前），这一层只负责
-  /// 「调用得到」；`limit` 是本轮最多跑几条任务（按条数，不是毫秒预算）。
-  Future<JobRunSummary> runDueJobs({required int limit});
+  /// - `budget_ms` 是平台授予的**时间预算**（毫秒），对齐契约 `jobs.runDue` 的
+  ///   `budgetMs`；`0` 表示这一轮一条都不跑。预算**只在任务之间判断**：已经在跑的
+  ///   任务不打断（核心不做抢占），所以一条任务本身可以比预算还长；
+  /// - `trigger` 是唤醒来源（`startup` / `foreground` / `wake` / `manual` …），
+  ///   核心如实记进摘要但不改变行为；什么时候调用由平台层决定（#19）；
+  /// - 条数上限由这一层夹一个防御性常量 `RUN_DUE_MAX_JOBS`（契约没给这个参数）：
+  ///   没跑上的任务留在队列里、如实计入 `dueBacklog`，下一轮接着跑。
+  Future<JobRunSummary> runDueJobs({
+    required int budgetMs,
+    required String trigger,
+  });
 
   /// 保存草稿。只有核心确认落盘后才返回 `durable = true`。
   Future<DraftSaveResult> saveDraft({

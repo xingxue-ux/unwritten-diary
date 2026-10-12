@@ -259,6 +259,21 @@ abstract class DiaryApi {
 
   Future<IndexStatus> indexesStatus({Set<String>? sourceScope});
 
+  /// 排一条关键词索引重建任务，返回它的 `jobId`。契约第 4.4 节 `indexes.rebuild`。
+  ///
+  /// **异步**：只排任务，不做同步重建——同步重建会阻塞界面，真正重建由 `index`
+  /// 执行者在 [runDueJobs] 里跑（队列的退避、补做与依赖闸门已经就绪）。
+  ///
+  /// [scope] 的编码（契约第 4.4 节，v1）只有两种合法写法：
+  /// - `all`：整库，等价于 [indexesStatus] 不传来源范围；
+  /// - `sources:<id>[,<id>]*`：只重建这些来源。来源 id 是不透明字符串，`,` 是
+  ///   分隔符，id 记号只允许 `[A-Za-z0-9_]`（不定义转义）。顺序没有语义，解析时
+  ///   排序成规范形；空列表、空记号、重复 id、越界字符都是 `invalid_argument`，
+  ///   不存在的来源是 `not_found`。
+  ///
+  /// [reason] 是给用户/排查看的原因文字；同一个 `(scope, reason, operationId)`
+  /// 重复调用返回同一条任务，同一个 [operationId] 换了内容报
+  /// `idempotency_conflict`。
   Future<JobTicket> rebuildIndexes({
     required String scope,
     required String reason,
@@ -283,6 +298,16 @@ abstract class DiaryApi {
   Future<DateTime?> nextWakeup();
 
   /// 在平台授予的运行预算内执行到期任务，支持取消与租约恢复。
+  ///
+  /// [budgetMs] 是**时间预算**（毫秒），`0` 表示这一轮一条都不跑。预算只在**任务
+  /// 之间**判断：已经领取、正在跑的任务不打断（核心不做抢占），所以一条任务本身
+  /// 可以比预算还长。[trigger] 是唤醒来源（startup / foreground / wake / manual …），
+  /// 如实记进摘要、不改变行为。没跑上的到期任务留在队列里，数量在
+  /// [DueRunSummary.dueBacklog] 里如实报出来。
+  ///
+  /// 依赖闸门在**每次领取前**重评估，所以「导入 → 提取 → 索引」这样的链在**一次**
+  /// 调用里就能走完，不依赖平台层再叫一次；一轮结束后若仍有等待前置的任务，
+  /// [DueRunSummary.nextWakeup] 必定非空。
   Future<DueRunSummary> runDueJobs({
     required int budgetMs,
     required String trigger,

@@ -15,6 +15,7 @@ mod assets;
 mod chunker;
 mod error;
 mod extractors;
+mod index_rebuild;
 mod jobs;
 /// 数据对象。公开是为了让桥接层的 codegen 能扫描它们（见 flutter_rust_bridge.yaml）。
 pub mod model;
@@ -681,15 +682,35 @@ impl Core {
     /// 跑到期任务：领取 → 按 `kind` 执行 → 落结果（成功 / 退避重试 / 已放弃）。
     ///
     /// - `now` 是本次运行的开始时刻，也是「补做」判定的分界；
-    /// - `limit` 是本次最多跑几个任务，**0 表示一个都不跑**；被截住的到期任务
-    ///   留在队列里，数量如实报进 `JobRunSummary::due_backlog`；
+    /// - `budget_ms` 是调用方（平台层）给的**时间预算**，毫秒，`0` 表示一个都不跑。
+    ///   预算**只在任务之间判断**：已经领取、正在跑的那条任务不打断，也不能打断
+    ///   （核心不做抢占）。所以一条任务本身可以比预算还长——预算是「这一轮还能不能
+    ///   再开一条」，不是「这一轮最多跑多久」；
+    /// - `max_jobs` 是防御性的**条数上限**：预算挡长尾，它挡「队列很长 + 多条短任务」；
+    /// - `trigger` 是唤醒来源（startup / foreground / wake / manual …），核心只如实
+    ///   记进摘要，不用它改变行为；
+    /// - 被预算或条数截住的到期任务留在队列里，数量如实报进
+    ///   `JobRunSummary::due_backlog`；
+    /// - 每一轮**每次领取前**先重新评估在等的任务（`waiting_dependency`），并在**一轮
+    ///   收尾时**再评估一次：前置已满足的回到 `queued` 并在**同一轮**被拉起执行，
+    ///   仍未满足的留在等待态、**不消耗重试额度**；前置不会再有执行者满足的进终态
+    ///   `failed` + 明确错误码（不挂死），数量报在
+    ///   `JobRunSummary::dependency_failed`。所以「导入 → 提取 → 索引」这样的链在
+    ///   **一次**调用里就能走完，不需要平台层再叫一次；一轮结束后若还留着等待态，
+    ///   摘要给出的 `next_wakeup` 必定非空（等在 `queued`/`retry_wait` 的前置上）；
     /// - 运行开始会先回收上一次没跑完（`running`）的任务（进程被杀/断电时留下的），
     ///   否则它们会被永远跳过；
     /// - 没有执行者的 `kind` 不会静默成功：进「已放弃」+ `no_handler`。
     ///
     /// 口径与不谎报的理由见 `docs/architecture/m4-任务调度与补做.md`。
-    pub fn run_due_jobs(&mut self, now: DateTime<Utc>, limit: usize) -> Result<JobRunSummary> {
-        jobs::run_due(self, now, limit)
+    pub fn run_due_jobs(
+        &mut self,
+        now: DateTime<Utc>,
+        budget_ms: u64,
+        trigger: &str,
+        max_jobs: usize,
+    ) -> Result<JobRunSummary> {
+        jobs::run_due(self, now, budget_ms, trigger, max_jobs)
     }
 
     pub fn complete_job(&mut self, job_id: &str) -> Result<Job> {
@@ -798,10 +819,35 @@ impl Core {
     ///
     /// 返回重建的文档数：派生内容片段 + 用户自己写的记录文字（`captures.draft_text`）。
     ///
-    /// 整库重建是重活，产品路径上应当是可取消的任务；这一片先提供同步入口，
-    /// 让覆盖状态与增量索引有个可靠的校准方式（任务化见 issue #31）。
+    /// 这是**同步**入口，给覆盖状态校准与测试用。产品路径走
+    /// `schedule_index_rebuild`（契约 `indexes.rebuild`）：它只排任务，不阻塞界面。
     pub fn rebuild_keyword_index(&mut self, source_scope: Option<&[String]>) -> Result<i64> {
         search::rebuild(self, source_scope)
+    }
+
+    /// 排一条关键词索引重建任务，契约第 4.4 节 `indexes.rebuild`。
+    ///
+    /// **异步**：只排任务并返回它（调用方拿 `job.id`），真正重建由 `index` 执行者在
+    /// `run_due_jobs` 里跑。`scope` 的编码（v1）是：
+    ///
+    /// - `all`：整库（与 `rebuild_keyword_index(None)` 同义，含记录文字那一路）；
+    /// - `sources:<id>[,<id>]*`：只重建这些来源；id 只允许 `[A-Za-z0-9_]`，`,` 是
+    ///   分隔符，不定义转义。
+    ///
+    /// 顺序对重建没有语义，解析时排序成规范形；空列表、空记号、重复 id、越界字符
+    /// 报 `invalid_argument`；指定了不存在的来源报 `not_found`。
+    ///
+    /// 幂等：同一个 `(scope, 原因, operationId)` 重复调用返回同一条任务（按 id 读
+    /// 当前状态）；同一个 operationId 换了 scope 或原因报 `idempotency_conflict`。
+    ///
+    /// 口径与 `scope` 规范见契约第 4.4 节与 `docs/architecture/m4-任务调度与补做.md`。
+    pub fn schedule_index_rebuild(
+        &mut self,
+        scope: &str,
+        reason: &str,
+        operation_id: &str,
+    ) -> Result<Job> {
+        index_rebuild::schedule(self, scope, reason, operation_id)
     }
 
     /// 关键词检索候选：命中**派生片段**的 ID，按索引写入顺序。

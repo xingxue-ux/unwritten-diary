@@ -60,6 +60,7 @@ void main() {
         'idempotency_conflict',
         'not_found',
         'invalid_state',
+        'invalid_argument',
         'asset_missing',
         'integrity_failed',
         'unsupported_format',
@@ -81,6 +82,14 @@ void main() {
       for (final code in contractCodes) {
         expect(declared, contains(code));
       }
+    });
+
+    test('invalid_argument 的 wire 值与往返（契约第 7 节）', () {
+      expect(DiaryErrorCode.invalidArgument.wire, 'invalid_argument');
+      expect(
+        DiaryErrorCode.fromWire('invalid_argument'),
+        DiaryErrorCode.invalidArgument,
+      );
     });
 
     test('异常携带可重试标记与字段错误', () {

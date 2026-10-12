@@ -4,8 +4,9 @@
 //! 下次唤醒时刻与通知去重。
 //!
 //! 驱动（`run_due`）：把到期任务取出来，按 `kind` 找执行者跑掉，再把结果落回队列。
-//! 目前只有 `extract` 真有执行者；没有执行者的 `kind` **不会静默成功**，而是
-//! 进「已放弃」+ `error_code = no_handler` 等人工处理（见 `execute`）。
+//! 目前 `extract` 与 `index` 真有执行者；没有执行者的 `kind`（`transcribe` 等 B4a
+//! 的 Provider）**不会静默成功**，而是进「已放弃」+ `error_code = no_handler`
+//! 等人工处理（见 `execute`）。
 //!
 //! 优先级照任务书 7.1 节：保存与录音片段登记最高，整库重建最低。
 //! 决定与口径写在 `docs/architecture/m4-任务调度与补做.md`。
@@ -22,6 +23,27 @@ use crate::Core;
 
 /// 真有执行者的任务类型：导入完成后对来源修订跑已有提取路径。
 pub(crate) const KIND_EXTRACT: &str = "extract";
+
+/// 关键词索引任务：对 `target_ids` 里的**来源**重跑关键词索引重建。
+///
+/// `target_ids` 为空表示**整库**（`indexes.rebuild(scope=all)`），执行者走
+/// `rebuild_keyword_index(None)`；非空则只重建这些来源。
+///
+/// 语义索引（`build_semantic_index`）不在这里：那要等 #58 的向量接入合入之后
+/// 才谈得上任务化（见 m4 文档「没有做到的」）。
+pub(crate) const KIND_INDEX: &str = "index";
+
+/// 「没有目标」的终态失败码。只有 `extract` 用它：`extract` 没有「整库」这种语义，
+/// 空目标是实打实的错误。`index` 的空 `target_ids` 是整库重建，不是错误。
+pub(crate) const ERROR_NO_TARGET: &str = "no_target";
+
+/// `index` 在等什么（写在 `jobs.error_code` 上，**不改 schema**）：
+/// 目标来源的当前修订还没提取完，而队列里还有一条活着的 `extract` 会写出来。
+pub(crate) const WAITING_EXTRACT: &str = "waiting_extract";
+
+/// `index` 的终态失败码：`extract` 这一环不会再有执行者来满足了（前置任务被取消、
+/// 已放弃，又没有派生内容）。码里点明是哪一环，挂死不如如实失败。
+pub(crate) const ERROR_DEPENDENCY_UNMET: &str = "dependency_extract_unmet";
 
 /// 「最近错误」最多给几条：状态摘要不是日志导出。
 pub(crate) const RECENT_ERROR_LIMIT: i64 = 5;
@@ -72,6 +94,23 @@ fn find_active_by_business_key(tx: &Transaction<'_>, job: &NewJob) -> Result<Opt
 ///
 /// `job.changed` 由这里发（只在真的新建时）：调用方不用记得自己发，也就不会漏。
 pub(crate) fn enqueue_in_tx(tx: &Transaction<'_>, job: NewJob) -> Result<Job> {
+    enqueue_in_tx_with_state(tx, job, JobState::Queued, None)
+}
+
+/// 入队一个任务，并指定它**这一刻**的状态与「在等什么」。
+///
+/// 用在哪：导入完成时排的 `index` 任务，这一刻它的前置（提取）**一定**还没跑，
+/// 所以直接落在 `waiting_dependency` + `error_code = waiting_extract`，用户不用等
+/// 一轮驱动就能在 `job_status()` / `list_jobs()` 里看到它在等哪一环。
+///
+/// 它**不是失败**：`attempt_count = 0`、`next_attempt_at` 为空、不消耗重试额度；
+/// 驱动**每次领取前**以及**一轮收尾时**都会重新评估前置（`resolve_dependencies`）。
+pub(crate) fn enqueue_in_tx_with_state(
+    tx: &Transaction<'_>,
+    job: NewJob,
+    state: JobState,
+    waiting_reason: Option<&str>,
+) -> Result<Job> {
     if let Some(existing) = find_active_by_business_key(tx, &job)? {
         return Ok(existing);
     }
@@ -82,16 +121,18 @@ pub(crate) fn enqueue_in_tx(tx: &Transaction<'_>, job: NewJob) -> Result<Job> {
     let max_attempts = job.max_attempts.max(1);
     tx.execute(
         "INSERT INTO jobs (id, kind, state, priority, target_ids, input_snapshot_hash, \
-         attempt_count, max_attempts, next_attempt_at, created_at, updated_at) \
-         VALUES (?1, ?2, 'queued', ?3, ?4, ?5, 0, ?6, ?7, ?8, ?8)",
+         attempt_count, max_attempts, next_attempt_at, error_code, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?10)",
         params![
             id,
             job.kind,
+            state.wire(),
             job.priority.value(),
             target_ids,
             job.input_snapshot_hash,
             max_attempts,
             job.next_attempt_at.map(support::to_iso),
+            waiting_reason,
             support::to_iso(now),
         ],
     )?;
@@ -99,7 +140,7 @@ pub(crate) fn enqueue_in_tx(tx: &Transaction<'_>, job: NewJob) -> Result<Job> {
     Ok(Job {
         id,
         kind: job.kind,
-        state: JobState::Queued,
+        state,
         priority: job.priority.value(),
         target_ids: job.target_ids,
         input_snapshot_hash: job.input_snapshot_hash,
@@ -107,7 +148,7 @@ pub(crate) fn enqueue_in_tx(tx: &Transaction<'_>, job: NewJob) -> Result<Job> {
         attempt_count: 0,
         max_attempts,
         next_attempt_at: job.next_attempt_at,
-        error_code: None,
+        error_code: waiting_reason.map(str::to_owned),
         requires_user_action: false,
         attention_key: None,
         created_at: now,
@@ -447,6 +488,11 @@ pub(crate) fn cancel(core: &mut Core, job_id: &str, operation_id: &str) -> Resul
 }
 
 /// 建议的下次唤醒时刻；没有待办时为 None。
+///
+/// **在等前置的任务不算「待办」**：它们要等的是别人跑完（`waiting_dependency`），
+/// 不是时间到。前置那一环自己会在 `queued`/`retry_wait` 里，所以下一次唤醒时刻
+/// 由它给；前置压根没有执行者时，闸门会把在等的任务终态失败，不会留下一个
+/// 「永远没有下一次唤醒」的挂死任务。
 pub(crate) fn next_wakeup(core: &Core) -> Result<Option<DateTime<Utc>>> {
     let now = support::now();
     // 有立刻能跑的排队任务，就该现在唤醒。
@@ -497,6 +543,230 @@ pub(crate) fn is_attention_acknowledged(core: &Core, attention_key: &str) -> Res
     Ok(found.is_some())
 }
 
+// ------------------------------------------------------------------ 依赖闸门
+
+/// 一条 `index` 任务的前置条件评估结果。
+enum Dependency {
+    /// 前置已满足，可以跑。
+    Ready,
+    /// 前置还没满足，但队列里还有活着的任务会满足它：留在 `waiting_dependency`。
+    Pending(&'static str),
+    /// 前置不会再有执行者来满足了（或者目标本身就不成立）：终态失败，别挂死。
+    Broken(&'static str),
+}
+
+/// 评估一条 `index` 任务的前置：`target_ids` 里每个**来源**的当前修订都要「可索引」。
+///
+/// 口径（可解释，见 m4 文档）：
+/// - **空 `target_ids` = 整库重建**（`indexes.rebuild(scope=all)`）：等队列里所有
+///   **活着的** `extract` 收尾，再按现状整库重刷（`rebuild_keyword_index(None)`）。
+///   它**不会**判 `Broken`——某条提取被取消只是少一份内容，不该把整库重建连坐成
+///   终态失败；
+/// - 来源不存在 / 没有当前修订 / 当前修订读不到 → `Broken("not_found")`；
+/// - 当前修订是**文字修订**（`asset_id` 为空）：提交时正文就落库了，关键词这一路
+///   没有「提取」这一环 → 视为可索引；
+/// - 当前修订有资产：要有 `extracted_contents` 行才算提取完；还没有的话，看队列里
+///   还有没有**活着的** `extract` 任务瞄着这个修订：
+///   - 有 → `Pending("waiting_extract")`（在等哪一环说得清）；
+///   - 没有 → `Broken("dependency_extract_unmet")`：没有谁会再产出它，挂死不如如实失败。
+///
+/// 为什么不用「提取任务成功」当条件而用「有没有派生内容」：改过正文、重跑过提取的
+/// 来源会换修订，队列里那条 `extract` 的成功与否已经不是当下的真相；派生内容在不在
+/// 才是「这个来源现在能不能被索引」的答案。
+fn index_dependency(core: &Core, job: &Job) -> Result<Dependency> {
+    if job.target_ids.is_empty() {
+        // 整库：等着在跑的提取收尾，别重建到一半又被新的派生内容补一刀。
+        let live_extract: i64 = core.conn.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE kind = ?1 \
+             AND state NOT IN ('succeeded', 'failed', 'cancelled')",
+            params![KIND_EXTRACT],
+            |row| row.get(0),
+        )?;
+        return Ok(if live_extract > 0 {
+            Dependency::Pending(WAITING_EXTRACT)
+        } else {
+            Dependency::Ready
+        });
+    }
+    let mut waiting = false;
+    for source_id in &job.target_ids {
+        let current: Option<Option<String>> = core
+            .conn
+            .query_row(
+                "SELECT current_revision_id FROM source_items WHERE source_id = ?1",
+                params![source_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(Some(revision_id)) = current else {
+            return Ok(Dependency::Broken(crate::error::ErrorCode::NotFound.wire()));
+        };
+
+        let asset: Option<Option<String>> = core
+            .conn
+            .query_row(
+                "SELECT asset_id FROM source_revisions WHERE revision_id = ?1",
+                params![revision_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(asset_id) = asset else {
+            return Ok(Dependency::Broken(crate::error::ErrorCode::NotFound.wire()));
+        };
+        if asset_id.is_none() {
+            // 文字修订：正文在提交时就落库并且同步进了关键词索引，没有提取这一环。
+            continue;
+        }
+
+        let extracted: i64 = core.conn.query_row(
+            "SELECT COUNT(*) FROM extracted_contents WHERE source_revision_id = ?1",
+            params![revision_id],
+            |row| row.get(0),
+        )?;
+        if extracted > 0 {
+            continue;
+        }
+
+        // `target_ids` 是 JSON 数组，用 json_each 精确比对：`LIKE` 会把
+        // `rev_a` 与 `rev_ab` 这种前缀关系看成一回事。
+        let live_extract: i64 = core.conn.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE kind = ?1 \
+             AND state NOT IN ('succeeded', 'failed', 'cancelled') \
+             AND EXISTS (SELECT 1 FROM json_each(jobs.target_ids) WHERE value = ?2)",
+            params![KIND_EXTRACT, revision_id],
+            |row| row.get(0),
+        )?;
+        if live_extract > 0 {
+            waiting = true;
+        } else {
+            return Ok(Dependency::Broken(ERROR_DEPENDENCY_UNMET));
+        }
+    }
+    Ok(if waiting {
+        Dependency::Pending(WAITING_EXTRACT)
+    } else {
+        Dependency::Ready
+    })
+}
+
+/// 重新评估所有 `index` 任务的前置，把等待态推到当下的真相。
+///
+/// 驱动**每次领取前**跑一次，**一轮收尾时**再跑一次（`run_due`），所以：
+/// - 前置已经满足的在等任务 → 回到 `queued`，同一轮的下一次领取就能被领取；
+/// - 前置仍未满足的 → 留在 `waiting_dependency`，原因写在 `error_code` 上；
+/// - 前置不会再有执行者满足的 → 终态 `failed` + 明确错误码 + `requires_user_action`。
+///
+/// **为什么每次领取前都要重评估，而不是每轮一次**：一轮只评估一次的话，前置任务在
+/// 这一轮跑完时后继仍在等待态，而 `next_wakeup` 不把等待态算成待办——队列里没有别的
+/// 任务时摘要会给出 `next_wakeup = None`，按摘要安排唤醒的平台层就不会再叫驱动，
+/// 链条只能碰巧再次进前台才可能走完。每次领取前重评估之后，链在**一次**驱动调用里
+/// 就能走完，不把「能不能走完」寄托在平台层肯不肯再叫一次上（#19 可能因省电/退出
+/// 而不叫）。预算与条数上限照旧只在任务之间判断，链式推进不会打断正在跑的任务。
+///
+/// 它**不领取、不执行、不动 `attempt_count`、不排退避**：在等前置不是一次失败，
+/// 不该消耗重试额度。它是**纯查询**（只把状态推到真相），不消耗预算。改状态时照旧
+/// 发 `job.changed`。
+///
+/// 返回值是这一轮**被闸门终态失败**的任务数（没有任何执行者跑过），如实报进
+/// `JobRunSummary::dependency_failed`。
+fn resolve_dependencies(core: &mut Core, now: DateTime<Utc>) -> Result<i64> {
+    let ids: Vec<String> = {
+        let mut stmt = core.conn.prepare(
+            "SELECT id FROM jobs WHERE kind = ?1 \
+             AND state NOT IN ('running', 'succeeded', 'failed', 'cancelled') \
+             ORDER BY created_at, id",
+        )?;
+        let collected = stmt
+            .query_map(params![KIND_INDEX], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        collected
+    };
+
+    let mut broken = 0;
+    for job_id in ids {
+        let job = load_job(&core.conn, &job_id)?;
+        match index_dependency(core, &job)? {
+            Dependency::Ready => {
+                if job.state == JobState::WaitingDependency {
+                    promote_dependency(core, &job_id, now)?;
+                }
+            }
+            Dependency::Pending(reason) => {
+                if job.state != JobState::WaitingDependency
+                    || job.error_code.as_deref() != Some(reason)
+                {
+                    defer_for_dependency(core, &job_id, reason, now)?;
+                }
+            }
+            Dependency::Broken(code) => {
+                let attention = format!("job-terminal:{KIND_INDEX}:{code}");
+                fail_terminal(
+                    core,
+                    &job_id,
+                    code,
+                    &dependency_message(code, &job),
+                    Some(&attention),
+                    now,
+                )?;
+                broken += 1;
+            }
+        }
+    }
+    Ok(broken)
+}
+
+/// 前置已满足：把在等的任务放回 `queued`，这一轮立刻可跑。
+///
+/// 清掉 `error_code`：那是「在等什么」，前置满足了它就不再成立。
+fn promote_dependency(core: &mut Core, job_id: &str, now: DateTime<Utc>) -> Result<()> {
+    let tx = core.conn.transaction()?;
+    tx.execute(
+        "UPDATE jobs SET state = 'queued', error_code = NULL, next_attempt_at = NULL, \
+         updated_at = ?1 WHERE id = ?2",
+        params![support::to_iso(now), job_id],
+    )?;
+    crate::insert_event(&tx, EventType::JobChanged, job_id, 1)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// 前置还没满足：留在 `waiting_dependency`，把「在等什么」写在 `error_code` 上。
+///
+/// 不碰 `attempt_count`、不排 `next_attempt_at`、不置 `requires_user_action`：
+/// 在等前置不是失败，也不需要用户做什么。
+fn defer_for_dependency(
+    core: &mut Core,
+    job_id: &str,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let tx = core.conn.transaction()?;
+    tx.execute(
+        "UPDATE jobs SET state = 'waiting_dependency', error_code = ?1, next_attempt_at = NULL, \
+         requires_user_action = 0, attention_key = NULL, updated_at = ?2 WHERE id = ?3",
+        params![reason, support::to_iso(now), job_id],
+    )?;
+    crate::insert_event(&tx, EventType::JobChanged, job_id, 1)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// 前置失败的用户可读说明。
+///
+/// 它会跟着这次失败进 `job_attempts.message`；**闸门拦下的任务没有尝试记录**（没有
+/// 执行者跑过，不该凭空记一次尝试），所以那种情况下这个文案不会落库——用户看到的是
+/// `error_code`（`not_found` / `dependency_extract_unmet`，码里点明了等的是哪一环）。
+/// 留着它是给「有尝试记录」的那条路径用的，也方便将来把说明接出来。
+fn dependency_message(code: &str, job: &Job) -> String {
+    let targets = job.target_ids.join("、");
+    match code {
+        ERROR_DEPENDENCY_UNMET => format!(
+            "等不到提取完成：{targets} 没有可索引的派生内容，队列里也没有活着的 extract 任务"
+        ),
+        _ => format!("目标来源不可用：{targets}"),
+    }
+}
+
 // ------------------------------------------------------------------ 驱动
 
 /// 处理器的失败。`terminal = true` 表示「重试也不会好」（例如没有处理器）。
@@ -528,16 +798,45 @@ impl HandlerFailure {
 /// 跑到期任务：领取 → 按 `kind` 执行 → 把结果落回队列。
 ///
 /// 口径（都写在 `docs/architecture/m4-任务调度与补做.md`）：
-/// - **`limit`**：本次最多跑几个，0 表示一个都不跑。被截住的到期任务留在队列里，
-///   数量如实报进 `due_backlog`；
+/// - **`budget_ms`**：调用方（平台层）给的**时间预算**，毫秒。0 表示一个都不跑。
+///   预算**只在任务之间判断**：已经领取、正在跑的那条任务不会被中途打断，也不能
+///   被打断（核心不做抢占）。所以「一条任务本身比预算还长」是可能的，预算是
+///   「这一轮还能不能再开一条」，不是「这一轮最多跑多久」；
+/// - **`max_jobs`**：防御性的**条数上限**。预算在任务之间挡长尾，它挡的是「队列很
+///   长、但每条都不长」把一轮拖成没完没了的情况。被预算或条数截住的到期任务留在
+///   队列里，数量如实报进 `due_backlog`；
+/// - **`trigger`**：唤醒来源，如实记进摘要，供观察与排查；核心不用它改变行为；
 /// - **补做**：领取时任务的 `next_attempt_at` 已经早于本次运行的开始时刻
 ///   （`started_at`）。`next_attempt_at` 为空表示「入队即到期」——队列里没有它
 ///   本该何时跑的信息，所以**不计入补做**（否则刚入队就被跑的任务也会算成补做，
 ///   反而误导）；这类积压由 `due_backlog` 呈现。我们只说「补做」，不说「准时」；
-/// - **运行开始先回收**上一次没跑完（`running`）的任务，否则那些任务会被永久丢掉。
-pub(crate) fn run_due(core: &mut Core, now: DateTime<Utc>, limit: usize) -> Result<JobRunSummary> {
+/// - **运行开始先回收**上一次没跑完（`running`）的任务，否则那些任务会被永久丢掉；
+/// - **每次领取前先重新评估依赖**（`resolve_dependencies`），并在**一轮收尾时**再评估
+///   一次：前置已满足的在等任务会被拉起，在**同一轮**内被领取执行。所以「导入 → 提取
+///   → 索引」这样的链在**一次**驱动调用里就能走完，不需要平台层再叫一次。
+///
+/// **依赖链的不变式（一轮结束后必须成立）**：若还有任务留在 `waiting_dependency`，
+/// 它们只可能是在等队列里 `queued` / `retry_wait` 的前置任务（那些任务的
+/// `next_attempt_at` / 「入队即到期」就是下一次唤醒时刻），或者前置已判 `Broken`——
+/// 而 `Broken` 在本轮已被闸门终态失败，不会留下等待态。因此**不允许**出现
+/// 「有等待态、却 `next_wakeup = None` 且队列里没有任何到期/排队任务」：那等于把链
+/// 挂死，且摘要对平台层说了谎。收尾的那次评估就是为了堵住这个缺口——前置跑完就
+/// 立刻把后继推进到 `queued`（`next_wakeup` 随即给出「现在」），轮末不会留下
+/// 「依赖其实已满足却还写着等待」的任务。`debug_assert` 把它钉在代码里，测试另钉一条。
+pub(crate) fn run_due(
+    core: &mut Core,
+    now: DateTime<Utc>,
+    budget_ms: u64,
+    trigger: &str,
+    max_jobs: usize,
+) -> Result<JobRunSummary> {
+    // 预算按**真实流逝时间**算，不用调用方给的 `now`：`now` 是业务时钟（测试会把它
+    // 推到过去/未来来排期），拿它算预算会随调用方的时钟走。`Instant` 与业务时钟无关。
+    let started = std::time::Instant::now();
+
     let mut summary = JobRunSummary {
         started_at: now,
+        trigger: trigger.to_owned(),
         processed: 0,
         succeeded: 0,
         failed: 0,
@@ -545,11 +844,30 @@ pub(crate) fn run_due(core: &mut Core, now: DateTime<Utc>, limit: usize) -> Resu
         backfilled: 0,
         recovered: recover_interrupted_runs(core, now)?,
         due_backlog: 0,
+        waiting_dependency: 0,
+        dependency_failed: 0,
         next_wakeup: None,
     };
 
+    // 依赖闸门在**每次领取前**重评估（见下面的循环），不再只在每轮开始跑一次：
+    // 上一条前置任务跑完，后继就在同一轮被拉起并执行。这一步不领取、不执行、
+    // 不消耗预算：前置已经满足的回到 `queued`（同一轮的下一次领取就能跑），
+    // 仍未满足的留在等待态，前置不可能再满足的终态失败并如实报数。
+
     let mut processed: usize = 0;
-    while processed < limit {
+    loop {
+        // 预算与条数上限**只在任务之间**判断（见上面的口径）。
+        if processed >= max_jobs {
+            break;
+        }
+        if started.elapsed().as_millis() >= u128::from(budget_ms) {
+            break;
+        }
+
+        // 每次领取前重评估依赖：上一条前置任务刚跑完，它的后继在这一刻就被认账、
+        // 被拉起，并在同一轮内被领取执行。闸门是纯查询，不消耗预算，也不动额度。
+        summary.dependency_failed += resolve_dependencies(core, now)?;
+
         let Some(claimed) = claim_next_due_record(core, now)? else {
             break;
         };
@@ -590,9 +908,28 @@ pub(crate) fn run_due(core: &mut Core, now: DateTime<Utc>, limit: usize) -> Resu
         }
         processed += 1;
     }
+
+    // 一轮收尾再评估一次：把等待态推到当下的真相（前置已满足的回到 `queued`，
+    // `next_wakeup` 随即给出「现在」）。这是「有等待态就必须有可用的下一次唤醒」
+    // 这条不变式的兜底：循环可能因为预算 / 条数上限在这一轮的最后一条任务之后
+    // 直接退出，没来得及在「领取前」认账刚跑完的前置（见函数文档）。
+    summary.dependency_failed += resolve_dependencies(core, now)?;
+
     summary.processed = processed as i64;
+    summary.waiting_dependency = count(core, Some(&[JobState::WaitingDependency]))?;
     summary.due_backlog = count_due(core, now)?;
     summary.next_wakeup = next_wakeup(core)?;
+
+    // 不变式：一轮结束后还留着等待态，就必须给出可用的下一次唤醒时刻。留下的等待态
+    // 只可能是在等队列里 `queued`/`retry_wait` 的前置（其 `next_attempt_at` / 入队即
+    // 到期就是那次唤醒），而前置已判 `Broken` 的在本轮已经被终态失败。断言在开发/
+    // 测试构建里把这个缺口钉住，避免「有等待态却 next_wakeup = None」的挂死回归。
+    debug_assert!(
+        summary.waiting_dependency == 0 || summary.next_wakeup.is_some(),
+        "依赖链不变式被破坏：还有 {} 个等待态任务，却没有可用的下一次唤醒时刻",
+        summary.waiting_dependency
+    );
+
     Ok(summary)
 }
 
@@ -604,6 +941,7 @@ pub(crate) fn run_due(core: &mut Core, now: DateTime<Utc>, limit: usize) -> Resu
 fn execute(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailure> {
     match job.kind.as_str() {
         KIND_EXTRACT => run_extract(core, job),
+        KIND_INDEX => run_index(core, job),
         _ => Err(HandlerFailure::terminal(
             "no_handler",
             format!(
@@ -624,7 +962,7 @@ fn execute(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailure
 fn run_extract(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailure> {
     if job.target_ids.is_empty() {
         return Err(HandlerFailure::terminal(
-            "no_target",
+            ERROR_NO_TARGET,
             "提取任务没有目标来源，重试也不会变好".to_owned(),
         ));
     }
@@ -632,6 +970,49 @@ fn run_extract(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFai
         core.extract_source(target)
             .map_err(HandlerFailure::retryable)?;
     }
+    Ok(())
+}
+
+/// `index` 的执行者：对任务 `target_ids` 里的**来源**重跑关键词索引重建。
+///
+/// **空 `target_ids` = 整库重建**（`indexes.rebuild(scope=all)`）：走
+/// `rebuild_keyword_index(None)`，范围是整库，连没有来源的记录文字也重刷一遍。
+///
+/// **运行期间关键词检索照旧可用**：重建按片段先删后写、在一个事务里提交，
+/// 每次写入都会 `bump_index_epoch`。检索会话的快照按 epoch 认账，索引一变旧快照
+/// 如实报 `search_expired` 让前端重取，而不是拿半截索引当准的。所以「重建中」
+/// 不等于「搜不到」，也不等于「搜到的可能是旧的还假装是新的」。
+///
+/// 成败口径：
+/// - **结构性原因**（目标来源不存在）→ 终态 `failed` + 明确错误码。
+///   正常路径上闸门（`resolve_dependencies`）在领取前就已经把它们终态失败了，
+///   这里再挡一次是防御：绕过闸门也不能悄悄成功；
+/// - **可恢复原因**（IO / 数据库暂时不可用）→ 按 #67 的 `HandlerFailure::retryable`
+///   退避重试，消耗额度。
+fn run_index(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailure> {
+    if job.target_ids.is_empty() {
+        core.rebuild_keyword_index(None)
+            .map_err(HandlerFailure::retryable)?;
+        return Ok(());
+    }
+    for target in &job.target_ids {
+        let exists: i64 = core
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM source_items WHERE source_id = ?1",
+                params![target],
+                |row| row.get(0),
+            )
+            .map_err(|error| HandlerFailure::retryable(error.into()))?;
+        if exists == 0 {
+            return Err(HandlerFailure::terminal(
+                crate::error::ErrorCode::NotFound.wire(),
+                format!("索引目标来源不存在：{target}"),
+            ));
+        }
+    }
+    core.rebuild_keyword_index(Some(&job.target_ids))
+        .map_err(HandlerFailure::retryable)?;
     Ok(())
 }
 
