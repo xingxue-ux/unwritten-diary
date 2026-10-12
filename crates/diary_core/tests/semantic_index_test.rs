@@ -1187,3 +1187,113 @@ fn semantic_index_with_the_real_model() {
     let after = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
     assert_eq!(after.results[0].group_id, source_a);
 }
+/// 回归（评审在 #58 上指出的）：**旧修订的块不能被语义/混合检索当成当前内容召回**。
+///
+/// 场景：建好语义索引 → `revise_text` 改正文 → **不重建** → 搜索。
+/// 块与向量都按内容存，所以旧修订的块仍在生效代次里；候选查询若不按
+/// `source_items.current_revision_id` 过滤，就会命中旧正文。关键词那一路在 #54 已按同一
+/// 口径修过，这一条把语义那一路钉住。
+#[test]
+fn retired_revision_is_not_returned_by_semantic_search_before_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = Core::open(&path).unwrap();
+    let counters = Arc::new(Counters::default());
+    // 桩：旧正文含「旧说法」，新正文含「新说法」——两组正交单位向量，命中与否一目了然。
+    core.set_embedder(stub(
+        &counters,
+        vec![("旧说法", unit(0)), ("新说法", unit(1))],
+    ));
+
+    let capture_id = write_capture(&mut core, at(2026, 9, 20), "", "op");
+    let source_id = import_and_extract(
+        &mut core,
+        &capture_id,
+        "报告.txt",
+        "体检报告：这里写着旧说法，请以此为准。\n",
+        "op-mat",
+    );
+    // 提交后才能改正文（草稿态不允许 revise）。
+    let revision = core.get_capture(&capture_id).unwrap().revision;
+    core.commit(&capture_id, revision, "op-commit").unwrap();
+    core.build_semantic_index(None).unwrap();
+
+    // 前提：建索引之后，旧说法在语义与混合两路都能命中。
+    assert_eq!(
+        search_mode(&mut core, "旧说法", SearchMode::Semantic, 10)
+            .results
+            .len(),
+        1,
+        "前提：旧说法此刻应当能命中"
+    );
+    assert_eq!(
+        search_mode(&mut core, "旧说法", SearchMode::Hybrid, 10)
+            .results
+            .len(),
+        1,
+        "前提：混合那一路此刻也能命中"
+    );
+
+    // 改正文：新修订进库（#54 会顺手产出派生内容），但**没有重建语义索引**。
+    let revision = core.get_capture(&capture_id).unwrap().revision;
+    core.revise_text(
+        &source_id,
+        "体检报告：这里写的是新说法，请以此为准。\n",
+        revision,
+        "op-revise",
+    )
+    .unwrap();
+
+    // 这一段是**回归本体**：旧修订的块与向量还在库里，但不能再被召回。
+    assert_eq!(
+        search_mode(&mut core, "旧说法", SearchMode::Semantic, 10)
+            .results
+            .len(),
+        0,
+        "旧修订的块不能被语义检索召回（#32：旧版本不能当成当前内容）"
+    );
+    assert_eq!(
+        search_mode(&mut core, "旧说法", SearchMode::Hybrid, 10).results.len(),
+        0,
+        "混合那一路同样不能召回旧修订"
+    );
+    // 诚实的一面：新正文此时**还没有**向量（没重建），所以语义搜不到它是如实结果。
+    assert_eq!(
+        search_mode(&mut core, "新说法", SearchMode::Semantic, 10)
+            .results
+            .len(),
+        0,
+        "没重建之前，新正文本来就没有向量——如实为空，而不是拿旧向量顶上"
+    );
+
+    // 状态也不能撒谎：旧块不算「可用的块」（它的每一段都不是当前修订）。
+    let status = core.index_status(None).unwrap();
+    assert_eq!(
+        status.total_chunks, 0,
+        "改正文后、重建前，可用的块是 0（旧块仍在库里，但不是当前内容）"
+    );
+    assert_eq!(status.embedded_chunks, 0, "同理，已嵌入的可用块也是 0");
+    assert!(!status.semantic_index_ready, "没有可用块时不该说就绪");
+
+    // 重建之后：新正文能被语义召回，旧正文仍然不能。
+    core.build_semantic_index(None).unwrap();
+    assert_eq!(
+        search_mode(&mut core, "新说法", SearchMode::Semantic, 10)
+            .results
+            .len(),
+        1,
+        "重建之后，新正文应当能被语义召回"
+    );
+    // 注意：**纯语义是 kNN**，它总会返回最近的几条（这里新块与查询正交、分数≈0），
+    // 所以不能断言「条数为 0」——要断言的是**没有任何一条命中是旧正文**。
+    let after = search_mode(&mut core, "旧说法", SearchMode::Semantic, 10);
+    assert!(
+        after.results.iter().all(|hit| !hit
+            .snippet
+            .as_deref()
+            .unwrap_or_default()
+            .contains("旧说法")),
+        "重建之后任何命中都不该是旧正文：{:?}",
+        after.results.iter().map(|h| h.snippet.clone()).collect::<Vec<_>>()
+    );
+}

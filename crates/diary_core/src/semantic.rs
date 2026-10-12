@@ -381,6 +381,10 @@ pub(crate) fn candidates(
         });
     }
 
+    // **来源篇必须仍是当前修订**：块的 id 与向量都按内容存，`revise_text` 之后、下一次
+    // `build_semantic_index` 之前，旧修订的块与向量**仍在生效代次里**——不过滤就会把旧正文
+    // 当成当前内容召回（#32 明确禁止；关键词那一路在 #54 已按同一口径修过）。
+    // 记录自写文字的 span 没有来源修订（空串），单独按 `capture_id` 处理即可。
     let (kinds, scope) = crate::search_session::filters_to_params(filters)?;
     let sql = "SELECT v.vector, v.dims, v.storage, s.chunk_id, s.ordinal, s.capture_id, \
                       s.source_id, s.source_revision_id, s.start_char, s.end_char, s.kind, \
@@ -394,7 +398,11 @@ pub(crate) fn candidates(
                  AND (?3 IS NULL OR c.day_key >= ?3) \
                  AND (?4 IS NULL OR c.day_key <= ?4) \
                  AND (?5 IS NULL OR s.kind IN (SELECT value FROM json_each(?5))) \
-                 AND (?6 IS NULL OR s.source_id IN (SELECT value FROM json_each(?6)))";
+                 AND (?6 IS NULL OR s.source_id IN (SELECT value FROM json_each(?6))) \
+                   AND (s.source_revision_id = '' \
+                        OR EXISTS (SELECT 1 FROM source_items si \
+                                   WHERE si.source_id = s.source_id \
+                                     AND si.current_revision_id = s.source_revision_id))";
     let mut statement = core.conn.prepare(sql)?;
     let rows = statement
         .query_map(
