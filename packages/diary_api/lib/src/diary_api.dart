@@ -242,10 +242,35 @@ abstract class DiaryApi {
   // -------------------------------------------------------------- 搜索
 
   /// 开始检索。返回初始快照，后续经事件更新。
+  ///
+  /// `hybrid` 模式的初始阶段是 [SearchPhase.keywordReady]：先只算关键词那一路，
+  /// 首屏不等向量模型；要语义补充得再调 [upgradeSearch]。
   Future<SearchSnapshot> startSearch({
     required SearchRequest request,
     required int queryRevision,
   });
+
+  /// 把已经给了关键词结果的会话升级到融合阶段（契约 4.4）。
+  ///
+  /// 语义与核心一致：
+  /// - **同一会话**再取一份快照，阶段从 [SearchPhase.keywordReady] 走到
+  ///   [SearchPhase.hybridReady]，结果是两路 RRF 融合并重排后的；
+  /// - **幂等**：重复调用（含已经确认升不了级的情形）返回同一份，不重复计算；
+  /// - **游标重置**：升级后的游标是融合结果第一页的游标；拿升级前的深页游标
+  ///   翻页报 `cursor_expired`，不按新顺序返回一段对不上的结果；
+  /// - **语义不可用时绝不假装**：没有模型、没有生效代次或没有可用块时不融合，
+  ///   阶段如实停在 [SearchPhase.keywordReady] 并在 `warnings` 里说明；
+  /// - **错误**：会话过期抛 [SearchExpiredException]；非 `hybrid` 会话抛
+  ///   `invalid_state`；已取消的会话返回 `cancelled` 快照、不融合。
+  ///
+  /// **默认实现是诚实的退化**：只实现本接口、接不上混合检索的实现者，拿到的
+  /// 是这条会话**当前那一份**快照——也就是仍然 [SearchPhase.keywordReady] 的
+  /// 关键词结果。这样做的原因：接口新增方法不能让已有实现者编译不过，而这里
+  /// 能给出的最诚实的答案就是「我没有融合，阶段如实停在关键词阶段」。它**不抛
+  /// 异常**（调用方在 keyword_ready 上应当继续可用），也**不伪造** hybrid_ready。
+  /// 桥接（`BridgeDiaryApi`）等真正支持混合检索的实现会覆盖它。
+  Future<SearchSnapshot> upgradeSearch({required String sessionId}) =>
+      searchSnapshot(sessionId);
 
   /// 翻页绑定原会话；快照失效时抛 [SearchExpiredException]。
   Future<SearchSnapshot> nextPage({required String sessionId, String? cursor});
