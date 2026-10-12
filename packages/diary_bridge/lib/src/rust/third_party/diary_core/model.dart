@@ -804,8 +804,8 @@ enum LocatorType {
       RustLib.instance.api.diaryCoreModelLocatorTypeWire(that: this);
 }
 
-/// 一条命中是靠什么匹配上的，契约第 2.6 节。关键词那一路全是 `Keyword`；
-/// 语义那一路全是 `Semantic`（混合两路合并是 #51）。
+/// 一条命中是靠什么匹配上的，契约第 2.6 节。关键词那一路全是 `Keyword`，语义那一路
+/// 全是 `Semantic`；混合那一路**如实**标：两路都有就是 `[Keyword, Semantic]`。
 enum MatchedBy {
   keyword,
   semantic,
@@ -1017,8 +1017,8 @@ class SearchHit {
           locator == other.locator;
 }
 
-/// 检索模式，契约第 2.6 节。`Keyword` 与 `Semantic` 都实现了；`Hybrid` 留给
-/// #51（B3c-3），现在如实降级到关键词并给提示（不假装跑过混合）。
+/// 检索模式，契约第 2.6 节。三种都实现了：`Hybrid` 是 RRF 融合（#51，B3c-3），
+/// 语义未就绪时**退化为关键词并在 `warnings` 里明说**（不静默，也不假装跑过混合）。
 enum SearchMode {
   keyword,
   semantic,
