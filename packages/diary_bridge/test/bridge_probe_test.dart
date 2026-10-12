@@ -301,13 +301,24 @@ void main() {
   });
 
   test('驱动一轮到期任务：调用得到，且摘要自洽', () async {
-    // 不清库：前面的用例可能已经排了任务（导入会排 extract），所以这里不断言「跑了 0 条」，
-    // 只钉住**对外契约**：调用得到、计数自洽、补做数不超过已跑条数。
-    final summary = await session.runDueJobs(limit: 10);
-    expect(summary.processed, summary.succeeded + summary.failed + summary.retrying,
-        reason: '每一条跑过的任务都要落在一个终态或等待态里');
+    // 不清库：前面的用例可能已经排了任务（导入会排 extract + 等提取的 index），所以这里
+    // 不断言「跑了 0 条」，只钉住**对外契约**：调用得到、计数自洽、唤醒来源如实回传。
+    final summary = await session.runDueJobs(
+      budgetMs: 60000,
+      trigger: 'foreground',
+    );
+    expect(summary.trigger, 'foreground', reason: '唤醒来源如实记进摘要');
+    expect(
+      summary.processed,
+      summary.succeeded + summary.failed + summary.retrying,
+      reason: '每一条跑过的任务都要落在一个终态或等待态里',
+    );
     expect(summary.backfilled, lessThanOrEqualTo(summary.processed));
     expect(summary.processed, greaterThanOrEqualTo(0));
+    expect(summary.waitingDependency, greaterThanOrEqualTo(0));
+    expect(summary.dependencyFailed, greaterThanOrEqualTo(0));
+    expect(summary.recovered, greaterThanOrEqualTo(0));
+    expect(summary.dueBacklog, greaterThanOrEqualTo(0));
   });
 
 }

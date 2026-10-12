@@ -644,14 +644,18 @@ impl NewJob {
 
 /// 一次「跑到期任务」的结果摘要。
 ///
-/// 数字都是真实统计：**没有跑的任务绝不会被算成跑过**；被 limit 截住的到期任务
-/// 在 `due_backlog` 里如实报出来。契约 `runDueJobs` 的返回值就是它——桥接还没接
-/// 这个方法，`packages/diary_api` 里的 `DueRunSummary` 形状更老，接的时候再对齐。
+/// 数字都是真实统计：**没有跑的任务绝不会被算成跑过**；被预算或条数上限截住的
+/// 到期任务在 `due_backlog` 里如实报出来，在等前置的任务在 `waiting_dependency`
+/// 里如实报出来。契约 `runDueJobs` 的返回值就是它（`packages/diary_api` 的
+/// `DueRunSummary` 字段与这里一一对应）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobRunSummary {
     /// 本次运行开始的时刻（调用方给的 `now`）。「补做」以它为界。
     pub started_at: DateTime<Utc>,
-    /// 本次领取并执行的任务数，不超过调用方给的 limit。
+    /// 唤醒来源，调用方给什么就如实记什么（例如 startup / foreground / wake / manual）。
+    /// 核心只用它做观察与排查，不用它改变行为。
+    pub trigger: String,
+    /// 本次领取并执行的任务数，不超过调用方给的条数上限。
     pub processed: i64,
     /// 其中执行成功、进入 `succeeded` 的数量。
     pub succeeded: i64,
@@ -665,9 +669,23 @@ pub struct JobRunSummary {
     pub backfilled: i64,
     /// 运行开始时回收的「上次没跑完」（`state=running`）任务数。
     pub recovered: i64,
-    /// 本次运行结束后仍然到期、但这次没跑上的任务数（被 limit 截住）。
+    /// 本次运行结束后仍然到期、但这次没跑上的任务数（被预算或条数上限截住）。
+    ///
+    /// `due_backlog > 0` 就说明这一轮是**提前收手**的（不是没有活了）；预算耗尽
+    /// 不是一个单独的字段，因为它和这个数字说的是一件事，留两个字段只会互相矛盾。
     pub due_backlog: i64,
-    /// 下一个到期时刻；没有待办时为 None。
+    /// 本次运行结束时还在等前置条件的任务数（现在只有 `index` 等 `extract`）。
+    ///
+    /// 这些任务**没有**被领取、没有消耗重试额度，所以也不在 `processed` 里。
+    pub waiting_dependency: i64,
+    /// 本次运行里被**闸门**判定「前置不可能再满足」而终态失败的任务数。
+    ///
+    /// 这些任务同样不在 `processed` 里（一行执行者代码都没跑）；它们是被闸门在
+    /// 事务里落成「已放弃」的，`job_status().failed` / `recent_errors` 里看得到。
+    /// 单独报出来，是为了让摘要不必把「这一轮什么都没跑」说成「一切正常」。
+    pub dependency_failed: i64,
+    /// 下一个到期时刻；没有待办时为 None。等前置到期的任务不算「待办」：
+    /// 它们要等的是别人跑完，不是时间到（见 `jobs::next_wakeup`）。
     pub next_wakeup: Option<DateTime<Utc>>,
 }
 

@@ -73,6 +73,13 @@ pub struct BridgeSession {
     library_id: String,
 }
 
+/// 一轮驱动最多跑几条任务（防御性上限）。
+///
+/// 契约 `jobs.runDue` 只给毫秒预算、不给条数，所以这个上限由桥接层拍：预算挡的是
+/// 长尾，它挡的是「队列很长 + 多条短任务」把一轮拖成没完没了。没跑上的任务留在
+/// 队列里、如实计入摘要的 `dueBacklog`，下一轮接着跑——不会丢。
+const RUN_DUE_MAX_JOBS: usize = 64;
+
 impl BridgeSession {
     /// 打开（或创建）资料库。
     pub fn open(library_path: String) -> Result<BridgeSession, BridgeError> {
@@ -334,13 +341,28 @@ impl BridgeSession {
     }
 
     /// **跑一轮到期任务**（驱动），返回本轮摘要：跑了几条、成功/失败各几条、其中多少条是
-    /// **补做**（本轮领取时排期已过期）、还有多少到期未跑（被 `limit` 截住）、下一个唤醒时刻。
+    /// **补做**（本轮领取时排期已过期）、还有多少到期未跑（被预算/条数截住）、有多少在等
+    /// 依赖、下一个唤醒时刻，以及本次的唤醒来源。
     ///
-    /// 什么时候调用由平台层决定（#19：系统级唤醒 / 前台 / 退出前），这一层只负责
-    /// 「调用得到」；`limit` 是本轮最多跑几条任务（按条数，不是毫秒预算）。
-    pub fn run_due_jobs(&self, limit: u32) -> Result<JobRunSummary, BridgeError> {
+    /// - `budget_ms` 是平台授予的**时间预算**（毫秒），对齐契约 `jobs.runDue` 的
+    ///   `budgetMs`；`0` 表示这一轮一条都不跑。预算**只在任务之间判断**：已经在跑的
+    ///   任务不打断（核心不做抢占），所以一条任务本身可以比预算还长；
+    /// - `trigger` 是唤醒来源（`startup` / `foreground` / `wake` / `manual` …），
+    ///   核心如实记进摘要但不改变行为；什么时候调用由平台层决定（#19）；
+    /// - 条数上限由这一层夹一个防御性常量 `RUN_DUE_MAX_JOBS`（契约没给这个参数）：
+    ///   没跑上的任务留在队列里、如实计入 `dueBacklog`，下一轮接着跑。
+    pub fn run_due_jobs(
+        &self,
+        budget_ms: u32,
+        trigger: String,
+    ) -> Result<JobRunSummary, BridgeError> {
         let mut core = self.lock()?;
-        Ok(core.run_due_jobs(Utc::now(), limit as usize)?)
+        Ok(core.run_due_jobs(
+            Utc::now(),
+            u64::from(budget_ms),
+            &trigger,
+            RUN_DUE_MAX_JOBS,
+        )?)
     }
 
     /// 建议的下次唤醒时刻；没有待办时为空。

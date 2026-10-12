@@ -1236,7 +1236,8 @@ fn wire__crate__api__BridgeSession_run_due_jobs_impl(
             let api_that = <RustOpaqueMoi<
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
             >>::sse_decode(&mut deserializer);
-            let api_limit = <u32>::sse_decode(&mut deserializer);
+            let api_budget_ms = <u32>::sse_decode(&mut deserializer);
+            let api_trigger = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::BridgeError>((move || {
@@ -1254,8 +1255,11 @@ fn wire__crate__api__BridgeSession_run_due_jobs_impl(
                         }
                     }
                     let api_that_guard = api_that_guard.unwrap();
-                    let output_ok =
-                        crate::api::BridgeSession::run_due_jobs(&*api_that_guard, api_limit)?;
+                    let output_ok = crate::api::BridgeSession::run_due_jobs(
+                        &*api_that_guard,
+                        api_budget_ms,
+                        api_trigger,
+                    )?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -2940,6 +2944,7 @@ const _: fn() = || {
     {
         let JobRunSummary = None::<diary_core::model::JobRunSummary>.unwrap();
         let _: chrono::DateTime<chrono::Utc> = JobRunSummary.started_at;
+        let _: String = JobRunSummary.trigger;
         let _: i64 = JobRunSummary.processed;
         let _: i64 = JobRunSummary.succeeded;
         let _: i64 = JobRunSummary.failed;
@@ -2947,6 +2952,8 @@ const _: fn() = || {
         let _: i64 = JobRunSummary.backfilled;
         let _: i64 = JobRunSummary.recovered;
         let _: i64 = JobRunSummary.due_backlog;
+        let _: i64 = JobRunSummary.waiting_dependency;
+        let _: i64 = JobRunSummary.dependency_failed;
         let _: Option<chrono::DateTime<chrono::Utc>> = JobRunSummary.next_wakeup;
     }
     {
@@ -3576,6 +3583,7 @@ impl SseDecode for diary_core::model::JobRunSummary {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_startedAt = <chrono::DateTime<chrono::Utc>>::sse_decode(deserializer);
+        let mut var_trigger = <String>::sse_decode(deserializer);
         let mut var_processed = <i64>::sse_decode(deserializer);
         let mut var_succeeded = <i64>::sse_decode(deserializer);
         let mut var_failed = <i64>::sse_decode(deserializer);
@@ -3583,9 +3591,12 @@ impl SseDecode for diary_core::model::JobRunSummary {
         let mut var_backfilled = <i64>::sse_decode(deserializer);
         let mut var_recovered = <i64>::sse_decode(deserializer);
         let mut var_dueBacklog = <i64>::sse_decode(deserializer);
+        let mut var_waitingDependency = <i64>::sse_decode(deserializer);
+        let mut var_dependencyFailed = <i64>::sse_decode(deserializer);
         let mut var_nextWakeup = <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
         return diary_core::model::JobRunSummary {
             started_at: var_startedAt,
+            trigger: var_trigger,
             processed: var_processed,
             succeeded: var_succeeded,
             failed: var_failed,
@@ -3593,6 +3604,8 @@ impl SseDecode for diary_core::model::JobRunSummary {
             backfilled: var_backfilled,
             recovered: var_recovered,
             due_backlog: var_dueBacklog,
+            waiting_dependency: var_waitingDependency,
+            dependency_failed: var_dependencyFailed,
             next_wakeup: var_nextWakeup,
         };
     }
@@ -5202,6 +5215,7 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::JobRunSumma
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.0.started_at.into_into_dart().into_dart(),
+            self.0.trigger.into_into_dart().into_dart(),
             self.0.processed.into_into_dart().into_dart(),
             self.0.succeeded.into_into_dart().into_dart(),
             self.0.failed.into_into_dart().into_dart(),
@@ -5209,6 +5223,8 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::JobRunSumma
             self.0.backfilled.into_into_dart().into_dart(),
             self.0.recovered.into_into_dart().into_dart(),
             self.0.due_backlog.into_into_dart().into_dart(),
+            self.0.waiting_dependency.into_into_dart().into_dart(),
+            self.0.dependency_failed.into_into_dart().into_dart(),
             self.0.next_wakeup.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -6148,6 +6164,7 @@ impl SseEncode for diary_core::model::JobRunSummary {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <chrono::DateTime<chrono::Utc>>::sse_encode(self.started_at, serializer);
+        <String>::sse_encode(self.trigger, serializer);
         <i64>::sse_encode(self.processed, serializer);
         <i64>::sse_encode(self.succeeded, serializer);
         <i64>::sse_encode(self.failed, serializer);
@@ -6155,6 +6172,8 @@ impl SseEncode for diary_core::model::JobRunSummary {
         <i64>::sse_encode(self.backfilled, serializer);
         <i64>::sse_encode(self.recovered, serializer);
         <i64>::sse_encode(self.due_backlog, serializer);
+        <i64>::sse_encode(self.waiting_dependency, serializer);
+        <i64>::sse_encode(self.dependency_failed, serializer);
         <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.next_wakeup, serializer);
     }
 }

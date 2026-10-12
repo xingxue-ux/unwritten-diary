@@ -202,7 +202,8 @@ abstract class RustLibApi extends BaseApi {
 
   Future<JobRunSummary> crateApiBridgeSessionRunDueJobs({
     required BridgeSession that,
-    required int limit,
+    required int budgetMs,
+    required String trigger,
   });
 
   Future<DraftSaveResult> crateApiBridgeSessionSaveDraft({
@@ -1243,7 +1244,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @override
   Future<JobRunSummary> crateApiBridgeSessionRunDueJobs({
     required BridgeSession that,
-    required int limit,
+    required int budgetMs,
+    required String trigger,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1253,7 +1255,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          sse_encode_u_32(limit, serializer);
+          sse_encode_u_32(budgetMs, serializer);
+          sse_encode_String(trigger, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1266,7 +1269,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_bridge_error,
         ),
         constMeta: kCrateApiBridgeSessionRunDueJobsConstMeta,
-        argValues: [that, limit],
+        argValues: [that, budgetMs, trigger],
         apiImpl: this,
       ),
     );
@@ -1275,7 +1278,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiBridgeSessionRunDueJobsConstMeta =>
       const TaskConstMeta(
         debugName: "BridgeSession_run_due_jobs",
-        argNames: ["that", "limit"],
+        argNames: ["that", "budgetMs", "trigger"],
       );
 
   @override
@@ -3129,18 +3132,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   JobRunSummary dco_decode_job_run_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return JobRunSummary(
       startedAt: dco_decode_Chrono_Utc(arr[0]),
-      processed: dco_decode_i_64(arr[1]),
-      succeeded: dco_decode_i_64(arr[2]),
-      failed: dco_decode_i_64(arr[3]),
-      retrying: dco_decode_i_64(arr[4]),
-      backfilled: dco_decode_i_64(arr[5]),
-      recovered: dco_decode_i_64(arr[6]),
-      dueBacklog: dco_decode_i_64(arr[7]),
-      nextWakeup: dco_decode_opt_box_autoadd_Chrono_Utc(arr[8]),
+      trigger: dco_decode_String(arr[1]),
+      processed: dco_decode_i_64(arr[2]),
+      succeeded: dco_decode_i_64(arr[3]),
+      failed: dco_decode_i_64(arr[4]),
+      retrying: dco_decode_i_64(arr[5]),
+      backfilled: dco_decode_i_64(arr[6]),
+      recovered: dco_decode_i_64(arr[7]),
+      dueBacklog: dco_decode_i_64(arr[8]),
+      waitingDependency: dco_decode_i_64(arr[9]),
+      dependencyFailed: dco_decode_i_64(arr[10]),
+      nextWakeup: dco_decode_opt_box_autoadd_Chrono_Utc(arr[11]),
     );
   }
 
@@ -4239,6 +4245,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   JobRunSummary sse_decode_job_run_summary(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_startedAt = sse_decode_Chrono_Utc(deserializer);
+    var var_trigger = sse_decode_String(deserializer);
     var var_processed = sse_decode_i_64(deserializer);
     var var_succeeded = sse_decode_i_64(deserializer);
     var var_failed = sse_decode_i_64(deserializer);
@@ -4246,9 +4253,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_backfilled = sse_decode_i_64(deserializer);
     var var_recovered = sse_decode_i_64(deserializer);
     var var_dueBacklog = sse_decode_i_64(deserializer);
+    var var_waitingDependency = sse_decode_i_64(deserializer);
+    var var_dependencyFailed = sse_decode_i_64(deserializer);
     var var_nextWakeup = sse_decode_opt_box_autoadd_Chrono_Utc(deserializer);
     return JobRunSummary(
       startedAt: var_startedAt,
+      trigger: var_trigger,
       processed: var_processed,
       succeeded: var_succeeded,
       failed: var_failed,
@@ -4256,6 +4266,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       backfilled: var_backfilled,
       recovered: var_recovered,
       dueBacklog: var_dueBacklog,
+      waitingDependency: var_waitingDependency,
+      dependencyFailed: var_dependencyFailed,
       nextWakeup: var_nextWakeup,
     );
   }
@@ -5562,6 +5574,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_Chrono_Utc(self.startedAt, serializer);
+    sse_encode_String(self.trigger, serializer);
     sse_encode_i_64(self.processed, serializer);
     sse_encode_i_64(self.succeeded, serializer);
     sse_encode_i_64(self.failed, serializer);
@@ -5569,6 +5582,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_64(self.backfilled, serializer);
     sse_encode_i_64(self.recovered, serializer);
     sse_encode_i_64(self.dueBacklog, serializer);
+    sse_encode_i_64(self.waitingDependency, serializer);
+    sse_encode_i_64(self.dependencyFailed, serializer);
     sse_encode_opt_box_autoadd_Chrono_Utc(self.nextWakeup, serializer);
   }
 
@@ -6456,12 +6471,24 @@ class BridgeSessionImpl extends RustOpaque implements BridgeSession {
   );
 
   /// **跑一轮到期任务**（驱动），返回本轮摘要：跑了几条、成功/失败各几条、其中多少条是
-  /// **补做**（本轮领取时排期已过期）、还有多少到期未跑（被 `limit` 截住）、下一个唤醒时刻。
+  /// **补做**（本轮领取时排期已过期）、还有多少到期未跑（被预算/条数截住）、有多少在等
+  /// 依赖、下一个唤醒时刻，以及本次的唤醒来源。
   ///
-  /// 什么时候调用由平台层决定（#19：系统级唤醒 / 前台 / 退出前），这一层只负责
-  /// 「调用得到」；`limit` 是本轮最多跑几条任务（按条数，不是毫秒预算）。
-  Future<JobRunSummary> runDueJobs({required int limit}) => RustLib.instance.api
-      .crateApiBridgeSessionRunDueJobs(that: this, limit: limit);
+  /// - `budget_ms` 是平台授予的**时间预算**（毫秒），对齐契约 `jobs.runDue` 的
+  ///   `budgetMs`；`0` 表示这一轮一条都不跑。预算**只在任务之间判断**：已经在跑的
+  ///   任务不打断（核心不做抢占），所以一条任务本身可以比预算还长；
+  /// - `trigger` 是唤醒来源（`startup` / `foreground` / `wake` / `manual` …），
+  ///   核心如实记进摘要但不改变行为；什么时候调用由平台层决定（#19）；
+  /// - 条数上限由这一层夹一个防御性常量 `RUN_DUE_MAX_JOBS`（契约没给这个参数）：
+  ///   没跑上的任务留在队列里、如实计入 `dueBacklog`，下一轮接着跑。
+  Future<JobRunSummary> runDueJobs({
+    required int budgetMs,
+    required String trigger,
+  }) => RustLib.instance.api.crateApiBridgeSessionRunDueJobs(
+    that: this,
+    budgetMs: budgetMs,
+    trigger: trigger,
+  );
 
   /// 保存草稿。只有核心确认落盘后才返回 `durable = true`。
   Future<DraftSaveResult> saveDraft({

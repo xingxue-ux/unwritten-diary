@@ -283,6 +283,12 @@ abstract class DiaryApi {
   Future<DateTime?> nextWakeup();
 
   /// 在平台授予的运行预算内执行到期任务，支持取消与租约恢复。
+  ///
+  /// [budgetMs] 是**时间预算**（毫秒），`0` 表示这一轮一条都不跑。预算只在**任务
+  /// 之间**判断：已经领取、正在跑的任务不打断（核心不做抢占），所以一条任务本身
+  /// 可以比预算还长。[trigger] 是唤醒来源（startup / foreground / wake / manual …），
+  /// 如实记进摘要、不改变行为。没跑上的到期任务留在队列里，数量在
+  /// [DueRunSummary.dueBacklog] 里如实报出来。
   Future<DueRunSummary> runDueJobs({
     required int budgetMs,
     required String trigger,

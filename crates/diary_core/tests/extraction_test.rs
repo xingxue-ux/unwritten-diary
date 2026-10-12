@@ -409,7 +409,17 @@ fn importing_a_file_queues_an_extract_job() {
     // 任务指向的是「源修订」——提取真正需要的东西。用它当输入必须能直接跑通。
     let content = core.extract_source(&jobs[0].target_ids[0]).unwrap();
     assert_eq!(content.segments.len(), 1);
-    let _ = source_id;
+
+    // 导入还排了一条**等提取**的关键词索引任务（指向来源，不是修订）：
+    // 这一刻提取还没跑，它落在 waiting_dependency，不消耗重试额度。
+    let waiting = core
+        .list_jobs(Some(&[JobState::WaitingDependency]), 10)
+        .unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].kind, "index");
+    assert_eq!(waiting[0].target_ids, vec![source_id]);
+    assert_eq!(waiting[0].error_code.as_deref(), Some("waiting_extract"));
+    assert_eq!(waiting[0].attempt_count, 0, "等前置不是失败，不动尝试次数");
 }
 
 #[test]

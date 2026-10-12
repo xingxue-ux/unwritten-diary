@@ -267,6 +267,25 @@ pub(crate) fn finish(
         .targeting(vec![revision_id.clone()])
         .with_snapshot(actual_sha.clone());
     crate::jobs::enqueue_in_tx(&tx, extract_job)?;
+
+    // 同一份材料还要有一个**关键词索引任务**：这就是「导入 → 提取 → 索引」这条链
+    // 的尾巴。这一刻提取**一定**还没跑（extract 任务刚入队），所以它直接落在
+    // `waiting_dependency` + `error_code = waiting_extract`：不是失败、不消耗重试额度，
+    // 驱动每一轮开始时重新评估，提取一完成就在下一轮被拉起。
+    //
+    // 为什么连索引也要排任务，而不是只靠提取时的增量索引：增量索引写的是「那一刻」
+    // 的派生片段；重建任务是对现有材料的校准入口（#31 要的 `indexes.rebuild` 也走
+    // 同一个执行者），也是后面语义索引任务化要挂上去的位置。范围只限这一条来源，
+    // 代价是这条材料的片段数，不是整库。
+    let index_job = crate::model::NewJob::new("index", crate::model::JobPriority::Maintenance)
+        .targeting(vec![source_id.clone()])
+        .with_snapshot(actual_sha.clone());
+    crate::jobs::enqueue_in_tx_with_state(
+        &tx,
+        index_job,
+        crate::model::JobState::WaitingDependency,
+        Some(crate::jobs::WAITING_EXTRACT),
+    )?;
     crate::insert_event(&tx, EventType::AssetChanged, &asset_id, 1)?;
     crate::insert_event(
         &tx,

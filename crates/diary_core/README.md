@@ -19,7 +19,8 @@
 | 导入恢复 | 重开资料库时把未完成的导入标成 `recoverable`，不假装成功 |
 | 录音会话 | `prepare_recording` / `register_segment` / `update_recording_state` / `finalize_recording` / `recover_recording`；片段按序号幂等，最终化流式拼成逻辑音频 |
 | 任务队列 | 入队、按优先级领取、成功/失败/退避重试、手动重试、取消、下次唤醒时刻、通知去重；`commit_with_jobs` 保证提交与入队同事务 |
-| 任务驱动 | `run_due_jobs`：按 `kind` 派活（现在只有 `extract`）、失败退避或放弃、回收上次没跑完的任务；业务键去重、`job.changed`、`job_status`（各状态计数 / 到期积压 / 最近错误）；补做口径见 m4 文档 |
+| 任务驱动 | `run_due_jobs(now, budget_ms, trigger, max_jobs)`：按 `kind` 派活（`extract` 提取、`index` 关键词索引重建）、失败退避或放弃、回收上次没跑完的任务；**毫秒预算只在任务之间判断**（不抢占正在跑的任务），条数上限防御性夹一道；业务键去重、`job.changed`、`job_status`（各状态计数 / 到期积压 / 最近错误）；补做口径见 m4 文档 |
+| 依赖链 | 导入完成同事务排 `extract` + `index`；`index` 前置未满足时进 `waiting_dependency`（`error_code = waiting_extract`），不消耗重试额度；驱动每轮开始时重新评估，前置满足就拉起、不可能满足就终态失败并报明确错误码 |
 | 错误码 | 映射到契约第 7 节，含 `SQLITE_FULL` → `storage_full`、ENOSPC → `storage_full` |
 | 时间精度 | 所有对外返回的时间统一截断到毫秒，保证「写进去的」和「读出来的」相等 |
 | 提取 | `extract_source`：纯文本（含 GBK 等编码检测）、Markdown、DOCX、文本 PDF、扫描件与无能力类型的如实降级；结果可重建 |
@@ -27,12 +28,13 @@
 
 ## 还没实现
 
-索引任务化与真机排期（#19）、语义/向量检索、转写与 OCR 真实能力（B4）、日记生成、插件、备份恢复，以及大部分桥接接线。
+真机排期与系统级唤醒（#19）、语义/向量索引的任务化（#58）、转写与 OCR 真实能力（B4）、
+`indexes.rebuild` 的桥接入口、日记生成、插件、备份恢复，以及大部分桥接接线。
 
 ## 校验
 
 ```bash
-cargo test -p diary_core        # 106 项通过（另有 1 项 10 万片段量测默认忽略）
+cargo test -p diary_core        # 141 项通过（另有 1 项 10 万片段量测默认忽略）
 cargo clippy -p diary_core --all-targets -- -D warnings
 ```
 

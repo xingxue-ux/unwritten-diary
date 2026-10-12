@@ -969,37 +969,103 @@ class JobTicket {
 }
 
 /// 一轮到期任务执行摘要。契约第 4.4 节 `jobs.runDue`。
+///
+/// 字段与核心的 `JobRunSummary` **一一对应**（桥接镜像的就是它）。数字都是真实统计：
+/// - 没有跑的任务绝不算进 [processed]；被预算/条数截住的到期任务在 [dueBacklog]
+///   里如实报出来（`dueBacklog > 0` 就说明这一轮是**提前收手**，不是「没有活了」，
+///   所以不再单独给 `budgetExhausted`：那会和这个数字说同一件事）；
+/// - [waitingDependency] 是还在等前置（现在只有 `index` 等 `extract`）的任务数，
+///   它们没被领取、没消耗重试额度；
+/// - [dependencyFailed] 是这一轮被闸门判定「前置不可能再满足」而终态失败的任务数
+///   （同样没有执行者跑过），`jobStatus().failed` / `recentErrors` 里也看得到；
+/// - [backfilled] 只说「补做」，不说「准时完成」。
 class DueRunSummary {
   const DueRunSummary({
+    required this.startedAt,
+    this.trigger = '',
     this.processed = 0,
     this.succeeded = 0,
     this.failed = 0,
-    this.remaining = 0,
-    this.budgetExhausted = false,
+    this.retrying = 0,
+    this.backfilled = 0,
+    this.recovered = 0,
+    this.dueBacklog = 0,
+    this.waitingDependency = 0,
+    this.dependencyFailed = 0,
+    this.nextWakeup,
   });
 
+  /// 本次运行开始的时刻。「补做」以它为界。
+  final DateTime startedAt;
+
+  /// 唤醒来源，调用方给什么就记什么（startup / foreground / wake / manual …）。
+  final String trigger;
+
+  /// 本次领取并执行的任务数。
   final int processed;
+
+  /// 其中执行成功、进入 `succeeded` 的。
   final int succeeded;
+
+  /// 其中进入「已放弃」（`failed`）的。
   final int failed;
-  final int remaining;
-  final bool budgetExhausted;
+
+  /// 其中失败但还有额度、已排退避重试（`retry_wait`）的。
+  final int retrying;
+
+  /// 其中属于「补做」的。
+  final int backfilled;
+
+  /// 运行开始时回收的「上次没跑完」（`running`）任务数。
+  final int recovered;
+
+  /// 本轮结束后仍然到期、但没跑上的任务数。
+  final int dueBacklog;
+
+  /// 本轮结束时还在等前置条件的任务数。
+  final int waitingDependency;
+
+  /// 本轮被闸门终态失败（前置不可能再满足）的任务数。
+  final int dependencyFailed;
+
+  /// 下一个到期时刻；没有待办时为空。
+  final DateTime? nextWakeup;
 
   @override
   bool operator ==(Object other) =>
       other is DueRunSummary &&
+      other.startedAt == startedAt &&
+      other.trigger == trigger &&
       other.processed == processed &&
       other.succeeded == succeeded &&
       other.failed == failed &&
-      other.remaining == remaining &&
-      other.budgetExhausted == budgetExhausted;
+      other.retrying == retrying &&
+      other.backfilled == backfilled &&
+      other.recovered == recovered &&
+      other.dueBacklog == dueBacklog &&
+      other.waitingDependency == waitingDependency &&
+      other.dependencyFailed == dependencyFailed &&
+      other.nextWakeup == nextWakeup;
 
   @override
-  int get hashCode =>
-      Object.hash(processed, succeeded, failed, remaining, budgetExhausted);
+  int get hashCode => Object.hash(
+        startedAt,
+        trigger,
+        processed,
+        succeeded,
+        failed,
+        retrying,
+        backfilled,
+        recovered,
+        dueBacklog,
+        waitingDependency,
+        dependencyFailed,
+        nextWakeup,
+      );
 
   @override
-  String toString() => 'DueRunSummary(processed: $processed, '
-      'remaining: $remaining)';
+  String toString() => 'DueRunSummary(trigger: $trigger, processed: $processed, '
+      'dueBacklog: $dueBacklog, waitingDependency: $waitingDependency)';
 }
 
 /// 能力测试报告。必须说明是否发生了实际模型调用。契约第 4.4 节。
