@@ -13,7 +13,7 @@ abstract final class SketchColors {
   static const button = Color(0xFFEAE8E0);
   static const ink = Color(0xFF303331);
   static const text = Color(0xFF454541);
-  static const muted = Color(0xFF858780);
+  static const muted = Color(0xFF62645E);
   static const line = Color(0xFFD8D9D2);
   static const blush = Color(0xFFD9C1B3);
 }
@@ -109,39 +109,49 @@ class SketchAction extends StatelessWidget {
   final bool compact;
 
   @override
-  Widget build(BuildContext context) => Opacity(
-    opacity: onPressed == null ? .42 : 1,
-    child: InkWell(
-      onTap: onPressed,
-      hoverColor: SketchColors.soft,
-      splashColor: SketchColors.blush.withValues(alpha: .4),
-      child: SketchFrame(
-        fill: filled ? SketchColors.button : SketchColors.paper,
-        padding: EdgeInsets.symmetric(
-          horizontal: compact ? 12 : 18,
-          vertical: compact ? 10 : 13,
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (icon != null) ...[
-              Icon(icon, size: compact ? 16 : 18, color: SketchColors.ink),
-              const SizedBox(width: 8),
-            ],
-            Flexible(
-              child: Text(
-                label,
-                softWrap: true,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: SketchColors.ink,
-                  fontSize: compact ? 13 : 15,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+  Widget build(BuildContext context) => Semantics(
+    button: true,
+    enabled: onPressed != null,
+    label: label,
+    excludeSemantics: true,
+    child: Opacity(
+      opacity: onPressed == null ? .42 : 1,
+      child: InkWell(
+        onTap: onPressed,
+        excludeFromSemantics: true,
+        hoverColor: SketchColors.soft,
+        splashColor: SketchColors.blush.withValues(alpha: .4),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+          child: SketchFrame(
+            fill: filled ? SketchColors.button : SketchColors.paper,
+            padding: EdgeInsets.symmetric(
+              horizontal: compact ? 12 : 18,
+              vertical: compact ? 10 : 13,
             ),
-          ],
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (icon != null) ...[
+                  Icon(icon, size: compact ? 16 : 18, color: SketchColors.ink),
+                  const SizedBox(width: 8),
+                ],
+                Flexible(
+                  child: Text(
+                    label,
+                    softWrap: true,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: SketchColors.ink,
+                      fontSize: compact ? 13 : 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     ),
@@ -219,7 +229,18 @@ class _WritingCatState extends State<WritingCat>
     _motion = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1100),
-    )..repeat(reverse: true);
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _motion.stop();
+      _motion.value = .5;
+    } else if (!_motion.isAnimating) {
+      _motion.repeat(reverse: true);
+    }
   }
 
   @override

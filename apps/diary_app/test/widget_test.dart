@@ -211,6 +211,55 @@ void main() {
     expect(find.text('测试片段 1'), findsWidgets);
   });
 
+  testWidgets('record page meets text contrast and Android touch guidelines', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await openApp(tester, MockDiaryApi());
+    await expectLater(tester, meetsGuideline(textContrastGuideline));
+    await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+    for (final label in ['封面与加载动画', '记录', '添加材料', '收好这一刻']) {
+      final node = tester.getSemantics(find.bySemanticsLabel(label));
+      expect(
+        node.getSemanticsData().flagsCollection.isButton,
+        isTrue,
+        reason: label,
+      );
+    }
+    final date = tester.getSemantics(find.bySemanticsLabel(RegExp('记录日期')));
+    expect(date.getSemanticsData().flagsCollection.isButton, isTrue);
+    semantics.dispose();
+  });
+
+  testWidgets('reduced motion settles the writing cat', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: MediaQuery(
+            data: MediaQueryData(disableAnimations: true),
+            child: WritingCat(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
+  testWidgets('system dark mode uses the warm ink and paper treatment', (
+    tester,
+  ) async {
+    tester.binding.platformDispatcher.platformBrightnessTestValue =
+        Brightness.dark;
+    addTearDown(
+      tester.binding.platformDispatcher.clearPlatformBrightnessTestValue,
+    );
+    await openApp(tester, MockDiaryApi());
+    expect(find.byType(ColorFiltered), findsOneWidget);
+    expect(find.text('今天，想留住什么？'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('real mode reads saved records and hides preview material', (
     tester,
   ) async {

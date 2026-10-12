@@ -27,6 +27,23 @@ class DiaryApp extends StatelessWidget {
     title: '不写日记',
     debugShowCheckedModeBanner: false,
     theme: DiaryTheme.light,
+    builder: (context, child) {
+      if (MediaQuery.platformBrightnessOf(context) != Brightness.dark) {
+        return child!;
+      }
+      // The hand-drawn UI is intentionally built from a fixed paper/ink
+      // palette. This warm negative-print transform keeps every stroke and
+      // text shade legible in system dark mode without changing its shapes.
+      return ColorFiltered(
+        colorFilter: const ColorFilter.matrix(<double>[
+          0, 0, -.88, 0, 245,
+          0, -.88, 0, 0, 245,
+          -.88, 0, 0, 0, 245,
+          0, 0, 0, 1, 0,
+        ]),
+        child: child!,
+      );
+    },
     home: _BootGate(api: api, demoMode: demoMode),
   );
 }
