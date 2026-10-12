@@ -149,22 +149,27 @@ void main() {
   });
 
   test('检索会话经契约接口完成搜索、翻页、快照与取消', () async {
-    final draft = await api.createDraft(operationId: 'adapter-search-create');
-    final saved = await api.saveDraft(
-      id: draft.id,
-      text: '适配层写进来的第二句。',
-      expectedRevision: draft.revision,
-      operationId: 'adapter-search-save',
-    );
-    await api.commit(
-      id: draft.id,
-      expectedRevision: saved.revision,
-      operationId: 'adapter-search-commit',
-    );
+    // Seed both pages here: this test must also pass when run by --plain-name.
+    for (final suffix in ['甲', '乙']) {
+      final draft = await api.createDraft(
+        operationId: 'adapter-search-create-$suffix',
+      );
+      final saved = await api.saveDraft(
+        id: draft.id,
+        text: '独立检索标记$suffix。',
+        expectedRevision: draft.revision,
+        operationId: 'adapter-search-save-$suffix',
+      );
+      await api.commit(
+        id: draft.id,
+        expectedRevision: saved.revision,
+        operationId: 'adapter-search-commit-$suffix',
+      );
+    }
 
     final first = await api.startSearch(
       request: const SearchRequest(
-        query: '适配层',
+        query: '独立检索标记',
         mode: SearchMode.keyword,
         pageSize: 1,
       ),
@@ -174,7 +179,7 @@ void main() {
     expect(first.phase, SearchPhase.keywordReady);
     expect(first.results, hasLength(1));
     expect(first.cursor, isNotNull);
-    expect(first.results.single.snippet, contains('适配层'));
+    expect(first.results.single.snippet, contains('独立检索标记'));
     expect(first.results.single.matchedBy, contains(MatchedBy.keyword));
     // This hit is text written directly in a capture. It has no original asset
     // or source revision to locate; the adapter must preserve that null value.
@@ -197,7 +202,7 @@ void main() {
 
     final cancellable = await api.startSearch(
       request: const SearchRequest(
-        query: '适配层',
+        query: '独立检索标记',
         mode: SearchMode.keyword,
         pageSize: 1,
       ),

@@ -86,7 +86,12 @@ class DiarySearchController extends ChangeNotifier {
       }
     } on SearchExpiredException {
       if (generation == _generation) {
-        // The index changed. A fresh query is safer than showing old hits.
+        // The session changed. Restart rather than retrying its stale cursor.
+        await search(_query, kinds: _kinds);
+      }
+    } on CursorExpiredException {
+      if (generation == _generation) {
+        // A stale cursor cannot recover by requesting the same page again.
         await search(_query, kinds: _kinds);
       }
     } on Object catch (error) {

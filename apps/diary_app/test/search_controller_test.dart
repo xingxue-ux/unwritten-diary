@@ -25,6 +25,44 @@ class DelayedSearchApi extends MockDiaryApi {
   }
 }
 
+class ExpiringCursorApi extends MockDiaryApi {
+  int searches = 0;
+  int pageRequests = 0;
+
+  @override
+  Future<SearchSnapshot> startSearch({
+    required SearchRequest request,
+    required int queryRevision,
+  }) async {
+    searches++;
+    return SearchSnapshot(
+      sessionId: 'session-$searches',
+      queryRevision: queryRevision,
+      phase: SearchPhase.keywordReady,
+      results: [
+        SearchHit(
+          hitId: 'hit-$searches',
+          groupId: 'capture-$searches',
+          sourceKind: SourceKind.text,
+          matchedBy: const {MatchedBy.keyword},
+          coverage: Coverage.complete,
+          snippet: '第 $searches 次搜索',
+        ),
+      ],
+      cursor: 'cursor-$searches',
+    );
+  }
+
+  @override
+  Future<SearchSnapshot> nextPage({
+    required String sessionId,
+    String? cursor,
+  }) async {
+    pageRequests++;
+    throw const CursorExpiredException(message: '游标已过期');
+  }
+}
+
 SearchSnapshot result(String session, String text, int revision) =>
     SearchSnapshot(
       sessionId: session,
@@ -60,6 +98,26 @@ void main() {
       expect(controller.hits.map((hit) => hit.snippet), ['新结果']);
       expect(controller.snapshot?.sessionId, 'new-session');
       expect(api.cancelled, contains('old-session'));
+      controller.dispose();
+    },
+  );
+
+  test(
+    'expired cursor restarts the query instead of retrying the same page',
+    () async {
+      final api = ExpiringCursorApi();
+      final controller = DiarySearchController(api);
+      await controller.search('独立查询');
+      expect(controller.snapshot?.sessionId, 'session-1');
+      expect(controller.canLoadMore, isTrue);
+
+      await controller.loadMore();
+
+      expect(api.pageRequests, 1);
+      expect(api.searches, 2);
+      expect(controller.snapshot?.sessionId, 'session-2');
+      expect(controller.hits.map((hit) => hit.hitId), ['hit-2']);
+      expect(controller.error, isNull);
       controller.dispose();
     },
   );
