@@ -318,7 +318,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     child: Semantics(
       button: true,
       selected: _tab == index && _panel == null && _detail == null,
-      label: label,
+      label: '前往$label',
       excludeSemantics: true,
       child: InkWell(
         onTap: () => _go(index),

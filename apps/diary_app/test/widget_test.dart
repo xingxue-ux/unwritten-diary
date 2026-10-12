@@ -8,6 +8,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:unwritten_diary/main.dart';
 import 'package:unwritten_diary/src/sketch_ui.dart';
 
+double _contrastRatio(Color foreground, Color background) {
+  final a = foreground.computeLuminance();
+  final b = background.computeLuminance();
+  final lighter = a > b ? a : b;
+  final darker = a > b ? b : a;
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 class CountingMockDiaryApi extends MockDiaryApi {
   int openCount = 0;
 
@@ -216,9 +224,23 @@ void main() {
   ) async {
     final semantics = tester.ensureSemantics();
     await openApp(tester, MockDiaryApi());
+    // The navigation button has an action label and a separate visible short
+    // label. Check the configured text colors against its paper background;
+    // Flutter's pixel heuristic mistakes tiny antialiased CJK glyphs in a
+    // composite button for the pale outline around them on Linux CI.
+    for (final label in ['记录', '日记', '搜索', '片段', '我的']) {
+      final text = tester.widget<Text>(find.text(label).last);
+      final foreground = text.style?.color;
+      expect(foreground, isNotNull, reason: label);
+      expect(
+        _contrastRatio(foreground!, SketchColors.paper),
+        greaterThanOrEqualTo(4.5),
+        reason: '$label must remain readable on the navigation paper',
+      );
+    }
     await expectLater(tester, meetsGuideline(textContrastGuideline));
     await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
-    for (final label in ['封面与加载动画', '记录', '添加材料', '收好这一刻']) {
+    for (final label in ['封面与加载动画', '前往记录', '添加材料', '收好这一刻']) {
       final node = tester.getSemantics(find.bySemanticsLabel(label));
       expect(
         node.getSemanticsData().flagsCollection.isButton,
