@@ -10,8 +10,8 @@ import '../diary_bridge.dart' as bridge;
 
 /// 把桥接的 `BridgeSession` 适配成契约的 [api.DiaryApi]。
 ///
-/// **只覆盖记录路径**：`open` / `snapshot` / `close` / `createDraft` /
-/// `saveDraft` / `commit` / `getCapture` / `listCaptures`。其余契约方法一律抛
+/// **覆盖记录与检索路径**：`open` / `snapshot` / `close` / 记录 CRUD /
+/// `startSearch` / `nextPage` / `searchSnapshot` / `cancelSearch`。其余契约方法一律抛
 /// [UnsupportedError]（和 `diary_mock` 的做法一致），并且**不出现在
 /// [api.CoreInfo.capabilities] 里**——能力清单是窄化过的，界面据此决定显示哪些入口。
 ///
@@ -55,6 +55,10 @@ class BridgeDiaryApi implements api.DiaryApi {
     'captures.commit',
     'captures.get',
     'captures.list',
+    'search.start',
+    'search.nextPage',
+    'search.snapshot',
+    'search.cancel',
   };
 
   /// 幂等地初始化 frb 运行时。
@@ -91,9 +95,8 @@ class BridgeDiaryApi implements api.DiaryApi {
     // DiaryApi 的调用方——其他记录方法都翻过了，这里漏一个就会出现「同一个
     // 失败，取决于发生在哪一步，异常类型不同」。
     final session = await _translate(
-      () => bridge.BridgeSession.open(
-        libraryPath: libraryHandle ?? libraryPath,
-      ),
+      () =>
+          bridge.BridgeSession.open(libraryPath: libraryHandle ?? libraryPath),
     );
     _session = session;
     return await _snapshot(session);
@@ -185,16 +188,62 @@ class BridgeDiaryApi implements api.DiaryApi {
   }) async {
     final session = _open;
     final page = await _translate(
-      () => session.listCaptures(
-        dayKey: dayKey,
-        cursor: cursor,
-        limit: pageSize,
-      ),
+      () =>
+          session.listCaptures(dayKey: dayKey, cursor: cursor, limit: pageSize),
     );
     return api.CapturePage(
       captures: page.captures.map(_capture).toList(growable: false),
       nextCursor: page.nextCursor,
     );
+  }
+
+  @override
+  Future<api.SearchSnapshot> startSearch({
+    required api.SearchRequest request,
+    required int queryRevision,
+  }) async {
+    final result = await _translate(
+      () => _open.startSearch(
+        request: bridge.SearchRequest(
+          query: request.query,
+          mode: bridge.SearchMode.values.byName(request.mode.name),
+          filters: bridge.SearchFilters(
+            fromDayKey: request.filters.fromDayKey,
+            toDayKey: request.filters.toDayKey,
+            kinds: request.filters.kinds
+                .map((kind) => bridge.SourceKind.values.byName(kind.name))
+                .toList(growable: false),
+            sourceScope: request.filters.sourceScope?.toList(growable: false),
+            includeOldDiaryVersions: request.filters.includeOldDiaryVersions,
+            includeTrashed: request.filters.includeTrashed,
+          ),
+          pageSize: request.pageSize,
+        ),
+        queryRevision: queryRevision,
+      ),
+    );
+    return _searchSnapshot(result);
+  }
+
+  @override
+  Future<api.SearchSnapshot> nextPage({
+    required String sessionId,
+    String? cursor,
+  }) async => _searchSnapshot(
+    await _translate(
+      () => _open.searchNextPage(sessionId: sessionId, cursor: cursor),
+    ),
+  );
+
+  @override
+  Future<api.SearchSnapshot> searchSnapshot(String sessionId) async =>
+      _searchSnapshot(
+        await _translate(() => _open.searchSnapshot(sessionId: sessionId)),
+      );
+
+  @override
+  Future<void> cancelSearch(String sessionId) async {
+    await _translate(() => _open.cancelSearch(sessionId: sessionId));
   }
 
   /// 没接的方法一律明确报错——照 `diary_mock` 的做法，避免悄悄返回空数据。
@@ -212,6 +261,12 @@ class BridgeDiaryApi implements api.DiaryApi {
     try {
       return await action();
     } on bridge.BridgeError catch (error) {
+      if (error.code == api.DiaryErrorCode.searchExpired.wire) {
+        throw api.SearchExpiredException(message: error.message);
+      }
+      if (error.code == api.DiaryErrorCode.cursorExpired.wire) {
+        throw api.CursorExpiredException(message: error.message);
+      }
       throw api.DiaryException(
         code: _errorCode(error.code),
         message: error.message,
@@ -237,9 +292,7 @@ class BridgeDiaryApi implements api.DiaryApi {
         buildVersion: info.buildVersion,
         libraryId: info.libraryId,
         // 窄化：核心报的是「桥接接了多少」，这里只报适配层真的能用的。
-        capabilities: info.capabilities
-            .where(_wiredMethods.contains)
-            .toSet(),
+        capabilities: info.capabilities.where(_wiredMethods.contains).toSet(),
       ),
       recovery: api.RecoverySummary(
         // 核心不区分「恢复的草稿」：草稿本来就持久存在（B1a），重启后仍是草稿，
@@ -296,4 +349,65 @@ class BridgeDiaryApi implements api.DiaryApi {
         occurredAt: value.occurredAt,
         // 桥接侧目前不提供 provenance（契约里它是可空字段），如实留空。
       );
+
+  api.SearchSnapshot _searchSnapshot(bridge.SearchSnapshot value) =>
+      api.SearchSnapshot(
+        sessionId: value.sessionId,
+        queryRevision: value.queryRevision.toInt(),
+        phase: api.SearchPhase.values.byName(value.phase.name),
+        results: value.results
+            .map(
+              (hit) => api.SearchHit(
+                hitId: hit.hitId,
+                groupId: hit.groupId,
+                sourceKind: api.SourceKind.values.byName(hit.sourceKind.name),
+                matchedBy: hit.matchedBy
+                    .map((kind) => api.MatchedBy.values.byName(kind.name))
+                    .toSet(),
+                coverage: api.Coverage.values.byName(hit.coverage.name),
+                sourceId: hit.sourceId,
+                revisionId: hit.revisionId,
+                dayKey: hit.dayKey,
+                title: hit.title,
+                snippet: hit.snippet,
+                highlights: hit.highlights
+                    .map(
+                      (range) => api.TextRange(
+                        start: range.start.toInt(),
+                        end: range.end.toInt(),
+                      ),
+                    )
+                    .toList(growable: false),
+                locator: hit.locator == null ? null : _locator(hit.locator!),
+              ),
+            )
+            .toList(growable: false),
+        cursor: value.cursor,
+        indexCoverage: api.Coverage.values.byName(value.indexCoverage.name),
+        warnings: value.warnings,
+      );
+
+  api.SourceLocator _locator(bridge.SourceLocator value) => api.SourceLocator(
+    type: api.LocatorType.values.byName(value.locatorType.name),
+    sourceRevisionId: value.sourceRevisionId,
+    textRange: value.textStart == null || value.textEnd == null
+        ? null
+        : api.TextRange(
+            start: value.textStart!.toInt(),
+            end: value.textEnd!.toInt(),
+          ),
+    startMs: value.startMs?.toInt(),
+    endMs: value.endMs?.toInt(),
+    pageNumber: value.pageNumber?.toInt(),
+    blockId: value.blockId,
+    rect: value.rect == null
+        ? null
+        : api.NormalizedRect(
+            left: value.rect![0],
+            top: value.rect![1],
+            right: value.rect![2],
+            bottom: value.rect![3],
+          ),
+    assetId: value.assetId,
+  );
 }
