@@ -1018,6 +1018,8 @@ class SearchHit {
 }
 
 /// 检索模式，契约第 2.6 节。三种都实现了：`Hybrid` 是 RRF 融合（#51，B3c-3），
+/// **分两阶段给**（#69）——`start_search` 先只算关键词那一路并报 `keyword_ready`，
+/// 显式调用 `upgrade_search_to_hybrid(sessionId)` 才融合并报 `hybrid_ready`。
 /// 语义未就绪时**退化为关键词并在 `warnings` 里明说**（不静默，也不假装跑过混合）。
 enum SearchMode {
   keyword,
@@ -1032,6 +1034,11 @@ enum SearchMode {
 }
 
 /// 检索阶段，契约第 2.6 节。
+///
+/// 混合检索的阶段流程（#69）：`start_search(mode = hybrid)` → `keyword_ready`
+/// （只有关键词那一路的结果）→ `upgrade_search_to_hybrid(sessionId)` → `hybrid_ready`
+/// （融合 + 重排后的结果）→ 翻完最后一页 `done`。语义拿不出证据时升级**不会**给出
+/// `hybrid_ready`，阶段如实停在 `keyword_ready`。取消 → `cancelled`。
 enum SearchPhase {
   initial,
   keywordReady,

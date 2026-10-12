@@ -231,6 +231,14 @@ fn search_mode(core: &mut Core, query: &str, mode: SearchMode, page_size: i64) -
     .unwrap()
 }
 
+/// 混合那一路的完整两步（#69）：`start_search(mode = hybrid)` 先只算关键词
+/// （`keyword_ready`），`upgrade_search_to_hybrid` 再融合（`hybrid_ready`）。
+/// 「要融合后的结果」的用例都走这里，与产品路径一致。
+fn hybrid_mode(core: &mut Core, query: &str, page_size: i64) -> SearchSnapshot {
+    let started = search_mode(core, query, SearchMode::Hybrid, page_size);
+    core.upgrade_search_to_hybrid(&started.session_id).unwrap()
+}
+
 fn open(path: &Path) -> rusqlite::Connection {
     rusqlite::Connection::open(path).unwrap()
 }
@@ -318,9 +326,10 @@ fn without_a_model_keywords_keep_working_and_semantics_says_why() {
         semantic.warnings
     );
 
-    // hybrid（#51）：语义未就绪 → **退化为关键词**，并且把原因明说出来；
-    // 退化不等于没有结果，result 与关键词那一路是同一批。
+    // hybrid（#51/#69）：语义未就绪 → 第一阶段就**退化为关键词**，并且把原因明说出来；
+    // 退化不等于没有结果，result 与关键词那一路是同一批。阶段如实停在 keyword_ready。
     let hybrid = search_mode(&mut core, "妈妈", SearchMode::Hybrid, 20);
+    assert_eq!(hybrid.phase, SearchPhase::KeywordReady, "混合的首屏只有一个阶段：关键词就绪");
     assert_eq!(hybrid.results.len(), 2, "混合退化为关键词之后与关键词同一批结果");
     assert!(
         hybrid
@@ -350,6 +359,27 @@ fn without_a_model_keywords_keep_working_and_semantics_says_why() {
             .map(|hit| &hit.matched_by)
             .collect::<Vec<_>>()
     );
+
+    // 升级也**不许**假装融合过：仍然 keyword_ready、仍然是那批关键词结果，
+    // 只是多一句「没有可融合的语义证据」。
+    let upgraded = core.upgrade_search_to_hybrid(&hybrid.session_id).unwrap();
+    assert_eq!(
+        upgraded.phase,
+        SearchPhase::KeywordReady,
+        "语义拿不出证据时升级绝不能声称 hybrid_ready"
+    );
+    assert_eq!(upgraded.results, hybrid.results, "结果仍是关键词那一路，一条不多一条不少");
+    assert!(
+        upgraded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("没有可融合的语义证据")),
+        "升级这一步要如实说清为什么没融合：{:?}",
+        upgraded.warnings
+    );
+    // 幂等：再升级一次给同一份快照，不重复算。
+    let again = core.upgrade_search_to_hybrid(&hybrid.session_id).unwrap();
+    assert_eq!(again, upgraded, "重复升级返回同一份快照");
 }
 
 /// 模型缺失时建语义索引：**诚实的错误、什么都不改**（连块都不重建）。
@@ -1323,7 +1353,48 @@ fn hybrid_fuses_two_paths_with_rrf_and_reports_matched_by() {
     );
     core.build_semantic_index(None).unwrap();
 
-    let snapshot = search_mode(&mut core, "开源节流", SearchMode::Hybrid, 20);
+    // —— 第一阶段（#69）：只有关键词那一路。B 只被语义召回，**不该**出现在这里 ——
+    let started = search_mode(&mut core, "开源节流", SearchMode::Hybrid, 20);
+    assert_eq!(
+        started.phase,
+        SearchPhase::KeywordReady,
+        "hybrid 首屏必须是 keyword_ready（融合还没算）"
+    );
+    let first_order: Vec<&str> = started
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert_eq!(
+        first_order,
+        vec![c.as_str(), a.as_str()],
+        "关键词那一路：C（9/3）比 A（9/1）近，B 一条都没有"
+    );
+    assert!(
+        !started.results.iter().any(|hit| hit.group_id == b),
+        "只被语义召回到的那篇在第一阶段不许出现：{:?}",
+        first_order
+    );
+    assert!(
+        started
+            .results
+            .iter()
+            .all(|hit| hit.matched_by == vec![MatchedBy::Keyword]),
+        "第一阶段 matchedBy 如实只反映关键词，不给语义填假值：{:?}",
+        started
+            .results
+            .iter()
+            .map(|hit| (&hit.group_id, &hit.matched_by))
+            .collect::<Vec<_>>()
+    );
+
+    // —— 第二阶段：显式升级才融合，B 被补进来并按 RRF 重新排序 ——
+    let snapshot = core.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(
+        snapshot.phase,
+        SearchPhase::HybridReady,
+        "升级之后才允许报 hybrid_ready"
+    );
     let order: Vec<&str> = snapshot
         .results
         .iter()
@@ -1338,6 +1409,10 @@ fn hybrid_fuses_two_paths_with_rrf_and_reports_matched_by() {
             .iter()
             .map(|hit| (&hit.group_id, &hit.matched_by))
             .collect::<Vec<_>>()
+    );
+    assert!(
+        hit_of(&snapshot, &b).matched_by == vec![MatchedBy::Semantic],
+        "B 是语义独有的那篇，位置在第 2（融合后的顺序）"
     );
 
     assert_eq!(
@@ -1386,7 +1461,7 @@ fn hybrid_treats_semantic_below_the_threshold_as_no_evidence() {
     core.build_semantic_index(None).unwrap();
 
     // 关键词那一路没对上（查询是「失眠」，正文里没有这两个字）+ 语义低于门槛 → 空。
-    let snapshot = search_mode(&mut core, "失眠", SearchMode::Hybrid, 20);
+    let snapshot = hybrid_mode(&mut core, "失眠", 20);
     assert!(
         snapshot.results.is_empty(),
         "关键词空 + 语义低于门槛 → 必须返回空：{:?}",
@@ -1415,7 +1490,7 @@ fn hybrid_treats_semantic_below_the_threshold_as_no_evidence() {
 
     // 同一份数据、同一条查询，只把门槛降到 0.10：应当命中，并且如实标成语义。
     core.set_hybrid_min_score_for_test(0.10);
-    let loosened = search_mode(&mut core, "失眠", SearchMode::Hybrid, 20);
+    let loosened = hybrid_mode(&mut core, "失眠", 20);
     assert_eq!(loosened.results.len(), 1, "{:?}", loosened.warnings);
     assert_eq!(loosened.results[0].group_id, source);
     assert_eq!(loosened.results[0].matched_by, vec![MatchedBy::Semantic]);
@@ -1464,7 +1539,7 @@ fn hybrid_tie_break_is_the_same_across_libraries() {
         );
         core.build_semantic_index(None).unwrap();
 
-        let snapshot = search_mode(&mut core, "开源节流", SearchMode::Hybrid, 20);
+        let snapshot = hybrid_mode(&mut core, "开源节流", 20);
         assert_eq!(snapshot.results.len(), 2, "两篇都要在结果里");
         assert!(
             snapshot
@@ -1526,7 +1601,7 @@ fn hybrid_sessions_page_and_snapshot_like_keyword_ones() {
     }
     core.build_semantic_index(None).unwrap();
 
-    let all = search_mode(&mut core, "睡前", SearchMode::Hybrid, 20);
+    let all = hybrid_mode(&mut core, "睡前", 20);
     assert_eq!(all.results.len(), 5);
     for source in &sources {
         assert!(
@@ -1541,34 +1616,259 @@ fn hybrid_sessions_page_and_snapshot_like_keyword_ones() {
         filters: SearchFilters::default(),
         page_size,
     };
-    let first = core.start_search(request(2), 1).unwrap();
+    // —— 升级之前：翻页只给关键词结果，阶段一直是 keyword_ready ——
+    const REVISION: i64 = 42;
+    let first = core.start_search(request(2), REVISION).unwrap();
     assert_eq!(first.results.len(), 2);
-    assert_eq!(first.phase, SearchPhase::Done, "混合一次算完，阶段就是 done");
-    let cursor = first.cursor.clone().expect("还有下一页");
-    let second = core.search_next_page(&first.session_id, Some(&cursor)).unwrap();
+    assert_eq!(first.phase, SearchPhase::KeywordReady, "还没升级，阶段如实停在 keyword_ready");
+    assert_eq!(first.query_revision, REVISION);
+    let keyword_cursor = first.cursor.clone().expect("还有下一页");
+    let keyword_second = core
+        .search_next_page(&first.session_id, Some(&keyword_cursor))
+        .unwrap();
+    assert_eq!(keyword_second.results.len(), 2);
+    assert_eq!(
+        keyword_second.phase,
+        SearchPhase::KeywordReady,
+        "升级前的翻页也不许假装融合过"
+    );
+    // `search.snapshot` 给的是「当前这一页」，而且是幂等的。
+    let snapshot = core.search_snapshot(&first.session_id).unwrap();
+    assert_eq!(snapshot.results, keyword_second.results);
+    assert_eq!(snapshot.phase, SearchPhase::KeywordReady);
+    assert_eq!(core.search_snapshot(&first.session_id).unwrap(), snapshot);
+
+    // —— 升级：从头给融合结果，阶段变成 hybrid_ready，仍是同一个会话 ——
+    let upgraded = core.upgrade_search_to_hybrid(&first.session_id).unwrap();
+    assert_eq!(upgraded.phase, SearchPhase::HybridReady);
+    assert_eq!(upgraded.session_id, first.session_id, "升级是同一会话，不新造一个");
+    assert_eq!(upgraded.query_revision, REVISION, "升级沿用同一个查询修订");
+    assert_eq!(upgraded.results.len(), 2);
+    let upgrade_cursor = upgraded.cursor.clone().expect("还有下一页");
+    // 幂等：再升级给同一份快照。
+    assert_eq!(
+        core.upgrade_search_to_hybrid(&first.session_id).unwrap(),
+        upgraded
+    );
+
+    // 升级前的深页游标对不上融合后的进度 → 如实 cursor_expired，不悄悄错位返回。
+    let error = core
+        .search_next_page(&first.session_id, keyword_second.cursor.as_deref())
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        diary_core::ErrorCode::CursorExpired,
+        "升级前的深页游标不能接着翻融合结果"
+    );
+
+    // —— 升级之后：翻页给融合结果，阶段保持 hybrid_ready，翻完照旧 done ——
+    let second = core
+        .search_next_page(&first.session_id, Some(&upgrade_cursor))
+        .unwrap();
     assert_eq!(second.results.len(), 2);
+    assert_eq!(second.phase, SearchPhase::HybridReady);
     let third = core
         .search_next_page(&first.session_id, second.cursor.as_deref())
         .unwrap();
     assert_eq!(third.results.len(), 1);
     assert!(third.cursor.is_none(), "末页没有下一页游标");
+    assert_eq!(third.phase, SearchPhase::Done, "翻完照旧 done");
 
     let mut paged: Vec<SearchHit> = Vec::new();
-    paged.extend(first.results.clone());
+    paged.extend(upgraded.results.clone());
     paged.extend(second.results.clone());
     paged.extend(third.results.clone());
-    assert_eq!(paged, all.results, "分页拼起来必须与一次取全一致");
-
-    // 快照给的是「当前这一页」。
-    let snapshot = core.search_snapshot(&first.session_id).unwrap();
-    assert_eq!(snapshot.results, third.results);
+    assert_eq!(
+        paged, all.results,
+        "升级后的分页拼起来必须与「一次取全的融合结果」一致"
+    );
 
     // 拿别的会话的游标翻页要被拒（游标绑定原会话）。
     let other = core.start_search(request(2), 2).unwrap();
     let error = core
-        .search_next_page(&other.session_id, Some(&cursor))
+        .search_next_page(&other.session_id, Some(&upgrade_cursor))
         .unwrap_err();
     assert_eq!(error.code(), diary_core::ErrorCode::CursorExpired);
+}
+
+/// **真的会重排**（#69 验收）：关键词那一路先给出的顺序，融合后因为 B 又被语义命中
+/// （两路相加的 RRF 分更高）而翻到前面。也顺便钉住**升级只算一次**（幂等）。
+#[test]
+fn hybrid_upgrade_reorders_what_keyword_already_had() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub_split(
+        &counters,
+        // 文档侧：先匹配「难以入睡」（只 B 走这条）；A 只含关键词，向量与查询正交。
+        vec![("难以入睡", unit(0)), ("开源节流", unit(1))],
+        // 查询侧：正文里那个关键词出现时，查询向量是 unit(0)。
+        vec![("开源节流", unit(0))],
+    ));
+    // A 更近（9/2）→ 关键词名次 1；B 更早（9/1）→ 名次 2。
+    let a_capture = write_capture(&mut core, at(2026, 9, 2), "", "opA");
+    let a = import_and_extract(
+        &mut core,
+        &a_capture,
+        "A.txt",
+        "开源节流，先把账记清。\n",
+        "matA",
+    );
+    let b_capture = write_capture(&mut core, at(2026, 9, 1), "", "opB");
+    let b = import_and_extract(
+        &mut core,
+        &b_capture,
+        "B.txt",
+        "开源节流之外，一到夜里就难以入睡。\n",
+        "matB",
+    );
+    core.build_semantic_index(None).unwrap();
+
+    let started = search_mode(&mut core, "开源节流", SearchMode::Hybrid, 20);
+    assert_eq!(started.phase, SearchPhase::KeywordReady);
+    let first_order: Vec<&str> = started
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert_eq!(
+        first_order,
+        vec![a.as_str(), b.as_str()],
+        "关键词阶段按日期：A（9/2）在前"
+    );
+
+    let fused = core.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(fused.phase, SearchPhase::HybridReady);
+    let order: Vec<&str> = fused
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert_eq!(
+        order,
+        vec![b.as_str(), a.as_str()],
+        "B 两路都中（1/62 + 1/61 > A 的 1/61），融合后被排到 A 前面"
+    );
+    assert_eq!(
+        hit_of(&fused, &b).matched_by,
+        vec![MatchedBy::Keyword, MatchedBy::Semantic]
+    );
+    assert_eq!(hit_of(&fused, &a).matched_by, vec![MatchedBy::Keyword]);
+
+    // 幂等升级**不重复算**：查询向量只 embed 一次。
+    let queries = counters.queries.load(Ordering::SeqCst);
+    assert_eq!(
+        core.upgrade_search_to_hybrid(&started.session_id).unwrap(),
+        fused
+    );
+    assert_eq!(
+        counters.queries.load(Ordering::SeqCst),
+        queries,
+        "重复升级不重复算向量"
+    );
+}
+
+/// 空查询的边界：没有可匹配的内容，`start` 给空结果；语义就绪时升级进 `hybrid_ready`
+/// （空就是最终答案），但**语义不可用时仍然停在 `keyword_ready`**——「空查询」不是
+/// 假装融合过的借口。
+#[test]
+fn hybrid_upgrade_on_an_empty_query_still_checks_semantic_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    let capture = write_capture(&mut core, at(2026, 9, 20), "", "op");
+    import_and_extract(&mut core, &capture, "D.txt", "睡前想了很多事情。\n", "mat");
+    core.build_semantic_index(None).unwrap();
+
+    let empty = |mode: SearchMode| SearchRequest {
+        query: "   ".to_owned(),
+        mode,
+        filters: SearchFilters::default(),
+        page_size: 10,
+    };
+
+    let started = core.start_search(empty(SearchMode::Hybrid), 1).unwrap();
+    assert_eq!(started.phase, SearchPhase::KeywordReady);
+    assert!(started.results.is_empty());
+    let upgraded = core.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(upgraded.phase, SearchPhase::HybridReady);
+    assert!(upgraded.results.is_empty());
+
+    // 语义不可用（另一个库，没建代次）：升级不许假装。
+    let other_dir = tempfile::tempdir().unwrap();
+    let mut other = new_core(other_dir.path());
+    let started = other.start_search(empty(SearchMode::Hybrid), 2).unwrap();
+    let upgraded = other.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(
+        upgraded.phase,
+        SearchPhase::KeywordReady,
+        "语义不可用时，空查询的升级也不许报 hybrid_ready：{:?}",
+        upgraded.warnings
+    );
+}
+
+/// 升级要**如实**对待会话状态（#69 第 6 条）：取消（升级前 / 后）、过期、非混合
+/// 会话都不许静默给一份融合结果。
+#[test]
+fn hybrid_upgrade_respects_cancel_expiry_and_non_hybrid_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub_split(
+        &counters,
+        vec![("睡前", unit(0))],
+        vec![("睡前", unit(0))],
+    ));
+    let capture = write_capture(&mut core, at(2026, 9, 20), "", "op");
+    import_and_extract(&mut core, &capture, "D.txt", "睡前想了很多事情。\n", "mat");
+    core.build_semantic_index(None).unwrap();
+
+    let request = |mode: SearchMode| SearchRequest {
+        query: "睡前".to_owned(),
+        mode,
+        filters: SearchFilters::default(),
+        page_size: 10,
+    };
+
+    // 升级前取消：升级不融合，返回 cancelled 快照。
+    let before = core.start_search(request(SearchMode::Hybrid), 1).unwrap();
+    core.cancel_search(&before.session_id).unwrap();
+    let upgraded = core.upgrade_search_to_hybrid(&before.session_id).unwrap();
+    assert_eq!(
+        upgraded.phase,
+        SearchPhase::Cancelled,
+        "取消就是取消，不静默给一份融合结果"
+    );
+    assert_eq!(upgraded.cursor, None);
+
+    // 升级后取消：再升级仍是 cancelled。
+    let after = core.start_search(request(SearchMode::Hybrid), 2).unwrap();
+    let fused = core.upgrade_search_to_hybrid(&after.session_id).unwrap();
+    assert_eq!(fused.phase, SearchPhase::HybridReady);
+    core.cancel_search(&after.session_id).unwrap();
+    let cancelled = core.upgrade_search_to_hybrid(&after.session_id).unwrap();
+    assert_eq!(cancelled.phase, SearchPhase::Cancelled);
+
+    // 过期：会话期间索引变了 → search_expired，让前端重新发起（与 snapshot/nextPage 同口径）。
+    let expiring = core.start_search(request(SearchMode::Hybrid), 3).unwrap();
+    let another = write_capture(&mut core, at(2026, 9, 21), "", "op2");
+    import_and_extract(&mut core, &another, "E.txt", "睡前又想到别的。\n", "mat2");
+    let error = core
+        .upgrade_search_to_hybrid(&expiring.session_id)
+        .unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::SearchExpired);
+
+    // 非混合会话：明确报 invalid_state，不说「升级成功了」。
+    let keyword = core.start_search(request(SearchMode::Keyword), 4).unwrap();
+    let error = core
+        .upgrade_search_to_hybrid(&keyword.session_id)
+        .unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::InvalidState);
+
+    // 会话不存在：search_expired。
+    let error = core.upgrade_search_to_hybrid("search-missing").unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::SearchExpired);
 }
 
 /// 融合口径是可审计常量：版本号里带着 k / 深度 / 门槛。改了常量却不同步改版本号，
@@ -1626,9 +1926,7 @@ fn retired_revision_is_not_returned_by_semantic_search_before_rebuild() {
         "前提：旧说法此刻应当能命中"
     );
     assert_eq!(
-        search_mode(&mut core, "旧说法", SearchMode::Hybrid, 10)
-            .results
-            .len(),
+        hybrid_mode(&mut core, "旧说法", 10).results.len(),
         1,
         "前提：混合那一路此刻也能命中"
     );
@@ -1652,7 +1950,7 @@ fn retired_revision_is_not_returned_by_semantic_search_before_rebuild() {
         "旧修订的块不能被语义检索召回（#32：旧版本不能当成当前内容）"
     );
     assert_eq!(
-        search_mode(&mut core, "旧说法", SearchMode::Hybrid, 10).results.len(),
+        hybrid_mode(&mut core, "旧说法", 10).results.len(),
         0,
         "混合那一路同样不能召回旧修订"
     );

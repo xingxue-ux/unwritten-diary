@@ -2,8 +2,10 @@
 //! `matchedBy` 分布、以及**语义证据门槛的扫描表**。
 //!
 //! 与 `semantic_quality` 一样走**产品路径**：真核心 `build_semantic_index` +
-//! `search.start(mode = keyword / semantic / hybrid)`，同一份质量集、同一套口径
-//! （按来源算召回、同一来源的多个块折叠成一条、延迟不含建库与提取）。
+//! `search.start(mode = keyword / semantic)`、`search.start(mode = hybrid)` +
+//! `Core::upgrade_search_to_hybrid`（混合是两步，量的是**融合后**的结果，#69），
+//! 同一份质量集、同一套口径（按来源算召回、同一来源的多个块折叠成一条、
+//! 延迟不含建库与提取）。
 //!
 //! 阈值扫描**不另写一套融合**：它在同一条产品路径上改
 //! `Core::set_hybrid_min_score_for_test`，所以量到的曲线就是线上那条曲线。
@@ -43,6 +45,10 @@ struct Run {
     top_score: Option<f32>,
     /// 期望来源在语义一路的分数（期望来源没进候选时为 None）。
     expected_score: Option<f32>,
+    /// 关键词首屏（`start_search`）耗时；#69 之后混合的第一阶段。
+    start_ms: f64,
+    /// 升级（`upgrade_search_to_hybrid`）耗时；非混合模式恒为 0。
+    upgrade_ms: f64,
 }
 
 pub fn run() -> Result<()> {
@@ -68,6 +74,10 @@ pub fn run() -> Result<()> {
     println!(
         "  产品默认语义门槛：{:.2}  候选深度：50  k：60",
         diary_core::HYBRID_SEMANTIC_MIN_SCORE
+    );
+    println!(
+        "  阶段（#69）：start_search 先给 keyword_ready（只关键词那一路），\
+         upgrade_search_to_hybrid 再给 hybrid_ready（融合 + 重排后，量的是这一份）"
     );
 
     let thresholds = scan_thresholds();
@@ -113,6 +123,7 @@ pub fn run() -> Result<()> {
     report_no_answer(&set, &keyword_runs, &semantic_runs, &hybrid_runs)?;
     report_matched_by(&set, &keyword_runs, &semantic_runs, &hybrid_runs);
     report_scan(&set, &scan_runs);
+    report_latency(&hybrid_runs);
     Ok(())
 }
 
@@ -172,6 +183,10 @@ impl Scores {
 }
 
 /// 跑一条 case 的一次查询：名次按 `group_id`（与语义那一路同一个口径）。
+///
+/// 混合（#69）走**两步**：`start_search` 先给关键词首屏，`upgrade_search_to_hybrid`
+/// 再融合；量测读的是**融合后**的那份快照（否则量的就不是混合了），同时把两步的
+/// 耗时都记下来。
 fn run_case(
     core: &mut Core,
     case: &Case,
@@ -186,8 +201,14 @@ fn run_case(
         page_size: TOP_K as i64,
     };
     let start = Instant::now();
-    let snapshot = core.start_search(request, 1)?;
-    let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mut snapshot = core.start_search(request, 1)?;
+    let start_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mut upgrade_ms = 0.0;
+    if mode == SearchMode::Hybrid {
+        let upgrade = Instant::now();
+        snapshot = core.upgrade_search_to_hybrid(&snapshot.session_id)?;
+        upgrade_ms = upgrade.elapsed().as_secs_f64() * 1000.0;
+    }
 
     let mut first_seen: BTreeMap<&str, usize> = BTreeMap::new();
     for (position, hit) in snapshot.results.iter().enumerate() {
@@ -219,7 +240,8 @@ fn run_case(
             hit_rank,
             matched_sources: first_seen.len(),
             hits: snapshot.results.len(),
-            elapsed_ms,
+            // 混合的「一条查询总延迟」= 关键词首屏 + 升级；其余模式就是 start 那一次。
+            elapsed_ms: start_ms + upgrade_ms,
             warnings: snapshot.warnings.clone(),
         },
         keyword,
@@ -227,6 +249,8 @@ fn run_case(
         both,
         top_score: scores.top,
         expected_score: scores.expected,
+        start_ms,
+        upgrade_ms,
     })
 }
 
@@ -450,4 +474,56 @@ fn category_rate_at(runs: &[Run], set: &QualitySet, category: &str, k: usize) ->
 fn r1_text(runs: &[Run], set: &QualitySet, category: &str) -> String {
     let (hit, total) = category_rate(runs, set, category, false);
     format!("{hit}/{total}")
+}
+
+/// 渐进式（#69）的延迟：关键词首屏（`start_search`）与升级（`upgrade_search_to_hybrid`）
+/// 各多少毫秒。36 条查询各跑一次，取中位 / 均值 / p95 / 最大。
+fn report_latency(runs: &[Run]) {
+    println!("\n[6] 渐进式延迟（36 条查询各一次；产品的两步：#69）");
+    println!(
+        "  {:<24} {:>10} {:>10} {:>10} {:>10}",
+        "", "中位", "均值", "p95", "最大"
+    );
+    let start: Vec<f64> = runs.iter().map(|run| run.start_ms).collect();
+    let upgrade: Vec<f64> = runs.iter().map(|run| run.upgrade_ms).collect();
+    let total: Vec<f64> = runs
+        .iter()
+        .map(|run| run.start_ms + run.upgrade_ms)
+        .collect();
+    println!("  {:<24} {}", "关键词首屏 start_search", stats_text(&start));
+    println!("  {:<24} {}", "升级 upgrade_search", stats_text(&upgrade));
+    println!("  {:<24} {}", "合计（首屏 + 升级）", stats_text(&total));
+    println!(
+        "  读法：这里量的是**嵌入器已注入**（模型已加载）后的路径——升级那一步是\n\
+         \x20        查询向量 + 全表余弦 + RRF 合并；产品里如果模型还没加载，\n\
+         \x20        升级会额外付一次模型加载（首屏刻意不付这笔），探针量不到它。"
+    );
+}
+
+fn stats_text(values: &[f64]) -> String {
+    format!(
+        "{:>10.2} {:>10.2} {:>10.2} {:>10.2}",
+        percentile(values, 50.0),
+        mean(values),
+        percentile(values, 95.0),
+        values.iter().copied().fold(0.0_f64, f64::max),
+    )
+}
+
+fn mean(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.iter().sum::<f64>() / values.len() as f64
+}
+
+/// 最近秩法取分位：`ceil(p/100 × n)` 名（1 起），够用且不插值。
+fn percentile(values: &[f64], p: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    let index = ((p / 100.0) * sorted.len() as f64).ceil() as usize;
+    sorted[index.clamp(1, sorted.len()) - 1]
 }
