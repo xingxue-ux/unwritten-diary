@@ -259,6 +259,21 @@ abstract class DiaryApi {
 
   Future<IndexStatus> indexesStatus({Set<String>? sourceScope});
 
+  /// 排一条关键词索引重建任务，返回它的 `jobId`。契约第 4.4 节 `indexes.rebuild`。
+  ///
+  /// **异步**：只排任务，不做同步重建——同步重建会阻塞界面，真正重建由 `index`
+  /// 执行者在 [runDueJobs] 里跑（队列的退避、补做与依赖闸门已经就绪）。
+  ///
+  /// [scope] 的编码（契约第 4.4 节，v1）只有两种合法写法：
+  /// - `all`：整库，等价于 [indexesStatus] 不传来源范围；
+  /// - `sources:<id>[,<id>]*`：只重建这些来源。来源 id 是不透明字符串，`,` 是
+  ///   分隔符，id 记号只允许 `[A-Za-z0-9_]`（不定义转义）。顺序没有语义，解析时
+  ///   排序成规范形；空列表、空记号、重复 id、越界字符都是 `invalid_argument`，
+  ///   不存在的来源是 `not_found`。
+  ///
+  /// [reason] 是给用户/排查看的原因文字；同一个 `(scope, reason, operationId)`
+  /// 重复调用返回同一条任务，同一个 [operationId] 换了内容报
+  /// `idempotency_conflict`。
   Future<JobTicket> rebuildIndexes({
     required String scope,
     required String reason,

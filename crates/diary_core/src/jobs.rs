@@ -4,8 +4,9 @@
 //! 下次唤醒时刻与通知去重。
 //!
 //! 驱动（`run_due`）：把到期任务取出来，按 `kind` 找执行者跑掉，再把结果落回队列。
-//! 目前只有 `extract` 真有执行者；没有执行者的 `kind` **不会静默成功**，而是
-//! 进「已放弃」+ `error_code = no_handler` 等人工处理（见 `execute`）。
+//! 目前 `extract` 与 `index` 真有执行者；没有执行者的 `kind`（`transcribe` 等 B4a
+//! 的 Provider）**不会静默成功**，而是进「已放弃」+ `error_code = no_handler`
+//! 等人工处理（见 `execute`）。
 //!
 //! 优先级照任务书 7.1 节：保存与录音片段登记最高，整库重建最低。
 //! 决定与口径写在 `docs/architecture/m4-任务调度与补做.md`。
@@ -25,11 +26,15 @@ pub(crate) const KIND_EXTRACT: &str = "extract";
 
 /// 关键词索引任务：对 `target_ids` 里的**来源**重跑关键词索引重建。
 ///
+/// `target_ids` 为空表示**整库**（`indexes.rebuild(scope=all)`），执行者走
+/// `rebuild_keyword_index(None)`；非空则只重建这些来源。
+///
 /// 语义索引（`build_semantic_index`）不在这里：那要等 #58 的向量接入合入之后
 /// 才谈得上任务化（见 m4 文档「没有做到的」）。
 pub(crate) const KIND_INDEX: &str = "index";
 
-/// 「没有目标」的终态失败码：`extract` 与 `index` 共用。
+/// 「没有目标」的终态失败码。只有 `extract` 用它：`extract` 没有「整库」这种语义，
+/// 空目标是实打实的错误。`index` 的空 `target_ids` 是整库重建，不是错误。
 pub(crate) const ERROR_NO_TARGET: &str = "no_target";
 
 /// `index` 在等什么（写在 `jobs.error_code` 上，**不改 schema**）：
@@ -553,6 +558,10 @@ enum Dependency {
 /// 评估一条 `index` 任务的前置：`target_ids` 里每个**来源**的当前修订都要「可索引」。
 ///
 /// 口径（可解释，见 m4 文档）：
+/// - **空 `target_ids` = 整库重建**（`indexes.rebuild(scope=all)`）：等队列里所有
+///   **活着的** `extract` 收尾，再按现状整库重刷（`rebuild_keyword_index(None)`）。
+///   它**不会**判 `Broken`——某条提取被取消只是少一份内容，不该把整库重建连坐成
+///   终态失败；
 /// - 来源不存在 / 没有当前修订 / 当前修订读不到 → `Broken("not_found")`；
 /// - 当前修订是**文字修订**（`asset_id` 为空）：提交时正文就落库了，关键词这一路
 ///   没有「提取」这一环 → 视为可索引；
@@ -566,7 +575,18 @@ enum Dependency {
 /// 才是「这个来源现在能不能被索引」的答案。
 fn index_dependency(core: &Core, job: &Job) -> Result<Dependency> {
     if job.target_ids.is_empty() {
-        return Ok(Dependency::Broken(ERROR_NO_TARGET));
+        // 整库：等着在跑的提取收尾，别重建到一半又被新的派生内容补一刀。
+        let live_extract: i64 = core.conn.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE kind = ?1 \
+             AND state NOT IN ('succeeded', 'failed', 'cancelled')",
+            params![KIND_EXTRACT],
+            |row| row.get(0),
+        )?;
+        return Ok(if live_extract > 0 {
+            Dependency::Pending(WAITING_EXTRACT)
+        } else {
+            Dependency::Ready
+        });
     }
     let mut waiting = false;
     for source_id in &job.target_ids {
@@ -727,12 +747,11 @@ fn defer_for_dependency(
 ///
 /// 它会跟着这次失败进 `job_attempts.message`；**闸门拦下的任务没有尝试记录**（没有
 /// 执行者跑过，不该凭空记一次尝试），所以那种情况下这个文案不会落库——用户看到的是
-/// `error_code`（`no_target` / `not_found` / `dependency_extract_unmet`，码里点明了
-/// 等的是哪一环）。留着它是给「有尝试记录」的那条路径用的，也方便将来把说明接出来。
+/// `error_code`（`not_found` / `dependency_extract_unmet`，码里点明了等的是哪一环）。
+/// 留着它是给「有尝试记录」的那条路径用的，也方便将来把说明接出来。
 fn dependency_message(code: &str, job: &Job) -> String {
     let targets = job.target_ids.join("、");
     match code {
-        ERROR_NO_TARGET => "索引任务没有目标来源，重试也不会变好".to_owned(),
         ERROR_DEPENDENCY_UNMET => format!(
             "等不到提取完成：{targets} 没有可索引的派生内容，队列里也没有活着的 extract 任务"
         ),
@@ -916,23 +935,25 @@ fn run_extract(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFai
 
 /// `index` 的执行者：对任务 `target_ids` 里的**来源**重跑关键词索引重建。
 ///
+/// **空 `target_ids` = 整库重建**（`indexes.rebuild(scope=all)`）：走
+/// `rebuild_keyword_index(None)`，范围是整库，连没有来源的记录文字也重刷一遍。
+///
 /// **运行期间关键词检索照旧可用**：重建按片段先删后写、在一个事务里提交，
 /// 每次写入都会 `bump_index_epoch`。检索会话的快照按 epoch 认账，索引一变旧快照
 /// 如实报 `search_expired` 让前端重取，而不是拿半截索引当准的。所以「重建中」
 /// 不等于「搜不到」，也不等于「搜到的可能是旧的还假装是新的」。
 ///
 /// 成败口径：
-/// - **结构性原因**（没有目标、目标来源不存在）→ 终态 `failed` + 明确错误码。
+/// - **结构性原因**（目标来源不存在）→ 终态 `failed` + 明确错误码。
 ///   正常路径上闸门（`resolve_dependencies`）在领取前就已经把它们终态失败了，
 ///   这里再挡一次是防御：绕过闸门也不能悄悄成功；
 /// - **可恢复原因**（IO / 数据库暂时不可用）→ 按 #67 的 `HandlerFailure::retryable`
 ///   退避重试，消耗额度。
 fn run_index(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailure> {
     if job.target_ids.is_empty() {
-        return Err(HandlerFailure::terminal(
-            ERROR_NO_TARGET,
-            "索引任务没有目标来源，重试也不会变好".to_owned(),
-        ));
+        core.rebuild_keyword_index(None)
+            .map_err(HandlerFailure::retryable)?;
+        return Ok(());
     }
     for target in &job.target_ids {
         let exists: i64 = core

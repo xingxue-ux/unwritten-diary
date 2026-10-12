@@ -109,6 +109,21 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 决定是显示文字还是提供「打开原件」。
   Future<SourceRevision?> previousSourceRevision({required String sourceId});
 
+  /// 排一条关键词索引重建任务，契约第 4.4 节 `indexes.rebuild`。
+  ///
+  /// **异步**：只排任务并返回它（`targetIds` 为空表示整库），不做同步重建——同步
+  /// 重建会阻塞界面，而队列的退避、补做与依赖闸门已经就绪。`scope` 的编码见契约
+  /// 第 4.4 节：`all` 整库，`sources:<id>[,<id>]*` 指定来源（顺序无语义，空列表 /
+  /// 非法字符报 `invalid_argument`，不存在的来源报 `not_found`）。
+  ///
+  /// 幂等：同一个 `(scope, reason, operationId)` 重复调用返回同一条任务；同一个
+  /// operationId 换了 scope 或原因报 `idempotency_conflict`。
+  Future<Job> rebuildIndexes({
+    required String scope,
+    required String reason,
+    required String operationId,
+  });
+
   /// 修改某一篇来源的原始文字：新建一个修订，旧修订保留。
   ///
   /// 契约第 4.1 节 `sources.reviseText`。**改完必须再跑一次 `extract_source`**，

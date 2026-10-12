@@ -15,6 +15,7 @@ mod assets;
 mod chunker;
 mod error;
 mod extractors;
+mod index_rebuild;
 mod jobs;
 /// 数据对象。公开是为了让桥接层的 codegen 能扫描它们（见 flutter_rust_bridge.yaml）。
 pub mod model;
@@ -815,10 +816,35 @@ impl Core {
     ///
     /// 返回重建的文档数：派生内容片段 + 用户自己写的记录文字（`captures.draft_text`）。
     ///
-    /// 整库重建是重活，产品路径上应当是可取消的任务；这一片先提供同步入口，
-    /// 让覆盖状态与增量索引有个可靠的校准方式（任务化见 issue #31）。
+    /// 这是**同步**入口，给覆盖状态校准与测试用。产品路径走
+    /// `schedule_index_rebuild`（契约 `indexes.rebuild`）：它只排任务，不阻塞界面。
     pub fn rebuild_keyword_index(&mut self, source_scope: Option<&[String]>) -> Result<i64> {
         search::rebuild(self, source_scope)
+    }
+
+    /// 排一条关键词索引重建任务，契约第 4.4 节 `indexes.rebuild`。
+    ///
+    /// **异步**：只排任务并返回它（调用方拿 `job.id`），真正重建由 `index` 执行者在
+    /// `run_due_jobs` 里跑。`scope` 的编码（v1）是：
+    ///
+    /// - `all`：整库（与 `rebuild_keyword_index(None)` 同义，含记录文字那一路）；
+    /// - `sources:<id>[,<id>]*`：只重建这些来源；id 只允许 `[A-Za-z0-9_]`，`,` 是
+    ///   分隔符，不定义转义。
+    ///
+    /// 顺序对重建没有语义，解析时排序成规范形；空列表、空记号、重复 id、越界字符
+    /// 报 `invalid_argument`；指定了不存在的来源报 `not_found`。
+    ///
+    /// 幂等：同一个 `(scope, 原因, operationId)` 重复调用返回同一条任务（按 id 读
+    /// 当前状态）；同一个 operationId 换了 scope 或原因报 `idempotency_conflict`。
+    ///
+    /// 口径与 `scope` 规范见契约第 4.4 节与 `docs/architecture/m4-任务调度与补做.md`。
+    pub fn schedule_index_rebuild(
+        &mut self,
+        scope: &str,
+        reason: &str,
+        operation_id: &str,
+    ) -> Result<Job> {
+        index_rebuild::schedule(self, scope, reason, operation_id)
     }
 
     /// 关键词检索候选：命中**派生片段**的 ID，按索引写入顺序。
