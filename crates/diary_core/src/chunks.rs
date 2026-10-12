@@ -602,9 +602,17 @@ pub(crate) fn counts(core: &Core, source_scope: Option<&[String]>) -> Result<Chu
         ),
     };
 
+    // 「可用的块」= 它的每一段要么是记录自写文字（没有来源修订），要么该来源的当前修订
+    // 就是这一段记的修订。`revise_text` 之后、重建之前，旧块还在库里但没有一段属于当前内容
+    // ——不排除它们，状态就会声称「已嵌入 N 块」，而检索其实一块都用不上（那是撒谎）。
+    let current_filter = " AND NOT EXISTS (SELECT 1 FROM chunk_spans s2 \
+         WHERE s2.chunk_id = t.chunk_id AND s2.source_revision_id <> '' \
+           AND NOT EXISTS (SELECT 1 FROM source_items si2 \
+                           WHERE si2.source_id = s2.source_id \
+                             AND si2.current_revision_id = s2.source_revision_id))";
     let total_sql = format!(
         "SELECT COUNT(*) FROM text_chunks t WHERE EXISTS \
-         (SELECT 1 FROM chunk_spans s WHERE s.chunk_id = t.chunk_id{scope_filter})"
+         (SELECT 1 FROM chunk_spans s WHERE s.chunk_id = t.chunk_id{scope_filter}){current_filter}"
     );
     let total = core
         .conn
@@ -616,7 +624,7 @@ pub(crate) fn counts(core: &Core, source_scope: Option<&[String]>) -> Result<Chu
         Some(generation) => {
             let sql = format!(
                 "SELECT COUNT(*) FROM text_chunks t WHERE EXISTS \
-                 (SELECT 1 FROM chunk_spans s WHERE s.chunk_id = t.chunk_id{scope_filter}) \
+                 (SELECT 1 FROM chunk_spans s WHERE s.chunk_id = t.chunk_id{scope_filter}){current_filter} \
                  AND EXISTS (SELECT 1 FROM chunk_vectors v WHERE v.chunk_id = t.chunk_id \
                  AND v.generation = ?)"
             );
