@@ -365,17 +365,18 @@ fn hybrid_search(
     let mut seen_groups: HashSet<String> = HashSet::new();
     let mut previous_prefix: Option<(i64, i64, i64)> = None;
     let mut group_rank = 0_usize;
-    for (position, row) in window.iter().enumerate() {
+    // 名次按**折叠之后的篇**数：`kept` 是已经留下来的篇数。
+    //
+    // 用文档位置（`position + 1`）当名次是错的：一篇被抽成很多片段时，排在它后面的篇名次
+    // 会被顶高，于是那一篇的融合分取决于**前面那篇被切成几段**——同一个短篇，前面放一篇
+    // 5 段的与放一篇 1 段的，RRF 分数会不同（评审在 #60 上指出）。
+    let mut kept = 0_usize;
+    for row in window.iter() {
         let key = sort_key(row);
         let prefix = (key.0, key.1, key.2);
-        // 同名次：与上一行同前缀就沿用上一行的名次，否则用当前 1 起的位置。
-        let current_rank = if previous_prefix.as_ref() == Some(&prefix) {
-            group_rank
-        } else {
-            position + 1
-        };
-        previous_prefix = Some(prefix);
-        group_rank = current_rank;
+        // 同名次：与**上一篇留下来的**同前缀就沿用它，否则用「已保留篇数 + 1」。
+        // 只在真正保留一行时更新 `previous_prefix`——被折叠掉的行不该影响后面的名次。
+        let tied_with_previous = previous_prefix.as_ref() == Some(&prefix);
 
         let (group_id, day_key, text) = if let Some(page) = segment_rows.remove(&row.doc) {
             (page.source_id, page.day_key, page.text)
@@ -388,6 +389,10 @@ fn hybrid_search(
         if !seen_groups.insert(group_id.clone()) {
             continue;
         }
+        let current_rank = next_group_rank(kept, tied_with_previous, group_rank);
+        previous_prefix = Some(prefix);
+        group_rank = current_rank;
+        kept += 1;
         keyword_groups.push((
             group_id,
             row.doc,
@@ -395,7 +400,7 @@ fn hybrid_search(
             support::content_hash(&text),
             current_rank,
         ));
-        if keyword_groups.len() >= RRF_CANDIDATE_DEPTH {
+        if kept >= RRF_CANDIDATE_DEPTH {
             break;
         }
     }
@@ -507,6 +512,18 @@ impl FusedCandidate {
 }
 
 /// 一路的名次换算成 RRF 分：`1/(k + rank)`，`rank` 从 1 起。
+/// 关键词那一路**按篇**给名次：`kept` 是已保留的篇数，同前缀（同名次）沿用上一档。
+///
+/// 抽成纯函数是为了能直接测「一篇被切成很多片段时，后面的篇名次不被顶高」——
+/// 这正是评审在 #60 上指出的问题（原来用 `position + 1`，名次跟文档位置走）。
+fn next_group_rank(kept: usize, tied_with_previous: bool, group_rank: usize) -> usize {
+    if tied_with_previous && kept > 0 {
+        group_rank
+    } else {
+        kept + 1
+    }
+}
+
 fn rrf_score(rank: usize) -> f32 {
     1.0 / (RRF_K as f32 + rank as f32)
 }
@@ -998,4 +1015,41 @@ pub(crate) fn filters_to_params(filters: &SearchFilters) -> Result<(Option<Strin
         None => None,
     };
     Ok((kinds, scope))
+}
+
+#[cfg(test)]
+mod rank_tests {
+    use super::next_group_rank;
+
+    /// 评审在 #60 上给的场景：第一篇占 5 个命中片段、紧随的第二篇只有 1 个。
+    /// 按篇给名次 ⇒ 名次是 1、2；按文档位置 ⇒ 第二篇会变成 6（它的融合分就取决于
+    /// 前一篇被切成几段）。
+    #[test]
+    fn ranks_follow_folded_pieces_not_document_positions() {
+        let mut kept = 0;
+        let mut group_rank = 0;
+        let mut ranks = Vec::new();
+        // 第一篇的 5 个片段：前缀各不相同（不是同名次），但都属于同一篇 ⇒ 只有第 1 个被保留。
+        for _ in 0..5 {
+            let first_of_group = kept == 0;
+            if first_of_group {
+                kept += 1;
+                group_rank = next_group_rank(kept - 1, false, group_rank);
+                ranks.push(group_rank);
+            }
+        }
+        // 第二篇：1 个片段 ⇒ 名次必须是 2，而不是 6。
+        kept += 1;
+        ranks.push(next_group_rank(kept - 1, false, group_rank));
+        assert_eq!(ranks, vec![1, 2], "名次按折叠后的篇数走");
+    }
+
+    /// 同名次（competition ranking）：日期/出现位置/家族三项都相同的相邻篇共享名次，
+    /// 下一档从「已保留篇数 + 1」继续。
+    #[test]
+    fn tied_pieces_share_a_rank_and_next_starts_after_them() {
+        assert_eq!(next_group_rank(0, false, 0), 1);
+        assert_eq!(next_group_rank(1, true, 1), 1, "并列第二篇沿用第一档");
+        assert_eq!(next_group_rank(2, false, 1), 3, "并列结束后从已保留篇数 + 1 继续");
+    }
 }
