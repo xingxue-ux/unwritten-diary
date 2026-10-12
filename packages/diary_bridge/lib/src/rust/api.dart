@@ -121,6 +121,13 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
+  /// **跑一轮到期任务**（驱动），返回本轮摘要：跑了几条、成功/失败各几条、其中多少条是
+  /// **补做**（本轮领取时排期已过期）、还有多少到期未跑（被 `limit` 截住）、下一个唤醒时刻。
+  ///
+  /// 什么时候调用由平台层决定（#19：系统级唤醒 / 前台 / 退出前），这一层只负责
+  /// 「调用得到」；`limit` 是本轮最多跑几条任务（按条数，不是毫秒预算）。
+  Future<JobRunSummary> runDueJobs({required int limit});
+
   /// 保存草稿。只有核心确认落盘后才返回 `durable = true`。
   Future<DraftSaveResult> saveDraft({
     required String captureId,

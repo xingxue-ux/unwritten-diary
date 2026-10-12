@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 2102969302;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1484311880;
 
 // Section: executor
 
@@ -1205,6 +1205,57 @@ fn wire__crate__api__BridgeSession_revise_text_impl(
                         api_expected_revision,
                         api_operation_id,
                     )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__BridgeSession_run_due_jobs_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_run_due_jobs",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_limit = <u32>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::api::BridgeSession::run_due_jobs(&*api_that_guard, api_limit)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -2887,6 +2938,18 @@ const _: fn() = || {
         let _: i64 = JobProgress.total;
     }
     {
+        let JobRunSummary = None::<diary_core::model::JobRunSummary>.unwrap();
+        let _: chrono::DateTime<chrono::Utc> = JobRunSummary.started_at;
+        let _: i64 = JobRunSummary.processed;
+        let _: i64 = JobRunSummary.succeeded;
+        let _: i64 = JobRunSummary.failed;
+        let _: i64 = JobRunSummary.retrying;
+        let _: i64 = JobRunSummary.backfilled;
+        let _: i64 = JobRunSummary.recovered;
+        let _: i64 = JobRunSummary.due_backlog;
+        let _: Option<chrono::DateTime<chrono::Utc>> = JobRunSummary.next_wakeup;
+    }
+    {
         let JobStatus = None::<diary_core::model::JobStatus>.unwrap();
         let _: i64 = JobStatus.queued;
         let _: i64 = JobStatus.running;
@@ -3505,6 +3568,32 @@ impl SseDecode for diary_core::model::JobProgress {
         return diary_core::model::JobProgress {
             completed: var_completed,
             total: var_total,
+        };
+    }
+}
+
+impl SseDecode for diary_core::model::JobRunSummary {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_startedAt = <chrono::DateTime<chrono::Utc>>::sse_decode(deserializer);
+        let mut var_processed = <i64>::sse_decode(deserializer);
+        let mut var_succeeded = <i64>::sse_decode(deserializer);
+        let mut var_failed = <i64>::sse_decode(deserializer);
+        let mut var_retrying = <i64>::sse_decode(deserializer);
+        let mut var_backfilled = <i64>::sse_decode(deserializer);
+        let mut var_recovered = <i64>::sse_decode(deserializer);
+        let mut var_dueBacklog = <i64>::sse_decode(deserializer);
+        let mut var_nextWakeup = <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
+        return diary_core::model::JobRunSummary {
+            started_at: var_startedAt,
+            processed: var_processed,
+            succeeded: var_succeeded,
+            failed: var_failed,
+            retrying: var_retrying,
+            backfilled: var_backfilled,
+            recovered: var_recovered,
+            due_backlog: var_dueBacklog,
+            next_wakeup: var_nextWakeup,
         };
     }
 }
@@ -4398,108 +4487,109 @@ fn pde_ffi_dispatcher_primary_impl(
             data_len,
         ),
         22 => wire__crate__api__BridgeSession_revise_text_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__BridgeSession_save_draft_impl(port, ptr, rust_vec_len, data_len),
-        24 => {
+        23 => wire__crate__api__BridgeSession_run_due_jobs_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__BridgeSession_save_draft_impl(port, ptr, rust_vec_len, data_len),
+        25 => {
             wire__crate__api__BridgeSession_search_next_page_impl(port, ptr, rust_vec_len, data_len)
         }
-        25 => {
+        26 => {
             wire__crate__api__BridgeSession_search_snapshot_impl(port, ptr, rust_vec_len, data_len)
         }
-        26 => wire__crate__api__BridgeSession_start_search_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__diary_core__model__asset_storage_state_from_wire_impl(
+        27 => wire__crate__api__BridgeSession_start_search_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__diary_core__model__asset_storage_state_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        28 => wire__diary_core__model__asset_storage_state_wire_impl(
+        29 => wire__diary_core__model__asset_storage_state_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        29 => {
+        30 => {
             wire__diary_core__model__author_type_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        30 => wire__diary_core__model__author_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        31 => {
+        31 => wire__diary_core__model__author_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        32 => {
             wire__diary_core__model__capture_state_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        32 => wire__diary_core__model__capture_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__diary_core__model__coverage_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__diary_core__model__coverage_wire_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__diary_core__model__event_type_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__diary_core__model__event_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        37 => {
+        33 => wire__diary_core__model__capture_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__diary_core__model__coverage_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__diary_core__model__coverage_wire_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__diary_core__model__event_type_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__diary_core__model__event_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        38 => {
             wire__diary_core__model__import_origin_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        38 => wire__diary_core__model__import_origin_wire_impl(port, ptr, rust_vec_len, data_len),
-        39 => {
+        39 => wire__diary_core__model__import_origin_wire_impl(port, ptr, rust_vec_len, data_len),
+        40 => {
             wire__diary_core__model__import_state_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        40 => wire__diary_core__model__import_state_is_in_flight_impl(
+        41 => wire__diary_core__model__import_state_is_in_flight_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        41 => wire__diary_core__model__import_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__diary_core__model__job_priority_value_impl(port, ptr, rust_vec_len, data_len),
-        43 => wire__diary_core__model__job_state_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        44 => {
+        42 => wire__diary_core__model__import_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        43 => wire__diary_core__model__job_priority_value_impl(port, ptr, rust_vec_len, data_len),
+        44 => wire__diary_core__model__job_state_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        45 => {
             wire__diary_core__model__job_state_is_terminal_impl(port, ptr, rust_vec_len, data_len)
         }
-        45 => wire__diary_core__model__job_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        46 => {
+        46 => wire__diary_core__model__job_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        47 => {
             wire__diary_core__model__locator_type_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        47 => wire__diary_core__model__locator_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__diary_core__model__matched_by_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        49 => wire__diary_core__model__matched_by_wire_impl(port, ptr, rust_vec_len, data_len),
-        50 => wire__diary_core__model__processing_status_from_wire_impl(
+        48 => wire__diary_core__model__locator_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__diary_core__model__matched_by_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        50 => wire__diary_core__model__matched_by_wire_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__diary_core__model__processing_status_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        51 => {
+        52 => {
             wire__diary_core__model__processing_status_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        52 => wire__diary_core__model__processing_summary_default_impl(
+        53 => wire__diary_core__model__processing_summary_default_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        53 => wire__diary_core__model__recording_state_from_wire_impl(
+        54 => wire__diary_core__model__recording_state_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        54 => {
+        55 => {
             wire__diary_core__model__recording_state_is_open_impl(port, ptr, rust_vec_len, data_len)
         }
-        55 => wire__diary_core__model__recording_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        56 => {
+        56 => wire__diary_core__model__recording_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        57 => {
             wire__diary_core__model__search_filters_default_impl(port, ptr, rust_vec_len, data_len)
         }
-        57 => {
+        58 => {
             wire__diary_core__model__search_mode_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        58 => wire__diary_core__model__search_mode_wire_impl(port, ptr, rust_vec_len, data_len),
-        59 => {
+        59 => wire__diary_core__model__search_mode_wire_impl(port, ptr, rust_vec_len, data_len),
+        60 => {
             wire__diary_core__model__search_phase_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        60 => wire__diary_core__model__search_phase_wire_impl(port, ptr, rust_vec_len, data_len),
-        61 => {
+        61 => wire__diary_core__model__search_phase_wire_impl(port, ptr, rust_vec_len, data_len),
+        62 => {
             wire__diary_core__model__source_kind_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        62 => wire__diary_core__model__source_kind_wire_impl(port, ptr, rust_vec_len, data_len),
-        63 => {
+        63 => wire__diary_core__model__source_kind_wire_impl(port, ptr, rust_vec_len, data_len),
+        64 => {
             wire__diary_core__model__source_locator_document_impl(port, ptr, rust_vec_len, data_len)
         }
-        64 => wire__diary_core__model__source_locator_text_range_impl(
+        65 => wire__diary_core__model__source_locator_text_range_impl(
             port,
             ptr,
             rust_vec_len,
@@ -5104,6 +5194,34 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::JobProgress
     for diary_core::model::JobProgress
 {
     fn into_into_dart(self) -> FrbWrapper<diary_core::model::JobProgress> {
+        self.into()
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::JobRunSummary> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.0.started_at.into_into_dart().into_dart(),
+            self.0.processed.into_into_dart().into_dart(),
+            self.0.succeeded.into_into_dart().into_dart(),
+            self.0.failed.into_into_dart().into_dart(),
+            self.0.retrying.into_into_dart().into_dart(),
+            self.0.backfilled.into_into_dart().into_dart(),
+            self.0.recovered.into_into_dart().into_dart(),
+            self.0.due_backlog.into_into_dart().into_dart(),
+            self.0.next_wakeup.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<diary_core::model::JobRunSummary>
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::JobRunSummary>>
+    for diary_core::model::JobRunSummary
+{
+    fn into_into_dart(self) -> FrbWrapper<diary_core::model::JobRunSummary> {
         self.into()
     }
 }
@@ -6023,6 +6141,21 @@ impl SseEncode for diary_core::model::JobProgress {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i64>::sse_encode(self.completed, serializer);
         <i64>::sse_encode(self.total, serializer);
+    }
+}
+
+impl SseEncode for diary_core::model::JobRunSummary {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <chrono::DateTime<chrono::Utc>>::sse_encode(self.started_at, serializer);
+        <i64>::sse_encode(self.processed, serializer);
+        <i64>::sse_encode(self.succeeded, serializer);
+        <i64>::sse_encode(self.failed, serializer);
+        <i64>::sse_encode(self.retrying, serializer);
+        <i64>::sse_encode(self.backfilled, serializer);
+        <i64>::sse_encode(self.recovered, serializer);
+        <i64>::sse_encode(self.due_backlog, serializer);
+        <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.next_wakeup, serializer);
     }
 }
 

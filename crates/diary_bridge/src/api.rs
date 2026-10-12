@@ -14,7 +14,8 @@ use chrono::{DateTime, Utc};
 use diary_core::{
     Capture, CapturePage, CommitResult, Core, CoreError, DomainEvent, DraftSaveResult,
     ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job,
-    JobState, JobStatus, SearchRequest, SearchSnapshot, SourceLocation, SourceLocator,
+    JobRunSummary, JobState, JobStatus, SearchRequest, SearchSnapshot, SourceLocation,
+    SourceLocator,
     SourceRevision,
 };
 use flutter_rust_bridge::frb;
@@ -332,6 +333,16 @@ impl BridgeSession {
         Ok(core.job_status()?)
     }
 
+    /// **跑一轮到期任务**（驱动），返回本轮摘要：跑了几条、成功/失败各几条、其中多少条是
+    /// **补做**（本轮领取时排期已过期）、还有多少到期未跑（被 `limit` 截住）、下一个唤醒时刻。
+    ///
+    /// 什么时候调用由平台层决定（#19：系统级唤醒 / 前台 / 退出前），这一层只负责
+    /// 「调用得到」；`limit` 是本轮最多跑几条任务（按条数，不是毫秒预算）。
+    pub fn run_due_jobs(&self, limit: u32) -> Result<JobRunSummary, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.run_due_jobs(Utc::now(), limit as usize)?)
+    }
+
     /// 建议的下次唤醒时刻；没有待办时为空。
     pub fn next_wakeup(&self) -> Result<Option<DateTime<Utc>>, BridgeError> {
         let core = self.lock()?;
@@ -410,6 +421,7 @@ fn wired_capabilities() -> Vec<String> {
         "jobs.list",
         "jobs.get",
         "jobs.status",
+        "jobs.runDue",
         "jobs.nextWakeup",
         "core.events",
     ]

@@ -59,6 +59,8 @@ void main() {
     expect(info.capabilities, contains('search.start'));
     // B5 的任务状态摘要接上了。
     expect(info.capabilities, contains('jobs.status'));
+    // B5 的驱动入口也接上了（什么时候调用由平台层决定）。
+    expect(info.capabilities, contains('jobs.runDue'));
     // 诚实的能力声明：还没接的不该出现在清单里。
     expect(info.capabilities, isNot(contains('diary.generate')));
     expect(info.recovery.pendingJobs, 0);
@@ -297,6 +299,17 @@ void main() {
     final again = await session.getCapture(captureId: draft.id);
     expect(again.draftText, text);
   });
+
+  test('驱动一轮到期任务：调用得到，且摘要自洽', () async {
+    // 不清库：前面的用例可能已经排了任务（导入会排 extract），所以这里不断言「跑了 0 条」，
+    // 只钉住**对外契约**：调用得到、计数自洽、补做数不超过已跑条数。
+    final summary = await session.runDueJobs(limit: 10);
+    expect(summary.processed, summary.succeeded + summary.failed + summary.retrying,
+        reason: '每一条跑过的任务都要落在一个终态或等待态里');
+    expect(summary.backfilled, lessThanOrEqualTo(summary.processed));
+    expect(summary.processed, greaterThanOrEqualTo(0));
+  });
+
 }
 
 String _defaultLibraryPath() {

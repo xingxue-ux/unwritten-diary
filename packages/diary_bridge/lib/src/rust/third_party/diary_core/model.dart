@@ -7,7 +7,7 @@ import '../../frb_generated.dart';
 import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `JobRunSummary`, `NativeRecordingStatus`, `NewJob`, `RecordingFinalizeResult`, `RecordingRecovery`, `RecordingSession`, `RecordingTicket`, `SegmentManifest`, `SegmentReceipt`, `SourceItem`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NativeRecordingStatus`, `NewJob`, `RecordingFinalizeResult`, `RecordingRecovery`, `RecordingSession`, `RecordingTicket`, `SegmentManifest`, `SegmentReceipt`, `SourceItem`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
 
@@ -770,6 +770,81 @@ class JobProgress {
           runtimeType == other.runtimeType &&
           completed == other.completed &&
           total == other.total;
+}
+
+/// 一次「跑到期任务」的结果摘要。
+///
+/// 数字都是真实统计：**没有跑的任务绝不会被算成跑过**；被 limit 截住的到期任务
+/// 在 `due_backlog` 里如实报出来。契约 `runDueJobs` 的返回值就是它——桥接还没接
+/// 这个方法，`packages/diary_api` 里的 `DueRunSummary` 形状更老，接的时候再对齐。
+class JobRunSummary {
+  /// 本次运行开始的时刻（调用方给的 `now`）。「补做」以它为界。
+  final DateTime startedAt;
+
+  /// 本次领取并执行的任务数，不超过调用方给的 limit。
+  final PlatformInt64 processed;
+
+  /// 其中执行成功、进入 `succeeded` 的数量。
+  final PlatformInt64 succeeded;
+
+  /// 其中用完额度或没有处理器、进入「已放弃」（`failed`）的数量。
+  final PlatformInt64 failed;
+
+  /// 其中这次失败但还有额度、已经排了退避重试（`retry_wait`）的数量。
+  final PlatformInt64 retrying;
+
+  /// 其中属于「补做」的数量：领取时它的 `next_attempt_at` 已经早于 `started_at`。
+  ///
+  /// 口径与理由见 `jobs::run_due`；我们只说「补做」，不说「准时完成」。
+  final PlatformInt64 backfilled;
+
+  /// 运行开始时回收的「上次没跑完」（`state=running`）任务数。
+  final PlatformInt64 recovered;
+
+  /// 本次运行结束后仍然到期、但这次没跑上的任务数（被 limit 截住）。
+  final PlatformInt64 dueBacklog;
+
+  /// 下一个到期时刻；没有待办时为 None。
+  final DateTime? nextWakeup;
+
+  const JobRunSummary({
+    required this.startedAt,
+    required this.processed,
+    required this.succeeded,
+    required this.failed,
+    required this.retrying,
+    required this.backfilled,
+    required this.recovered,
+    required this.dueBacklog,
+    this.nextWakeup,
+  });
+
+  @override
+  int get hashCode =>
+      startedAt.hashCode ^
+      processed.hashCode ^
+      succeeded.hashCode ^
+      failed.hashCode ^
+      retrying.hashCode ^
+      backfilled.hashCode ^
+      recovered.hashCode ^
+      dueBacklog.hashCode ^
+      nextWakeup.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is JobRunSummary &&
+          runtimeType == other.runtimeType &&
+          startedAt == other.startedAt &&
+          processed == other.processed &&
+          succeeded == other.succeeded &&
+          failed == other.failed &&
+          retrying == other.retrying &&
+          backfilled == other.backfilled &&
+          recovered == other.recovered &&
+          dueBacklog == other.dueBacklog &&
+          nextWakeup == other.nextWakeup;
 }
 
 /// 任务状态，契约第 3 节「任务」行。
