@@ -7,16 +7,19 @@
 //!   只要还留着等待态，摘要就必须给出**可用的** `nextWakeup`（不能是 null）；
 //! - 被条数上限截住的路径仍可能需要两轮：第一轮摘要要给出可用的下一次唤醒时刻；
 //! - 前置不可能再满足（提取被取消）→ 终态失败 + 明确错误码，不挂死、不假装成功；
-//! - 不变式专测：有等待态 ⟺ 必须有可用的 `nextWakeup`（前置 `Broken` 时不留等待态）。
+//! - 不变式专测：有等待态 ⟺ 必须有可用的 `nextWakeup`（前置 `Broken` 时不留等待态）；
+//! - #67 二轮复审的回归：排在未来到期的索引任务，前置提前完成时**不被提前执行**；
+//!   等待期与晋升都保留原排期，`nextWakeup` 如实指向未来时刻；按时执行不计补做，
+//!   排期已过才跑的仍计入补做。
 //!
 //! 只做**关键词**索引任务化；语义索引要等 #58 的向量接入合入（见 m4 文档）。
 
 use std::path::Path;
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use diary_core::{
-    Core, CreateDraftInput, ImportManifest, ImportOrigin, ImportRequest, JobState, SearchFilters,
-    SearchMode, SearchRequest,
+    Core, CreateDraftInput, ImportManifest, ImportOrigin, ImportRequest, JobPriority, JobState,
+    NewJob, SearchFilters, SearchMode, SearchRequest,
 };
 use sha2::{Digest, Sha256};
 
@@ -99,6 +102,11 @@ fn waiting_index_jobs(core: &Core) -> Vec<diary_core::Job> {
         .into_iter()
         .filter(|job| job.kind == "index")
         .collect()
+}
+
+/// 排期在库里以 ISO 文本存，精度是**毫秒**：用例里的期望值也截到毫秒才可比。
+fn to_millis(at: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    chrono::DateTime::from_timestamp_millis(at.timestamp_millis()).expect("毫秒时间戳可还原")
 }
 
 /// 端到端链：导入 → 提取 → 索引任务跑完。**只调一次** `run_due_jobs`：
@@ -346,4 +354,140 @@ fn a_run_never_reports_no_wakeup_while_jobs_are_waiting() {
     assert_eq!(broken.waiting_dependency, 0, "前置不可能满足就终态失败");
     assert_eq!(broken.dependency_failed, 1);
     assert!(broken.next_wakeup.is_none(), "既没有等待态也没有待办，才允许为空");
+}
+
+/// #67 二轮复审的回归（评审点名的场景）：排一条「一小时后执行」的索引任务，此时
+/// 前置（提取）还没完成；跑驱动让提取**提前完成**，那条索引任务**绝不能被提前执行**。
+///
+/// 修法后的三处口径一起钉在这里：
+/// - **等待期**（`defer_for_dependency`）与**晋升**（`promote_dependency`）都保留
+///   原 `next_attempt_at`，所以「依赖刚满足但排期还在未来」的任务停在
+///   `queued` + 未来排期，既有的领取判据 `next_attempt_at IS NULL OR <= now`
+///   自然拦住它（不需要另加状态）；
+/// - **领取**（`claim_next_due_record`）必须「依赖已满足」与「已到期」同时成立；
+/// - 排期不丢：它作为 `queued` 任务进 `next_wakeup`，摘要与状态如实给出那个未来时刻；
+/// - 补做不被污染：按时（`due_at == now`）被领走**不算**补做。
+#[test]
+fn an_index_job_due_in_the_future_is_not_run_early_when_its_extract_finishes_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let (_, source_id) = import_text(&mut core, b"scheduled body", "note.txt", "op-future");
+
+    let now = Utc::now();
+    let due = to_millis(now + Duration::hours(1));
+
+    // 导入顺带排的那条来源索引任务先取消掉，好让这次观察只落在「一小时后」的那条上。
+    let auto = waiting_index_jobs(&core)
+        .into_iter()
+        .next()
+        .expect("导入要排一条在等的索引任务");
+    core.cancel_job(&auto.id, "op-cancel-auto-index").unwrap();
+
+    // 一条**排在一小时后**的索引任务；此刻前置（提取）还没跑。
+    let scheduled = core
+        .enqueue_job(
+            NewJob::new("index", JobPriority::Maintenance)
+                .targeting(vec![source_id.clone()])
+                .scheduled_at(due),
+        )
+        .unwrap();
+    assert_eq!(scheduled.next_attempt_at, Some(due), "排期要真的落库");
+    assert_eq!(scheduled.state, JobState::Queued);
+
+    // 跑一轮：提取提前完成，闸门把它认账并晋升——但排期未到，不能领它。
+    let first = core.run_due_jobs(now, 60_000, "foreground", 64).unwrap();
+
+    // 断言 1：本轮只跑了提取；排期在一小时后的索引任务没有被提前执行。
+    assert_eq!(
+        first.processed, 1,
+        "本轮只该跑提取：排期未到的索引任务不能被领走"
+    );
+    assert_eq!(first.succeeded, 1);
+    assert_eq!(first.backfilled, 0, "提取是入队即到期，不算补做");
+    assert_eq!(first.waiting_dependency, 0, "前置已满足，不再留在等待态");
+    assert_eq!(first.due_backlog, 0, "排期还在未来，就不算「到期积压」");
+
+    let promoted = core.get_job(&scheduled.id).unwrap();
+    assert_eq!(
+        promoted.state,
+        JobState::Queued,
+        "前置满足后回到 queued，等排期到才跑"
+    );
+    assert_eq!(
+        promoted.next_attempt_at,
+        Some(due),
+        "晋升不能丢掉原计划时间（否则会被立刻领走）"
+    );
+    assert!(promoted.error_code.is_none(), "前置满足后不该留着在等的原因");
+    assert_eq!(promoted.attempt_count, 0, "没被提前领走，就不该记尝试");
+
+    // 断言 3：到期时间没丢——摘要与状态给出的下次唤醒就是那个未来时刻。
+    assert_eq!(
+        first.next_wakeup,
+        Some(due),
+        "晋升后唤醒时刻要如实指向原排期，不是 None、也不是「现在」"
+    );
+    assert_eq!(core.next_wakeup().unwrap(), Some(due));
+    assert_eq!(core.job_status().unwrap().next_wakeup, Some(due));
+
+    // 断言 2 / 4 的另一半：把 now 推到排期那一刻（按时）才跑，它被执行，且不计补做。
+    let on_time = core.run_due_jobs(due, 60_000, "foreground", 64).unwrap();
+    assert_eq!(on_time.processed, 1, "到点了就该跑");
+    assert_eq!(on_time.succeeded, 1);
+    assert_eq!(
+        on_time.backfilled, 0,
+        "按时执行（领取时排期未过）不能算成补做"
+    );
+    assert_eq!(on_time.next_wakeup, None, "跑完没有待办了");
+    let done = core.get_job(&scheduled.id).unwrap();
+    assert_eq!(done.state, JobState::Succeeded);
+    assert_eq!(done.attempt_count, 1, "真正跑过一次才记一次尝试");
+    assert!(
+        core.index_status(Some(std::slice::from_ref(&source_id)))
+            .unwrap()
+            .keyword_index_ready,
+        "到点跑完，这条来源的关键词索引就绪"
+    );
+}
+
+/// 断言 4 的另一半：**排期已过、驱动当时没跑、后来才跑**的情形**仍计** `backfilled`。
+///
+/// 与上一条用例同一条代码路径（等待期保留排期），只是排期在过去：前置完成、晋升回
+/// `queued` 时它已经到期，于是**同一轮**被领走，领取时排期已过 → 如实算作补做。
+/// 两条方向都钉住，避免「一改保留排期，就把补做统计钉死成 0」。
+#[test]
+fn an_index_job_whose_scheduled_time_already_passed_is_still_backfilled() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let (_, source_id) = import_text(&mut core, b"overdue body", "note.txt", "op-overdue");
+
+    let now = Utc::now();
+    let due = now - Duration::hours(2);
+
+    let auto = waiting_index_jobs(&core)
+        .into_iter()
+        .next()
+        .expect("导入要排一条在等的索引任务");
+    core.cancel_job(&auto.id, "op-cancel-auto-overdue").unwrap();
+
+    // 排期在两小时前：本来早该跑，但等前置等到了现在。
+    let scheduled = core
+        .enqueue_job(
+            NewJob::new("index", JobPriority::Maintenance)
+                .targeting(vec![source_id.clone()])
+                .scheduled_at(due),
+        )
+        .unwrap();
+    assert!(scheduled.next_attempt_at.expect("排期要落库") < now);
+
+    // 提取跑完 → 晋升回 queued（排期已过）→ 同一轮就能领走执行。
+    let round = core.run_due_jobs(now, 60_000, "foreground", 64).unwrap();
+    assert_eq!(round.processed, 2, "提取与到期的索引任务都跑掉");
+    assert_eq!(round.succeeded, 2);
+    assert_eq!(
+        round.backfilled, 1,
+        "排期已过、这次才跑上：必须如实算作补做（提取那条入队即到期，不算）"
+    );
+    assert_eq!(core.get_job(&scheduled.id).unwrap().state, JobState::Succeeded);
+    assert!(round.next_wakeup.is_none(), "没有待办了");
 }

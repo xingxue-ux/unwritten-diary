@@ -222,6 +222,16 @@ pub(crate) fn claim_next_due(core: &mut Core, now: DateTime<Utc>) -> Result<Opti
 }
 
 /// 与 `claim_next_due` 相同，但把领取前的到期时刻一起带出来。
+///
+/// **领取要同时满足「依赖已满足」与「已到期」两个条件**：#67 二轮复审的口径。
+/// - 「依赖已满足」不由这里查询，而是由**状态**保证：等在 `waiting_dependency`
+///   的任务不在本查询的 `state IN ('queued', 'retry_wait')` 里，闸门只在
+///   `index_dependency` 判 `Ready` 时才把它放回 `queued`（`promote_dependency`）。
+///   所以能进这里的 `queued` 任务，依赖都已经满足；
+/// - 「已到期」由 `next_attempt_at IS NULL OR <= now` 保证：`NULL` 是「入队即到期」，
+///   非空则要等到那一刻。`promote_dependency` / `defer_for_dependency` **保留**任务
+///   原本的排期，于是「依赖刚满足、但排期还在未来」的任务会停在 `queued` 等时间到，
+///   不会被提前领取（不需要另加一个「已满足但未到期」的状态）。
 pub(crate) fn claim_next_due_record(
     core: &mut Core,
     now: DateTime<Utc>,
@@ -493,6 +503,10 @@ pub(crate) fn cancel(core: &mut Core, job_id: &str, operation_id: &str) -> Resul
 /// 不是时间到。前置那一环自己会在 `queued`/`retry_wait` 里，所以下一次唤醒时刻
 /// 由它给；前置压根没有执行者时，闸门会把在等的任务终态失败，不会留下一个
 /// 「永远没有下一次唤醒」的挂死任务。
+///
+/// 前置满足、但排期还在未来的任务（被 `promote_dependency` 放回 `queued` 且保留了
+/// `next_attempt_at`）**算待办**：下面按 `queued`/`retry_wait` 的 `next_attempt_at`
+/// 取最早值，于是「一小时后才该跑」的任务会把唤醒时刻如实报成那个未来时刻。
 pub(crate) fn next_wakeup(core: &Core) -> Result<Option<DateTime<Utc>>> {
     let now = support::now();
     // 有立刻能跑的排队任务，就该现在唤醒。
@@ -715,13 +729,21 @@ fn resolve_dependencies(core: &mut Core, now: DateTime<Utc>) -> Result<i64> {
     Ok(broken)
 }
 
-/// 前置已满足：把在等的任务放回 `queued`，这一轮立刻可跑。
+/// 前置已满足：把在等的任务放回 `queued`，这一轮**到期就**可跑。
 ///
 /// 清掉 `error_code`：那是「在等什么」，前置满足了它就不再成立。
+///
+/// **保留 `next_attempt_at`（#67 二轮复审）**：排期是这条任务「本该何时跑」的
+/// 事实，等待前置不该把它抹掉。保留之后，「依赖刚满足但排期还在未来」的任务落在
+/// `queued` + 未来 `next_attempt_at`，既有的领取判据
+/// （`next_attempt_at IS NULL OR <= now`）自然拦住它，不需要另加状态；同时它作为
+/// `queued` 任务会进 `next_wakeup`，到期时间不丢。若清空，一条排在一小时后的索引
+/// 任务会在前置提前完成的那一刻被立刻领走（本轮就被提前执行），
+/// `next_wakeup` 与补做统计里也再看不到原计划时刻。
 fn promote_dependency(core: &mut Core, job_id: &str, now: DateTime<Utc>) -> Result<()> {
     let tx = core.conn.transaction()?;
     tx.execute(
-        "UPDATE jobs SET state = 'queued', error_code = NULL, next_attempt_at = NULL, \
+        "UPDATE jobs SET state = 'queued', error_code = NULL, \
          updated_at = ?1 WHERE id = ?2",
         params![support::to_iso(now), job_id],
     )?;
@@ -732,8 +754,14 @@ fn promote_dependency(core: &mut Core, job_id: &str, now: DateTime<Utc>) -> Resu
 
 /// 前置还没满足：留在 `waiting_dependency`，把「在等什么」写在 `error_code` 上。
 ///
-/// 不碰 `attempt_count`、不排 `next_attempt_at`、不置 `requires_user_action`：
-/// 在等前置不是失败，也不需要用户做什么。
+/// 不碰 `attempt_count`、不置 `requires_user_action`：在等前置不是失败，也不需要
+/// 用户做什么。
+///
+/// **保留 `next_attempt_at`（#67 二轮复审）**：等待期间那条任务原本的排期仍是真的，
+/// 清空它会让「一小时后才该跑的索引任务」在前置提前完成时被立刻领走，而且原到期
+/// 时刻从 `next_wakeup` 与补做统计里一起消失。保留排期后，等待态由它的前置任务
+/// 负责唤醒（`next_wakeup` 仍只把 `queued`/`retry_wait` 当待办），前置满足再靠
+/// 「是否到期」决定能不能领。
 fn defer_for_dependency(
     core: &mut Core,
     job_id: &str,
@@ -742,7 +770,7 @@ fn defer_for_dependency(
 ) -> Result<()> {
     let tx = core.conn.transaction()?;
     tx.execute(
-        "UPDATE jobs SET state = 'waiting_dependency', error_code = ?1, next_attempt_at = NULL, \
+        "UPDATE jobs SET state = 'waiting_dependency', error_code = ?1, \
          requires_user_action = 0, attention_key = NULL, updated_at = ?2 WHERE id = ?3",
         params![reason, support::to_iso(now), job_id],
     )?;
@@ -806,10 +834,14 @@ impl HandlerFailure {
 ///   长、但每条都不长」把一轮拖成没完没了的情况。被预算或条数截住的到期任务留在
 ///   队列里，数量如实报进 `due_backlog`；
 /// - **`trigger`**：唤醒来源，如实记进摘要，供观察与排查；核心不用它改变行为；
-/// - **补做**：领取时任务的 `next_attempt_at` 已经早于本次运行的开始时刻
+/// - **补做**：领取时任务的 `next_attempt_at` 已经**严格早于**本次运行的开始时刻
 ///   （`started_at`）。`next_attempt_at` 为空表示「入队即到期」——队列里没有它
 ///   本该何时跑的信息，所以**不计入补做**（否则刚入队就被跑的任务也会算成补做，
-///   反而误导）；这类积压由 `due_backlog` 呈现。我们只说「补做」，不说「准时」；
+///   反而误导）；这类积压由 `due_backlog` 呈现。**按时执行不算补做**：在排期那一刻
+///   或更早被领走（`due_at == now`）不算，只有排在**过去**、这次才跑上的才算。
+///   等待依赖期间排期被保留（见 `defer_for_dependency` / `promote_dependency`），
+///   所以「排在未来、前置提前完成」的任务不会被提前跑，也就不会被误记成补做。
+///   我们只说「补做」，不说「准时」；
 /// - **运行开始先回收**上一次没跑完（`running`）的任务，否则那些任务会被永久丢掉；
 /// - **每次领取前先重新评估依赖**（`resolve_dependencies`），并在**一轮收尾时**再评估
 ///   一次：前置已满足的在等任务会被拉起，在**同一轮**内被领取执行。所以「导入 → 提取
