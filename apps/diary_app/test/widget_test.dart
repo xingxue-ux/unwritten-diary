@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:diary_api/diary_api.dart';
 import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter/material.dart';
@@ -65,12 +68,149 @@ class ConflictSaveApi extends MockDiaryApi {
   );
 }
 
+class LargeCaptureApi extends MockDiaryApi {
+  LargeCaptureApi({this.ignorePageSize = false, this.count = 1001});
+
+  final bool ignorePageSize;
+  final int count;
+  int pageRequests = 0;
+
+  @override
+  Future<CapturePage> listCaptures({
+    String? dayKey,
+    String? cursor,
+    int pageSize = 20,
+  }) async {
+    pageRequests++;
+    final start = int.tryParse(cursor ?? '0') ?? 0;
+    final end = (start + (ignorePageSize ? count : pageSize)).clamp(0, count);
+    final when = DateTime.utc(2026, 10, 12);
+    return CapturePage(
+      captures: [
+        for (var index = start; index < end; index++)
+          Capture(
+            id: 'large-$index',
+            revision: 1,
+            state: CaptureState.committed,
+            occurredAt: when.subtract(Duration(minutes: index)),
+            createdAt: when,
+            updatedAt: when,
+            timeZone: 'Asia/Shanghai',
+            utcOffsetMinutes: 480,
+            dayKey: '2026-10-12',
+            draftText: '测试片段 $index',
+          ),
+      ],
+      nextCursor: end < count ? '$end' : null,
+    );
+  }
+}
+
 Future<void> openApp(WidgetTester tester, MockDiaryApi api) async {
   await tester.pumpWidget(DiaryApp(api: api, demoMode: true));
   await tester.pumpAndSettle();
 }
 
 void main() {
+  testWidgets('timeline builds only visible tiles from 1001 records', (
+    tester,
+  ) async {
+    final api = LargeCaptureApi(ignorePageSize: true);
+    final stopwatch = Stopwatch()..start();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('片段').last);
+    await tester.pumpAndSettle();
+    stopwatch.stop();
+
+    final built = find.textContaining('测试片段').evaluate().length;
+    expect(built, greaterThan(0));
+    expect(built, lessThan(30));
+    // Diagnostic numbers make regressions visible without imposing a machine-
+    // specific timing or memory threshold on CI.
+    // ignore: avoid_print
+    print(
+      'timeline 1001: ${stopwatch.elapsedMilliseconds} ms, '
+      '$built built tiles, ${ProcessInfo.currentRss ~/ (1024 * 1024)} MiB RSS',
+    );
+
+    stopwatch
+      ..reset()
+      ..start();
+    await tester.tap(find.text('搜索').last);
+    await tester.pumpAndSettle();
+    stopwatch.stop();
+    final searchBuilt = find.textContaining('测试片段').evaluate().length;
+    expect(searchBuilt, greaterThan(0));
+    expect(searchBuilt, lessThan(30));
+    // ignore: avoid_print
+    print(
+      'search 1001: ${stopwatch.elapsedMilliseconds} ms, '
+      '$searchBuilt built tiles, ${ProcessInfo.currentRss ~/ (1024 * 1024)} MiB RSS',
+    );
+  });
+
+  testWidgets('timeline loads another page and keeps position after detail', (
+    tester,
+  ) async {
+    final api = LargeCaptureApi(count: 60);
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('片段').last);
+    await tester.pumpAndSettle();
+    expect(api.pageRequests, 1);
+
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -2200));
+    await tester.pumpAndSettle();
+    expect(api.pageRequests, greaterThan(1));
+    final scrollable = find.descendant(
+      of: find.byType(CustomScrollView),
+      matching: find.byType(Scrollable),
+    );
+    final before = tester.state<ScrollableState>(scrollable).position.pixels;
+    expect(before, greaterThan(0));
+
+    await tester.tap(find.textContaining('测试片段').at(2));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('返回'));
+    await tester.pumpAndSettle();
+    final after = tester.state<ScrollableState>(scrollable).position.pixels;
+    expect(after, closeTo(before, 2));
+  });
+
+  testWidgets('search waits for IME commit and then debounces once', (
+    tester,
+  ) async {
+    final api = LargeCaptureApi(count: 2);
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('搜索').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('global-search')));
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '测试片段 1',
+        selection: TextSelection.collapsed(offset: 6),
+        composing: ui.TextRange(start: 0, end: 6),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('测试片段 0'), findsOneWidget);
+
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '测试片段 1',
+        selection: TextSelection.collapsed(offset: 6),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 249));
+    expect(find.text('测试片段 0'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.pumpAndSettle();
+    expect(find.text('测试片段 0'), findsNothing);
+    expect(find.text('测试片段 1'), findsWidgets);
+  });
+
   testWidgets('real mode reads saved records and hides preview material', (
     tester,
   ) async {
@@ -261,6 +401,14 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('片段').last);
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('放大字体的记录'),
+      250,
+      scrollable: find.descendant(
+        of: find.byType(CustomScrollView),
+        matching: find.byType(Scrollable),
+      ),
+    );
     expect(find.text('放大字体的记录'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
