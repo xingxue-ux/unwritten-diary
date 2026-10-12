@@ -81,6 +81,21 @@ install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
+# The Dart entry point always opens the real core. Keep the native library next
+# to the executable and fail the build if the backend artifact was not supplied.
+set(DIARY_BRIDGE_DLL
+  "${CMAKE_SOURCE_DIR}/../../../target/x86_64-pc-windows-msvc/release/diary_bridge.dll"
+  CACHE FILEPATH "Built Rust diary_bridge.dll")
+if(NOT EXISTS "${DIARY_BRIDGE_DLL}")
+  message(FATAL_ERROR "Missing diary_bridge.dll: ${DIARY_BRIDGE_DLL}. Build the Rust Windows target first or pass -DDIARY_BRIDGE_DLL=<path>.")
+endif()
+# app_services.dart loads this from Platform.resolvedExecutable's directory.
+# Use the executable's install destination explicitly even if Flutter's
+# INSTALL_BUNDLE_LIB_DIR changes to a separate lib/ folder later.
+message(STATUS "Installing diary_bridge.dll next to ${BINARY_NAME}.exe: ${CMAKE_INSTALL_PREFIX}")
+install(FILES "${DIARY_BRIDGE_DLL}" DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime)
+
 if(PLUGIN_BUNDLED_LIBRARIES)
   install(FILES "${PLUGIN_BUNDLED_LIBRARIES}"
     DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"

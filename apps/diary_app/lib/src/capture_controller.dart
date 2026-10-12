@@ -22,6 +22,7 @@ class CaptureController extends ChangeNotifier {
   _PendingSave? _pendingSave;
   String? _createOperationId;
   String? _commitOperationId;
+  DiaryErrorCode? _conflictCode;
   int _operation = 0;
   bool _disposed = false;
 
@@ -36,6 +37,7 @@ class CaptureController extends ChangeNotifier {
   bool get canChangeDate =>
       _draft == null && _createOperationId == null && _finishing == null;
   bool get finishing => _finishing != null;
+  bool get needsManualRecovery => _conflictCode != null;
 
   void _notify() {
     if (!_disposed) notifyListeners();
@@ -92,12 +94,18 @@ class CaptureController extends ChangeNotifier {
   void updateText(String value) {
     if (_disposed || finishing) return;
     text = value;
+    // A conflicting write must not silently retry with a stale revision or
+    // operation ID. Keep the user's text available to copy.
+    if (needsManualRecovery) {
+      _notify();
+      return;
+    }
     error = null;
     phase = value == _savedText && _pendingSave == null
         ? SavePhase.saved
         : SavePhase.editing;
     _debounce?.cancel();
-    if (value.trim().isNotEmpty &&
+    if ((value.trim().isNotEmpty || _draft != null) &&
         (value != _savedText || _pendingSave != null)) {
       _debounce = Timer(autoSaveDelay, saveNow);
     }
@@ -106,7 +114,11 @@ class CaptureController extends ChangeNotifier {
 
   Future<bool> saveNow() async {
     _debounce?.cancel();
-    if (_disposed || text.trim().isEmpty) return false;
+    if (_disposed ||
+        needsManualRecovery ||
+        (text.trim().isEmpty && _draft == null)) {
+      return false;
+    }
     while (!_disposed) {
       final current = _saving;
       if (current != null) {
@@ -184,6 +196,7 @@ class CaptureController extends ChangeNotifier {
       return true;
     } catch (failure) {
       if (_disposed) return false;
+      _blockOnConflict(failure);
       phase = SavePhase.failed;
       error = _message(failure);
       _notify();
@@ -207,7 +220,7 @@ class CaptureController extends ChangeNotifier {
 
   Future<bool> _finishOnce() async {
     _debounce?.cancel();
-    if (text.trim().isEmpty) return false;
+    if (text.trim().isEmpty || needsManualRecovery) return false;
     if (!await saveNow()) {
       if (!_disposed) {
         error ??= '记录还没有保存成功，请重试。';
@@ -242,6 +255,7 @@ class CaptureController extends ChangeNotifier {
       return true;
     } catch (failure) {
       if (_disposed) return false;
+      _blockOnConflict(failure);
       phase = SavePhase.failed;
       error = _message(failure);
       _notify();
@@ -249,8 +263,27 @@ class CaptureController extends ChangeNotifier {
     }
   }
 
-  String _message(Object failure) =>
-      failure is DiaryException ? failure.message : '这次操作没有完成，请稍后重试。';
+  void _blockOnConflict(Object failure) {
+    if (failure is! DiaryException) return;
+    if (failure.code == DiaryErrorCode.revisionConflict ||
+        failure.code == DiaryErrorCode.idempotencyConflict ||
+        failure.code == DiaryErrorCode.invalidState) {
+      _conflictCode = failure.code;
+    }
+  }
+
+  String _message(Object failure) {
+    if (failure is! DiaryException) return '这次操作没有完成，请稍后重试。';
+    return switch (failure.code) {
+      DiaryErrorCode.revisionConflict =>
+        '记录版本冲突。文字还在这里，请先复制，再重新打开应用。',
+      DiaryErrorCode.idempotencyConflict =>
+        '重复操作发生冲突。文字还在这里，请先复制，再重新打开应用。',
+      DiaryErrorCode.invalidState =>
+        '这条记录的状态已变化。文字还在这里，请先复制，再重新打开应用。',
+      _ => failure.message,
+    };
+  }
 
   @override
   void dispose() {

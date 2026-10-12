@@ -1,5 +1,5 @@
 name: unwritten_diary
-description: 不写日记的 Flutter 客户端（F0 演示版）
+description: 不写日记的 Windows/Android Flutter 客户端
 publish_to: none
 version: 0.1.0+1
 
@@ -13,6 +13,11 @@ dependencies:
     path: ../../packages/diary_api
   diary_mock:
     path: ../../packages/diary_mock
+  diary_bridge:
+    path: ../../packages/diary_bridge
+  flutter_timezone: ^5.1.1
+  path: ^1.9.1
+  path_provider: ^2.1.6
 
 dev_dependencies:
   flutter_test:

@@ -1,33 +1,55 @@
-# 不写日记 · Flutter 交互演示
+# 不写日记 · Flutter 客户端
 
-此工程按仓库 `docs/development/` 的产品计划展示完整的信息架构。启动后直接进入可输入的记录页；奶油白、直角手绘黑框与线条小猫适配 Windows 宽窗口和 Android 窄屏。封面可从左上角图标进入。小猫加载动画只在打开资料库时显示；“我的 → 封面与加载动画”也可单独预览。
+正常启动使用 `BridgeDiaryApi` 连接本机 Rust 核心。资料库的稳定路径是 `getApplicationSupportDirectory()/unwritten_diary/library.sqlite`，供后续备份与找回资料定位；当前尚无备份入口，运行中不要直接复制数据库文件。重启后会从核心读回最近的文字记录和未完成草稿。页面测试可显式注入 `DiaryApi`；预演模式必须显式开启。
 
-## 运行
+## 本地运行
 
-```bash
+在仓库根目录先构建当前提交的 Rust 桥接产物，再运行 Flutter。**不要混用不同提交的 `.dll` / `.so` 与 Dart 绑定**：flutter_rust_bridge 会因内容哈希不一致拒绝启动，开发日志会出现 `Content hash on Dart side ... is different from Rust side ...`。本仓库的 `diary_bridge` 没有额外的 Cargo feature 开关。
+
+Windows x64（仓库根目录运行第一行）：
+
+```powershell
+cargo build --release --target x86_64-pc-windows-msvc -p diary_bridge
 cd apps/diary_app
 flutter pub get
 flutter run -d windows
-# 配好 Android SDK 和设备后：flutter run -d <device-id>
 ```
 
-`DiaryApp(api: ..., demoMode: ...)` 显式注入 `DiaryApi` 与演示标记。目前使用 `MockDiaryApi`，`demoMode: true`。文字草稿与提交通过该接口完成，自动保存约 450 毫秒防抖；桌面 Ctrl+Enter 提交、Enter 换行。Mock 只在内存中保存，关闭应用后消失，不能用来验证真实持久化。顶部常驻“演示模式”提示，示例卡片与本次会话文字分别标明。标题使用开源霞鹜文楷 GB 的界面文案子集，正文保留易读的系统字体；字体来源与授权见 `assets/fonts/OFL.txt` 及[原项目](https://github.com/lxgw/LxgwWenkaiGB)。
+生成的 DLL 位于 `target/x86_64-pc-windows-msvc/release/diary_bridge.dll`。CMake 将它安装到 `${CMAKE_INSTALL_PREFIX}`，与 exe 同级；当前模板的 `INSTALL_BUNDLE_LIB_DIR` 也等于 `${CMAKE_INSTALL_PREFIX}`。自定义产物路径可向 CMake 传 `-DDIARY_BRIDGE_DLL=<绝对路径>`，但仍必须与 Dart 绑定来自同一提交。
 
-## 可体验的页面
+Android arm64（仓库根目录运行前两行，需 Android SDK、NDK 和 cargo-ndk）：
 
-- **记录**：文字输入、保存状态、日期、附件卡片预览、录音状态流程预览。附件和录音按钮不会访问设备。
-- **日记**：自然段阅读、来源入口、候选版本、编辑与主动回应的交互预览。
-- **搜索**：示例资料与本次会话文字的关键词匹配、材料类型筛选及详情跳转；不假装已经做了语义检索。
-- **片段**：示例原件与本次会话提交的文字记录。
-- **我的**：风格、模型、整理时机、任务、插件、备份与恢复、存储和回收站的界面流程。风格与整理时机设置只在当前界面预览，不会保存或启动整理。
+```bash
+cargo ndk -t arm64-v8a -o target/android-jniLibs build --release -p diary_bridge
+cd apps/diary_app
+flutter pub get
+flutter run -d <arm64-设备编号>
+```
 
-日记、来源、任务、回应、插件、备份等页面使用明确标记的示例状态；它们目前没有接入真实本地核心、文件库、模型服务或平台录音能力。密钥框在演示中禁用，不收集或保存密钥。真实功能按 F1–F8 与 B1–B7 的接口和任务推进，不能用本演示替代发布验收。
+`target/android-jniLibs/arm64-v8a/libdiary_bridge.so` 会被 Gradle 打进安装包。x86_64 模拟器需先以 `cargo ndk -t x86_64 -o target/android-jniLibs build --release -p diary_bridge` 构建对应 ABI，然后运行 Flutter；arm64 产物不能替代 x86_64。Release 构建缺少 arm64 库时会失败。
+
+已备好目标平台的原生构建环境时，可显式预览模拟内容：
+
+```bash
+flutter run -d <设备编号> --dart-define=DIARY_DEMO_MODE=true
+```
+
+预演模式注入内存 `MockDiaryApi`，不写真实资料库；不带此参数时只连接真实核心。`utcOffsetMinutes` 是启动时读取的新记录默认偏移；每条记录由核心保存自己的时区和偏移。
+
+打开资料库失败时，应用显示错误和可重试时的重试入口，不会自动改用内存 Mock。Windows 缺少 DLL 时会显示明确的安装错误。开发构建在日志中打印底层异常类型与堆栈，供排查桥接哈希或资料库错误；正式构建不向用户展示堆栈。
+
+## 当前实际接线
+
+文字草稿、保存、提交和最近记录走真实核心；保存成功提示只在收到 `durable` 确认后出现。点「此刻的记录」下的输入区输入文字，停顿约 450 毫秒后自动保存；点「收好这一刻」提交，随后在「片段」查看。离开输入框、切页或进入后台时也立即尝试保存。清空已有草稿会保存空正文，但空正文不能提交。遇到版本、幂等或记录状态冲突时，界面保留文字并提供「复制文字」，停止重复旧写入；复制后重新打开应用以读取资料库当前状态。
+
+录音、附件、完整搜索、日记生成、模型设置、插件和备份仍等待相应平台层及核心接口接入。正常模式不会创建模拟附件、模拟录音或显示示例日记；这些流程仍可在显式注入 Mock 的演示模式中预览。当前构建不能作为完整产品发布。
 
 ## 检查
 
 ```bash
-cd packages/diary_mock && dart analyze && dart test
-cd ../../apps/diary_app && flutter analyze && flutter test
+cd apps/diary_app
+flutter analyze --fatal-infos
+flutter test
 ```
 
-评审曾在 Android API 36 x86_64 模拟器验证上一版 APK 的安装、启动、输入与演示保存。本次字体和文案更新已通过 Flutter 测试及本地 Web 预览构建；更新后的 Android APK、Windows 构建、Android arm64 真机、深色模式与真实核心功能仍待各自复验。
+Android arm64 真机持久化、Windows 安装包与原生库打包还需在相应设备上验收；组件测试不能替代这些检查。
