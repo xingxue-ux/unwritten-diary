@@ -32,13 +32,13 @@ void main() {
     final first = await api.saveDraft(
       id: draft.id,
       text: '第一句',
-      expectedRevision: 0,
+      expectedRevision: draft.revision,
       operationId: 'save-1',
     );
     final repeat = await api.saveDraft(
       id: draft.id,
       text: '第一句',
-      expectedRevision: 0,
+      expectedRevision: draft.revision,
       operationId: 'save-1',
     );
     expect(repeat.revision, first.revision);
@@ -46,7 +46,7 @@ void main() {
       () => api.saveDraft(
         id: draft.id,
         text: '第二句',
-        expectedRevision: 0,
+        expectedRevision: draft.revision,
         operationId: 'save-2',
       ),
       throwsA(
@@ -69,10 +69,10 @@ void main() {
     Future<DraftSaveResult> save() => api.saveDraft(
       id: draft.id,
       text: '稍后再试',
-      expectedRevision: 0,
+      expectedRevision: draft.revision,
       operationId: 'save-1',
     );
     await expectLater(save(), throwsA(isA<DiaryException>()));
-    expect((await save()).revision, 1);
+    expect((await save()).revision, 2); // 新建就是 1，保存后 +1
   });
 }

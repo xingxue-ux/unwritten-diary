@@ -554,10 +554,15 @@ name = "diary_probe"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "diary_core",
  "jieba-rs",
  "libc",
  "ort",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
  "tokenizers",
  "wasmi",
  "wat",

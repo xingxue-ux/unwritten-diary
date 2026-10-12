@@ -35,6 +35,27 @@ use crate::Core;
 /// 过期，需要重建，而不是同新行混在一张表里。
 pub const TOKENIZER_VERSION: &str = "jieba-0.11-gram1-v1";
 
+/// 「只看当前修订」的 SQL 条件。
+///
+/// `content_alias` 是 `extracted_contents` 的别名；条件里约定了 `source_items`
+/// 的别名必须是 `src`。权威只有一处：`source_items.current_revision_id`。
+///
+/// 为什么查询时过滤**和**重建时不索引两条都要做（见
+/// `docs/architecture/m2-修订与检索可见性.md`）：
+/// - 只做重建那条，改修订之前就已经写进 `search_docs` 的行会留在库里被搜到；
+/// - 只做查询这条，重建会把旧修订的片段重新捞回索引，白清一次。
+///
+/// `current_revision_id` 为空时按「这一版就是当前版本」处理，而不是「整条来源都
+/// 不算数」：建 `source_items` 的三处（导入、录音、提交草稿）都会写上当前修订，
+/// 真出现空值属异常数据，让它继续可搜比让它从检索里凭空消失更容易被发现，也和
+/// `extractors::extracted_content` 已有的口径一致。
+fn current_revision_only(content_alias: &str) -> String {
+    format!(
+        "(src.current_revision_id IS NULL \
+         OR {content_alias}.source_revision_id = src.current_revision_id)"
+    )
+}
+
 /// jieba 词典是懒加载的。
 ///
 /// 核心启动时不加载它（任务书 2 节：启动不做重活）；建索引或检索时才付
@@ -217,11 +238,47 @@ pub(crate) fn index_capture(tx: &Transaction<'_>, capture: CaptureInput<'_>) -> 
     }
     Ok(())
 }
+
+/// 清掉「不是当前修订」的派生片段索引行，返回删掉的行数。
+///
+/// 范围口径与其它地方一致：空数组是「什么都不看」（一条都不删），`None` 是整库。
+///
+/// 为什么值得单独一步：增量索引是在提取时写的，那时这一版就是「当前修订」。之后
+/// 有人 `revise_text`，同一来源的旧片段仍留在 `search_docs` 里。查询过滤能挡住它，
+/// 但重建的语义是「索引重新对一遍现状」，留着这种行会让「重建完了索引里还有什么」
+/// 说不清，也会让 `index_rows` 这类物理计数与状态数字对不上。
+fn purge_retired_segment_docs(core: &Core, source_scope: Option<&[String]>) -> Result<usize> {
+    let scope_filter = match source_scope {
+        Some([]) => " AND 0".to_owned(),
+        Some(scope) => format!(" AND ec.source_id IN ({})", placeholders(scope.len())),
+        None => String::new(),
+    };
+    let sql = format!(
+        "DELETE FROM search_docs WHERE segment_id IN (\
+             SELECT s.id FROM extracted_segments s \
+             JOIN extracted_contents ec ON ec.id = s.content_id \
+             JOIN source_items src ON src.source_id = ec.source_id \
+             WHERE NOT {}{scope_filter})",
+        current_revision_only("ec")
+    );
+    let values: Vec<&String> = match source_scope {
+        Some(scope) => scope.iter().collect(),
+        None => Vec::new(),
+    };
+    let mut statement = core.conn.prepare(&sql)?;
+    let deleted = statement.execute(rusqlite::params_from_iter(values))?;
+    Ok(deleted)
+}
+
 /// 重建关键词索引。`source_scope` 为空表示整个资料库。
 ///
 /// 两路都要重建：派生内容片段（`search_docs`）与用户自己写的记录文字
 /// （`search_capture_docs`）。范围里的记录全部重刷一遍，文字为空的记录会在
 /// `index_capture` 里只删不写，所以「清空过的记录」也不会留下旧词项。
+///
+/// **只索引当前修订**：改过的正文按决策「当成新的一篇」，旧修订的正文不该出现在
+/// 默认检索里。查询侧也有同样的过滤（`current_revision_only`），重建侧再做一次是
+/// 为了让索引表本身干净——重建之后表里不该还留着不参与检索的行。
 ///
 /// 返回值是两边加起来重建的文档数（片段 + 记录文字），不是片段数——名字里的
 /// 「索引」涵盖两张表，只数片段会让调用方以为记录文字没重建。
@@ -229,11 +286,19 @@ pub(crate) fn index_capture(tx: &Transaction<'_>, capture: CaptureInput<'_>) -> 
 /// 整库重建是重活，产品路径上它应该是一个可取消的任务；这一片先提供同步入口，
 /// 让覆盖状态与增量索引有可靠的校准方式（`indexes.rebuild` 的任务化见 #31）。
 pub(crate) fn rebuild(core: &mut Core, source_scope: Option<&[String]>) -> Result<i64> {
+    // 先清掉「已经不当班」的修订留下的索引行。不先清的话，重建会跳过旧修订、
+    // 但也不会动它们上一次增量索引写进去的行：查询过滤能挡住，可索引表里仍然
+    // 有一批「搜不到、也说不清」的行。
+    purge_retired_segment_docs(core, source_scope)?;
+
     let content_ids: Vec<String> = match source_scope {
         Some(scope) => {
             let sql = format!(
-                "SELECT id FROM extracted_contents WHERE source_id IN ({})",
-                placeholders(scope.len())
+                "SELECT ec.id FROM extracted_contents ec \
+                 JOIN source_items src ON src.source_id = ec.source_id \
+                 WHERE ec.source_id IN ({}) AND {}",
+                placeholders(scope.len()),
+                current_revision_only("ec")
             );
             let mut statement = core.conn.prepare(&sql)?;
             let rows = statement
@@ -244,7 +309,13 @@ pub(crate) fn rebuild(core: &mut Core, source_scope: Option<&[String]>) -> Resul
             rows
         }
         None => {
-            let mut statement = core.conn.prepare("SELECT id FROM extracted_contents")?;
+            let sql = format!(
+                "SELECT ec.id FROM extracted_contents ec \
+                 JOIN source_items src ON src.source_id = ec.source_id \
+                 WHERE {}",
+                current_revision_only("ec")
+            );
+            let mut statement = core.conn.prepare(&sql)?;
             let rows = statement
                 .query_map([], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -307,6 +378,15 @@ pub(crate) fn rebuild(core: &mut Core, source_scope: Option<&[String]>) -> Resul
 }
 
 /// 索引覆盖状态。`source_scope` 为空表示整个资料库。
+///
+/// **片段类数字只算当前修订**（`source_items.current_revision_id`）。改过的正文按
+/// 决策当成新的一篇，旧修订的派生内容与索引行虽然还留在库里，但默认搜索看不到它们
+/// ——那就不该出现在 `total_segments` / `indexed_segments` / `stale_segments` /
+/// `failed_sources` / `index_rows` / `index_terms` 里。否则会出现「搜索看不到它、
+/// 状态却说它已全部索引」这种自相矛盾（验收标准第 2 条）。
+///
+/// 旧修订的行数不丢：`reasons` 里会明说有多少片段属于旧修订、不计入数字。
+/// `index_bytes` 例外，它永远是整库物理占用（dbstat 只能按表统计）。
 pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<IndexStatus> {
     // 范围过滤按表限定列名拼：`extracted_segments` 自己没有 source_id，
     // 要通过 `extracted_contents` 才能判断它属于哪个来源。
@@ -352,35 +432,45 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
             .query_row(sql, rusqlite::params_from_iter(values), |row| row.get(0))?)
     };
 
+    // 片段类的数字都从这里往下走：`current_join` 把来源挂上，`current_filter`
+    // 只要当前修订。两者必须成对使用——少了 join，条件里的 `src` 就不存在。
+    let current_join = "JOIN source_items src ON src.source_id = c.source_id";
+    let current_filter = current_revision_only("c");
+
     let total_segments = count(&format!(
         "SELECT COUNT(*) FROM extracted_segments s \
-         JOIN extracted_contents c ON c.id = s.content_id WHERE 1=1{}",
+         JOIN extracted_contents c ON c.id = s.content_id {current_join} \
+         WHERE 1=1{} AND {current_filter}",
         scope_filter("c.source_id")
     ))?;
     // search_docs 不重复存来源：范围过滤 join 回派生内容表。
     let docs_in_scope = format!(
         "SELECT COUNT(*) FROM search_docs d \
          JOIN extracted_segments s ON s.id = d.segment_id \
-         JOIN extracted_contents c ON c.id = s.content_id WHERE 1=1{}",
+         JOIN extracted_contents c ON c.id = s.content_id {current_join} \
+         WHERE 1=1{} AND {current_filter}",
         scope_filter("c.source_id")
     );
     let indexed_segments = count(&docs_in_scope)?;
     let stale_segments = count(&format!(
         "SELECT COUNT(*) FROM search_docs d \
          JOIN extracted_segments s ON s.id = d.segment_id \
-         JOIN extracted_contents c ON c.id = s.content_id \
-         WHERE 1=1{} AND d.tokenizer_version <> '{TOKENIZER_VERSION}'",
+         JOIN extracted_contents c ON c.id = s.content_id {current_join} \
+         WHERE 1=1{} AND {current_filter} \
+           AND d.tokenizer_version <> '{TOKENIZER_VERSION}'",
         scope_filter("c.source_id")
     ))?;
     // 提取失败的材料没有片段可索引，要单独算：否则「失败」在状态里完全看不见。
     let failed_sources = count(&format!(
-        "SELECT COUNT(*) FROM extracted_contents WHERE 1=1{} AND status = 'failed'",
-        scope_filter("source_id")
+        "SELECT COUNT(*) FROM extracted_contents c {current_join} \
+         WHERE 1=1{} AND {current_filter} AND c.status = 'failed'",
+        scope_filter("c.source_id")
     ))?;
     let indexed_chars = count(&format!(
         "SELECT COALESCE(SUM(d.text_length), 0) FROM search_docs d \
          JOIN extracted_segments s ON s.id = d.segment_id \
-         JOIN extracted_contents c ON c.id = s.content_id WHERE 1=1{}",
+         JOIN extracted_contents c ON c.id = s.content_id {current_join} \
+         WHERE 1=1{} AND {current_filter}",
         scope_filter("c.source_id")
     ))? + count(&format!(
         "SELECT COALESCE(SUM(d.text_length), 0) FROM search_capture_docs d \
@@ -390,9 +480,19 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
     let scoped_doc_ids = format!(
         "SELECT d.doc_id FROM search_docs d \
          JOIN extracted_segments s ON s.id = d.segment_id \
-         JOIN extracted_contents c ON c.id = s.content_id WHERE 1=1{}",
+         JOIN extracted_contents c ON c.id = s.content_id {current_join} \
+         WHERE 1=1{} AND {current_filter}",
         scope_filter("c.source_id")
     );
+    // 旧修订留下的索引行：不参与上面的任何数字，也不参与默认检索。有就报一句，
+    // 免得「索引表里有行、状态里没数」被当成漏统计。`rebuild` 会把它们清掉。
+    let retired_segments = count(&format!(
+        "SELECT COUNT(*) FROM search_docs d \
+         JOIN extracted_segments s ON s.id = d.segment_id \
+         JOIN extracted_contents c ON c.id = s.content_id {current_join} \
+         WHERE 1=1{} AND NOT {current_filter}",
+        scope_filter("c.source_id")
+    ))?;
     // 记录文字那一路的文档行；index_rows / index_terms 要把两边都算上，
     // 否则「索引里有多少行」只数了一半。
     let scoped_capture_doc_ids = format!(
@@ -511,6 +611,14 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
             "index_bytes 是整库索引占用：dbstat 只能按表统计，无法按来源拆分".to_owned(),
         );
     }
+    // 旧修订的行不计入上面的数字，也不参与默认检索。这一句必须说，否则
+    // 「索引表里还留着词项、状态数字里却没有」看起来就像漏统计。
+    if retired_segments > 0 {
+        reasons.push(format!(
+            "{retired_segments} 个片段属于非当前修订：不计入上面的数字，默认搜索也看不到它们\
+             （重建会把这些行清掉）"
+        ));
+    }
     // 语义索引还没接：如实写清楚，而不是让前端以为「索引已就绪」包含它。
     reasons.push("语义索引尚未接入（见 issue #32）：当前只有关键词索引".to_owned());
 
@@ -560,6 +668,9 @@ pub(crate) fn non_empty_text(column: &str) -> String {
 /// 只覆盖派生片段（B3a 的范围），记录文字不在这里——片段 ID 这个返回值表达不了
 /// 「一条记录的文字」。产品检索路径是 `search.start`，它把两路合在一起搜。
 ///
+/// 只返回**当前修订**的片段：改过的正文当成新的一篇，旧修订的正文不再出现在
+/// 默认检索里（这条与 `ranked_matches` 的口径必须一致，否则候选与结果对不上）。
+///
 /// `ORDER BY g.doc_id` 而不是 `d.doc_id`：倒排表的主键是 `(term, doc_id)`，
 /// 固定 term 之后它天然按 doc_id 有序，SQLite 能直接顺扫并在 `LIMIT` 处停下。
 /// 写成 `d.doc_id` 时规划器不认这个顺序，实测会退化成「把几万条候选全排进
@@ -570,13 +681,17 @@ pub(crate) fn candidates(core: &Core, query: &str, limit: usize) -> Result<Vec<S
         None => return Ok(Vec::new()),
     };
 
-    let mut statement = core.conn.prepare(
+    let sql = format!(
         "SELECT d.segment_id FROM search_grams g \
          CROSS JOIN search_docs d ON d.doc_id = g.doc_id \
          CROSS JOIN extracted_segments s ON s.id = d.segment_id \
-         WHERE g.term = ?1 AND instr(lower(s.text), ?2) > 0 \
+         JOIN extracted_contents ec ON ec.id = s.content_id \
+         JOIN source_items src ON src.source_id = ec.source_id \
+         WHERE g.term = ?1 AND instr(lower(s.text), ?2) > 0 AND {} \
          ORDER BY g.doc_id LIMIT ?3",
-    )?;
+        current_revision_only("ec")
+    );
+    let mut statement = core.conn.prepare(&sql)?;
     let rows = statement.query_map(params![filter, needle, limit as i64], |row| {
         row.get::<_, String>(0)
     })?;
@@ -585,7 +700,8 @@ pub(crate) fn candidates(core: &Core, query: &str, limit: usize) -> Result<Vec<S
 
 /// 命中数量。测试与测量用它核对召回是否完整。
 ///
-/// 与 `candidates` 一样只数派生片段：它核对的是「片段索引召回全不全」，
+/// 与 `candidates` 一样只数派生片段，且只数**当前修订**：它核对的口径必须与
+/// `candidates`、`ranked_matches` 一致，否则「三条查询给同一件事三个数字」。
 /// 记录文字那一路的命中数没有稳定的旧口径可比（它是新加的表）。
 pub(crate) fn count_matches(core: &Core, query: &str) -> Result<i64> {
     let (filter, needle) = match candidate_filter(query) {
@@ -594,21 +710,30 @@ pub(crate) fn count_matches(core: &Core, query: &str) -> Result<i64> {
     };
     // `CROSS JOIN` 把连接顺序写成「倒排表 → 文档行 → 片段」，和候选查询一致。
     // 诚实说明：在 SQLite 3.51 上实测 `JOIN` 与 `CROSS JOIN` 的计划**本来就相同**
-    // （10 万片段上都是 38–39 ms），这不是性能修复，而是防规划器变化——
+    // （10 万片段上 39.1 对 37.8 ms），这不是性能修复，而是防规划器变化——
     // 一旦顺序变了，候选与计数就会给同一件事两个数字，没人知道该信哪个。
     //
-    // 这个计数的代价由「过滤 gram 的候选行数」决定：二字查询约 40 ms，
+    // 这个计数的代价由「过滤 gram 的候选行数」决定：二字查询约 50 ms，
     // 「面试官」也差不多，因为它的过滤 gram 是「面试」，命中 4.18 万行。
     // 按各 bigram 取交集实测能降到 8 ms（见架构文档），产品路径不需要全量计数，
     // 所以没有实现。
-    let count = core.conn.query_row(
+    //
+    // 「只看当前修订」那两个 join 在这个全量计数上要按候选行数各做一次主键查找，
+    // 实测把上面的 42–43 ms 抬到 48–55 ms（10 万片段，见
+    // `docs/architecture/m2-修订与检索可见性.md`）。它不在产品路径上（翻页靠快照
+    // 游标），首屏那条走 `LIMIT` 的候选查询代价不变，所以这个涨幅可以接受。
+    let sql = format!(
         "SELECT COUNT(*) FROM search_grams g \
          CROSS JOIN search_docs d ON d.doc_id = g.doc_id \
          CROSS JOIN extracted_segments s ON s.id = d.segment_id \
-         WHERE g.term = ?1 AND instr(lower(s.text), ?2) > 0",
-        params![filter, needle],
-        |row| row.get(0),
-    )?;
+         JOIN extracted_contents ec ON ec.id = s.content_id \
+         JOIN source_items src ON src.source_id = ec.source_id \
+         WHERE g.term = ?1 AND instr(lower(s.text), ?2) > 0 AND {}",
+        current_revision_only("ec")
+    );
+    let count = core
+        .conn
+        .query_row(&sql, params![filter, needle], |row| row.get(0))?;
     Ok(count)
 }
 
@@ -709,8 +834,10 @@ pub(crate) fn ranked_matches(
     let (kinds, scope) = crate::search_session::filters_to_params(filters)?;
 
     // 派生片段一路：过滤条件全部下到 SQL（与记录文字那一路同一套语义）。
+    // `current_revision_only` 是「旧修订退出默认检索」的关键：索引照旧按修订存，
+    // 但只有 `source_items.current_revision_id` 指向的那一版参与命中。
     let mut matches: Vec<RankedMatch> = {
-        let mut statement = core.conn.prepare(
+        let sql = format!(
             "SELECT d.doc_id, instr(lower(s.text), ?2), c.day_key \
              FROM search_grams g \
              CROSS JOIN search_docs d ON d.doc_id = g.doc_id \
@@ -719,12 +846,15 @@ pub(crate) fn ranked_matches(
              JOIN source_items src ON src.source_id = ec.source_id \
              JOIN captures c ON c.id = src.capture_id \
              WHERE g.term = ?1 AND instr(lower(s.text), ?2) > 0 \
+               AND {} \
                AND (?3 = 1 OR c.state <> 'trashed') \
                AND (?4 IS NULL OR c.day_key >= ?4) \
                AND (?5 IS NULL OR c.day_key <= ?5) \
                AND (?6 IS NULL OR src.kind IN (SELECT value FROM json_each(?6))) \
                AND (?7 IS NULL OR src.source_id IN (SELECT value FROM json_each(?7)))",
-        )?;
+            current_revision_only("ec")
+        );
+        let mut statement = core.conn.prepare(&sql)?;
         let rows = statement
             .query_map(
                 params![
@@ -800,6 +930,10 @@ pub(crate) fn ranked_matches(
 ///
 /// 正文只在这里读，按页读。两张表分两次取是刻意的：它们的 `doc_id` 各自从 1
 /// 开始，一条 SQL 把两边 UNION 起来就分不清哪一行来自哪张表。
+///
+/// 这里再加一次「只看当前修订」的过滤，和 `ranked_matches` 重复。重复是故意的：
+/// 候选是上一次查询算出来的 `doc_id`，而取正文是另一次 SQL——真正的保证要落在
+/// 取正文这一步上，不能让「旧修订已经不在结果里」只靠调用方记得先过滤。
 pub(crate) fn load_page(core: &Core, refs: &[DocRef]) -> Result<Vec<PageRow>> {
     let doc_ids: Vec<i64> = refs
         .iter()
@@ -822,7 +956,8 @@ pub(crate) fn load_page(core: &Core, refs: &[DocRef]) -> Result<Vec<PageRow>> {
          JOIN captures c ON c.id = src.capture_id \
          LEFT JOIN source_revisions sr ON sr.revision_id = s.source_revision_id \
          LEFT JOIN assets a ON a.id = sr.asset_id \
-         WHERE d.doc_id IN ({placeholders})"
+         WHERE d.doc_id IN ({placeholders}) AND {}",
+        current_revision_only("ec")
     );
     let mut statement = core.conn.prepare(&sql)?;
     let rows = statement

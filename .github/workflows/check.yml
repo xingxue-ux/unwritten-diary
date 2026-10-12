@@ -183,3 +183,9 @@ jobs:
           cargo check --release -p diary_probe --no-default-features --features plugin --target aarch64-linux-android
       - name: 中文短词检索验证（小语料，含结论断言）
         run: cargo run --release -p diary_probe -- short-word-search 3000
+      # 质量集只用仓库内的数据（tests/quality/search_quality_set.json），能在 CI 跑。
+      # 这一步**不设阈值**：它报的是关键词这一路的基线数字，并且会在语料被改坏
+      # （expectedContains 对不上、标注被污染）时直接失败。等 B3c-3 做出混合结果
+      # 之后，再谈「提升多少算达标」——现在定阈值只会把刚建的基线锁死。
+      - name: 检索质量集（关键词基线，含语料自检）
+        run: cargo run --release -p diary_probe -- quality-set
