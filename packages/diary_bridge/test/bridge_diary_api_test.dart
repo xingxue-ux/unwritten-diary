@@ -176,7 +176,10 @@ void main() {
     expect(first.cursor, isNotNull);
     expect(first.results.single.snippet, contains('适配层'));
     expect(first.results.single.matchedBy, contains(MatchedBy.keyword));
-    expect(first.results.single.locator?.sourceRevisionId, isNotEmpty);
+    // This hit is text written directly in a capture. It has no original asset
+    // or source revision to locate; the adapter must preserve that null value.
+    expect(first.results.single.sourceId, isNull);
+    expect(first.results.single.locator, isNull);
 
     await expectLater(
       api.nextPage(sessionId: first.sessionId, cursor: 'invalid-cursor'),
