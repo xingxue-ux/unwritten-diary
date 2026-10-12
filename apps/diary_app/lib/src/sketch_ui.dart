@@ -113,6 +113,7 @@ class SketchAction extends StatelessWidget {
     button: true,
     enabled: onPressed != null,
     label: label,
+    onTap: onPressed,
     excludeSemantics: true,
     child: Opacity(
       opacity: onPressed == null ? .42 : 1,

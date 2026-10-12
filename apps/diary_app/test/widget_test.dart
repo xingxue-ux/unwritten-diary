@@ -224,10 +224,8 @@ void main() {
   ) async {
     final semantics = tester.ensureSemantics();
     await openApp(tester, MockDiaryApi());
-    // The navigation button has an action label and a separate visible short
-    // label. Check the configured text colors against its paper background;
-    // Flutter's pixel heuristic mistakes tiny antialiased CJK glyphs in a
-    // composite button for the pale outline around them on Linux CI.
+    // Flutter's pixel guideline mistakes antialiased CJK placeholder glyphs
+    // for the foreground in CI. Check the declared colors directly instead.
     for (final label in ['记录', '日记', '搜索', '片段', '我的']) {
       final text = tester.widget<Text>(find.text(label).last);
       final foreground = text.style?.color;
@@ -238,18 +236,44 @@ void main() {
         reason: '$label must remain readable on the navigation paper',
       );
     }
-    await expectLater(tester, meetsGuideline(textContrastGuideline));
     await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
-    for (final label in ['封面与加载动画', '前往记录', '添加材料', '收好这一刻']) {
+    for (final label in [
+      '封面与加载动画',
+      '前往记录',
+      '前往日记',
+      '前往搜索',
+      '前往片段',
+      '前往我的',
+      '添加材料',
+    ]) {
       final node = tester.getSemantics(find.bySemanticsLabel(label));
-      expect(
-        node.getSemanticsData().flagsCollection.isButton,
-        isTrue,
-        reason: label,
-      );
+      final data = node.getSemanticsData();
+      expect(data.flagsCollection.isButton, isTrue, reason: label);
+      expect(data.hasAction(ui.SemanticsAction.tap), isTrue, reason: label);
     }
     final date = tester.getSemantics(find.bySemanticsLabel(RegExp('记录日期')));
     expect(date.getSemanticsData().flagsCollection.isButton, isTrue);
+    expect(date.getSemanticsData().hasAction(ui.SemanticsAction.tap), isTrue);
+    final disabledFinish = tester.getSemantics(find.bySemanticsLabel('收好这一刻'));
+    expect(
+      disabledFinish.getSemanticsData().flagsCollection.isEnabled,
+      ui.Tristate.isFalse,
+    );
+    expect(
+      disabledFinish.getSemanticsData().hasAction(ui.SemanticsAction.tap),
+      isFalse,
+    );
+    await tester.enterText(find.byKey(const Key('capture-editor')), '今天的一句话');
+    await tester.pump();
+    final enabledFinish = tester.getSemantics(find.bySemanticsLabel('收好这一刻'));
+    expect(
+      enabledFinish.getSemanticsData().flagsCollection.isEnabled,
+      ui.Tristate.isTrue,
+    );
+    expect(
+      enabledFinish.getSemanticsData().hasAction(ui.SemanticsAction.tap),
+      isTrue,
+    );
     semantics.dispose();
   });
 
@@ -278,8 +302,43 @@ void main() {
     );
     await openApp(tester, MockDiaryApi());
     expect(find.byType(ColorFiltered), findsOneWidget);
+    expect(
+      tester.widget<ColorFiltered>(find.byType(ColorFiltered)).colorFilter,
+      const ColorFilter.matrix(<double>[
+        0,
+        0,
+        -.88,
+        0,
+        245,
+        0,
+        -.88,
+        0,
+        0,
+        245,
+        -.88,
+        0,
+        0,
+        0,
+        245,
+        0,
+        0,
+        0,
+        1,
+        0,
+      ]),
+    );
     expect(find.text('今天，想留住什么？'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('light mode keeps the original paper palette', (tester) async {
+    tester.binding.platformDispatcher.platformBrightnessTestValue =
+        Brightness.light;
+    addTearDown(
+      tester.binding.platformDispatcher.clearPlatformBrightnessTestValue,
+    );
+    await openApp(tester, MockDiaryApi());
+    expect(find.byType(ColorFiltered), findsNothing);
   });
 
   testWidgets('real mode reads saved records and hides preview material', (

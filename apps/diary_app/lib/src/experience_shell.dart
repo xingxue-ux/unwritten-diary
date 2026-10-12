@@ -213,6 +213,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         Semantics(
           button: true,
           label: '封面与加载动画',
+          onTap: () => _openPanel('cover'),
           excludeSemantics: true,
           child: InkWell(
             onTap: () => _openPanel('cover'),
@@ -319,6 +320,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       button: true,
       selected: _tab == index && _panel == null && _detail == null,
       label: '前往$label',
+      onTap: () => _go(index),
       excludeSemantics: true,
       child: InkWell(
         onTap: () => _go(index),
@@ -504,6 +506,7 @@ class _ExperienceShellState extends State<ExperienceShell>
           button: true,
           enabled: _capture.canChangeDate,
           label: '记录日期：${_dateLabel(_capture.occurredAt ?? DateTime.now())}',
+          onTap: _capture.canChangeDate ? _chooseDate : null,
           excludeSemantics: true,
           child: InkWell(
             onTap: _capture.canChangeDate ? _chooseDate : null,
