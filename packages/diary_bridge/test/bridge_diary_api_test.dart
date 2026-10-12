@@ -56,11 +56,7 @@ void main() {
     expect(opened.coreInfo.dataSchemaVersion, expectedDataSchemaVersion);
     expect(opened.coreInfo.capabilities, contains('captures.commit'));
     expect(opened.captureCount, 0);
-    expect(
-      opened.recovery.notes,
-      isEmpty,
-      reason: '空库里没有需要恢复的东西',
-    );
+    expect(opened.recovery.notes, isEmpty, reason: '空库里没有需要恢复的东西');
 
     final draft = await api.createDraft(operationId: 'adapter-create');
     expect(draft.state, CaptureState.draft);
@@ -132,8 +128,11 @@ void main() {
     await expectLater(
       broken.createDraft(operationId: 'op-after-failed-open'),
       throwsA(
-        isA<DiaryException>()
-            .having((error) => error.code, 'code', DiaryErrorCode.invalidState),
+        isA<DiaryException>().having(
+          (error) => error.code,
+          'code',
+          DiaryErrorCode.invalidState,
+        ),
       ),
     );
   });
@@ -149,24 +148,81 @@ void main() {
     );
   });
 
+  test('检索会话经契约接口完成搜索、翻页、快照与取消', () async {
+    // Seed both pages here: this test must also pass when run by --plain-name.
+    for (final suffix in ['甲', '乙']) {
+      final draft = await api.createDraft(
+        operationId: 'adapter-search-create-$suffix',
+      );
+      final saved = await api.saveDraft(
+        id: draft.id,
+        text: '独立检索标记$suffix。',
+        expectedRevision: draft.revision,
+        operationId: 'adapter-search-save-$suffix',
+      );
+      await api.commit(
+        id: draft.id,
+        expectedRevision: saved.revision,
+        operationId: 'adapter-search-commit-$suffix',
+      );
+    }
+
+    final first = await api.startSearch(
+      request: const SearchRequest(
+        query: '独立检索标记',
+        mode: SearchMode.keyword,
+        pageSize: 1,
+      ),
+      queryRevision: 42,
+    );
+    expect(first.queryRevision, 42);
+    expect(first.phase, SearchPhase.keywordReady);
+    expect(first.results, hasLength(1));
+    expect(first.cursor, isNotNull);
+    expect(first.results.single.snippet, contains('独立检索标记'));
+    expect(first.results.single.matchedBy, contains(MatchedBy.keyword));
+    // This hit is text written directly in a capture. It has no original asset
+    // or source revision to locate; the adapter must preserve that null value.
+    expect(first.results.single.sourceId, isNull);
+    expect(first.results.single.locator, isNull);
+
+    await expectLater(
+      api.nextPage(sessionId: first.sessionId, cursor: 'invalid-cursor'),
+      throwsA(isA<CursorExpiredException>()),
+    );
+
+    final second = await api.nextPage(
+      sessionId: first.sessionId,
+      cursor: first.cursor,
+    );
+    expect(second.results, hasLength(1));
+    expect(second.results.single.hitId, isNot(first.results.single.hitId));
+    expect(second.phase, SearchPhase.done);
+    expect((await api.searchSnapshot(first.sessionId)).phase, SearchPhase.done);
+
+    final cancellable = await api.startSearch(
+      request: const SearchRequest(
+        query: '独立检索标记',
+        mode: SearchMode.keyword,
+        pageSize: 1,
+      ),
+      queryRevision: 43,
+    );
+    await api.cancelSearch(cancellable.sessionId);
+    expect(
+      (await api.searchSnapshot(cancellable.sessionId)).phase,
+      SearchPhase.cancelled,
+    );
+  });
+
   test('没接的方法明确报错，且不在能力清单里', () async {
     final snapshot = await api.snapshot();
     expect(snapshot.coreInfo.capabilities, contains('captures.list'));
-    // 桥接侧核心是接了 search 的（能力清单里没有，但将来会有），适配层没接，
-    // 所以这里必须是「没有」——能力清单要反映适配层的真实能力。
-    expect(snapshot.coreInfo.capabilities, isNot(contains('search.start')));
+    expect(snapshot.coreInfo.capabilities, contains('search.start'));
     expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.status')));
     // 桥接侧现在也接了 `indexes.rebuild`（能力项进了核心的 wired_capabilities），
     // 但适配层的 `_wiredMethods` 这一片没动，所以这里同样必须是「没有」。
     expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.rebuild')));
-
-    expect(
-      () => api.startSearch(
-        request: const SearchRequest(query: '测试'),
-        queryRevision: 1,
-      ),
-      throwsUnsupportedError,
-    );
   });
 }
 
