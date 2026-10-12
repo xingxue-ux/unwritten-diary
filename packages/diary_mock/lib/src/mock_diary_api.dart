@@ -114,7 +114,7 @@ class MockDiaryApi implements DiaryApi {
         final time = occurredAt?.toUtc() ?? now;
         final capture = Capture(
           id: 'mock-${_nextId++}',
-          revision: 0,
+          revision: 1, // 与真核心一致：新建记录的 revision 从 1 开始（契约）
           state: CaptureState.draft,
           occurredAt: time,
           createdAt: now,
