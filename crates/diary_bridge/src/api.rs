@@ -306,6 +306,12 @@ impl BridgeSession {
         Ok(core.cancel_search(&session_id)?)
     }
 
+    /// 把混合会话从关键词阶段升级到融合阶段（#69）；幂等，重复调用不重复算。
+    pub fn upgrade_search(&self, session_id: String) -> Result<SearchSnapshot, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.upgrade_search_to_hybrid(&session_id)?)
+    }
+
     // ------------------------------------------------------------ 任务与事件
 
     /// 按状态列出任务；不传状态就列全部。
@@ -398,6 +404,7 @@ fn wired_capabilities() -> Vec<String> {
         "search.nextPage",
         "search.snapshot",
         "search.cancel",
+        "search.upgrade",
         "jobs.list",
         "jobs.get",
         "jobs.nextWakeup",

@@ -5,15 +5,33 @@
 //! 1. **旧查询的结果不能覆盖新查询**。核心按 `sessionId` + `queryRevision` 双校验；
 //!    会话不存在、或索引在会话期间变了，一律报 `search_expired` 让前端重新发起，
 //!    而不是把过期结果糊到新界面上。
-//! 2. **翻页绑定原会话**。游标里带着会话号，拿别的会话的游标来翻报 `cursor_expired`。
+//! 2. **翻页绑定原会话与结果代次**。游标里带着会话号与结果代次（generation），拿别的
+//!    会话的游标来翻报 `cursor_expired`；结果集被替换过（混合升级融合，代次递增）时，
+//!    **所有**升级前的游标也一律 `cursor_expired`，**不看偏移**——升级前第一页与升级后
+//!    第一页的偏移可能相同（`pageSize = 2` 时都是 2），只看偏移会放它们进来，把两个
+//!    阶段的结果拼在一起（乱序 / 重复 / 漏项）。
 //! 3. **取消只停止后续处理，不删任何原件**。取消后 `phase` 是 `cancelled`，
 //!    再翻页会被拒（`invalid_state`），但已经返回的结果仍然可读。
 //!
 //! 会话状态放在内存里：它记录的是「这一次查询翻到哪、快照还有效吗」，不是需要
 //! 长期保存的业务数据。重开资料库后旧 `sessionId` 一律 `search_expired`。
+//!
+//! # 三种模式
+//!
+//! - `Keyword`：纯关键词（B3a/B3d）；
+//! - `Semantic`：纯语义（B3c-2），模型或生效代次缺失时**空结果 + 诚实警告**；
+//! - `Hybrid`：RRF 融合（B3c-3，issue [#51](https://github.com/xingxue-ux/unwritten-diary/issues/51)），
+//!   **分两阶段给**（#69）：`start_search` 先只算关键词那一路，报 `keyword_ready`
+//!   （首屏不等模型）；融合由显式调用 `upgrade_search_to_hybrid(sessionId)` 触发，
+//!   报 `hybrid_ready`。两路各取**篇**为单位的前 `RRF_CANDIDATE_DEPTH` 条，
+//!   `score = Σ 1/(RRF_K + rank)`，相关度优先、同档按时间降序、再按**内容决定**的键
+//!   （正文哈希，不用任何 UUID）。语义未就绪时**退化为关键词并在 `warnings` 里明说**，
+//!   不静默；升级这一步也**绝不**在没有语义证据时假装融合过——模型不可用、候选全被
+//!   证据门槛滤掉、查询是空的，一律保留关键词快照与 `keyword_ready`。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use crate::embedding::Embedder;
 use crate::error::{CoreError, Result};
 use crate::model::{
     Coverage, MatchedBy, SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest,
@@ -21,6 +39,7 @@ use crate::model::{
 };
 use crate::search;
 use crate::semantic;
+use crate::semantic::EmbedderReadiness;
 use crate::support;
 use crate::Core;
 
@@ -30,24 +49,107 @@ const MAX_PAGE_SIZE: i64 = 100;
 /// 摘录窗口：命中位置前后各留这么多字符。
 const SNIPPET_PADDING: usize = 24;
 
+/// RRF 的 `k`。`score = Σ_paths 1/(k + rank_path)`，`rank` 从 1 起。
+///
+/// `k = 60` 是 Cormack 等 2009 提出 RRF 时的常用值，**没有**在 36 条合成语料上
+/// 调参：那个规模撑不起「调出来的最优」，留下的只有过拟合痕迹。
+const RRF_K: i64 = 60;
+
+/// 融合前每一路最多取这么多**篇**（不是块、不是片段）。
+///
+/// 关键词那一路先按篇折叠再截断，语义那一路本来就是按篇折叠的（#32 消费契约第 1 条），
+/// 所以两条路在同一个单位上取深度，融合才是公平的。
+const RRF_CANDIDATE_DEPTH: usize = 50;
+
+/// 关键词那一路为「按篇折叠 + 正文哈希」最多读这么多条**文档**的正文
+/// （`4 × RRF_CANDIDATE_DEPTH`）。
+///
+/// 关键词模式本来只按页读正文；混合要在候选阶段折叠、算内容哈希，全读会把几万条
+/// 命中的正文拉进内存。所以只读排序最靠前的一段：正常数据（一篇 1–2 段）200 条足够
+/// 折出 50 篇；病态数据（前 200 条全是一个来源的段）会折出更少的篇——这是刻意的取舍，
+/// 写在文档的「没有做到的」里。
+const RRF_KEYWORD_OVERSCAN: usize = RRF_CANDIDATE_DEPTH * 4;
+
+/// 语义一路的**证据门槛**（余弦相似度）。低于它的候选算「这一路没有证据」，不参与
+/// 融合；一条都不剩时，语义这一路就是不贡献结果——`no_answer` 四条的「4/4 空」靠
+/// 它守住（纯 kNN 没有「没有答案」这个概念，只能靠分数拒绝）。
+///
+/// 取值来自 `tests/quality/search_quality_set.json` 上的**阈值扫描**（0.20–0.50，
+/// 步进 0.02，表在 `docs/architecture/m2-向量索引与换代.md`），不是拍脑袋；扫描用的
+/// 探针入口是 `diary_probe hybrid-quality`，它通过 `set_hybrid_min_score_for_test`
+/// 在同一条产品路径上换阈值。
+pub const HYBRID_SEMANTIC_MIN_SCORE: f32 = 0.40;
+
+/// 融合口径的版本号：`RRF_K` / `RRF_CANDIDATE_DEPTH` / 关键词扫描窗口 / 语义门槛
+/// 任何一项变了都要改这一行（照 `CHUNKER_VERSION` 的先例）。文档与探针输出都引用它，
+/// 测试钉住这个字符串。
+pub const HYBRID_FUSION_VERSION: &str = "hybrid-rrf-k60-depth50-over200-min0.40";
+
 /// 索引指纹：关键词索引代次 + 语义生效代次。会话期间有人写过索引、或语义索引
 /// 换了一代，它就会变，快照随即作废。
 ///
 /// 原来只有关键词那一个代次。语义这一路要跟着生效代次走：一代向量被切走之后，
 /// 会话手里的「块 → 篇」排序已经过期，旧结果不该继续糊在新界面上。
-/// 关键词会话不看语义代次，语义修改不会无谓地打断关键词翻页。
+/// 关键词会话不看语义代次，语义修改不会无谓地打断关键词翻页；**混合会话要看**——
+/// 融合结果里有一半来自语义。
 type IndexFingerprint = (i64, Option<i64>);
 
 /// 会话里一条命中的引用。两条路的「一条结果」不是同一种东西：
 ///
 /// - 关键词：一个索引文档（派生片段 / 记录文字），正文按页现取；
-/// - 语义：**一篇**（消费契约要求按篇上报），证据块与篇内区间一起记着。
+/// - 语义：**一篇**（消费契约要求按篇上报），证据块与篇内区间一起记着；
+/// - 混合：**一篇**，两路各自的证据都留着，`matchedBy` 如实标。
 ///
 /// 会话里只存引用，正文仍然按页现取。
 #[derive(Debug, Clone)]
 pub(crate) enum RankedRef {
     Keyword(search::DocRef),
     Semantic(semantic::SemanticCandidate),
+    Hybrid(HybridHit),
+}
+
+/// 混合检索融合后的一条：以**篇**为单位。
+///
+/// 两路各自的证据都留着：关键词那一路有高亮（正文里哪几个字对上），语义那一路没有。
+/// 一条命中两路都有时，用关键词那份正文（有高亮），`matchedBy` 标成两者都有。
+#[derive(Debug, Clone)]
+pub(crate) struct HybridHit {
+    /// 关键词那一路的证据（篇内哪个片段 / 记录文字）。
+    pub keyword: Option<search::DocRef>,
+    /// 语义那一路的证据（篇内得分最高的那一块）。
+    pub semantic: Option<semantic::SemanticCandidate>,
+    /// 如实的命中来源：`[Keyword]` / `[Semantic]` / `[Keyword, Semantic]`。
+    pub matched_by: Vec<MatchedBy>,
+}
+
+/// 融合过程中的一条候选（排序完就转成 `RankedRef`）。`content_key` 只在排序时用。
+struct FusedCandidate {
+    group_id: String,
+    score: f32,
+    day_key: Option<String>,
+    /// 正文哈希：同分兜底键，**由内容决定**（不用 UUID）。
+    content_key: String,
+    keyword: Option<search::DocRef>,
+    semantic: Option<semantic::SemanticCandidate>,
+}
+
+/// 混合会话「升级」到哪一步了（#69）。阶段值不是装饰：只有真的融合过（`Fused`）
+/// 才允许报 `hybrid_ready` / `done`，其余三种必须如实停在 `keyword_ready`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HybridUpgrade {
+    /// 还只算了关键词那一路：`start_search(mode = hybrid)` 之后的默认态。
+    Pending,
+    /// 语义这一路**不可用**（没配模型 / 加载失败 / 没有生效代次 / 没有块）：升不了级，
+    /// 继续如实报关键词结果与 `keyword_ready`，并在 `warnings` 里说明。
+    Unavailable,
+    /// 语义**可用**（代次在、块在、模型可用），但这一路拿不出**可融合的证据**：候选全被
+    /// `HYBRID_SEMANTIC_MIN_SCORE` 滤掉，或查询是空的、一条候选都没有。这种「尝试过升级、
+    /// 但没有东西可融合」同样不许假装融合过——保留关键词那份快照与 `keyword_ready`，
+    /// 原因写进 `warnings`。与 `Unavailable` 分开记，是为了让「语义不可用」与「语义没有
+    /// 可融合的证据」在会话状态里也能分开审计。
+    NoEvidence,
+    /// 已经融合过：结果是融合 + 重排后的列表；再升级返回同一份快照，不重复算。
+    Fused,
 }
 
 /// 一个检索会话的内存状态。
@@ -57,13 +159,24 @@ pub(crate) struct SearchSessionState {
     request: SearchRequest,
     /// 命中的引用，已按各自的排序规则排好。只存引用：整段正文按页现取，别把几万条
     /// 正文常驻内存。关键词的引用带来源是因为两张表的 `doc_id` 会撞号。
+    ///
+    /// 混合会话里它先是**关键词那一路**的引用（`Pending` / `Unavailable`），
+    /// 升级之后换成融合后的引用（`Fused`）。
     ordered: Vec<RankedRef>,
     /// 上一页返回的引用，`search.snapshot` 要能原样再给一次。
     last_page: Vec<RankedRef>,
     /// 下一页的游标；没有下一页时为 None。
     next_cursor: Option<String>,
+    /// **结果代次**：会话内从 0 起，结果集被替换（混合升级融合重排）时递增。
+    ///
+    /// 游标里带着它。`pageSize = 2` 时，升级前的第一页游标与升级后的第一页游标偏移
+    /// 都是 2：只看偏移会认为「旧游标正指向升级后的第二页」，于是把关键词阶段与融合
+    /// 阶段的结果拼起来。代次一变，所有旧代次的游标都不再可用（`cursor_expired`）。
+    generation: i64,
     fingerprint: IndexFingerprint,
     phase: SearchPhase,
+    /// 混合会话专有：融合到哪一步了。其余模式恒为 `Pending`（不读它）。
+    hybrid_upgrade: HybridUpgrade,
     cancelled: bool,
     index_coverage: Coverage,
     warnings: Vec<String>,
@@ -78,33 +191,21 @@ pub(crate) fn start(
     let needle = request.query.trim().to_lowercase();
     let mut warnings = Vec::new();
 
-    if request.mode == SearchMode::Hybrid {
-        // 混合检索是 #51（B3c-3）。**如实降级**到关键词并说清楚——假装按混合跑了、
-        // 却不出分数，是骗人。纯语义（`Semantic`）不再降级：它真的跑语义那一路。
-        warnings.push(
-            "混合检索还没实现（#51），这次按关键词执行；语义那一路可以单独用 semantic 模式"
-                .to_owned(),
-        );
-    }
     if request.filters.include_old_diary_versions {
         warnings.push("日记历史版本还没有进索引，这个开关暂时没有效果".to_owned());
     }
 
-    let (ordered, index_coverage, phase) = if request.mode == SearchMode::Semantic {
-        semantic_search(
-            core,
-            &request,
-            &needle,
-            page_size,
-            &mut warnings,
-        )?
-    } else {
-        keyword_search(core, &request, &needle, page_size, &mut warnings)?
+    let (ordered, index_coverage, phase) = match request.mode {
+        SearchMode::Semantic => {
+            semantic_search(core, &request, &needle, page_size, &mut warnings)?
+        }
+        SearchMode::Hybrid => hybrid_start(core, &request, &needle, &mut warnings)?,
+        SearchMode::Keyword => keyword_search(core, &request, &needle, page_size, &mut warnings)?,
     };
 
     let session_id = support::new_id("search");
     let fingerprint = fingerprint(core, request.mode)?;
-    let (last_page, next_cursor) = page_window(&session_id, &ordered, 0, page_size);
+    let (last_page, next_cursor) = page_window(&session_id, 0, &ordered, 0, page_size);
 
     let state = SearchSessionState {
         session_id: session_id.clone(),
@@ -118,8 +219,10 @@ pub(crate) fn start(
         ordered,
         last_page,
         next_cursor,
+        generation: 0,
         fingerprint,
         phase,
+        hybrid_upgrade: HybridUpgrade::Pending,
         cancelled: false,
         index_coverage,
         warnings,
@@ -206,6 +309,511 @@ fn semantic_search(
     Ok((ordered, coverage, SearchPhase::Done))
 }
 
+/// 混合检索的**第一阶段**（#69）：只算关键词那一路，`phase = keyword_ready`。
+///
+/// 这一阶段**不加载模型、不算向量**：`hybrid_evidence` 只看库里的生效代次 / 块数与
+/// `embedder_readiness`（env + stat），所以首屏不必为「语义到底行不行」付模型加载的
+/// 代价。真正的融合在 `upgrade` 里发生（见 `Core::upgrade_search_to_hybrid`）。
+///
+/// 返回的命中**只反映关键词那一路**：`matchedBy` 全是 `[Keyword]`，只被语义召回到的篇
+/// 一条都不会出现——这不是假值，是如实：那一路此刻还没算。
+///
+/// 语义拿不出证据时沿用 #51 的退化路径：**按关键词执行 + 在 `warnings` 里明说**。
+/// 不静默——那会让「混合」这个标签撒谎；也不报空结果——那会把一条本来能用的
+/// 关键词查询变成什么都没有。
+fn hybrid_start(
+    core: &mut Core,
+    request: &SearchRequest,
+    needle: &str,
+    warnings: &mut Vec<String>,
+) -> Result<(Vec<RankedRef>, Coverage, SearchPhase)> {
+    if needle.is_empty() {
+        warnings.push("查询是空的，没有可匹配的内容".to_owned());
+        return Ok((
+            Vec::new(),
+            hybrid_coverage(core, &request.filters)?,
+            SearchPhase::KeywordReady,
+        ));
+    }
+
+    if let Some(reason) = hybrid_evidence(core)? {
+        let (ordered, coverage, _) =
+            keyword_search(core, request, needle, request.page_size, warnings)?;
+        let ordered = as_keyword_only_hybrid(ordered);
+        warnings.push(format!(
+            "混合检索退化为关键词：{reason}；这次只跑了关键词那一路（不是静默降级）"
+        ));
+        return Ok((ordered, coverage, SearchPhase::KeywordReady));
+    }
+
+    let keyword_coverage = index_coverage(core)?;
+    let semantic_coverage = semantic_coverage(core, &request.filters)?;
+    let coverage = weakest_coverage(keyword_coverage, semantic_coverage);
+    if keyword_coverage != Coverage::Complete {
+        warnings.push("关键词索引还没有覆盖全部内容，结果可能不完整".to_owned());
+    }
+    if semantic_coverage != Coverage::Complete {
+        warnings.push("语义索引还没有覆盖全部内容，结果可能不完整".to_owned());
+    }
+
+    // 关键词按篇折叠后的候选就是融合时关键词会贡献的那些篇——与 `fuse_hybrid` 共用
+    // 同一段折叠逻辑，所以首屏看到的篇在升级之后不会凭空消失，只会被并进来的语义篇
+    // 重新排序。
+    let ordered = keyword_groups(core, needle, &request.filters)?
+        .into_iter()
+        .map(|group| {
+            RankedRef::Hybrid(HybridHit {
+                keyword: Some(group.doc),
+                semantic: None,
+                matched_by: vec![MatchedBy::Keyword],
+            })
+        })
+        .collect();
+    Ok((ordered, coverage, SearchPhase::KeywordReady))
+}
+
+/// 退化路径的引用形状：会话按 mode 派发实体化，`materialize_hybrid` 只认 `Hybrid`
+/// 引用，直接塞 `Keyword` 引用会让它一条都认不出来（空结果）。
+fn as_keyword_only_hybrid(ordered: Vec<RankedRef>) -> Vec<RankedRef> {
+    ordered
+        .into_iter()
+        .map(|reference| match reference {
+            RankedRef::Keyword(doc) => RankedRef::Hybrid(HybridHit {
+                keyword: Some(doc),
+                semantic: None,
+                matched_by: vec![MatchedBy::Keyword],
+            }),
+            other => other,
+        })
+        .collect()
+}
+
+/// 语义这一路现在有没有**可融合的证据来源**。`None` 表示可以升级。
+///
+/// 只读库状态与 env/stat（`embedder_readiness` **不加载模型**），所以调用它不会把
+/// 关键词首屏拖进模型加载。「模型配了但加载失败」要到升级那一刻才知道——那时
+/// `upgrade` 会如实把它归到 `Unavailable`，绝不假装已经融合过。
+fn hybrid_evidence(core: &Core) -> Result<Option<String>> {
+    if semantic::active_generation(core)?.is_none() {
+        return Ok(Some(
+            "语义索引还没有生效的代次（先跑一次 build_semantic_index）".to_owned(),
+        ));
+    }
+    if crate::chunks::counts(core, None)?.total == 0 {
+        return Ok(Some(
+            "语义索引还没有可用的文本块（先跑一次 build_semantic_index）".to_owned(),
+        ));
+    }
+    match core.embedder_readiness() {
+        EmbedderReadiness::NotConfigured => Ok(Some(
+            "语义检索不可用：没有配置本地模型（DIARY_MODEL_DIR / DIARY_ORT_DYLIB）".to_owned(),
+        )),
+        EmbedderReadiness::Failed(reason) => Ok(Some(format!("语义检索不可用：{reason}"))),
+        // 配好了但还没加载：升级时 `core.embedder()` 才真正建 ORT 会话（可能失败）。
+        EmbedderReadiness::Configured | EmbedderReadiness::Ready => Ok(None),
+    }
+}
+
+/// 关键词那一路按篇折叠后的候选。融合与关键词阶段共用，所以两边的「一篇」是同一个
+/// 单位、同一批篇。
+struct KeywordGroup {
+    /// 篇标识（来源 ID / 记录 ID）。
+    group_id: String,
+    /// 篇内的关键词证据（哪个片段 / 记录文字）。
+    doc: search::DocRef,
+    day_key: Option<String>,
+    /// 正文哈希：同分兜底键，**由内容决定**（不用 UUID）。
+    content_key: String,
+    /// 关键词名次（按折叠后的篇算，同名次共享）。
+    rank: usize,
+}
+
+/// 关键词那一路的候选：按篇折叠 → 同名次 → 截断到 `RRF_CANDIDATE_DEPTH`。
+///
+/// 注意：关键词那一路**不是**按篇出的（一个来源可以被抽成多段，每段一个索引文档），
+/// 所以这里必须自己按 `groupId` 折叠。issue #51 的正文说「两路各自已经按篇折叠」，
+/// 对语义成立、对关键词不成立；这件事写在文档的「没有做到的」里。
+fn keyword_groups(
+    core: &Core,
+    needle: &str,
+    filters: &SearchFilters,
+) -> Result<Vec<KeywordGroup>> {
+    let keyword_matches = search::ranked_matches(core, needle, filters)?;
+    // 只把排序最靠前的 `RRF_KEYWORD_OVERSCAN` 条文档读进来：按篇折叠与正文哈希都要
+    // 正文/篇标识，而关键词这一路本来只按页读正文——几万条命中全读进来是这一片最
+    // 容易踩的性能坑。200 条文档对「一篇 1–2 段」的正常数据足够折出 50 篇。
+    let window = &keyword_matches[..keyword_matches.len().min(RRF_KEYWORD_OVERSCAN)];
+    let keyword_refs: Vec<search::DocRef> = window.iter().map(|row| row.doc).collect();
+    let mut segment_rows: HashMap<search::DocRef, search::PageRow> = search::load_page(core, &keyword_refs)?
+        .into_iter()
+        .map(|row| (row.doc, row))
+        .collect();
+    let mut capture_rows: HashMap<search::DocRef, search::CapturePageRow> =
+        search::load_capture_page(core, &keyword_refs)?
+            .into_iter()
+            .map(|row| (row.doc, row))
+            .collect();
+
+    // 名次用**同名次**（competition ranking）：`sort_key` 的前三项（日期、出现位置、
+    // 家族）都相同时视为并列第一/并列第几名，取这一组里最靠前的名次。理由：那三项
+    // 相同时，关键词这一路没有任何分数能分出高下，第 4 项是**库内**的 `doc_id`
+    // （插入顺序），拿它给两篇同分内容发不同的 RRF 分等于让融合结果跟建库顺序挂钩。
+    // 并列之后，先后交给融合自己的同分键（内容哈希）决定。
+    let mut groups: Vec<KeywordGroup> = Vec::new();
+    let mut seen_groups: HashSet<String> = HashSet::new();
+    let mut previous_prefix: Option<(i64, i64, i64)> = None;
+    let mut group_rank = 0_usize;
+    // 名次按**折叠之后的篇**数：`kept` 是已经留下来的篇数。
+    //
+    // 用文档位置（`position + 1`）当名次是错的：一篇被抽成很多片段时，排在它后面的篇名次
+    // 会被顶高，于是那一篇的融合分取决于**前面那篇被切成几段**——同一个短篇，前面放一篇
+    // 5 段的与放一篇 1 段的，RRF 分数会不同（评审在 #60 上指出）。
+    let mut kept = 0_usize;
+    for row in window.iter() {
+        let key = sort_key(row);
+        let prefix = (key.0, key.1, key.2);
+        // 同名次：与**上一篇留下来的**同前缀就沿用它，否则用「已保留篇数 + 1」。
+        // 只在真正保留一行时更新 `previous_prefix`——被折叠掉的行不该影响后面的名次。
+        let tied_with_previous = previous_prefix.as_ref() == Some(&prefix);
+
+        let (group_id, day_key, text) = if let Some(page) = segment_rows.remove(&row.doc) {
+            (page.source_id, page.day_key, page.text)
+        } else if let Some(page) = capture_rows.remove(&row.doc) {
+            (page.capture_id, Some(page.day_key), page.text)
+        } else {
+            // 索引行还在、正文行没了（重提取的中间态）：这一条如实跳过。
+            continue;
+        };
+        if !seen_groups.insert(group_id.clone()) {
+            continue;
+        }
+        let current_rank = next_group_rank(kept, tied_with_previous, group_rank);
+        previous_prefix = Some(prefix);
+        group_rank = current_rank;
+        kept += 1;
+        groups.push(KeywordGroup {
+            group_id,
+            doc: row.doc,
+            day_key,
+            content_key: support::content_hash(&text),
+            rank: current_rank,
+        });
+        if kept >= RRF_CANDIDATE_DEPTH {
+            break;
+        }
+    }
+    Ok(groups)
+}
+
+/// 混合检索的**第二阶段**：RRF 融合 + 重排（#51 的口径一字不改），以**篇**为单位。
+///
+/// 流程：关键词候选（`keyword_groups` 折好）+ 语义候选（过 `core.hybrid_min_score`
+/// 这道证据门槛、截断到 `RRF_CANDIDATE_DEPTH`）→ 逐路给 `1/(RRF_K + rank)` →
+/// 同篇相加 → 按 `score DESC → day_key DESC → 内容哈希 ASC` 排序。
+///
+/// 覆盖状态那两句 warning 在 `hybrid_start` 已经说过一次，这里只说融合这一步才能
+/// 知道的事（语义低于门槛 / 两路都空）。
+///
+/// 返回 `None` 表示**语义这一路拿不出可融合的证据**（候选全被门槛滤掉，或一条候选都
+/// 没有）：这时**不融合**，调用方必须保留关键词那份快照与 `keyword_ready`——只有真的
+/// 融合过（返回 `Some`）会话才允许报 `hybrid_ready`。为什么没融合由这里写进 `warnings`。
+fn fuse_hybrid(
+    core: &Core,
+    embedder: &dyn Embedder,
+    needle: &str,
+    filters: &SearchFilters,
+    warnings: &mut Vec<String>,
+) -> Result<Option<Vec<RankedRef>>> {
+    // —— 关键词那一路：按篇折叠 → 截断 → 名次 ——
+    let keyword_groups = keyword_groups(core, needle, filters)?;
+
+    // —— 语义那一路：候选已按篇折叠，过门槛，再截断 ——
+    let mut semantic_candidates = semantic::candidates(core, embedder, needle, filters)?;
+    let top_score = semantic_candidates.first().map(|candidate| candidate.score);
+    let min_score = core.hybrid_min_score();
+    semantic_candidates.retain(|candidate| candidate.score >= min_score);
+    semantic_candidates.truncate(RRF_CANDIDATE_DEPTH);
+    if semantic_candidates.is_empty() {
+        // 与 #51 一样的说明，一字不改：这一路没有贡献结果。区别只是**不再继续融合**。
+        match top_score {
+            Some(top) => warnings.push(format!(
+                "语义一路最像的内容相似度 {top:.3}，低于证据门槛 {min_score:.2}，\
+                 这一路没有贡献结果"
+            )),
+            None => warnings.push("语义检索没有找到相近的内容".to_owned()),
+        }
+        if keyword_groups.is_empty() {
+            warnings.push("两路都没有达到证据门槛的内容，这次没有结果".to_owned());
+        }
+        return Ok(None);
+    }
+
+    // —— 融合：同篇相加 RRF 分 ——
+    let mut fused: Vec<FusedCandidate> = Vec::new();
+    let mut fused_index: HashMap<String, usize> = HashMap::new();
+    for group in keyword_groups {
+        fused_index.insert(group.group_id.clone(), fused.len());
+        fused.push(FusedCandidate {
+            group_id: group.group_id,
+            score: rrf_score(group.rank),
+            day_key: group.day_key,
+            content_key: group.content_key,
+            keyword: Some(group.doc),
+            semantic: None,
+        });
+    }
+    for (position, candidate) in semantic_candidates.into_iter().enumerate() {
+        let score = rrf_score(position + 1);
+        match fused_index.get(&candidate.group_id) {
+            Some(&index) => {
+                fused[index].score += score;
+                fused[index].semantic = Some(candidate);
+            }
+            None => {
+                // 语义独有：正文哈希只在这一路上算。
+                let content_key = semantic::content_key(core, &candidate)?
+                    .unwrap_or_else(|| support::content_hash(""));
+                fused_index.insert(candidate.group_id.clone(), fused.len());
+                fused.push(FusedCandidate {
+                    group_id: candidate.group_id.clone(),
+                    score,
+                    day_key: Some(candidate.day_key.clone()),
+                    content_key,
+                    keyword: None,
+                    semantic: Some(candidate),
+                });
+            }
+        }
+    }
+
+    // 排序：**相关度优先，同档按时间降序**，再按内容决定的键，最后才是库内兜底。
+    //
+    // 为什么最后一项不用 `groupId` 打头（issue #57 的教训）：`groupId` 是 v7 UUID，
+    // 每个库都不一样；同分时先比它，同一份内容在两个库里就会给出不同的先后。
+    // `content_key` 是正文哈希，只由内容决定。真的走到 `groupId` 那一项时，两边的
+    // 正文哈希已经相同（内容一样），谁先谁后不影响用户看到什么。
+    fused.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| right.day_key.cmp(&left.day_key))
+            .then_with(|| left.content_key.cmp(&right.content_key))
+            .then_with(|| left.group_id.cmp(&right.group_id))
+    });
+
+    // 走到这里语义候选非空，融合结果必然非空（语义独有那些篇也会进来）。
+    debug_assert!(!fused.is_empty());
+
+    Ok(Some(
+        fused
+            .into_iter()
+            .map(|entry| {
+                let matched_by = entry.matched_by();
+                RankedRef::Hybrid(HybridHit {
+                    keyword: entry.keyword,
+                    semantic: entry.semantic,
+                    matched_by,
+                })
+            })
+            .collect(),
+    ))
+}
+
+/// 把混合会话从关键词阶段升级到融合阶段（#69）。
+///
+/// - **同一会话**：沿用 `sessionId` / `queryRevision` / 游标机制，不新造一套；
+/// - **幂等**：已经融合过（`Fused`）、已经确认升不了级（`Unavailable`）或已经确认没有
+///   可融合的证据（`NoEvidence`）就不再算，返回当前快照；
+/// - 升级后**从头**给融合结果：融合改变了顺序，原来「第几页」已经没有意义，所以
+///   游标重置为融合后第一章的游标，并**递增结果代次**——升级前发出的**所有**显式
+///   游标（含第一页那个与融合后第一页偏移相同的）都会 `cursor_expired`，而不是悄悄
+///   按新顺序返回一段对不上的结果；
+/// - 语义拿不出**可融合的证据**时**不声称** `hybrid_ready`，两种情形分开记：
+///   **不可用**（没配模型 / 加载失败 / 没有生效代次 / 没有块）与**可用但没有可融合的
+///   证据**（候选全被 `HYBRID_SEMANTIC_MIN_SCORE` 滤掉；查询是空的、一条候选都没有）。
+///   两者都如实返回**关键词那份快照**、阶段仍是 `keyword_ready`，并把原因写进
+///   `warnings`；结果集没换，代次不递增；
+/// - 已取消的会话**不融合**：返回 `cancelled` 快照（取消就是取消）；
+/// - 索引变了 / 会话不存在：`search_expired`；非混合会话：`invalid_state`。
+pub(crate) fn upgrade(core: &mut Core, session_id: &str) -> Result<SearchSnapshot> {
+    let mut state = core
+        .search_sessions_mut()
+        .remove(session_id)
+        .ok_or_else(|| CoreError::SearchExpired {
+            reason: format!("会话 {session_id} 不存在或已随重启丢失，请重新发起查询"),
+        })?;
+
+    let result = (|| -> Result<SearchSnapshot> {
+        if state.cancelled {
+            return materialize(core, &state, &state.last_page);
+        }
+        ensure_fresh(core, &state)?;
+        if state.request.mode != SearchMode::Hybrid {
+            return Err(CoreError::InvalidState {
+                entity: "检索会话",
+                id: state.session_id.clone(),
+                state: format!(
+                    "mode = {}，只有 hybrid 会话可以升级到融合阶段",
+                    state.request.mode.wire()
+                ),
+            });
+        }
+        // 幂等：已经融合过、或已经确认升不了级，就不再算一遍。
+        if state.hybrid_upgrade != HybridUpgrade::Pending {
+            return materialize(core, &state, &state.last_page);
+        }
+
+        let needle = state.request.query.trim().to_lowercase();
+        if needle.is_empty() {
+            // 空查询没有「语义证据」可谈：融合本身没什么可算的。**语义不可用**与
+            // **语义可用但没有可融合的证据**都不假装融合过——阶段如实停在
+            // `keyword_ready`（与所有退化情形同一个口径）。
+            return match hybrid_evidence(core)? {
+                Some(reason) => mark_unavailable(core, &mut state, reason),
+                None => mark_no_evidence(
+                    core,
+                    &mut state,
+                    Some("查询是空的，两路都没有可融合的证据".to_owned()),
+                ),
+            };
+        }
+
+        // 先看便宜的证据（库状态 + env/stat）；真的可以融合才加载模型。
+        if let Some(reason) = hybrid_evidence(core)? {
+            return mark_unavailable(core, &mut state, reason);
+        }
+        let embedder = match core.embedder() {
+            Ok(embedder) => embedder,
+            Err(error) => {
+                return mark_unavailable(core, &mut state, format!("语义检索不可用：{error}"));
+            }
+        };
+
+        let mut warnings = state.warnings.clone();
+        let fused = fuse_hybrid(core, &*embedder, &needle, &state.request.filters, &mut warnings)?;
+        state.warnings = warnings;
+        let Some(fused) = fused else {
+            // 语义**可用**，但候选全被证据门槛滤掉（或一条候选都没有）：不融合。
+            // 保留关键词那份快照与 `keyword_ready`，原因已在 `fuse_hybrid` 写进
+            // `warnings`。结果集没有换，所以代次不递增。
+            return mark_no_evidence(core, &mut state, None);
+        };
+        state.ordered = fused;
+        // 结果集被替换 → 代次递增。**所有**升级前发出的游标（哪怕第一页那个的偏移
+        // 与融合后第一页相同）从这里起都作废。幂等的重复调用在上面就短路了，走不到
+        // 这里，所以升级后发出的游标在再次升级之后仍然可用。
+        state.generation += 1;
+        let (page, cursor) = page_window(
+            &state.session_id,
+            state.generation,
+            &state.ordered,
+            0,
+            state.request.page_size,
+        );
+        state.last_page = page;
+        state.next_cursor = cursor;
+        state.hybrid_upgrade = HybridUpgrade::Fused;
+        state.phase = SearchPhase::HybridReady;
+        materialize(core, &state, &state.last_page)
+    })();
+
+    // 无论成功失败都要把会话放回去：失败（比如游标过期）不该把整个会话弄没。
+    core.search_sessions_mut().insert(session_id.to_owned(), state);
+    result
+}
+
+/// 升不了级：阶段如实停在 `keyword_ready`，把原因写进 `warnings`（只写一次——
+/// 幂等的重复调用走上面 `hybrid_upgrade != Pending` 的短路）。
+fn mark_unavailable(
+    core: &Core,
+    state: &mut SearchSessionState,
+    reason: String,
+) -> Result<SearchSnapshot> {
+    state.hybrid_upgrade = HybridUpgrade::Unavailable;
+    state.phase = SearchPhase::KeywordReady;
+    state.warnings.push(format!(
+        "升级到混合检索没有可融合的语义证据：{reason}；阶段保持 keyword_ready，\
+         结果仍只有关键词那一路（没有假装 hybrid_ready）"
+    ));
+    materialize(core, state, &state.last_page)
+}
+
+/// 尝试过升级，但语义这一路拿不出**可融合的证据**（候选全被门槛滤掉 / 查询是空的）：
+/// **不融合**——保留关键词那份快照，阶段如实停在 `keyword_ready`。为什么没融合由
+/// `fuse_hybrid` 或调用方写进 `warnings`（`reason` 只在 `fuse_hybrid` 没写过时补一句）。
+///
+/// 结果集没有被替换，所以**代次不递增**：升级前发出的游标继续可用（与融合路径相反）。
+/// 只写一次原因——幂等的重复调用走 `hybrid_upgrade != Pending` 的短路。
+fn mark_no_evidence(
+    core: &Core,
+    state: &mut SearchSessionState,
+    reason: Option<String>,
+) -> Result<SearchSnapshot> {
+    state.hybrid_upgrade = HybridUpgrade::NoEvidence;
+    state.phase = SearchPhase::KeywordReady;
+    if let Some(reason) = reason {
+        state.warnings.push(format!(
+            "升级没有融合：{reason}；阶段保持 keyword_ready，结果仍只有关键词那一路\
+             （没有假装 hybrid_ready）"
+        ));
+    }
+    materialize(core, state, &state.last_page)
+}
+
+impl FusedCandidate {
+    /// 如实的 `matchedBy`：两边都有就是两者都有。
+    fn matched_by(&self) -> Vec<MatchedBy> {
+        match (&self.keyword, &self.semantic) {
+            (Some(_), Some(_)) => vec![MatchedBy::Keyword, MatchedBy::Semantic],
+            (Some(_), None) => vec![MatchedBy::Keyword],
+            (None, Some(_)) => vec![MatchedBy::Semantic],
+            (None, None) => Vec::new(),
+        }
+    }
+}
+
+/// 一路的名次换算成 RRF 分：`1/(k + rank)`，`rank` 从 1 起。
+/// 关键词那一路**按篇**给名次：`kept` 是已保留的篇数，同前缀（同名次）沿用上一档。
+///
+/// 抽成纯函数是为了能直接测「一篇被切成很多片段时，后面的篇名次不被顶高」——
+/// 这正是评审在 #60 上指出的问题（原来用 `position + 1`，名次跟文档位置走）。
+fn next_group_rank(kept: usize, tied_with_previous: bool, group_rank: usize) -> usize {
+    if tied_with_previous && kept > 0 {
+        group_rank
+    } else {
+        kept + 1
+    }
+}
+
+fn rrf_score(rank: usize) -> f32 {
+    1.0 / (RRF_K as f32 + rank as f32)
+}
+
+/// 混合的覆盖程度：两路里**较弱**的那个（一路没覆盖完，融合结果就可能不完整）。
+fn hybrid_coverage(core: &mut Core, filters: &SearchFilters) -> Result<Coverage> {
+    let keyword = index_coverage(core)?;
+    let semantic = semantic_coverage(core, filters)?;
+    Ok(weakest_coverage(keyword, semantic))
+}
+
+/// 覆盖程度取弱：`complete` 最好、`unavailable` 最差（与文档里的取值序一致）。
+fn weakest_coverage(left: Coverage, right: Coverage) -> Coverage {
+    fn rank(coverage: Coverage) -> u8 {
+        match coverage {
+            Coverage::Complete => 3,
+            Coverage::Partial => 2,
+            Coverage::MetadataOnly => 1,
+            Coverage::Unavailable => 0,
+        }
+    }
+    if rank(left) <= rank(right) {
+        left
+    } else {
+        right
+    }
+}
+
 /// 语义那一路的覆盖程度：没有生效代次或没有块是 `unavailable`，生效代次没覆盖
 /// 完范围内的块是 `partial`，否则 `complete`。
 fn semantic_coverage(core: &Core, filters: &SearchFilters) -> Result<Coverage> {
@@ -227,8 +835,21 @@ pub(crate) fn next_page(
     cursor: Option<&str>,
 ) -> Result<SearchSnapshot> {
     // 先把游标解出来再借用会话：借错了顺序就编译不过，顺便逼着校验游标归属。
-    let offset = match cursor {
-        Some(value) => parse_cursor(value, session_id)?,
+    // 格式与会话号在进会话之前就能判：拿一个不属于当前会话的游标来时，报的是
+    // `cursor_expired`，不该因为「会话恰好不存在」而变成另一种错误。
+    let parsed = match cursor {
+        Some(value) => {
+            let parsed = Cursor::parse(value)?;
+            if parsed.session_id != session_id {
+                return Err(CoreError::CursorExpired {
+                    reason: format!(
+                        "游标属于别的会话（{}），不能用来翻当前会话",
+                        parsed.session_id
+                    ),
+                });
+            }
+            Some(parsed)
+        }
         None => None,
     };
 
@@ -249,19 +870,33 @@ pub(crate) fn next_page(
         }
         ensure_fresh(core, &state)?;
 
-        let start = match offset {
-            // 显式游标：必须指向这一页之后，否则就是拿旧游标重翻。
-            Some(value) => {
-                let expected = state.next_cursor.as_deref().map(parse_offset).transpose()?;
-                if Some(value) != expected {
+        let start = match &parsed {
+            // 显式游标分两层校验：**代次 → 偏移边界**。
+            //
+            // 代次不一致一律 `cursor_expired`，**不看偏移**：升级前第一页与升级后
+            // 第一页的偏移可能相同（`pageSize = 2` 时都是 2），只看偏移会放它进来，
+            // 于是「关键词阶段的第一页 + 融合阶段的第二页」被拼在一起。
+            Some(parsed) => {
+                if parsed.generation != state.generation {
                     return Err(CoreError::CursorExpired {
                         reason: format!(
-                            "游标与当前进度对不上（会话 {}，收到 {}）",
-                            state.session_id, value
+                            "游标是结果集第 {} 代的，当前已是第 {} 代（升级替换过结果集）；\
+                             请用当前快照的游标翻页",
+                            parsed.generation, state.generation
                         ),
                     });
                 }
-                value
+                let expected = state.next_cursor.as_deref().map(parse_offset).transpose()?;
+                // 代次一致：必须指向这一页之后，否则就是拿旧游标重翻。
+                if Some(parsed.offset) != expected {
+                    return Err(CoreError::CursorExpired {
+                        reason: format!(
+                            "游标与当前进度对不上（会话 {}，收到 {}）",
+                            state.session_id, parsed.offset
+                        ),
+                    });
+                }
+                parsed.offset
             }
             None => match state.next_cursor.as_deref() {
                 Some(cursor) => parse_offset(cursor)?,
@@ -274,13 +909,14 @@ pub(crate) fn next_page(
 
         let (page, cursor) = page_window(
             &state.session_id,
+            state.generation,
             &state.ordered,
             start,
             state.request.page_size,
         );
         state.last_page = page;
         state.next_cursor = cursor;
-        state.phase = phase_after_page(state.request.mode, state.next_cursor.is_none());
+        state.phase = phase_after_page(&state, state.next_cursor.is_none());
         materialize(core, &state, &state.last_page)
     })();
 
@@ -328,24 +964,47 @@ fn ensure_fresh(core: &Core, state: &SearchSessionState) -> Result<()> {
     Ok(())
 }
 
-/// 关键词会话的指纹是关键词代次；语义会话还要带上生效的向量代次——切了一代之后
-/// 旧的「块 → 篇」排序已经过期。关键词会话**不看**语义代次：向量换代不该无谓地
-/// 打断正在翻页的关键词查询。
+/// 关键词会话的指纹是关键词代次；语义与混合会话还要带上生效的向量代次——切了一代
+/// 之后旧的「块 → 篇」排序与融合结果都已经过期。关键词会话**不看**语义代次：
+/// 向量换代不该无谓地打断正在翻页的关键词查询。
 fn fingerprint(core: &Core, mode: SearchMode) -> Result<IndexFingerprint> {
     let epoch = search::index_epoch(core)?;
-    if mode == SearchMode::Semantic {
+    if matches!(mode, SearchMode::Semantic | SearchMode::Hybrid) {
         Ok((epoch, semantic::active_generation(core)?))
     } else {
         Ok((epoch, None))
     }
 }
 
-/// 一页之后该报什么阶段。语义没有「后面还会更好」的阶段，恒为 `done`。
-fn phase_after_page(mode: SearchMode, is_last_page: bool) -> SearchPhase {
-    if is_last_page || mode == SearchMode::Semantic {
-        SearchPhase::Done
-    } else {
-        SearchPhase::KeywordReady
+/// 一页之后该报什么阶段。
+///
+/// - 纯语义一次算完：恒为 `done`（翻页由游标表达）；
+/// - 纯关键词：还有下一页就 `keyword_ready`，翻完 `done`；
+/// - 混合：**只有融合过**（`Fused`）才 `hybrid_ready`，翻完 `done`；还没升级
+///   （`Pending`）或升不了级（`Unavailable`）时一直如实报 `keyword_ready`——
+///   不把「关键词就绪」说成「融合就绪」。
+fn phase_after_page(state: &SearchSessionState, is_last_page: bool) -> SearchPhase {
+    match state.request.mode {
+        SearchMode::Semantic => SearchPhase::Done,
+        SearchMode::Keyword => {
+            if is_last_page {
+                SearchPhase::Done
+            } else {
+                SearchPhase::KeywordReady
+            }
+        }
+        SearchMode::Hybrid => match state.hybrid_upgrade {
+            HybridUpgrade::Fused => {
+                if is_last_page {
+                    SearchPhase::Done
+                } else {
+                    SearchPhase::HybridReady
+                }
+            }
+            HybridUpgrade::Pending | HybridUpgrade::Unavailable | HybridUpgrade::NoEvidence => {
+                SearchPhase::KeywordReady
+            }
+        },
     }
 }
 
@@ -355,8 +1014,11 @@ fn index_coverage(core: &Core) -> Result<Coverage> {
 }
 
 /// 取一页与下一页游标。越界或空结果时下一页游标是 None。
+///
+/// 游标里带上 `generation`：结果集被替换过（代次变了）时旧游标一律作废，不看偏移。
 fn page_window<T: Clone>(
     session_id: &str,
+    generation: i64,
     ordered: &[T],
     start: usize,
     page_size: i64,
@@ -367,36 +1029,58 @@ fn page_window<T: Clone>(
     let end = (start + page_size as usize).min(ordered.len());
     let page = ordered[start..end].to_vec();
     let cursor = if end < ordered.len() {
-        Some(format!("{session_id}:{}", end))
+        Some(format!("{session_id}:{generation}:{end}"))
     } else {
         None
     };
     (page, cursor)
 }
 
-/// 游标是 `<sessionId>:<offset>`。会话号对不上就是 `cursor_expired`——
-/// 契约要求翻页绑定原会话，不能拿别的会话的游标接着翻。
-fn parse_cursor(value: &str, session_id: &str) -> Result<Option<usize>> {
-    let (owner, offset) = value.rsplit_once(':').ok_or_else(|| CoreError::CursorExpired {
-        reason: format!("游标格式不对：{value}"),
-    })?;
-    if owner != session_id {
-        return Err(CoreError::CursorExpired {
-            reason: format!("游标属于别的会话（{owner}），不能用来翻当前会话"),
-        });
-    }
-    Ok(Some(offset.parse::<usize>().map_err(|_| CoreError::CursorExpired {
-        reason: format!("游标里的位置不是数字：{value}"),
-    })?))
+/// 游标的**内部**格式：`<sessionId>:<generation>:<offset>`。
+///
+/// 对外它仍是**不透明字符串**（契约第 2 章「不透明 cursor」）：调用方只应把上一次
+/// 快照给的 `cursor` 原样回传，不该解析它。所以这条格式是核心的内部约定，不是契约
+/// 变更；契约里只在 `search.upgrade` 的保证里写「升级后的旧游标报 `cursor_expired`」。
+///
+/// - `sessionId`：翻页绑定原会话，对不上报 `cursor_expired`；
+/// - `generation`：结果代次，会话内从 0 起，结果集被替换（升级融合）时递增。
+///   与当前代次不一致 → `cursor_expired`，**不看偏移**；
+/// - `offset`：下一页从第几条（0 基）开始。代次一致时才校验它与当前进度一致。
+#[derive(Debug, Clone)]
+struct Cursor {
+    session_id: String,
+    generation: i64,
+    offset: usize,
 }
 
-fn parse_offset(cursor: &str) -> Result<usize> {
-    cursor
-        .rsplit_once(':')
-        .and_then(|(_, offset)| offset.parse::<usize>().ok())
-        .ok_or_else(|| CoreError::CursorExpired {
-            reason: format!("游标格式不对：{cursor}"),
+impl Cursor {
+    fn parse(value: &str) -> Result<Self> {
+        // 从右往左切两刀：会话号本身可能带冒号，代次与偏移不可能。
+        let mut parts = value.rsplitn(3, ':');
+        let offset = parts.next().unwrap_or_default();
+        let generation = parts.next();
+        let session_id = parts.next();
+        let (Some(generation), Some(session_id)) = (generation, session_id) else {
+            return Err(CoreError::CursorExpired {
+                reason: format!("游标格式不对：{value}"),
+            });
+        };
+        Ok(Self {
+            session_id: session_id.to_owned(),
+            generation: generation.parse::<i64>().map_err(|_| CoreError::CursorExpired {
+                reason: format!("游标里的代次不是数字：{value}"),
+            })?,
+            offset: offset.parse::<usize>().map_err(|_| CoreError::CursorExpired {
+                reason: format!("游标里的位置不是数字：{value}"),
+            })?,
         })
+    }
+}
+
+/// 会话自己发出去的游标（`state.next_cursor`）只取偏移。它总是当前代次的，
+/// 所以不必再过一遍归属 / 代次校验；解析失败说明内部状态坏了，如实报 `cursor_expired`。
+fn parse_offset(cursor: &str) -> Result<usize> {
+    Ok(Cursor::parse(cursor)?.offset)
 }
 
 /// 把这一页的引用变成命中对象。整段正文只在这一步取，按页取。
@@ -405,23 +1089,26 @@ fn parse_offset(cursor: &str) -> Result<usize> {
 /// 又不该把会话里「当前这一页」改掉——`search.snapshot` 还要能原样再给一次。
 ///
 /// 关键词那一路两路分两次取（两张表的 `doc_id` 各自从 1 开始，一条 UNION 就分不清
-/// 来源），取完按原顺序合并；语义那一路按篇出结果，摘录与定位取该篇自己那一段。
+/// 来源），取完按原顺序合并；语义那一路按篇出结果，摘录与定位取该篇自己那一段；
+/// 混合那一路两路都有时用关键词那份正文（有高亮），`matchedBy` 如实标。
 fn materialize(
     core: &Core,
     state: &SearchSessionState,
     page: &[RankedRef],
 ) -> Result<SearchSnapshot> {
-    let results = if state.request.mode == SearchMode::Semantic {
-        let candidates: Vec<semantic::SemanticCandidate> = page
-            .iter()
-            .filter_map(|reference| match reference {
-                RankedRef::Semantic(candidate) => Some(candidate.clone()),
-                RankedRef::Keyword(_) => None,
-            })
-            .collect();
-        semantic::materialize(core, &candidates)?
-    } else {
-        materialize_keyword(core, state, page)?
+    let results = match state.request.mode {
+        SearchMode::Semantic => {
+            let candidates: Vec<semantic::SemanticCandidate> = page
+                .iter()
+                .filter_map(|reference| match reference {
+                    RankedRef::Semantic(candidate) => Some(candidate.clone()),
+                    _ => None,
+                })
+                .collect();
+            semantic::materialize(core, &candidates)?
+        }
+        SearchMode::Hybrid => materialize_hybrid(core, state, page)?,
+        SearchMode::Keyword => materialize_keyword(core, state, page)?,
     };
 
     Ok(SearchSnapshot {
@@ -435,71 +1122,131 @@ fn materialize(
     })
 }
 
-/// 关键词那一路的命中实体化。
+/// 关键词那一路的命中实体化（按传入顺序）。
 fn materialize_keyword(
     core: &Core,
     state: &SearchSessionState,
     page: &[RankedRef],
 ) -> Result<Vec<SearchHit>> {
-    let needle = state.request.query.trim().to_lowercase();
     let refs: Vec<search::DocRef> = page
         .iter()
         .filter_map(|reference| match reference {
             RankedRef::Keyword(doc) => Some(*doc),
-            RankedRef::Semantic(_) => None,
+            _ => None,
         })
         .collect();
-    // 两路分开取：两张表的 doc_id 各自从 1 开始，一条 UNION 就分不清来源。
-    let mut segments: HashMap<search::DocRef, _> = search::load_page(core, &refs)?
+    let needle = state.request.query.trim().to_lowercase();
+    let mut hits = keyword_hits(core, &needle, &refs)?;
+    // 按传入的顺序合并：先后只由排序键决定，不受「哪条 SQL 先返回」影响。
+    Ok(refs.iter().filter_map(|doc| hits.remove(doc)).collect())
+}
+
+/// 混合那一路的命中实体化：一条融合命中只出一条 `SearchHit`。
+///
+/// 两路都有证据时以**关键词那份**为准：它带高亮（正文里哪几个字对上），语义那一路
+/// 本来就没有「哪几个字对上」这回事。关键词那份正文取不到（重提取中间态）时退回
+/// 语义那份，仍然取不到就如实跳过——不编。
+fn materialize_hybrid(
+    core: &Core,
+    state: &SearchSessionState,
+    page: &[RankedRef],
+) -> Result<Vec<SearchHit>> {
+    let needle = state.request.query.trim().to_lowercase();
+    let keyword_refs: Vec<search::DocRef> = page
+        .iter()
+        .filter_map(|reference| match reference {
+            RankedRef::Hybrid(entry) => entry.keyword,
+            _ => None,
+        })
+        .collect();
+    let mut keyword_hits = keyword_hits(core, &needle, &keyword_refs)?;
+
+    let mut results = Vec::with_capacity(page.len());
+    for reference in page {
+        let RankedRef::Hybrid(entry) = reference else {
+            continue;
+        };
+        let mut hit = entry
+            .keyword
+            .and_then(|doc| keyword_hits.remove(&doc))
+            .or_else(|| {
+                entry.semantic.as_ref().and_then(|candidate| {
+                    semantic::materialize(core, std::slice::from_ref(candidate))
+                        .ok()
+                        .and_then(|hits| hits.into_iter().next())
+                })
+            });
+        if let Some(hit) = hit.as_mut() {
+            hit.matched_by.clone_from(&entry.matched_by);
+            results.push(hit.clone());
+        }
+    }
+    Ok(results)
+}
+
+/// 关键词那一路的命中，按 `DocRef` 归位（两张表的 `doc_id` 各自从 1 开始，一条
+/// UNION 就分不清来源，所以分两次取）。返回 `HashMap` 是刻意的：调用方自己按
+/// 传入顺序取用，先后不受「哪条 SQL 先返回」影响。
+fn keyword_hits(
+    core: &Core,
+    needle: &str,
+    refs: &[search::DocRef],
+) -> Result<HashMap<search::DocRef, SearchHit>> {
+    let mut segments: HashMap<search::DocRef, _> = search::load_page(core, refs)?
         .into_iter()
         .map(|row| (row.doc, row))
         .collect();
-    let mut captures: HashMap<search::DocRef, _> = search::load_capture_page(core, &refs)?
+    let mut captures: HashMap<search::DocRef, _> = search::load_capture_page(core, refs)?
         .into_iter()
         .map(|row| (row.doc, row))
         .collect();
 
-    // 按传入的顺序合并：先后只由排序键决定，不受「哪条 SQL 先返回」影响。
-    let mut results = Vec::with_capacity(refs.len());
-    for doc in &refs {
+    let mut hits = HashMap::with_capacity(refs.len());
+    for doc in refs {
         if let Some(row) = segments.remove(doc) {
-            let (snippet, highlights) = snippet_of(&row.text, &needle);
-            results.push(SearchHit {
-                hit_id: row.segment_id.clone(),
-                group_id: row.source_id.clone(),
-                source_kind: SourceKind::from_wire(&row.kind),
-                matched_by: vec![MatchedBy::Keyword],
-                coverage: row.coverage,
-                source_id: Some(row.source_id),
-                revision_id: Some(row.source_revision_id.clone()),
-                day_key: row.day_key,
-                title: row.asset_name,
-                snippet,
-                highlights,
-                locator: Some(row.locator),
-            });
+            let (snippet, highlights) = snippet_of(&row.text, needle);
+            hits.insert(
+                *doc,
+                SearchHit {
+                    hit_id: row.segment_id.clone(),
+                    group_id: row.source_id.clone(),
+                    source_kind: SourceKind::from_wire(&row.kind),
+                    matched_by: vec![MatchedBy::Keyword],
+                    coverage: row.coverage,
+                    source_id: Some(row.source_id),
+                    revision_id: Some(row.source_revision_id.clone()),
+                    day_key: row.day_key,
+                    title: row.asset_name,
+                    snippet,
+                    highlights,
+                    locator: Some(row.locator),
+                },
+            );
         } else if let Some(row) = captures.remove(doc) {
             // 记录文字就是用户自己写的原文：没有原件、没有更细的定位，所以
             // `locator` / `source_id` / `revision_id` / `title` 照实给 None，
             // 覆盖状态是 Complete（没有提取这一步可言）。一段文字天然自成一个组。
-            let (snippet, highlights) = snippet_of(&row.text, &needle);
-            results.push(SearchHit {
-                hit_id: format!("cap_{}", row.capture_id),
-                group_id: row.capture_id,
-                source_kind: SourceKind::Text,
-                matched_by: vec![MatchedBy::Keyword],
-                coverage: Coverage::Complete,
-                source_id: None,
-                revision_id: None,
-                day_key: Some(row.day_key),
-                title: None,
-                snippet,
-                highlights,
-                locator: None,
-            });
+            let (snippet, highlights) = snippet_of(&row.text, needle);
+            hits.insert(
+                *doc,
+                SearchHit {
+                    hit_id: format!("cap_{}", row.capture_id),
+                    group_id: row.capture_id,
+                    source_kind: SourceKind::Text,
+                    matched_by: vec![MatchedBy::Keyword],
+                    coverage: Coverage::Complete,
+                    source_id: None,
+                    revision_id: None,
+                    day_key: Some(row.day_key),
+                    title: None,
+                    snippet,
+                    highlights,
+                    locator: None,
+                },
+            );
         }
     }
-    Ok(results)
+    Ok(hits)
 }
 
 /// 命中附近的摘录与高亮。高亮下标**相对摘录**，不是相对整段正文。
@@ -543,8 +1290,12 @@ fn snippet_of(text: &str, needle: &str) -> (Option<String>, Vec<TextRange>) {
 /// 同日期、同位置时直接比 `doc_id` 的话，片段 1 与记录 1 谁排前面就取决于这个
 /// 撞号的巧合——结果不可复现，测试也会飘。
 ///
-/// 为什么不用「整词命中优先」：那需要在候选阶段为每一行查一次词表，代价随候选数
-/// 线性增长；这一片先把可解释的排序做出来，等混合检索带分数进来再一起做。
+/// 最后一项 `doc_id` 是**库内**顺序，跨库不稳定。混合检索读这个键时只用前三项
+/// （日期、位置、家族）判并列，见 `hybrid_search` 里的同名次；跨库稳定交给融合
+/// 自己的内容哈希。纯关键词那一路仍按此键排（这条口径没变）。
+///
+/// 「整词命中优先」仍然没做：那需要在候选阶段为每一行查一次词表，代价随候选数
+/// 线性增长；混合检索的分数来自 RRF 名次，不来自关键词侧的整词匹配。
 pub(crate) fn sort_key(row: &search::RankedMatch) -> (i64, i64, i64, i64) {
     // 没有 day_key 的排最后（用很小的负数代表「很旧」）。
     let day = row
@@ -571,6 +1322,12 @@ impl Core {
     pub(crate) fn search_sessions_mut(&mut self) -> &mut HashMap<String, SearchSessionState> {
         &mut self.search_sessions
     }
+
+    /// 混合检索的语义证据门槛。产品路径用 `HYBRID_SEMANTIC_MIN_SCORE`；
+    /// 量测/测试可以改（见 `set_hybrid_min_score_for_test`）。
+    pub(crate) fn hybrid_min_score(&self) -> f32 {
+        self.hybrid_min_score
+    }
 }
 
 /// 过滤条件转成 SQL 参数；这里只做类型检查，不做语义解释。
@@ -595,4 +1352,41 @@ pub(crate) fn filters_to_params(filters: &SearchFilters) -> Result<(Option<Strin
         None => None,
     };
     Ok((kinds, scope))
+}
+
+#[cfg(test)]
+mod rank_tests {
+    use super::next_group_rank;
+
+    /// 评审在 #60 上给的场景：第一篇占 5 个命中片段、紧随的第二篇只有 1 个。
+    /// 按篇给名次 ⇒ 名次是 1、2；按文档位置 ⇒ 第二篇会变成 6（它的融合分就取决于
+    /// 前一篇被切成几段）。
+    #[test]
+    fn ranks_follow_folded_pieces_not_document_positions() {
+        let mut kept = 0;
+        let mut group_rank = 0;
+        let mut ranks = Vec::new();
+        // 第一篇的 5 个片段：前缀各不相同（不是同名次），但都属于同一篇 ⇒ 只有第 1 个被保留。
+        for _ in 0..5 {
+            let first_of_group = kept == 0;
+            if first_of_group {
+                kept += 1;
+                group_rank = next_group_rank(kept - 1, false, group_rank);
+                ranks.push(group_rank);
+            }
+        }
+        // 第二篇：1 个片段 ⇒ 名次必须是 2，而不是 6。
+        kept += 1;
+        ranks.push(next_group_rank(kept - 1, false, group_rank));
+        assert_eq!(ranks, vec![1, 2], "名次按折叠后的篇数走");
+    }
+
+    /// 同名次（competition ranking）：日期/出现位置/家族三项都相同的相邻篇共享名次，
+    /// 下一档从「已保留篇数 + 1」继续。
+    #[test]
+    fn tied_pieces_share_a_rank_and_next_starts_after_them() {
+        assert_eq!(next_group_rank(0, false, 0), 1);
+        assert_eq!(next_group_rank(1, true, 1), 1, "并列第二篇沿用第一档");
+        assert_eq!(next_group_rank(2, false, 1), 3, "并列结束后从已保留篇数 + 1 继续");
+    }
 }
