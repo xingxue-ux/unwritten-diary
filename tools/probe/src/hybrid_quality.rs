@@ -77,7 +77,9 @@ pub fn run() -> Result<()> {
     );
     println!(
         "  阶段（#69）：start_search 先给 keyword_ready（只关键词那一路），\
-         upgrade_search_to_hybrid 再给 hybrid_ready（融合 + 重排后，量的是这一份）"
+         upgrade_search_to_hybrid 再给 hybrid_ready（融合 + 重排后，量的是这一份）；\
+         语义候选全被门槛滤掉时按 #60 复审**不融合**，升级返回的仍是关键词那份快照、\
+         阶段仍是 keyword_ready（这一类查询量的就是关键词结果）"
     );
 
     let thresholds = scan_thresholds();
@@ -186,7 +188,8 @@ impl Scores {
 ///
 /// 混合（#69）走**两步**：`start_search` 先给关键词首屏，`upgrade_search_to_hybrid`
 /// 再融合；量测读的是**融合后**的那份快照（否则量的就不是混合了），同时把两步的
-/// 耗时都记下来。
+/// 耗时都记下来。语义候选全被门槛滤掉时升级**不融合**（#60 复审），那份快照就是
+/// 关键词结果、阶段是 `keyword_ready`——量测对这类查询量到的也是关键词结果。
 fn run_case(
     core: &mut Core,
     case: &Case,

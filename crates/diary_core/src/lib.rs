@@ -903,10 +903,12 @@ impl Core {
     /// 模型）；这里才真正做 RRF 融合，返回**同一会话**的 `hybrid_ready` 快照。升级后
     /// 翻页给融合结果，翻完报 `done`。**幂等**：重复调用返回当前快照，不重复算。
     ///
-    /// 语义拿不出可融合的证据（没配模型 / 加载失败 / 没有生效代次 / 没有块）时
-    /// **不声称** `hybrid_ready`：如实返回关键词结果、阶段仍是 `keyword_ready`，
-    /// 并在 `warnings` 里说明。已取消的会话返回 `cancelled` 快照；索引变了报
-    /// `search_expired`；非混合会话报 `invalid_state`。
+    /// 语义拿不出可融合的证据时**不声称** `hybrid_ready`：没配模型 / 加载失败 /
+    /// 没有生效代次 / 没有块（`Unavailable`），或语义可用但候选全被证据门槛
+    /// `HYBRID_SEMANTIC_MIN_SCORE` 滤掉、查询是空的（`NoEvidence`），都如实返回
+    /// **关键词那份快照**、阶段仍是 `keyword_ready`，并在 `warnings` 里说明。已取消的
+    /// 会话返回 `cancelled` 快照；索引变了报 `search_expired`；非混合会话报
+    /// `invalid_state`。
     pub fn upgrade_search_to_hybrid(&mut self, session_id: &str) -> Result<SearchSnapshot> {
         search_session::upgrade(self, session_id)
     }

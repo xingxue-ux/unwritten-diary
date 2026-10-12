@@ -26,7 +26,8 @@
 //!   报 `hybrid_ready`。两路各取**篇**为单位的前 `RRF_CANDIDATE_DEPTH` 条，
 //!   `score = Σ 1/(RRF_K + rank)`，相关度优先、同档按时间降序、再按**内容决定**的键
 //!   （正文哈希，不用任何 UUID）。语义未就绪时**退化为关键词并在 `warnings` 里明说**，
-//!   不静默；升级这一步也**绝不**在没有语义证据时假装融合过。
+//!   不静默；升级这一步也**绝不**在没有语义证据时假装融合过——模型不可用、候选全被
+//!   证据门槛滤掉、查询是空的，一律保留关键词快照与 `keyword_ready`。
 
 use std::collections::{HashMap, HashSet};
 
@@ -133,14 +134,20 @@ struct FusedCandidate {
 }
 
 /// 混合会话「升级」到哪一步了（#69）。阶段值不是装饰：只有真的融合过（`Fused`）
-/// 才允许报 `hybrid_ready` / `done`，其余两种必须如实停在 `keyword_ready`。
+/// 才允许报 `hybrid_ready` / `done`，其余三种必须如实停在 `keyword_ready`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HybridUpgrade {
     /// 还只算了关键词那一路：`start_search(mode = hybrid)` 之后的默认态。
     Pending,
-    /// 语义这一路拿不出**可融合的证据**（没配模型 / 加载失败 / 没有生效代次 / 没有块）：
-    /// 升不了级，继续如实报关键词结果与 `keyword_ready`，并在 `warnings` 里说明。
+    /// 语义这一路**不可用**（没配模型 / 加载失败 / 没有生效代次 / 没有块）：升不了级，
+    /// 继续如实报关键词结果与 `keyword_ready`，并在 `warnings` 里说明。
     Unavailable,
+    /// 语义**可用**（代次在、块在、模型可用），但这一路拿不出**可融合的证据**：候选全被
+    /// `HYBRID_SEMANTIC_MIN_SCORE` 滤掉，或查询是空的、一条候选都没有。这种「尝试过升级、
+    /// 但没有东西可融合」同样不许假装融合过——保留关键词那份快照与 `keyword_ready`，
+    /// 原因写进 `warnings`。与 `Unavailable` 分开记，是为了让「语义不可用」与「语义没有
+    /// 可融合的证据」在会话状态里也能分开审计。
+    NoEvidence,
     /// 已经融合过：结果是融合 + 重排后的列表；再升级返回同一份快照，不重复算。
     Fused,
 }
@@ -505,14 +512,18 @@ fn keyword_groups(
 /// 同篇相加 → 按 `score DESC → day_key DESC → 内容哈希 ASC` 排序。
 ///
 /// 覆盖状态那两句 warning 在 `hybrid_start` 已经说过一次，这里只说融合这一步才能
-/// 知道的事（语义低于门槛 / 两路都空）。只有真的走到这里，会话才允许报 `hybrid_ready`。
+/// 知道的事（语义低于门槛 / 两路都空）。
+///
+/// 返回 `None` 表示**语义这一路拿不出可融合的证据**（候选全被门槛滤掉，或一条候选都
+/// 没有）：这时**不融合**，调用方必须保留关键词那份快照与 `keyword_ready`——只有真的
+/// 融合过（返回 `Some`）会话才允许报 `hybrid_ready`。为什么没融合由这里写进 `warnings`。
 fn fuse_hybrid(
     core: &Core,
     embedder: &dyn Embedder,
     needle: &str,
     filters: &SearchFilters,
     warnings: &mut Vec<String>,
-) -> Result<Vec<RankedRef>> {
+) -> Result<Option<Vec<RankedRef>>> {
     // —— 关键词那一路：按篇折叠 → 截断 → 名次 ——
     let keyword_groups = keyword_groups(core, needle, filters)?;
 
@@ -523,6 +534,7 @@ fn fuse_hybrid(
     semantic_candidates.retain(|candidate| candidate.score >= min_score);
     semantic_candidates.truncate(RRF_CANDIDATE_DEPTH);
     if semantic_candidates.is_empty() {
+        // 与 #51 一样的说明，一字不改：这一路没有贡献结果。区别只是**不再继续融合**。
         match top_score {
             Some(top) => warnings.push(format!(
                 "语义一路最像的内容相似度 {top:.3}，低于证据门槛 {min_score:.2}，\
@@ -530,6 +542,10 @@ fn fuse_hybrid(
             )),
             None => warnings.push("语义检索没有找到相近的内容".to_owned()),
         }
+        if keyword_groups.is_empty() {
+            warnings.push("两路都没有达到证据门槛的内容，这次没有结果".to_owned());
+        }
+        return Ok(None);
     }
 
     // —— 融合：同篇相加 RRF 分 ——
@@ -586,33 +602,38 @@ fn fuse_hybrid(
             .then_with(|| left.group_id.cmp(&right.group_id))
     });
 
-    if fused.is_empty() {
-        warnings.push("两路都没有达到证据门槛的内容，这次没有结果".to_owned());
-    }
+    // 走到这里语义候选非空，融合结果必然非空（语义独有那些篇也会进来）。
+    debug_assert!(!fused.is_empty());
 
-    Ok(fused
-        .into_iter()
-        .map(|entry| {
-            let matched_by = entry.matched_by();
-            RankedRef::Hybrid(HybridHit {
-                keyword: entry.keyword,
-                semantic: entry.semantic,
-                matched_by,
+    Ok(Some(
+        fused
+            .into_iter()
+            .map(|entry| {
+                let matched_by = entry.matched_by();
+                RankedRef::Hybrid(HybridHit {
+                    keyword: entry.keyword,
+                    semantic: entry.semantic,
+                    matched_by,
+                })
             })
-        })
-        .collect())
+            .collect(),
+    ))
 }
 
 /// 把混合会话从关键词阶段升级到融合阶段（#69）。
 ///
 /// - **同一会话**：沿用 `sessionId` / `queryRevision` / 游标机制，不新造一套；
-/// - **幂等**：已经融合过（或已经确认升不了级）就不再算，返回当前快照；
+/// - **幂等**：已经融合过（`Fused`）、已经确认升不了级（`Unavailable`）或已经确认没有
+///   可融合的证据（`NoEvidence`）就不再算，返回当前快照；
 /// - 升级后**从头**给融合结果：融合改变了顺序，原来「第几页」已经没有意义，所以
 ///   游标重置为融合后第一章的游标，并**递增结果代次**——升级前发出的**所有**显式
 ///   游标（含第一页那个与融合后第一页偏移相同的）都会 `cursor_expired`，而不是悄悄
 ///   按新顺序返回一段对不上的结果；
-/// - 语义拿不出**可融合的证据**时**不声称** `hybrid_ready`：如实返回关键词结果、
-///   阶段仍是 `keyword_ready`，并在 `warnings` 里说明「没有可融合的语义证据」；
+/// - 语义拿不出**可融合的证据**时**不声称** `hybrid_ready`，两种情形分开记：
+///   **不可用**（没配模型 / 加载失败 / 没有生效代次 / 没有块）与**可用但没有可融合的
+///   证据**（候选全被 `HYBRID_SEMANTIC_MIN_SCORE` 滤掉；查询是空的、一条候选都没有）。
+///   两者都如实返回**关键词那份快照**、阶段仍是 `keyword_ready`，并把原因写进
+///   `warnings`；结果集没换，代次不递增；
 /// - 已取消的会话**不融合**：返回 `cancelled` 快照（取消就是取消）；
 /// - 索引变了 / 会话不存在：`search_expired`；非混合会话：`invalid_state`。
 pub(crate) fn upgrade(core: &mut Core, session_id: &str) -> Result<SearchSnapshot> {
@@ -645,17 +666,16 @@ pub(crate) fn upgrade(core: &mut Core, session_id: &str) -> Result<SearchSnapsho
 
         let needle = state.request.query.trim().to_lowercase();
         if needle.is_empty() {
-            // 空查询没有「语义证据」可谈：融合本身没什么可算的。但**语义不可用时也
-            // 不假装融合过**——阶段如实停在 `keyword_ready`（与所有退化情形同一个口径）。
+            // 空查询没有「语义证据」可谈：融合本身没什么可算的。**语义不可用**与
+            // **语义可用但没有可融合的证据**都不假装融合过——阶段如实停在
+            // `keyword_ready`（与所有退化情形同一个口径）。
             return match hybrid_evidence(core)? {
                 Some(reason) => mark_unavailable(core, &mut state, reason),
-                None => {
-                    // 空查询：结果集本来就是空的，升级只是把阶段推到 Fused。这一代
-                    // 从未发出过游标（空结果不给游标），所以没必要递增代次。
-                    state.hybrid_upgrade = HybridUpgrade::Fused;
-                    state.phase = SearchPhase::HybridReady;
-                    materialize(core, &state, &state.last_page)
-                }
+                None => mark_no_evidence(
+                    core,
+                    &mut state,
+                    Some("查询是空的，两路都没有可融合的证据".to_owned()),
+                ),
             };
         }
 
@@ -673,6 +693,12 @@ pub(crate) fn upgrade(core: &mut Core, session_id: &str) -> Result<SearchSnapsho
         let mut warnings = state.warnings.clone();
         let fused = fuse_hybrid(core, &*embedder, &needle, &state.request.filters, &mut warnings)?;
         state.warnings = warnings;
+        let Some(fused) = fused else {
+            // 语义**可用**，但候选全被证据门槛滤掉（或一条候选都没有）：不融合。
+            // 保留关键词那份快照与 `keyword_ready`，原因已在 `fuse_hybrid` 写进
+            // `warnings`。结果集没有换，所以代次不递增。
+            return mark_no_evidence(core, &mut state, None);
+        };
         state.ordered = fused;
         // 结果集被替换 → 代次递增。**所有**升级前发出的游标（哪怕第一页那个的偏移
         // 与融合后第一页相同）从这里起都作废。幂等的重复调用在上面就短路了，走不到
@@ -710,6 +736,28 @@ fn mark_unavailable(
         "升级到混合检索没有可融合的语义证据：{reason}；阶段保持 keyword_ready，\
          结果仍只有关键词那一路（没有假装 hybrid_ready）"
     ));
+    materialize(core, state, &state.last_page)
+}
+
+/// 尝试过升级，但语义这一路拿不出**可融合的证据**（候选全被门槛滤掉 / 查询是空的）：
+/// **不融合**——保留关键词那份快照，阶段如实停在 `keyword_ready`。为什么没融合由
+/// `fuse_hybrid` 或调用方写进 `warnings`（`reason` 只在 `fuse_hybrid` 没写过时补一句）。
+///
+/// 结果集没有被替换，所以**代次不递增**：升级前发出的游标继续可用（与融合路径相反）。
+/// 只写一次原因——幂等的重复调用走 `hybrid_upgrade != Pending` 的短路。
+fn mark_no_evidence(
+    core: &Core,
+    state: &mut SearchSessionState,
+    reason: Option<String>,
+) -> Result<SearchSnapshot> {
+    state.hybrid_upgrade = HybridUpgrade::NoEvidence;
+    state.phase = SearchPhase::KeywordReady;
+    if let Some(reason) = reason {
+        state.warnings.push(format!(
+            "升级没有融合：{reason}；阶段保持 keyword_ready，结果仍只有关键词那一路\
+             （没有假装 hybrid_ready）"
+        ));
+    }
     materialize(core, state, &state.last_page)
 }
 
@@ -953,7 +1001,9 @@ fn phase_after_page(state: &SearchSessionState, is_last_page: bool) -> SearchPha
                     SearchPhase::HybridReady
                 }
             }
-            HybridUpgrade::Pending | HybridUpgrade::Unavailable => SearchPhase::KeywordReady,
+            HybridUpgrade::Pending | HybridUpgrade::Unavailable | HybridUpgrade::NoEvidence => {
+                SearchPhase::KeywordReady
+            }
         },
     }
 }
