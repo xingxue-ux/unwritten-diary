@@ -33,6 +33,11 @@ class CaptureController extends ChangeNotifier {
   String? error;
   SavePhase phase = SavePhase.ready;
   List<Capture> recent = const [];
+  String? _nextCursor;
+  bool loadingMore = false;
+  String? loadMoreError;
+
+  bool get hasMore => _nextCursor != null;
 
   bool get canChangeDate =>
       _draft == null && _createOperationId == null && _finishing == null;
@@ -88,7 +93,35 @@ class CaptureController extends ChangeNotifier {
     final page = await api.listCaptures(pageSize: 20);
     if (_disposed) return;
     recent = page.captures;
+    _nextCursor = page.nextCursor;
+    loadMoreError = null;
     _notify();
+  }
+
+  Future<void> loadMore() async {
+    final cursor = _nextCursor;
+    if (_disposed || loadingMore || cursor == null) return;
+    loadingMore = true;
+    loadMoreError = null;
+    _notify();
+    try {
+      final page = await api.listCaptures(cursor: cursor, pageSize: 20);
+      if (_disposed) return;
+      final seen = recent.map((capture) => capture.id).toSet();
+      recent = [
+        ...recent,
+        ...page.captures.where((capture) => seen.add(capture.id)),
+      ];
+      _nextCursor = page.nextCursor;
+    } catch (failure) {
+      if (_disposed) return;
+      loadMoreError = _message(failure);
+    } finally {
+      if (!_disposed) {
+        loadingMore = false;
+        _notify();
+      }
+    }
   }
 
   void updateText(String value) {
@@ -275,12 +308,9 @@ class CaptureController extends ChangeNotifier {
   String _message(Object failure) {
     if (failure is! DiaryException) return '这次操作没有完成，请稍后重试。';
     return switch (failure.code) {
-      DiaryErrorCode.revisionConflict =>
-        '记录版本冲突。文字还在这里，请先复制，再重新打开应用。',
-      DiaryErrorCode.idempotencyConflict =>
-        '重复操作发生冲突。文字还在这里，请先复制，再重新打开应用。',
-      DiaryErrorCode.invalidState =>
-        '这条记录的状态已变化。文字还在这里，请先复制，再重新打开应用。',
+      DiaryErrorCode.revisionConflict => '记录版本冲突。文字还在这里，请先复制，再重新打开应用。',
+      DiaryErrorCode.idempotencyConflict => '重复操作发生冲突。文字还在这里，请先复制，再重新打开应用。',
+      DiaryErrorCode.invalidState => '这条记录的状态已变化。文字还在这里，请先复制，再重新打开应用。',
       _ => failure.message,
     };
   }
