@@ -144,7 +144,7 @@ void main() {
       expect(await finish, isTrue);
       expect(await firstSave, isTrue);
       expect(api.calls.map((call) => call.text), ['A', 'AB']);
-      expect(api.calls.map((call) => call.revision), [0, 1]);
+      expect(api.calls.map((call) => call.revision), [1, 2]); // 新建 1，每次成功写入 +1
       expect(api.commits, 1);
       expect((await api.listCaptures()).captures.single.draftText, 'AB');
       controller.dispose();
@@ -162,7 +162,7 @@ void main() {
     expect(api.calls, hasLength(2));
     expect(api.calls[1].operationId, api.calls[0].operationId);
     expect(api.calls[1].revision, api.calls[0].revision);
-    expect((await api.listCaptures()).captures.single.revision, 1);
+    expect((await api.listCaptures()).captures.single.revision, 2);
     controller.dispose();
   });
 

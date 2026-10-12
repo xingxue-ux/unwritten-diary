@@ -141,3 +141,73 @@ revert 救不了的两类事故：
 - **密钥泄露**：revert 不会把内容从历史里移除。正确顺序是先轮换密钥，再通知另一人重新 clone，最后才考虑重写历史（需要临时放开分支保护，代价很大）。仓库已开启 secret scanning 与 push protection，目标是在推送前就拦下。
 
 出事后先在 issue 里记录时间线、影响范围和当前状态，再动手。不要把"回滚了"当成"修好了"。
+## 10. 本机环境与常见坑
+
+这一节只写**这台开发机（Windows + WSL2）上反复踩到、且症状不像自己原因**的坑。每条都给出症状与处理，省掉重新排查的时间。
+
+### 10.1 「真机」的口径
+
+- **日常开发用 x86_64 模拟器当真机替身**：功能、交互、崩溃、权限、日志都按真机标准走，并留证据（截图 + `logcat`）。
+- **arm64 镜像在这台机器上跑不了**：现代 Android Emulator 拒绝跨架构，实测直接启动失败——
+  `FATAL | Avd's CPU Architecture 'arm64' is not supported by the QEMU2 emulator on x86_64 host.`
+  所以 arm64 的**运行**行为（`.so` 加载、ORT 退出、真实延迟/内存/耗电）在这台机器上无法自动化验证。
+- **真机验收留到开发完成后人工走一遍**，清单见 issue「安卓真机人工验收清单」。
+- 模拟器数字**不能当性能基线**，只能用于「同一台机器上 A 比 B 快」这类相对比较；PR 里必须按 CONTRIBUTING 第 8 节分别标明验证范围。
+
+### 10.2 安卓构建失败：Gradle **不读**环境变量里的代理
+
+**症状**：`flutter build apk` 报 `Could not resolve com.android.tools.build:gradle` 或
+`Could not HEAD 'https://dl.google.com/dl/android/maven2/...'`，而且**要等十来分钟才失败**（一直在重试）。
+
+**原因**：JVM 不认 `http_proxy`/`https_proxy`；`GRADLE_OPTS` 传给 Flutter 起的 Gradle 也不生效。本机直连不通、只有本地代理可用。
+
+**处理**：写进 Gradle 自己的配置（`~/.gradle/gradle.properties`），然后**重启 Gradle 守护进程**：
+
+```properties
+systemProp.http.proxyHost=127.0.0.1
+systemProp.http.proxyPort=7890
+systemProp.https.proxyHost=127.0.0.1
+systemProp.https.proxyPort=7890
+systemProp.http.nonProxyHosts=localhost|127.0.0.1
+```
+
+```bash
+pkill -f "[G]radleDaemon"   # 见下：方括号不能省
+```
+
+**注意**：必须写成 `[G]radleDaemon`。写成 `"GradleDaemon"` 时，`pkill -f` 会把**执行这条命令的 shell 自己**也匹配上（它的命令行里含这个字符串），于是任务被无声地 SIGTERM 掉——看起来像「命令跑着跑着没了」。
+
+首次安卓构建还会顺带下载 SDK Platform 与 Gradle 依赖，慢是正常的。
+
+### 10.3 编译报 `Cannot allocate memory (os error 12)`
+
+**症状**：编 Android 目标时 `failed to build archive at .../*.rlib: Cannot allocate memory`，看起来像代码或工具链问题。
+
+**原因**：内存压力。模拟器 + Gradle 守护进程 + 多个 cargo 构建同时占着，`available` 可能只剩几 GB。
+
+**处理**：先 `pkill -f "[G]radleDaemon"` 放掉守护进程，再用 `-j 2` 降低并行度重编。
+
+### 10.4 `.so` 与 Dart 的 frb 绑定**必须同源**
+
+**症状**：应用装上去启动就失败；底层异常是
+
+```
+StateError: Bad state: Content hash on Dart side (…) is different from Rust side (…),
+indicating out-of-sync code.
+```
+
+**原因**：`flutter_rust_bridge` 对 Dart 侧与 Rust 侧做内容哈希校验。**混用不同提交的构建产物**（例如拿了另一条分支编的 `.so` 塞进当前分支的 APK）就会触发。
+
+**规则**：`cargo ndk ... -p diary_bridge` 与 `flutter build` 必须在**同一个提交**上做。重新生成桥接代码时，生成命令与产物要放在同一个 PR 里（第 4 节已要求）。
+
+### 10.5 WSL2 挂载盘（`/mnt/e`）上的偶发失败与本机工具链怪癖
+
+这些**不是代码问题**，判断标准是「换到 ext4 就稳定」：
+
+- **全量 `cargo test` 偶发某个测试二进制段错误**：把产物目录放到 ext4 再跑，例如
+  `CARGO_TARGET_DIR=/tmp/diary-target cargo test --workspace`。单独跑那个测试通过、放到 ext4 连跑多次通过，就说明是挂载盘的问题。
+- **`flutter analyze --fatal-infos` 偶发以 255 退出**并报 `FormatException: Unexpected end of input`（解析分析器 JSON 时崩）。以 CI 的 `flutter` 检查为准，本机重跑一次即可。
+- **`NO_PROXY` 里带 `[::1]`** 会让 Python 的 httpx 报 `Invalid port: ':1]'`。跑 Python 工具时显式覆盖：
+  `NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost python3 …`。
+
+**通用原则**：本机失败先看「是不是挂载盘/工具链」，再怀疑改动；但**不要把本机通过当验收**——最终以 CI 与（开发完成后的）真机为准。

@@ -71,6 +71,9 @@ void main() {
     );
     expect(draft.state, CaptureState.draft);
     expect(draft.dayKey, '2026-09-27');
+      // 契约：新建记录的 revision 从 1 开始，此后每次成功写入 +1（issue #43）。
+      // 这一条钉住「真核心」那一侧；mock 那一侧由 packages/diary_mock 的测试钉住。
+      expect(draft.revision, 1, reason: '新建记录的 revision 必须是 1（契约）');
 
     final saved = await session.saveDraft(
       captureId: draft.id,
@@ -79,6 +82,7 @@ void main() {
       operationId: 'op-save',
     );
     expect(saved.durable, isTrue);
+      expect(saved.revision, 2, reason: '一次成功写入 +1');
 
     final committed = await session.commit(
       captureId: draft.id,
