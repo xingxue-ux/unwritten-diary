@@ -512,8 +512,14 @@ class IndexStatus {
   /// 建索引时用的分词器版本；与库里行不一致的片段或记录文字会被算成待重建。
   final String tokenizerVersion;
 
-  /// 语义索引用的模型版本：**生效代次那一批** `chunk_vectors.model_version`
-  /// （含模型文件的 sha256 前缀）。没有生效代次时是 `None`——那是库里的真值。
+  /// 语义索引用的模型版本：**生效代次**里所有向量共有的那个 `chunk_vectors.model_version`
+  /// （含模型文件的 sha256 前缀）。
+  ///
+  /// 三种情况是 `None`：还没有生效代次；生效代次里一行向量都没有；生效代次里混了
+  /// **不止一种**模型版本（历史遗留的混合代次）——后一种没有单一版本可报，此时
+  /// `semantic_index_ready` 为 `false`，`reasons` 里会点名口径不一致并提示重建。
+  /// 正常操作（`build_semantic_index`）不会再产出混合代次：续跑前核对口径，
+  /// 不一致就整代废弃按当前模型重算。
   final String? modelVersion;
 
   /// 切块规则版本（`chunker::CHUNKER_VERSION`）。

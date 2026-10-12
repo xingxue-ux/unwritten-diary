@@ -45,9 +45,19 @@ struct StubEmbedder {
 
 impl StubEmbedder {
     fn new(model_version: &str, counters: &Arc<Counters>, rules: Vec<(&'static str, Vec<f32>)>) -> Self {
+        Self::with_dims(model_version, 512, counters, rules)
+    }
+
+    /// 指定维度的桩：用来构造「换个模型连维度都不同」的场景（回归 #58）。
+    fn with_dims(
+        model_version: &str,
+        dims: usize,
+        counters: &Arc<Counters>,
+        rules: Vec<(&'static str, Vec<f32>)>,
+    ) -> Self {
         Self {
             model_version: model_version.to_owned(),
-            dims: 512,
+            dims,
             counters: Arc::clone(counters),
             rules,
         }
@@ -89,7 +99,12 @@ impl Embedder for StubEmbedder {
 
 /// 512 维的单位向量：只有第 `index` 位是 1。
 fn unit(index: usize) -> Vec<f32> {
-    let mut vector = vec![0_f32; 512];
+    unit_in(512, index)
+}
+
+/// 任意维度的单位向量（`index` 必须小于 `dims`）。
+fn unit_in(dims: usize, index: usize) -> Vec<f32> {
+    let mut vector = vec![0_f32; dims];
     vector[index] = 1.0;
     vector
 }
@@ -517,11 +532,18 @@ fn an_interrupted_generation_resumes_without_activating_half_a_build() {
     assert_eq!(status.embedded_chunks, 2, "旧代次还在服务");
     assert!(status.semantic_index_ready);
 
+    // 同口径续跑**不白重算**：用 embed 调用次数钉住（口径核对不能把续跑变成全量重算）。
+    let calls_before = counters.documents.load(Ordering::SeqCst);
     let report = core.build_semantic_index(None).unwrap();
     assert_eq!(report.generation, 2, "从留下的 building_generation 续跑");
     assert_eq!(report.reused_chunks, 1, "另一块从上一代复制");
     assert_eq!(report.resumed_chunks, 1, "中断前写好的那一块算「续上」");
     assert_eq!(report.embedded_chunks, 0, "没有一块需要重算");
+    assert_eq!(
+        counters.documents.load(Ordering::SeqCst),
+        calls_before,
+        "同口径续跑一次模型都不该调：续上的块沿用、没变的块复用"
+    );
     let conn = open(&path);
     let (active, building): (Option<i64>, Option<i64>) = conn
         .query_row(
@@ -532,6 +554,290 @@ fn an_interrupted_generation_resumes_without_activating_half_a_build() {
         .unwrap();
     assert_eq!((active, building), (Some(2), None));
     assert!(core.index_status(None).unwrap().semantic_index_ready);
+}
+
+/// 回归（评审在 #58 上指出的）：**中断 → 换模型 → 续跑不能混用不同模型的向量**。
+///
+/// 场景：模型 A 只写了一部分 `building_generation` 向量就中断 → 换成模型 B
+/// （`model_version` 与 `dims` 都不同）再调 `build_semantic_index`。
+///
+/// 修复前：A 的半成品被 `missing_chunks` 当成「已完成」，只有剩下的块由 B 补算，
+/// 最后切出一个**混合代次**——搜索把两个模型空间的向量放在一起打分，
+/// `index_status.model_version` 也只挑其中一行报出去。
+///
+/// 修复后：续跑前核对口径，只要有一条与当前嵌入器不一致就整代清理、按 B 从零重算。
+#[test]
+fn switching_models_mid_build_discards_the_half_built_generation() {
+    const A_VERSION: &str = "stub-embedder@aaaaaaaaaaaa";
+    const B_VERSION: &str = "stub-embedder@bbbbbbbbbbbb";
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    // A：512 维，把两篇正文都映到 e0，先建出一代生效向量。
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        A_VERSION,
+        512,
+        &counters,
+        vec![("苹果", unit(0)), ("香蕉", unit(0))],
+    )));
+    let apple = write_capture(&mut core, at(2026, 9, 20), "苹果很甜。", "opA");
+    let banana = write_capture(&mut core, at(2026, 9, 21), "香蕉也甜。", "opB");
+    let first = core.build_semantic_index(None).unwrap();
+    assert_eq!(first.embedded_chunks, 2, "前提：A 先建好一代");
+
+    // 模拟「A 在第 2 代里只写了苹果那一块就中断了」。
+    {
+        let conn = open(&path);
+        let chunk_id: String = conn
+            .query_row(
+                "SELECT chunk_id FROM text_chunks WHERE text LIKE '%苹果%' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, storage, \
+                                        vector, created_at) \
+             VALUES (?1, 2, ?2, 512, 'f32', zeroblob(2048), '2026-10-10T00:00:00.000Z')",
+            params![chunk_id, A_VERSION],
+        )
+        .unwrap();
+        conn.execute("UPDATE index_meta SET building_generation = 2", [])
+            .unwrap();
+    }
+    // 中断期间生效代次还是 A 的第 1 代。
+    let interrupted = core.index_status(None).unwrap();
+    assert_eq!(interrupted.model_version.as_deref(), Some(A_VERSION));
+
+    // 换成 B：model_version 与 dims（384）都不同。
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        B_VERSION,
+        384,
+        &counters,
+        vec![("苹果", unit_in(384, 5)), ("香蕉", unit_in(384, 5))],
+    )));
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.generation, 2, "代次号继续用，但内容按 B 从头来");
+    assert_eq!(report.reused_chunks, 0, "A 的向量口径不一致，一条都不复用");
+    assert_eq!(report.embedded_chunks, 2, "两块都按 B 重算");
+    assert_eq!(report.resumed_chunks, 0, "A 的半成品被丢弃，一点都没「续上」");
+
+    let conn = open(&path);
+    let (active, building): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT active_generation, building_generation FROM index_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((active, building), (Some(2), None));
+    // 生效代次里没有任何 A 的向量。
+    assert_eq!(
+        count(
+            &conn,
+            &format!("SELECT COUNT(*) FROM chunk_vectors WHERE model_version = '{A_VERSION}'"),
+            "chunk_vectors",
+        ),
+        0,
+        "A 的半成品必须一行不剩（否则统计与搜索还会撞上旧模型空间）"
+    );
+    // 整代口径完全一致，且等于 B。
+    let (distinct_versions, distinct_dims, distinct_storages): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT model_version), COUNT(DISTINCT dims), COUNT(DISTINCT storage) \
+             FROM chunk_vectors WHERE generation = 2",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (distinct_versions, distinct_dims, distinct_storages),
+        (1, 1, 1),
+        "生效代次里 model_version / dims / storage 都必须只有一种口径"
+    );
+    let caliber: (String, i64, String) = conn
+        .query_row(
+            "SELECT model_version, dims, storage FROM chunk_vectors WHERE generation = 2 LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(caliber, (B_VERSION.to_owned(), 384, "f32".to_owned()));
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM chunk_vectors", "chunk_vectors"),
+        2,
+        "A 的旧代次与半成品都清掉了，只剩 B 这一代"
+    );
+    drop(conn);
+
+    // 状态报的是 B：不是 A，也不是「混合」这种含糊值。
+    let status = core.index_status(None).unwrap();
+    assert_eq!(
+        status.model_version.as_deref(),
+        Some(B_VERSION),
+        "index_status 要报整代一致的那个版本"
+    );
+    assert!(status.semantic_index_ready, "整代口径一致、覆盖全部块");
+
+    // 搜索只在 B 的空间里打分：两篇正文都被 B 映到 e5（384 维），查询也是 e5，
+    // 所以两条的相似度都必须是 1.0。修复前苹果那一块留着 A 的 512 维 zeroblob，
+    // 与 384 维查询余弦为 0（不同空间硬算），这里就会红。
+    let ranking = core
+        .semantic_ranking("苹果", &SearchFilters::default())
+        .unwrap();
+    let score_of = |group: &str| {
+        ranking
+            .iter()
+            .find(|(candidate, _)| candidate.as_str() == group)
+            .map(|(_, score)| *score)
+            .unwrap_or_else(|| panic!("{group} 不在结果里：{ranking:?}"))
+    };
+    assert!(
+        (score_of(&apple) - 1.0).abs() < 1e-6,
+        "苹果那一块必须是 B 空间里的向量（修复前是 A 的，得分 0）：{ranking:?}"
+    );
+    assert!(
+        (score_of(&banana) - 1.0).abs() < 1e-6,
+        "香蕉那一块也要落在 B 空间：{ranking:?}"
+    );
+}
+
+/// 回归（评审在 #58 上指出的）：**半个代次的存储格式与当前不一致时，同样整代废弃重算**。
+///
+/// `storage` 是「一套口径」的第三个字段。将来从 f32 换成 int8 时，中断留下的 f32 半成品
+/// 若被当成「已完成」，切出来的代次里就会混着两种编码——搜索读到不认识的 `storage`
+/// 会直接报 `CorruptedData`。这条钉住「换存储格式也当换口径」。
+#[test]
+fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    // 模拟「上一轮开到第 2 代、用另一种存储格式写了一块就中断」。
+    {
+        let conn = open(&path);
+        let chunk_id: String = conn
+            .query_row(
+                "SELECT chunk_id FROM text_chunks ORDER BY day_key LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, storage, \
+                                        vector, created_at) \
+             VALUES (?1, 2, 'stub-embedder@000000000000', 512, 'i8', zeroblob(2048), \
+                     '2026-10-10T00:00:00.000Z')",
+            params![chunk_id],
+        )
+        .unwrap();
+        conn.execute("UPDATE index_meta SET building_generation = 2", [])
+            .unwrap();
+    }
+
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.generation, 2);
+    assert_eq!(report.reused_chunks, 2, "废弃半成品后，两块都能从上一代 f32 复用");
+    assert_eq!(report.embedded_chunks, 0, "没有一块需要重算");
+    assert_eq!(report.resumed_chunks, 0, "store 格式不一致的那一块不算「续上」");
+
+    let conn = open(&path);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2 AND storage <> 'f32'",
+            "chunk_vectors"
+        ),
+        0,
+        "生效代次里不能留下别的存储格式"
+    );
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2", "chunk_vectors"),
+        2
+    );
+    drop(conn);
+    // 半成品若真被留下，语义检索会在读到 'i8' 那一行时报 `CorruptedData`——能正常
+    // 返回（纯语义是 kNN，会把两块都列出来）就说明整代都是认识的 f32。
+    assert_eq!(
+        search_mode(&mut core, "妈妈", SearchMode::Semantic, 10).results.len(),
+        2
+    );
+}
+
+/// 历史遗留的**混合生效代次**：状态不能挑一行装作干净。
+///
+/// 修复之后正常操作产不出混合代次了，但旧库里可能已经存在一个（本片修复前激活的）。
+/// 这时候 `model_version` 没有单一真值可报：如实给 `None` + `reasons` 里点名「口径不一致」，
+/// 并且不说「就绪」。随后一次重建会把它按当前模型整代重算、自愈。
+#[test]
+fn a_mixed_active_generation_is_reported_honestly() {
+    const A_VERSION: &str = "stub-embedder@aaaaaaaaaaaa";
+    const B_VERSION: &str = "stub-embedder@bbbbbbbbbbbb";
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        A_VERSION,
+        512,
+        &counters,
+        vec![],
+    )));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    // 直接改掉其中一行的 model_version，模拟「修复前切出来的混合代次」。
+    {
+        let conn = open(&path);
+        conn.execute(
+            "UPDATE chunk_vectors SET model_version = ?1 WHERE chunk_id = \
+             (SELECT chunk_id FROM chunk_vectors WHERE generation = 1 ORDER BY chunk_id LIMIT 1)",
+            params![B_VERSION],
+        )
+        .unwrap();
+    }
+
+    let status = core.index_status(None).unwrap();
+    assert_eq!(
+        status.model_version, None,
+        "混合代次没有单一版本可报：宁可说「没有」也不挑一行假装干净"
+    );
+    assert_eq!(status.embedded_chunks, 2, "两块的向量都在（覆盖是够的）");
+    assert!(!status.semantic_index_ready, "混合代次不能叫「就绪」");
+    assert!(
+        status.reasons.iter().any(|reason| reason.contains("口径")),
+        "要说清是「口径不一致」，而不是含糊的未就绪：{:?}",
+        status.reasons
+    );
+
+    // 重建按当前模型整代重算，混合代次自愈。
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.generation, 2);
+    assert_eq!(report.reused_chunks, 1, "口径一致的那一块复用，口径不一致的重算");
+    assert_eq!(report.embedded_chunks, 1);
+    let conn = open(&path);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation <> 2",
+            "chunk_vectors"
+        ),
+        0,
+        "重建清掉了混合的旧代次"
+    );
+    drop(conn);
+    let healed = core.index_status(None).unwrap();
+    assert_eq!(healed.model_version.as_deref(), Some(A_VERSION));
+    assert!(healed.semantic_index_ready);
 }
 
 // ------------------------------------------------------------ 消费契约

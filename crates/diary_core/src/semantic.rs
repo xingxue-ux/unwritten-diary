@@ -20,10 +20,14 @@
 //!    与既有向量；
 //! 2. **开新代次**：`building_generation = COALESCE(building_generation, COALESCE(active_generation, 0) + 1)`。
 //!    正在服务的检索继续读旧那一代，界面不会突然空掉；
-//! 3. **复用 + 补算**：新代次里还没有向量的块，先尝试从旧代次**整批复制**口径一致
+//! 3. **续跑前核对口径**：`building_generation` 是上一次中断（或取消）留下的。若那一代
+//!    里已有的向量有任何一条与**当前嵌入器**的 `model_version` / `dims` / `storage` 不一致
+//!    （中途换过模型或换过存储格式），就整代清理、按当前模型从零重算。否则旧模型的
+//!    半成品会被当成「已完成」，剩下的块由新模型补算，最后切出一个**混合代次**；
+//! 4. **复用 + 补算**：新代次里还没有向量的块，先尝试从旧代次**整批复制**口径一致
 //!    （`model_version` / `dims` / `storage` 都相同）的向量，剩下的才算。
 //!    这正是「没变的块不重复算」；
-//! 4. **原子切换**：一个事务里 `active_generation = building_generation;
+//! 5. **原子切换**：一个事务里 `active_generation = building_generation;
 //!    building_generation = NULL`，并清掉 `generation < active` 的旧向量。
 //!    不存在「一半新一半旧」的服务状态，也不会每重建一次就把存储翻倍。
 //!
@@ -70,7 +74,8 @@ pub struct SemanticBuildReport {
     pub reused_chunks: i64,
     /// 这次真正算了向量的块数。
     pub embedded_chunks: i64,
-    /// 上一次中断留下的、本代次里已经有的向量数（续跑时不为 0）。
+    /// 上一次中断留下的、本代次里已经有的**口径一致**向量数（同模型续跑时不为 0；
+    /// 换过模型时那一批被整代清掉、这里回到 0）。
     pub resumed_chunks: i64,
 }
 
@@ -206,14 +211,79 @@ fn semantic_unavailable(reason: String) -> CoreError {
     }
 }
 
+/// 写进 `chunk_vectors` 的一套口径。三个字段与表里的列一一对应，**三者全同**才算
+/// 「同一个向量空间」：
+///
+/// - `model_version` 由模型文件哈希导出，换模型文件必然变；
+/// - `dims` 是向量维度，不同模型可能不同；
+/// - `storage` 是向量的编码格式（现在只有 `f32`）。
+///
+/// 口径不同的一批向量放在一起算余弦，量出来的相似度没有意义（两个空间各说各话），
+/// 所以这三项也是「能不能复用/续跑」的唯一判据。
+struct Caliber<'a> {
+    model_version: &'a str,
+    dims: i64,
+    storage: &'a str,
+}
+
+impl Caliber<'_> {
+    fn of(embedder: &dyn Embedder) -> Caliber<'_> {
+        Caliber {
+            model_version: embedder.model_version(),
+            dims: embedder.dims() as i64,
+            storage: STORAGE_F32,
+        }
+    }
+}
+
+/// 这个代次里有没有与当前口径不一致的向量。有一条不一致就说明这一代是**上一个模型**
+/// （或上一种存储格式）留下的半成品，不能在其基础上续算。
+fn has_foreign_vectors(core: &Core, generation: i64, caliber: &Caliber<'_>) -> Result<bool> {
+    let foreign: i64 = core.conn.query_row(
+        "SELECT COUNT(*) FROM chunk_vectors WHERE generation = ?1 \
+           AND (model_version <> ?2 OR dims <> ?3 OR storage <> ?4)",
+        params![generation, caliber.model_version, caliber.dims, caliber.storage],
+        |row| row.get(0),
+    )?;
+    Ok(foreign > 0)
+}
+
+/// 丢弃一个代次：按 `generation` 清掉它的**全部**向量。
+///
+/// - **幂等**：没有行时 `DELETE` 影响 0 行，再跑一次结果一样；中断在任何一步都不会
+///   留下更坏的状态。
+/// - **如实**：清理是整代的，不会留下属于旧模型的孤儿行让后面的统计或检索再撞上。
+/// - **代次号继续用**：清空之后它就是一代干净的、由当前模型从零算起的新代次，没必要
+///   跳号——跳号只会让「中断 → 换模型 → 续跑」多出一批必须记得清掉的旧行。
+fn discard_generation(core: &Core, generation: i64) -> Result<()> {
+    core.conn.execute(
+        "DELETE FROM chunk_vectors WHERE generation = ?1",
+        params![generation],
+    )?;
+    Ok(())
+}
+
 /// 开代次 → 复用/补算 → 原子切换。嵌入器已经确认可用。
 fn build_generation(core: &mut Core, embedder: &dyn Embedder) -> Result<SemanticBuildReport> {
+    let caliber = Caliber::of(embedder);
     let (active, building) = chunks::generations(core)?;
     // 开新代次：中断过就从它续跑，否则在生效代次之后 +1。**不在原地更新 active**。
     let generation = match building {
         Some(value) => value,
         None => active.map_or(1, |value| value + 1),
     };
+    // **续跑前核对口径**：`building_generation` 是上一次中断（或取消）留下的。若那一代
+    // 里已经有向量，但有任何一条的 `model_version` / `dims` / `storage` 与**当前嵌入器**
+    // 不一致，就说明中途换过模型或换过存储格式——整代废弃、清干净，按当前模型从零重算。
+    //
+    // 不核对会怎样（评审在 #58 指出的）：旧模型的半成品被 `missing_chunks` 当成
+    // 「已完成」，剩下的块由新模型补算，最后切出一个**混合代次**。搜索会把不同模型
+    // 空间的向量放在一起打分，`index_status.model_version` 也只能挑其中一行误报。
+    if let Some(value) = building {
+        if has_foreign_vectors(core, value, &caliber)? {
+            discard_generation(core, value)?;
+        }
+    }
     core.conn.execute(
         "UPDATE index_meta SET building_generation = ?1 WHERE id = 1",
         params![generation],
@@ -238,28 +308,40 @@ fn build_generation(core: &mut Core, embedder: &dyn Embedder) -> Result<Semantic
                 generation,
                 crate::embedding::now_iso(),
                 source_generation,
-                embedder.model_version(),
-                embedder.dims() as i64,
-                STORAGE_F32,
+                caliber.model_version,
+                caliber.dims,
+                caliber.storage,
             ],
         )? as i64,
     };
 
-    // 补齐：本代次里还没有向量的块。逐块提交：中途中断也留着 building_generation，
-    // 下一轮从这儿继续（不会激活半成品）。
-    let missing = missing_chunks(core, generation)?;
+    // 补齐：本代次里还没有**口径一致**向量的块。逐块提交：中途中断也留着
+    // building_generation，下一轮从这儿继续（不会激活半成品）。
+    let missing = missing_chunks(core, generation, &caliber)?;
+    // 续跑的块数 = 本代次里**已经存在的、口径一致的**向量数：总数减去这一轮复用的、
+    // 再减去这一轮要补算的。换模型时上一轮那批被整代清掉，这里自然回到 0。
     let resumed_chunks = (total_chunks - reused_chunks - missing.len() as i64).max(0);
-    let dims = embedder.dims();
     for (chunk_id, text) in &missing {
         let vector = embedder.embed_document(text)?;
-        if vector.len() != dims {
+        if vector.len() as i64 != caliber.dims {
             return Err(CoreError::InvalidState {
                 entity: "语义嵌入",
                 id: chunk_id.clone(),
-                state: format!("算出来的是 {} 维，与模型声明的 {dims} 维不符", vector.len()),
+                state: format!(
+                    "算出来的是 {} 维，与模型声明的 {} 维不符",
+                    vector.len(),
+                    caliber.dims
+                ),
             });
         }
-        write_vector(core, chunk_id, generation, embedder.model_version(), &vector)?;
+        write_vector(
+            core,
+            chunk_id,
+            generation,
+            caliber.model_version,
+            caliber.storage,
+            &vector,
+        )?;
     }
 
     // 原子切换 + 清理旧代次。一个事务：不存在「一半新一半旧」的服务状态。
@@ -283,27 +365,43 @@ fn build_generation(core: &mut Core, embedder: &dyn Embedder) -> Result<Semantic
     })
 }
 
-/// 本代次里还没有向量的块（按日期与块内顺序，确定性）。
-fn missing_chunks(core: &Core, generation: i64) -> Result<Vec<(String, String)>> {
+/// 本代次里还没有**口径一致**向量的块（按日期与块内顺序，确定性）。
+///
+/// 「已完成」的判据不是「`(chunk_id, generation)` 这一行存在」，而是「这一行存在**且**
+/// `model_version` / `dims` / `storage` 与当前嵌入器一致」。存在但口径不一致的行
+/// （历史遗留的混合代次）算**没完成**，会被当前模型重算覆盖——这是 `write_vector` 的
+/// `ON CONFLICT ... DO UPDATE` 那条路，不会留下旧行。
+fn missing_chunks(
+    core: &Core,
+    generation: i64,
+    caliber: &Caliber<'_>,
+) -> Result<Vec<(String, String)>> {
     let mut statement = core.conn.prepare(
         "SELECT t.chunk_id, t.text FROM text_chunks t \
          LEFT JOIN chunk_vectors v ON v.chunk_id = t.chunk_id AND v.generation = ?1 \
+           AND v.model_version = ?2 AND v.dims = ?3 AND v.storage = ?4 \
          WHERE v.chunk_id IS NULL ORDER BY t.day_key, t.ordinal, t.chunk_id",
     )?;
     let rows = statement
-        .query_map(params![generation], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
+        .query_map(
+            params![generation, caliber.model_version, caliber.dims, caliber.storage],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
 /// 写一行向量。自己的事务：中途中断也不会留下半行。
+///
+/// `ON CONFLICT ... DO UPDATE` 同时是**覆盖旧口径遗留行**的入口：同一
+/// `(chunk_id, generation)` 若已经有一行属于别的模型，这里把它改成当前口径的向量，
+/// 不会新旧并存。
 fn write_vector(
     core: &Core,
     chunk_id: &str,
     generation: i64,
     model_version: &str,
+    storage: &str,
     vector: &[f32],
 ) -> Result<()> {
     core.conn.execute(
@@ -317,7 +415,7 @@ fn write_vector(
             generation,
             model_version,
             vector.len() as i64,
-            STORAGE_F32,
+            storage,
             embedding::vector_bytes(vector),
             embedding::now_iso(),
         ],
@@ -670,18 +768,47 @@ pub fn ranking(
         .collect())
 }
 
-/// 生效代次那一批向量的 `model_version`（状态里要报的真值）。没有生效代次时 `None`。
-pub(crate) fn model_version(core: &Core) -> Result<Option<String>> {
+/// 生效代次那一批向量的模型口径（状态里要报的**真值**）。
+///
+/// 为什么不是「读一行 `model_version` 就完事」：`chunk_vectors` 的主键是
+/// `(chunk_id, generation)`，一个代次里理论上可以混进不止一种模型版本（本片修复前的
+/// 「A 写一半 → 换成 B 续跑」就会产出这种代次，历史库里也可能留下）。这时候
+/// 随便挑一行报出去是**撒谎**——它既不代表整代，也掩盖了「搜索正在把不同模型空间的
+/// 向量放在一起打分」这件事。
+///
+/// 本仓库的口径是「宁可如实说、不要假装干净」，所以按整代给三种结果：
+/// `Absent`（没有生效代次，或那一代一行向量都没有——没有版本可报）、
+/// `Single`（整代同一个版本，可以如实报）、
+/// `Mixed`（不止一种版本：调用方把 `model_version` 报成 `None`，并在 `reasons` 里
+/// 点名「口径不一致、需要重建」，而不是挑一行装作干净）。
+///
+/// 同时，**修复路径保证正常操作下再也产不出 `Mixed` 代次**：续跑前核对口径，
+/// 不一致就整代废弃重算；`missing_chunks` 也只认口径一致的行。所以 `Mixed` 只会是
+/// 历史遗留数据，正是要用「如实报出来 + 提示重建」处理的那一种。
+pub(crate) enum ActiveModelVersion {
+    /// 没有生效代次，或生效代次里没有向量：没有版本可报。
+    Absent,
+    /// 整代都是同一个模型版本。
+    Single(String),
+    /// 整代里有不止一种模型版本（去重后按字典序，便于测试与日志稳定）。
+    Mixed(Vec<String>),
+}
+
+pub(crate) fn active_model_version(core: &Core) -> Result<ActiveModelVersion> {
     let Some(generation) = active_generation(core)? else {
-        return Ok(None);
+        return Ok(ActiveModelVersion::Absent);
     };
-    let version: Option<String> = core
-        .conn
-        .query_row(
-            "SELECT model_version FROM chunk_vectors WHERE generation = ?1 LIMIT 1",
-            params![generation],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(version)
+    let mut statement = core.conn.prepare(
+        "SELECT DISTINCT model_version FROM chunk_vectors WHERE generation = ?1 \
+         ORDER BY model_version",
+    )?;
+    let versions = statement
+        .query_map(params![generation], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(match versions.len() {
+        0 => ActiveModelVersion::Absent,
+        // `len() == 1` 时 `next()` 一定有值。
+        1 => ActiveModelVersion::Single(versions.into_iter().next().expect("长度是 1")),
+        _ => ActiveModelVersion::Mixed(versions),
+    })
 }
