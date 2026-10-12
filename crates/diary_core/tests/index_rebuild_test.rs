@@ -7,7 +7,8 @@
 //!   同一个 operationId 换了 scope / 原因报 `idempotency_conflict`；
 //! - 桥接前的端到端：整库重建只排任务（异步），驱动跑完任务后 `index_status` 就绪，
 //!   整条链不手动 claim/complete；
-//! - 指定来源的重建在提取未完成时落 `waiting_dependency`，提取一完成下一轮被拉起；
+//! - 指定来源的重建在提取未完成时落 `waiting_dependency`，提取一完成就被拉起
+//!   （闸门每次领取前重评估，链在同一次驱动调用里走完）；
 //! - 整库重建跑前跑后关键词都可用，旧检索快照如实失效（沿用 #74 的口径，真实调用）。
 
 use std::path::Path;
@@ -295,7 +296,10 @@ fn a_whole_library_rebuild_job_advances_the_chain_to_a_ready_index() {
     assert!(!waiting.requires_user_action);
 
     let rounds = drive_until_idle(&mut core);
-    assert!(rounds >= 2, "导入链要 extract → index 至少两轮");
+    assert_eq!(
+        rounds, 1,
+        "闸门在每次领取前重评估：extract → index 一条链在一次驱动调用里走完"
+    );
 
     let done = core.get_job(&job.id).unwrap();
     assert_eq!(done.state, JobState::Succeeded);
@@ -336,18 +340,34 @@ fn a_source_scoped_rebuild_waits_for_extraction_before_running() {
     assert_eq!(waiting.error_code.as_deref(), Some("waiting_extract"));
     assert_eq!(waiting.attempt_count, 0, "等前置不是失败，不扣额度");
     assert!(!waiting.requires_user_action);
+    // 不变式：有等待态就必须给出可用的下一次唤醒。
+    assert!(idle.next_wakeup.is_some(), "等在 queued 的提取上，唤醒时刻必须可用");
 
-    // 提取跑完那一轮，索引任务还在等（一轮推进一层依赖）。
-    core.run_due_jobs(chrono::Utc::now(), 60_000, "foreground", 64)
+    // 条数上限 = 1：这一轮只跑提取。闸门在**收尾时**把后继推进到 queued
+    //（不是留在 waiting_dependency），摘要给出可用的下次唤醒——「还需要两轮」的
+    // 路径也必须诚实，不能是 null 却留着等待态。
+    let extracted = core
+        .run_due_jobs(chrono::Utc::now(), 60_000, "foreground", 1)
+        .unwrap();
+    assert_eq!(extracted.processed, 1, "条数上限只让这一轮跑一条");
+    assert_eq!(extracted.succeeded, 1);
+    assert_eq!(
+        extracted.waiting_dependency, 0,
+        "前置已满足，不能留在等待态"
+    );
+    assert!(extracted.next_wakeup.is_some(), "还有 queued 的索引任务");
+    let promoted = core.get_job(&job.id).unwrap();
+    assert_eq!(promoted.state, JobState::Queued, "被拉到 queued 等下次领取");
+    assert_eq!(promoted.attempt_count, 0, "被拉起不算跑过，不扣额度");
+
+    // 下一次驱动把排下的索引任务跑完（导入自己排的来源索引任务也一并跑掉）。
+    let indexed = core
+        .run_due_jobs(chrono::Utc::now(), 60_000, "foreground", 64)
         .unwrap();
     assert_eq!(
-        core.get_job(&job.id).unwrap().state,
-        JobState::WaitingDependency
+        indexed.succeeded, 2,
+        "手工排的指定来源任务 + 导入排的来源索引任务都在这一次里跑完"
     );
-
-    // 下一轮前置满足 → 被拉起并跑完。
-    core.run_due_jobs(chrono::Utc::now(), 60_000, "foreground", 64)
-        .unwrap();
     let done = core.get_job(&job.id).unwrap();
     assert_eq!(done.state, JobState::Succeeded);
     assert_eq!(done.attempt_count, 1, "真正跑过一次才记一次尝试");

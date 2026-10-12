@@ -1,10 +1,13 @@
 //! issue #70 的前半：任务依赖链闸门 + 关键词索引任务化。
 //!
-//! 覆盖三条**用真实调用**钉住的验收：
-//! - 导入 → 提取 → 索引任务跑完 → 关键词一路可搜（一条链走完，不手动 claim/complete）；
-//! - 「材料还没提取完就请求索引」→ 落在 `waiting_dependency`、原因可见、不消耗重试额度，
-//!   前置一满足就在下一轮被拉起；
-//! - 前置不可能再满足（提取被取消）→ 终态失败 + 明确错误码，不挂死、不假装成功。
+//! 覆盖五条**用真实调用**钉住的验收：
+//! - 导入 → 提取 → 索引任务跑完 → 关键词一路可搜。**只调一次** `run_due_jobs`：
+//!   闸门在**每次领取前**重评估，链在**一次**驱动调用里走完（评审 #74 指出的缺口）；
+//! - 「材料还没提取完就请求索引」→ 落在 `waiting_dependency`、原因可见、不消耗重试额度；
+//!   只要还留着等待态，摘要就必须给出**可用的** `nextWakeup`（不能是 null）；
+//! - 被条数上限截住的路径仍可能需要两轮：第一轮摘要要给出可用的下一次唤醒时刻；
+//! - 前置不可能再满足（提取被取消）→ 终态失败 + 明确错误码，不挂死、不假装成功；
+//! - 不变式专测：有等待态 ⟺ 必须有可用的 `nextWakeup`（前置 `Broken` 时不留等待态）。
 //!
 //! 只做**关键词**索引任务化；语义索引要等 #58 的向量接入合入（见 m4 文档）。
 
@@ -98,7 +101,9 @@ fn waiting_index_jobs(core: &Core) -> Vec<diary_core::Job> {
         .collect()
 }
 
-/// 端到端链：导入 → 提取 → 索引任务跑完，全程走驱动（不手动 claim/complete）。
+/// 端到端链：导入 → 提取 → 索引任务跑完。**只调一次** `run_due_jobs`：
+/// 闸门在每次领取前重评估，提取跑完的一刻索引任务就被拉起并在**同一轮**跑掉，
+/// 不把「链能不能走完」寄托在平台层肯不肯再叫一次上。全程不手动 claim/complete。
 #[test]
 fn the_import_to_extract_to_index_chain_advances_without_manual_claiming() {
     let dir = tempfile::tempdir().unwrap();
@@ -120,45 +125,43 @@ fn the_import_to_extract_to_index_chain_advances_without_manual_claiming() {
     assert_eq!(waiting[0].error_code.as_deref(), Some("waiting_extract"));
     assert_eq!(waiting[0].attempt_count, 0, "等前置不动尝试次数");
 
-    // 第一轮：只推进提取，索引任务仍然在等（一轮推进一层依赖）。
-    let first = core.run_due_jobs(Utc::now(), 60_000, "foreground", 64).unwrap();
-    assert_eq!(first.processed, 1, "这一轮只跑提取");
-    assert_eq!(first.succeeded, 1);
-    assert_eq!(first.waiting_dependency, 1, "索引任务如实算在等待里");
-    assert_eq!(first.dependency_failed, 0);
-
-    // **索引任务还没跑完**，关键词一路照旧可用（提取与建索引在同一个事务里落库）。
-    let early = keyword_search(&mut core, "正文");
-    assert!(!early.results.is_empty(), "索引任务没跑完也要搜得到");
-
-    // 第二轮：前置已满足，索引任务被拉起并跑完。
-    let second = core.run_due_jobs(Utc::now(), 60_000, "foreground", 64).unwrap();
-    assert_eq!(second.processed, 1, "这一轮跑索引任务");
-    assert_eq!(second.succeeded, 1);
-    assert_eq!(second.waiting_dependency, 0);
-    assert_eq!(second.due_backlog, 0);
+    // **只调一次**驱动：extract 跑完，闸门立刻认账并把 index 拉起、在同一轮跑完。
+    let round = core.run_due_jobs(Utc::now(), 60_000, "foreground", 64).unwrap();
+    assert_eq!(round.processed, 2, "一次调用要把 extract 与 index 都跑掉");
+    assert_eq!(round.succeeded, 2);
+    assert_eq!(round.waiting_dependency, 0, "链走完了就不该再留在等待态");
+    assert_eq!(round.dependency_failed, 0);
+    assert_eq!(round.due_backlog, 0);
+    assert_eq!(round.next_wakeup, None, "没有待办了，下次唤醒如实为空");
+    // 没跑的任务一条都没被谎报成跑过。
+    assert_eq!(round.processed, round.succeeded + round.failed + round.retrying);
 
     let index_job = core.get_job(&waiting[0].id).unwrap();
-    assert_eq!(index_job.state, JobState::Succeeded);
+    assert_eq!(
+        index_job.state,
+        JobState::Succeeded,
+        "索引任务必须在这一次驱动调用里跑完"
+    );
     assert!(index_job.error_code.is_none(), "前置满足后不该留着在等的原因");
     assert_eq!(index_job.attempt_count, 1, "只尝试过一次");
 
-    // 索引修完之后关键词仍然可搜（真实调用，不是伪造）。
+    // 关键词索引就绪（真实调用，不是伪造）。
     let after = keyword_search(&mut core, "正文");
     assert!(!after.results.is_empty(), "索引任务跑完后照样搜得到");
     assert!(
         core.count_search_matches("正文").unwrap() >= 1,
         "片段索引里要有内容"
     );
-
-    // 没跑的任务一条都没被谎报成跑过。
-    assert_eq!(
-        second.processed,
-        second.succeeded + second.failed + second.retrying
+    assert!(
+        core.index_status(Some(&[source_id]))
+            .unwrap()
+            .keyword_index_ready,
+        "这条来源的关键词索引就绪"
     );
 }
 
-/// 在等前置不是失败：不消耗重试额度，原因在状态里看得见，前置一满足下一轮就跑。
+/// 在等前置不是失败：不消耗重试额度，原因在状态里看得见；前置一满足，
+/// **同一次**驱动调用里就会被拉起并跑完。
 #[test]
 fn waiting_for_extraction_does_not_spend_attempts_and_is_visible() {
     let dir = tempfile::tempdir().unwrap();
@@ -172,6 +175,11 @@ fn waiting_for_extraction_does_not_spend_attempts_and_is_visible() {
     assert_eq!(idle.processed, 0);
     assert_eq!(idle.waiting_dependency, 1);
     assert_eq!(idle.due_backlog, 1, "提取任务还在排队等跑");
+    // 不变式：有等待态就必须给出可用的下一次唤醒（它等的是 queued 的 extract）。
+    assert!(
+        idle.next_wakeup.is_some(),
+        "有等待态却报「没有待办」就是挂死，不能这样"
+    );
 
     // 状态摘要里看得见「在等」，per-job 的原因码说清在等哪一环。
     let status = core.job_status().unwrap();
@@ -183,47 +191,57 @@ fn waiting_for_extraction_does_not_spend_attempts_and_is_visible() {
     assert_eq!(still_waiting.attempt_count, 0, "等了这么多轮也没动额度");
     assert!(!still_waiting.requires_user_action);
 
-    // 下一轮：提取跑完，索引任务仍在等（一轮一层）。
-    let extract_round = core.run_due_jobs(Utc::now(), 60_000, "foreground", 64).unwrap();
-    assert_eq!(extract_round.succeeded, 1);
-    assert_eq!(extract_round.waiting_dependency, 1);
-    assert_eq!(
-        core.get_job(&waiting[0].id).unwrap().attempt_count,
-        0,
-        "提取跑完这一轮，索引任务还是没被扣额度"
-    );
-
-    // 再下一轮：前置满足 → 被拉起并跑完。
-    let index_round = core.run_due_jobs(Utc::now(), 60_000, "foreground", 64).unwrap();
-    assert_eq!(index_round.succeeded, 1);
-    assert_eq!(index_round.waiting_dependency, 0);
+    // 一次驱动：提取跑完，闸门在领取前重评估，索引任务在同一轮被拉起并跑完。
+    let round = core.run_due_jobs(Utc::now(), 60_000, "foreground", 64).unwrap();
+    assert_eq!(round.succeeded, 2, "extract 与 index 在同一次调用里都跑完");
+    assert_eq!(round.waiting_dependency, 0);
     let done = core.get_job(&waiting[0].id).unwrap();
     assert_eq!(done.state, JobState::Succeeded);
     assert_eq!(done.attempt_count, 1, "真正跑过一次，才记一次尝试");
 }
 
 /// 索引任务跑前跑后都搜得到；旧检索快照在索引换代后**如实失效**，
-/// 而不是拿半截/过期索引假装还准（这就是「重建期间不停服」的边界）。
+/// 而不是拿半截/过期索引假装还准。
+///
+/// 这里用 `max_jobs = 1` 造出「还需要两轮」的中间态：第一轮只跑提取，闸门在**收尾**
+/// 时把索引任务从等待态推进到 `queued`（不是留在 `waiting_dependency`），摘要必须
+/// 给出可用的下一次唤醒时刻；第二轮才真正跑索引任务。评审点名要的第 2 条断言
+/// （需要两轮时第一轮 `nextWakeup` 非 null）就钉在这里。
 #[test]
 fn keyword_search_stays_available_across_the_index_job_and_old_snapshots_expire() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = new_core(dir.path());
     import_text(&mut core, "重建前也能搜到的正文".as_bytes(), "note.txt", "op-live");
+    let waiting = waiting_index_jobs(&core);
+    assert_eq!(waiting.len(), 1);
+    let index_id = waiting[0].id.clone();
 
-    // 提取先跑（索引任务还没跑），此时关键词可用，并发起一个检索会话。
-    core.run_due_jobs(Utc::now(), 60_000, "foreground", 64).unwrap();
+    // 条数上限 = 1：这一轮只跑提取（索引任务被截在下一轮）。
+    let truncated = core.run_due_jobs(Utc::now(), 60_000, "foreground", 1).unwrap();
+    assert_eq!(truncated.processed, 1, "这一轮只跑一条");
+    assert_eq!(truncated.succeeded, 1);
+    assert_eq!(
+        truncated.waiting_dependency, 0,
+        "前置已满足，不能留在等待态（否则下一轮可能没人叫）"
+    );
+    assert!(
+        truncated.next_wakeup.is_some(),
+        "还有 queued 的索引任务没跑，第一次摘要必须给出可用唤醒时刻"
+    );
+    let promoted = core.get_job(&index_id).unwrap();
+    assert_eq!(promoted.state, JobState::Queued, "被拉到 queued 等下一次领取");
+    assert_eq!(promoted.attempt_count, 0, "被拉起不算跑过，不扣额度");
+
+    // 提取与增量索引在同一个事务里落库：索引任务还没跑也搜得到，先发起一个检索会话。
     let session = keyword_search(&mut core, "正文");
     assert!(!session.results.is_empty());
-    assert_eq!(
-        waiting_index_jobs(&core).len(),
-        1,
-        "这一刻索引任务还没跑"
-    );
 
-    // 索引任务跑完（重建）。
+    // 第二轮：索引任务（重建）跑完。
     let round = core.run_due_jobs(Utc::now(), 60_000, "foreground", 64).unwrap();
     assert_eq!(round.succeeded, 1);
-    assert_eq!(waiting_index_jobs(&core).len(), 0);
+    assert_eq!(round.next_wakeup, None, "没有待办了");
+    assert_eq!(core.get_job(&index_id).unwrap().state, JobState::Succeeded);
+    assert!(waiting_index_jobs(&core).is_empty());
 
     // 旧会话不假装还准：索引代次变了就报 search_expired，让前端重取。
     let expired = core.search_snapshot(&session.session_id);
@@ -290,4 +308,42 @@ fn an_index_job_whose_extraction_can_never_happen_fails_with_a_clear_code() {
 
     // 下次唤醒不该被这条挂死任务拖住。
     assert!(round.next_wakeup.is_none());
+}
+
+/// 不变式（评审 #74 点名要钉的那条）：一轮结束后**还留着等待态**，摘要就必须给出
+/// 可用的下一次唤醒时刻——不允许 `nextWakeup = None` 却留着等待态，那会让按摘要
+/// 安排唤醒的平台层不再叫驱动，链就停住了。等待态只可能等在 `queued`/`retry_wait`
+/// 的前置上；前置判 `Broken` 时本轮已把它终态失败，不会留下等待态。
+#[test]
+fn a_run_never_reports_no_wakeup_while_jobs_are_waiting() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    import_text(&mut core, b"still waiting", "note.txt", "op-invariant");
+
+    // 预算 0：什么都不跑，闸门把 index 留在等待态（它等的是 queued 的 extract）。
+    let idle = core.run_due_jobs(Utc::now(), 0, "startup", 64).unwrap();
+    assert_eq!(idle.waiting_dependency, 1);
+    assert!(
+        idle.next_wakeup.is_some(),
+        "有等待态就必须有可用的下一次唤醒"
+    );
+
+    // 任务面板摘要同一条不变式（`job_status` 走同一个 `next_wakeup`）。
+    let status = core.job_status().unwrap();
+    assert_eq!(status.waiting_dependency, 1);
+    assert!(status.next_wakeup.is_some());
+
+    // 前置被判 `Broken`（提取被取消）：不留等待态，也就不需要「下一次唤醒」；
+    // 「等待态」与「nextWakeup = None」不会同时出现。
+    let extract = core
+        .list_jobs(Some(&[JobState::Queued]), 10)
+        .unwrap()
+        .into_iter()
+        .find(|job| job.kind == "extract")
+        .expect("导入要排一条提取任务");
+    core.cancel_job(&extract.id, "op-cancel-invariant").unwrap();
+    let broken = core.run_due_jobs(Utc::now(), 0, "startup", 64).unwrap();
+    assert_eq!(broken.waiting_dependency, 0, "前置不可能满足就终态失败");
+    assert_eq!(broken.dependency_failed, 1);
+    assert!(broken.next_wakeup.is_none(), "既没有等待态也没有待办，才允许为空");
 }

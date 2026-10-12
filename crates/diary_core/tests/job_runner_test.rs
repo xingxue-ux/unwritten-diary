@@ -95,7 +95,8 @@ fn keyword_search(core: &mut Core, query: &str) -> diary_core::SearchSnapshot {
     .unwrap()
 }
 
-/// 成功路径：导入排下的 `extract` 被驱动跑完，来源真的提取了，任务进 succeeded。
+/// 成功路径：导入排下的 `extract` 被驱动跑完，来源真的提取了，任务进 succeeded；
+/// 闸门在领取前重评估，导入顺带排的 `index` 在**同一次调用**里被拉起并跑完。
 #[test]
 fn the_driver_extracts_an_imported_source_and_succeeds() {
     let dir = tempfile::tempdir().unwrap();
@@ -112,13 +113,15 @@ fn the_driver_extracts_an_imported_source_and_succeeds() {
     assert_eq!(queued[0].kind, "extract");
 
     let summary = core.run_due_jobs(Utc::now(), 60_000, "test", 10).unwrap();
-    assert_eq!(summary.processed, 1);
-    assert_eq!(summary.succeeded, 1);
+    assert_eq!(
+        summary.processed, 2,
+        "extract 跑完，依赖闸门把 index 在同一轮拉起并跑掉"
+    );
+    assert_eq!(summary.succeeded, 2);
     assert_eq!(summary.failed, 0);
     assert_eq!(summary.retrying, 0);
-    // 导入还排了一条**等提取**的 `index` 任务：它没被领取（不在 processed 里），
-    // 也没消耗重试额度，只如实算在 waiting_dependency 上。
-    assert_eq!(summary.waiting_dependency, 1, "索引任务在等提取");
+    // 链条一次走完：没有任务再留在等待态，闸门也没有终态失败任何任务。
+    assert_eq!(summary.waiting_dependency, 0, "链走完了就不该再等");
     assert_eq!(summary.dependency_failed, 0);
     // 入队即到期（next_attempt_at 为空）的任务不算补做：队列里没有它「本该何时跑」
     // 的信息，把它算进去会让刚入队就被跑的任务也变成「补做」。
@@ -140,6 +143,12 @@ fn the_driver_extracts_an_imported_source_and_succeeds() {
     assert!(
         core.count_search_matches("正文").unwrap() >= 1,
         "提取出来的内容要立刻能搜到"
+    );
+    assert!(
+        core.index_status(Some(&[source_id]))
+            .unwrap()
+            .keyword_index_ready,
+        "索引任务跑完后这条来源报就绪"
     );
 }
 
@@ -278,11 +287,14 @@ fn a_job_missed_while_the_library_was_closed_is_backfilled_after_reopening() {
     assert!(before.next_attempt_at.expect("排期要留着") < now);
 
     let summary = core.run_due_jobs(now, 60_000, "test", 10).unwrap();
-    assert_eq!(summary.processed, 1, "重开之后必须能跑到它");
-    assert_eq!(summary.succeeded, 1, "补做也要真的做完");
+    assert_eq!(
+        summary.processed, 2,
+        "重开之后必须能跑到它；它跑完，导入排的来源索引任务也在同一轮被拉起跑掉"
+    );
+    assert_eq!(summary.succeeded, 2, "补做也要真的做完");
     assert_eq!(
         summary.backfilled, 1,
-        "本来早该跑、这次才补上：必须如实算作补做"
+        "本来早该跑、这次才补上：必须如实算作补做（被拉起的索引任务不是补做）"
     );
     // 补做的任务不会因为没有准时跑就被丢掉：来源真的提取了。
     let content = core
@@ -293,7 +305,7 @@ fn a_job_missed_while_the_library_was_closed_is_backfilled_after_reopening() {
 
     // 状态摘要如实呈现：已经补做完了，没有积压，也没有谎报「准时」的字段。
     let status = core.job_status().unwrap();
-    assert_eq!(status.succeeded, 1);
+    assert_eq!(status.succeeded, 2, "补做的提取与它带起的索引任务都成功了");
     assert_eq!(status.queued, 0);
     assert_eq!(status.due_backlog, 0);
 }
@@ -483,16 +495,18 @@ fn job_changed_is_emitted_on_every_step() {
     // 导入排两条任务（extract + 等提取的 index），各发一次入队事件。
     let (_, source_id) = import_text(&mut core, b"plain text", "note.txt", "op1");
     assert_eq!(job_changed_count(&core), 2, "入队要发 job.changed");
-    let success = core.run_due_jobs(Utc::now(), 60_000, "test", 10).unwrap();
-    assert_eq!(success.succeeded, 1);
-    assert_eq!(job_changed_count(&core), 4, "开始与成功各发一次");
-    assert!(core.extracted_content(&source_id).unwrap().is_some());
 
-    // 前置满足了：下一轮把 index 拉起（状态变化要发），再开始、成功各一次。
-    let indexed = core.run_due_jobs(Utc::now(), 60_000, "test", 10).unwrap();
-    assert_eq!(indexed.succeeded, 1, "索引任务要真的跑完");
-    assert_eq!(indexed.waiting_dependency, 0);
-    assert_eq!(job_changed_count(&core), 7, "拉起 + 开始 + 成功各发一次");
+    // 一次驱动把 extract → index 走完（闸门在领取前重评估，链在同一轮推进）：
+    // 2 次「开始」+ 2 次「成功」+ 1 次「index 被拉起」= 5 次。
+    let success = core.run_due_jobs(Utc::now(), 60_000, "test", 10).unwrap();
+    assert_eq!(success.succeeded, 2, "extract 与 index 都要真的跑完");
+    assert_eq!(success.waiting_dependency, 0);
+    assert_eq!(
+        job_changed_count(&core),
+        7,
+        "2 次开始 + 2 次成功 + index 拉起一次"
+    );
+    assert!(core.extracted_content(&source_id).unwrap().is_some());
 
     // 失败与重试路径。
     let mut job = NewJob::new("extract", JobPriority::BackgroundExtract)
@@ -530,8 +544,11 @@ fn an_interrupted_run_is_recovered_instead_of_being_lost() {
 
     let summary = core.run_due_jobs(now, 60_000, "test", 10).unwrap();
     assert_eq!(summary.recovered, 1, "运行开始要回收没跑完的任务");
-    assert_eq!(summary.processed, 1);
-    assert_eq!(summary.succeeded, 1, "回收之后要真的跑完");
+    assert_eq!(
+        summary.processed, 2,
+        "回收的提取跑完，闸门把导入排的索引任务在同一轮拉起跑掉"
+    );
+    assert_eq!(summary.succeeded, 2, "回收之后要真的跑完");
     let job = core.get_job(&queued.id).unwrap();
     assert_eq!(job.state, JobState::Succeeded);
     assert!(core.extracted_content(&source_id).unwrap().is_some());

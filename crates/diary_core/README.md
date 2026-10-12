@@ -20,7 +20,7 @@
 | 录音会话 | `prepare_recording` / `register_segment` / `update_recording_state` / `finalize_recording` / `recover_recording`；片段按序号幂等，最终化流式拼成逻辑音频 |
 | 任务队列 | 入队、按优先级领取、成功/失败/退避重试、手动重试、取消、下次唤醒时刻、通知去重；`commit_with_jobs` 保证提交与入队同事务 |
 | 任务驱动 | `run_due_jobs(now, budget_ms, trigger, max_jobs)`：按 `kind` 派活（`extract` 提取、`index` 关键词索引重建）、失败退避或放弃、回收上次没跑完的任务；**毫秒预算只在任务之间判断**（不抢占正在跑的任务），条数上限防御性夹一道；业务键去重、`job.changed`、`job_status`（各状态计数 / 到期积压 / 最近错误）；补做口径见 m4 文档 |
-| 依赖链 | 导入完成同事务排 `extract` + `index`；`index` 前置未满足时进 `waiting_dependency`（`error_code = waiting_extract`），不消耗重试额度；驱动每轮开始时重新评估，前置满足就拉起、不可能满足就终态失败并报明确错误码 |
+| 依赖链 | 导入完成同事务排 `extract` + `index`；`index` 前置未满足时进 `waiting_dependency`（`error_code = waiting_extract`），不消耗重试额度；驱动**每次领取前**重评估、轮末再兜底一次（前置满足就拉起、不可能满足就终态失败并报明确错误码），链在**一次**调用里走完；一轮结束后有等待态就必定给出非空 `nextWakeup` |
 | 索引重建入口 | `schedule_index_rebuild(scope, reason, operation_id)`（契约 `indexes.rebuild`）：**只排任务**、返回 `jobId`，不做同步重建；`scope` 为 `all`（整库，空 `target_ids`）或 `sources:<id>[,<id>]*`；空列表 / 非法字符 / 重复 id 报 `invalid_argument`，不存在的来源报 `not_found`；同一个 `(scope, 原因, operationId)` 幂等，换内容报 `idempotency_conflict` |
 | 错误码 | 映射到契约第 7 节，含 `SQLITE_FULL` → `storage_full`、ENOSPC → `storage_full` |
 | 时间精度 | 所有对外返回的时间统一截断到毫秒，保证「写进去的」和「读出来的」相等 |
@@ -35,7 +35,7 @@
 ## 校验
 
 ```bash
-cargo test -p diary_core        # 153 项通过（另有 1 项 10 万片段量测默认忽略）
+cargo test -p diary_core        # 154 项通过（另有 1 项 10 万片段量测默认忽略）
 cargo clippy -p diary_core --all-targets -- -D warnings
 ```
 

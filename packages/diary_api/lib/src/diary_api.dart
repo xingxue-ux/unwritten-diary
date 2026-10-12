@@ -304,6 +304,10 @@ abstract class DiaryApi {
   /// 可以比预算还长。[trigger] 是唤醒来源（startup / foreground / wake / manual …），
   /// 如实记进摘要、不改变行为。没跑上的到期任务留在队列里，数量在
   /// [DueRunSummary.dueBacklog] 里如实报出来。
+  ///
+  /// 依赖闸门在**每次领取前**重评估，所以「导入 → 提取 → 索引」这样的链在**一次**
+  /// 调用里就能走完，不依赖平台层再叫一次；一轮结束后若仍有等待前置的任务，
+  /// [DueRunSummary.nextWakeup] 必定非空。
   Future<DueRunSummary> runDueJobs({
     required int budgetMs,
     required String trigger,

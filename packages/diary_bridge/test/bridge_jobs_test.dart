@@ -10,8 +10,9 @@ import 'package:test/test.dart';
 ///
 /// 覆盖两件在 Dart 侧才看得出来的事：
 /// 1. **依赖闸门**：导入排下 extract + 等提取的 index，`jobStatus` 与 `runDueJobs`
-///    的摘要都如实报「在等」，而不是排一个注定失败的任务；
-/// 2. **链式推进**：驱动把 extract → index 一路推到就绪，关键词全程可搜。
+///    的摘要都如实报「在等」（并且有等待态时 `nextWakeup` 非空），而不是排一个
+///    注定失败的任务；
+/// 2. **链式推进**：**一次** `runDueJobs` 把 extract → index 推到就绪，关键词全程可搜。
 ///
 /// 每个用例开一个干净的资料库，避免互相干扰。
 void main() {
@@ -136,45 +137,41 @@ void main() {
     expect(idle.dueBacklog, 1, reason: 'extract 还到期没跑');
     expect(idle.waitingDependency, 1);
     expect(idle.dependencyFailed, 0);
+    expect(
+      idle.nextWakeup,
+      isNotNull,
+      reason: '有等待态就必须给出可用的下次唤醒，不能报「没有待办」',
+    );
   });
 
-  test('链式推进：extract → index 一路跑完，关键词全程可搜', () async {
+  test('链式推进：extract → index 一次驱动跑完，关键词全程可搜', () async {
     const text = '第一段：妈妈打电话来。\n\n第二段：晚上吃了面。';
     final sourceId = await addMaterial('链条.txt', text, 'op-chain');
 
-    // 第一轮：只推进到提取完成；索引任务仍在等（一轮推进一层依赖）。
-    final extracted = await session.runDueJobs(
+    // **只调一次**驱动：闸门在每次领取前重评估，extract 跑完立刻把 index 拉起并在
+    // 同一轮跑掉——不把链的完成寄托在平台层肯不肯再叫一次上（#74 评审）。
+    final round = await session.runDueJobs(
       budgetMs: 60000,
       trigger: 'foreground',
     );
-    expect(extracted.processed, 1);
-    expect(extracted.succeeded, 1);
-    expect(extracted.waitingDependency, 1);
-    expect(extracted.dueBacklog, 0);
+    expect(round.processed, 2);
+    expect(round.succeeded, 2);
+    expect(round.waitingDependency, 0);
+    expect(round.dependencyFailed, 0);
+    expect(round.dueBacklog, 0);
+    expect(round.nextWakeup, isNull, reason: '没有待办了');
+    expect(round.trigger, 'foreground');
     expect(
-      extracted.processed,
-      extracted.succeeded + extracted.failed + extracted.retrying,
-      reason: '跑过的任务都要落在终态或等待态里',
+      round.processed,
+      round.succeeded + round.failed + round.retrying,
+      reason: '跑过的任务都要落在终态里',
     );
-
-    // index 还没跑，关键词就该能搜到（提取与建索引在同一个事务里落库）。
-    expect(await searchHits('妈妈'), greaterThan(0));
-
-    // 第二轮：前置满足 → index 被拉起并跑完。
-    final indexed = await session.runDueJobs(
-      budgetMs: 60000,
-      trigger: 'foreground',
+    expect(
+      round.startedAt.isBefore(
+        DateTime.now().toUtc().add(const Duration(minutes: 1)),
+      ),
+      isTrue,
     );
-    expect(indexed.processed, 1);
-    expect(indexed.succeeded, 1);
-    expect(indexed.waitingDependency, 0);
-    expect(indexed.dependencyFailed, 0);
-    expect(indexed.dueBacklog, 0);
-    expect(indexed.nextWakeup, isNull, reason: '没有待办了');
-    expect(indexed.trigger, 'foreground');
-    expect(indexed.startedAt.isBefore(DateTime.now().toUtc().add(
-          const Duration(minutes: 1),
-        )), isTrue);
 
     // 索引跑完，关键词仍然可搜。
     expect(await searchHits('妈妈'), greaterThan(0));

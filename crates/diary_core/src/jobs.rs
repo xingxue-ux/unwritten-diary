@@ -104,7 +104,7 @@ pub(crate) fn enqueue_in_tx(tx: &Transaction<'_>, job: NewJob) -> Result<Job> {
 /// 一轮驱动就能在 `job_status()` / `list_jobs()` 里看到它在等哪一环。
 ///
 /// 它**不是失败**：`attempt_count = 0`、`next_attempt_at` 为空、不消耗重试额度；
-/// 驱动每一轮开始时重新评估前置（`resolve_dependencies`）。
+/// 驱动**每次领取前**以及**一轮收尾时**都会重新评估前置（`resolve_dependencies`）。
 pub(crate) fn enqueue_in_tx_with_state(
     tx: &Transaction<'_>,
     job: NewJob,
@@ -651,13 +651,21 @@ fn index_dependency(core: &Core, job: &Job) -> Result<Dependency> {
 
 /// 重新评估所有 `index` 任务的前置，把等待态推到当下的真相。
 ///
-/// 驱动**每一轮开始时**先跑一次（`run_due`），所以一轮只推进一层依赖：
-/// - 前置已经满足的在等任务 → 回到 `queued`，这一轮就能被领取；
+/// 驱动**每次领取前**跑一次，**一轮收尾时**再跑一次（`run_due`），所以：
+/// - 前置已经满足的在等任务 → 回到 `queued`，同一轮的下一次领取就能被领取；
 /// - 前置仍未满足的 → 留在 `waiting_dependency`，原因写在 `error_code` 上；
 /// - 前置不会再有执行者满足的 → 终态 `failed` + 明确错误码 + `requires_user_action`。
 ///
+/// **为什么每次领取前都要重评估，而不是每轮一次**：一轮只评估一次的话，前置任务在
+/// 这一轮跑完时后继仍在等待态，而 `next_wakeup` 不把等待态算成待办——队列里没有别的
+/// 任务时摘要会给出 `next_wakeup = None`，按摘要安排唤醒的平台层就不会再叫驱动，
+/// 链条只能碰巧再次进前台才可能走完。每次领取前重评估之后，链在**一次**驱动调用里
+/// 就能走完，不把「能不能走完」寄托在平台层肯不肯再叫一次上（#19 可能因省电/退出
+/// 而不叫）。预算与条数上限照旧只在任务之间判断，链式推进不会打断正在跑的任务。
+///
 /// 它**不领取、不执行、不动 `attempt_count`、不排退避**：在等前置不是一次失败，
-/// 不该消耗重试额度。改状态时照旧发 `job.changed`。
+/// 不该消耗重试额度。它是**纯查询**（只把状态推到真相），不消耗预算。改状态时照旧
+/// 发 `job.changed`。
 ///
 /// 返回值是这一轮**被闸门终态失败**的任务数（没有任何执行者跑过），如实报进
 /// `JobRunSummary::dependency_failed`。
@@ -803,8 +811,18 @@ impl HandlerFailure {
 ///   本该何时跑的信息，所以**不计入补做**（否则刚入队就被跑的任务也会算成补做，
 ///   反而误导）；这类积压由 `due_backlog` 呈现。我们只说「补做」，不说「准时」；
 /// - **运行开始先回收**上一次没跑完（`running`）的任务，否则那些任务会被永久丢掉；
-/// - **每一轮开始时先重新评估依赖**（`resolve_dependencies`）：前置已满足的在等任务
-///   这一轮就会被拉起，仍未满足的留在等待态。一轮只推进一层依赖。
+/// - **每次领取前先重新评估依赖**（`resolve_dependencies`），并在**一轮收尾时**再评估
+///   一次：前置已满足的在等任务会被拉起，在**同一轮**内被领取执行。所以「导入 → 提取
+///   → 索引」这样的链在**一次**驱动调用里就能走完，不需要平台层再叫一次。
+///
+/// **依赖链的不变式（一轮结束后必须成立）**：若还有任务留在 `waiting_dependency`，
+/// 它们只可能是在等队列里 `queued` / `retry_wait` 的前置任务（那些任务的
+/// `next_attempt_at` / 「入队即到期」就是下一次唤醒时刻），或者前置已判 `Broken`——
+/// 而 `Broken` 在本轮已被闸门终态失败，不会留下等待态。因此**不允许**出现
+/// 「有等待态、却 `next_wakeup = None` 且队列里没有任何到期/排队任务」：那等于把链
+/// 挂死，且摘要对平台层说了谎。收尾的那次评估就是为了堵住这个缺口——前置跑完就
+/// 立刻把后继推进到 `queued`（`next_wakeup` 随即给出「现在」），轮末不会留下
+/// 「依赖其实已满足却还写着等待」的任务。`debug_assert` 把它钉在代码里，测试另钉一条。
 pub(crate) fn run_due(
     core: &mut Core,
     now: DateTime<Utc>,
@@ -831,10 +849,10 @@ pub(crate) fn run_due(
         next_wakeup: None,
     };
 
-    // 每一轮开始时先重新评估在等的任务。这一步不领取、不执行、不消耗预算：
-    // 前置已经满足的回到 `queued`（这一轮就能跑），仍未满足的留在等待态，
-    // 前置不可能再满足的终态失败并如实报数。
-    summary.dependency_failed = resolve_dependencies(core, now)?;
+    // 依赖闸门在**每次领取前**重评估（见下面的循环），不再只在每轮开始跑一次：
+    // 上一条前置任务跑完，后继就在同一轮被拉起并执行。这一步不领取、不执行、
+    // 不消耗预算：前置已经满足的回到 `queued`（同一轮的下一次领取就能跑），
+    // 仍未满足的留在等待态，前置不可能再满足的终态失败并如实报数。
 
     let mut processed: usize = 0;
     loop {
@@ -845,6 +863,10 @@ pub(crate) fn run_due(
         if started.elapsed().as_millis() >= u128::from(budget_ms) {
             break;
         }
+
+        // 每次领取前重评估依赖：上一条前置任务刚跑完，它的后继在这一刻就被认账、
+        // 被拉起，并在同一轮内被领取执行。闸门是纯查询，不消耗预算，也不动额度。
+        summary.dependency_failed += resolve_dependencies(core, now)?;
 
         let Some(claimed) = claim_next_due_record(core, now)? else {
             break;
@@ -886,10 +908,28 @@ pub(crate) fn run_due(
         }
         processed += 1;
     }
+
+    // 一轮收尾再评估一次：把等待态推到当下的真相（前置已满足的回到 `queued`，
+    // `next_wakeup` 随即给出「现在」）。这是「有等待态就必须有可用的下一次唤醒」
+    // 这条不变式的兜底：循环可能因为预算 / 条数上限在这一轮的最后一条任务之后
+    // 直接退出，没来得及在「领取前」认账刚跑完的前置（见函数文档）。
+    summary.dependency_failed += resolve_dependencies(core, now)?;
+
     summary.processed = processed as i64;
     summary.waiting_dependency = count(core, Some(&[JobState::WaitingDependency]))?;
     summary.due_backlog = count_due(core, now)?;
     summary.next_wakeup = next_wakeup(core)?;
+
+    // 不变式：一轮结束后还留着等待态，就必须给出可用的下一次唤醒时刻。留下的等待态
+    // 只可能是在等队列里 `queued`/`retry_wait` 的前置（其 `next_attempt_at` / 入队即
+    // 到期就是那次唤醒），而前置已判 `Broken` 的在本轮已经被终态失败。断言在开发/
+    // 测试构建里把这个缺口钉住，避免「有等待态却 next_wakeup = None」的挂死回归。
+    debug_assert!(
+        summary.waiting_dependency == 0 || summary.next_wakeup.is_some(),
+        "依赖链不变式被破坏：还有 {} 个等待态任务，却没有可用的下一次唤醒时刻",
+        summary.waiting_dependency
+    );
+
     Ok(summary)
 }
 

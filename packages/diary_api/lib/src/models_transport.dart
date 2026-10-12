@@ -975,7 +975,10 @@ class JobTicket {
 ///   里如实报出来（`dueBacklog > 0` 就说明这一轮是**提前收手**，不是「没有活了」，
 ///   所以不再单独给 `budgetExhausted`：那会和这个数字说同一件事）；
 /// - [waitingDependency] 是还在等前置（现在只有 `index` 等 `extract`）的任务数，
-///   它们没被领取、没消耗重试额度；
+///   它们没被领取、没消耗重试额度；闸门在每次领取前重评估，所以一条依赖链
+///   （导入 → 提取 → 索引）在**一次** `runDueJobs` 里就能走完；
+/// - [nextWakeup] 是下一个到期时刻；等前置的不算待办，但有等待态时它必定非空
+///   （等在 `queued`/`retry_wait` 的前置上），不会出现「有等待态却报没有待办」；
 /// - [dependencyFailed] 是这一轮被闸门判定「前置不可能再满足」而终态失败的任务数
 ///   （同样没有执行者跑过），`jobStatus().failed` / `recentErrors` 里也看得到；
 /// - [backfilled] 只说「补做」，不说「准时完成」。
