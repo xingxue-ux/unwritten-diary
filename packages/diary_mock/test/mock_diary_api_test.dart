@@ -75,4 +75,21 @@ void main() {
     await expectLater(save(), throwsA(isA<DiaryException>()));
     expect((await save()).revision, 2); // 新建就是 1，保存后 +1
   });
+
+  test('升级检索不伪造 hybrid_ready（Mock 没有检索会话）', () async {
+    final api = MockDiaryApi(clock: () => now);
+
+    // Mock 只覆盖 F0 记录路径：它没有 `search.start` 建出来的会话，也没有任何
+    // 语义/融合能力。所以升级只能如实拒绝——绝不会返回一份编造的 hybrid_ready，
+    // 也不会替不存在的会话编一份 keyword_ready 快照。断言必须反映这个真实行为。
+    await expectLater(
+      api.upgradeSearch(sessionId: 'mock-session'),
+      throwsA(isA<UnsupportedError>()),
+    );
+
+    // 能力声明同样是诚实的：没接的检索能力不出现在 capabilities 里。
+    final capabilities = (await api.snapshot()).coreInfo.capabilities;
+    expect(capabilities, isNot(contains('search.upgrade')));
+    expect(capabilities, isNot(contains('search.start')));
+  });
 }
