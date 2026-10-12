@@ -369,7 +369,7 @@ fn a_failing_job_backs_off_and_then_gives_up() {
 }
 
 #[test]
-fn manual_retry_grants_one_more_attempt_and_cancel_keeps_originals() {
+fn manual_retry_resets_the_attempt_budget_and_cancel_keeps_originals() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = new_core(dir.path());
     let capture_id = draft(&mut core);
@@ -381,12 +381,18 @@ fn manual_retry_grants_one_more_attempt_and_cancel_keeps_originals() {
     core.claim_next_due_job(now).unwrap().unwrap();
     let failed = core.fail_job(&queued.id, "network_unavailable", "断网", now).unwrap();
     assert_eq!(failed.state, JobState::Failed);
+    assert!(failed.requires_user_action, "已放弃的任务要等用户处理");
 
-    let retried = core.retry_job(&queued.id, "op-retry").unwrap();
+    // 人工重试把这一轮的尝试次数清零（B5 的语义：点一次重试，再给一整份额度），
+    // 但历史尝试记录不删——`job_attempts` 里仍然看得到「试过几次」。
+    let retried = core.retry_job_idempotent(&queued.id, "op-retry").unwrap();
     assert_eq!(retried.state, JobState::Queued);
-    assert_eq!(retried.max_attempts, 2, "额度用完了要再给一次机会");
+    assert_eq!(retried.attempt_count, 0);
+    assert_eq!(retried.max_attempts, 1);
+    assert!(retried.error_code.is_none());
+    assert!(!retried.requires_user_action);
     // 同一个 operationId 重试返回原结果。
-    assert_eq!(core.retry_job(&queued.id, "op-retry").unwrap(), retried);
+    assert_eq!(core.retry_job_idempotent(&queued.id, "op-retry").unwrap(), retried);
 
     let cancelled = core.cancel_job(&queued.id, "op-cancel").unwrap();
     assert_eq!(cancelled.state, JobState::Cancelled);

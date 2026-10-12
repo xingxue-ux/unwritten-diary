@@ -156,6 +156,9 @@ void main() {
     // 所以这里必须是「没有」——能力清单要反映适配层的真实能力。
     expect(snapshot.coreInfo.capabilities, isNot(contains('search.start')));
     expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.status')));
+    // 桥接侧现在也接了 `indexes.rebuild`（能力项进了核心的 wired_capabilities），
+    // 但适配层的 `_wiredMethods` 这一片没动，所以这里同样必须是「没有」。
+    expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.rebuild')));
 
     expect(
       () => api.startSearch(

@@ -190,13 +190,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Job dco_decode_job(dynamic raw);
 
   @protected
+  JobErrorSummary dco_decode_job_error_summary(dynamic raw);
+
+  @protected
   JobPriority dco_decode_job_priority(dynamic raw);
 
   @protected
   JobProgress dco_decode_job_progress(dynamic raw);
 
   @protected
+  JobRunSummary dco_decode_job_run_summary(dynamic raw);
+
+  @protected
   JobState dco_decode_job_state(dynamic raw);
+
+  @protected
+  JobStatus dco_decode_job_status(dynamic raw);
 
   @protected
   LibraryInfo dco_decode_library_info(dynamic raw);
@@ -215,6 +224,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Job> dco_decode_list_job(dynamic raw);
+
+  @protected
+  List<JobErrorSummary> dco_decode_list_job_error_summary(dynamic raw);
 
   @protected
   List<JobState> dco_decode_list_job_state(dynamic raw);
@@ -562,13 +574,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Job sse_decode_job(SseDeserializer deserializer);
 
   @protected
+  JobErrorSummary sse_decode_job_error_summary(SseDeserializer deserializer);
+
+  @protected
   JobPriority sse_decode_job_priority(SseDeserializer deserializer);
 
   @protected
   JobProgress sse_decode_job_progress(SseDeserializer deserializer);
 
   @protected
+  JobRunSummary sse_decode_job_run_summary(SseDeserializer deserializer);
+
+  @protected
   JobState sse_decode_job_state(SseDeserializer deserializer);
+
+  @protected
+  JobStatus sse_decode_job_status(SseDeserializer deserializer);
 
   @protected
   LibraryInfo sse_decode_library_info(SseDeserializer deserializer);
@@ -589,6 +610,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Job> sse_decode_list_job(SseDeserializer deserializer);
+
+  @protected
+  List<JobErrorSummary> sse_decode_list_job_error_summary(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<JobState> sse_decode_list_job_state(SseDeserializer deserializer);
@@ -1025,13 +1051,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_job(Job self, SseSerializer serializer);
 
   @protected
+  void sse_encode_job_error_summary(
+    JobErrorSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_job_priority(JobPriority self, SseSerializer serializer);
 
   @protected
   void sse_encode_job_progress(JobProgress self, SseSerializer serializer);
 
   @protected
+  void sse_encode_job_run_summary(JobRunSummary self, SseSerializer serializer);
+
+  @protected
   void sse_encode_job_state(JobState self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_job_status(JobStatus self, SseSerializer serializer);
 
   @protected
   void sse_encode_library_info(LibraryInfo self, SseSerializer serializer);
@@ -1056,6 +1094,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_job(List<Job> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_job_error_summary(
+    List<JobErrorSummary> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_job_state(List<JobState> self, SseSerializer serializer);

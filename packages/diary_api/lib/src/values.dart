@@ -407,6 +407,7 @@ enum DiaryErrorCode {
   idempotencyConflict('idempotency_conflict'),
   notFound('not_found'),
   invalidState('invalid_state'),
+  invalidArgument('invalid_argument'),
   assetMissing('asset_missing'),
   integrityFailed('integrity_failed'),
   unsupportedFormat('unsupported_format'),
