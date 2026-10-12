@@ -6,10 +6,12 @@ import 'package:flutter/services.dart';
 
 import 'capture_controller.dart';
 import 'search_controller.dart';
+import 'revision_controller.dart';
+import 'revision_diff.dart';
 import 'sketch_ui.dart';
 
-/// A navigable preview of the product plan. Only text capture uses DiaryApi;
-/// all other content is clearly identified as a local, disposable simulation.
+/// The text, search, and source revision paths use DiaryApi. Remaining preview
+/// screens identify their local, disposable simulation state in the UI.
 class ExperienceShell extends StatefulWidget {
   const ExperienceShell({super.key, required this.api, required this.demoMode});
 
@@ -24,10 +26,12 @@ class _ExperienceShellState extends State<ExperienceShell>
     with WidgetsBindingObserver {
   late final CaptureController _capture;
   late final DiarySearchController _coreSearch;
+  late final RevisionController _revisions;
   late final Listenable _contentChanges;
   final _editor = TextEditingController();
   final _search = TextEditingController();
   final _editVersion = TextEditingController();
+  final _revisionEditor = TextEditingController();
   final _responseText = TextEditingController();
   final _secret = TextEditingController();
   Timer? _searchDebounce;
@@ -45,6 +49,8 @@ class _ExperienceShellState extends State<ExperienceShell>
   String _searchKind = '全部';
   String _activeQuery = '';
   SearchHit? _selectedSearchHit;
+  String _revisionView = '正文';
+  bool _editingRevision = false;
   String _candidateDraft = _candidateBody;
   String _schedule = '22:30';
   bool _automatic = true;
@@ -65,7 +71,8 @@ class _ExperienceShellState extends State<ExperienceShell>
     WidgetsBinding.instance.addObserver(this);
     _capture = CaptureController(widget.api);
     _coreSearch = DiarySearchController(widget.api);
-    _contentChanges = Listenable.merge([_capture, _coreSearch]);
+    _revisions = RevisionController(widget.api);
+    _contentChanges = Listenable.merge([_capture, _coreSearch, _revisions]);
     _search.addListener(_onSearchValueChanged);
     unawaited(
       _capture.initialize(opened: true).then((_) {
@@ -82,10 +89,12 @@ class _ExperienceShellState extends State<ExperienceShell>
     WidgetsBinding.instance.removeObserver(this);
     _capture.dispose();
     _coreSearch.dispose();
+    _revisions.dispose();
     _editor.dispose();
     _search.removeListener(_onSearchValueChanged);
     _search.dispose();
     _editVersion.dispose();
+    _revisionEditor.dispose();
     _responseText.dispose();
     _secret.dispose();
     _searchDebounce?.cancel();
@@ -122,6 +131,23 @@ class _ExperienceShellState extends State<ExperienceShell>
 
   void _openDetail(String detail) {
     _flushDraft();
+    final capture = _capture.recent
+        .where((item) => item.id == detail)
+        .firstOrNull;
+    if (!widget.demoMode &&
+        capture?.state == CaptureState.committed &&
+        capture!.orderedSourceIds.isNotEmpty) {
+      unawaited(
+        _revisions.open(
+          sourceId: capture.orderedSourceIds.first,
+          captureId: capture.id,
+        captureRevision: capture.revision,
+          initialText: capture.draftText,
+        ),
+      );
+      _revisionView = '正文';
+      _editingRevision = false;
+    }
     setState(() {
       _detail = detail;
       _panel = null;
@@ -470,10 +496,17 @@ class _ExperienceShellState extends State<ExperienceShell>
                     hit.title?.isNotEmpty == true ? hit.title! : '一段$kind记录',
                     '$kind${hit.dayKey == null ? '' : ' · ${hit.dayKey}'}',
                     hit.snippet ?? '这项材料暂无可展示的文字摘录。',
-                    () => setState(() {
-                      _selectedSearchHit = hit;
-                      _detail = 'search-hit';
-                    }),
+                    () {
+                      if (hit.sourceId != null) {
+                        unawaited(_revisions.open(sourceId: hit.sourceId!));
+                      }
+                      setState(() {
+                        _selectedSearchHit = hit;
+                        _revisionView = '正文';
+                        _editingRevision = false;
+                        _detail = 'search-hit';
+                      });
+                    },
                   ),
                   desktop,
                 );
@@ -2006,6 +2039,13 @@ class _ExperienceShellState extends State<ExperienceShell>
     final detail = _detail!;
     if (detail == 'search-hit' && _selectedSearchHit != null) {
       final hit = _selectedSearchHit!;
+      if (hit.sourceId != null) {
+        return _revisionDetail(
+          title: hit.title ?? '找到的片段',
+          subtitle: hit.dayKey ?? '本地原始材料',
+          fallback: hit.snippet,
+        );
+      }
       return Column(
         key: ValueKey('search-hit-${hit.hitId}'),
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2038,6 +2078,14 @@ class _ExperienceShellState extends State<ExperienceShell>
       );
     }
     final capture = _capture.recent.where((c) => c.id == detail).firstOrNull;
+    if (!widget.demoMode &&
+        capture?.state == CaptureState.committed &&
+        capture!.orderedSourceIds.isNotEmpty) {
+      return _revisionDetail(
+        title: '收好的记录',
+        subtitle: _dateLabel(capture.occurredAt.toLocal()),
+      );
+    }
     final title = switch (detail) {
       'source' => '花店门口的片刻',
       'photo' => '傍晚的街角',
@@ -2105,6 +2153,179 @@ class _ExperienceShellState extends State<ExperienceShell>
           ),
         ),
       ],
+    );
+  }
+
+  Widget _revisionDetail({
+    required String title,
+    required String subtitle,
+    String? fallback,
+  }) {
+    final revisions = _revisions;
+    final current = revisions.currentText;
+    final previous = revisions.previousText;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: _back,
+            icon: const Icon(Icons.arrow_back),
+            label: const Text('返回'),
+          ),
+        ),
+        _title(title, subtitle),
+        const SizedBox(height: 18),
+        if (revisions.loading) const LinearProgressIndicator(),
+        if (revisions.error != null)
+          _notice('读取正文失败：${revisions.error}', icon: Icons.error_outline),
+        if (revisions.indexWarning != null)
+          _notice(revisions.indexWarning!, icon: Icons.info_outline),
+        if (current == null && !revisions.loading && revisions.error == null)
+          _notice(fallback ?? '当前正文仍在处理，暂时无法展示完整内容。'),
+        if (current != null) ...[
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final view in [
+                '正文',
+                if (previous != null) '看原正文',
+                if (previous != null) '看改了什么',
+              ])
+                ChoiceChip(
+                  label: Text(view),
+                  selected: _revisionView == view,
+                  onSelected: (_) => setState(() {
+                    _revisionView = view;
+                    _editingRevision = false;
+                  }),
+                ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          if (_editingRevision) ...[
+            SketchFrame(
+              child: TextField(
+                key: const Key('revision-editor'),
+                controller: _revisionEditor,
+                minLines: 10,
+                maxLines: 22,
+                decoration: const InputDecoration(border: InputBorder.none),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 10,
+              children: [
+                SketchAction(
+                  label: revisions.saving ? '正在保存…' : '保存正文修改',
+                  filled: true,
+                  onPressed: revisions.saving
+                      ? null
+                      : () async {
+                          final saved = await revisions.save(
+                            _revisionEditor.text,
+                          );
+                          if (!mounted) return;
+                          if (saved) {
+                            try {
+                              await _capture.refresh();
+                            } catch (_) {
+                              // The durable revision was already confirmed.
+                            }
+                            if (!mounted) return;
+                            setState(() {
+                              _editingRevision = false;
+                              _revisionView = '正文';
+                            });
+                            _toast('新版正文已保存');
+                          }
+                        },
+                ),
+                SketchAction(
+                  label: '取消',
+                  onPressed: () => setState(() => _editingRevision = false),
+                ),
+              ],
+            ),
+          ] else if (_revisionView == '看改了什么' && previous != null)
+            _revisionDiffCard(previous, current)
+          else
+            SketchFrame(
+              padding: const EdgeInsets.all(27),
+              child: Text(
+                _revisionView == '看原正文' ? (previous ?? current) : current,
+                style: const TextStyle(
+                  color: SketchColors.text,
+                  fontSize: 17,
+                  height: 1.85,
+                ),
+              ),
+            ),
+          if (!_editingRevision &&
+              _revisionView == '正文' &&
+              revisions.canEdit) ...[
+            const SizedBox(height: 15),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: SketchAction(
+                label: '修改正文',
+                onPressed: () => setState(() {
+                  _revisionEditor.text = current;
+                  _editingRevision = true;
+                }),
+              ),
+            ),
+          ],
+        ],
+        if (revisions.error != null && _editingRevision)
+          _notice('保存失败：${revisions.error}', icon: Icons.error_outline),
+      ],
+    );
+  }
+
+  Widget _revisionDiffCard(String previous, String current) {
+    final lines = revisionDiff(previous, current);
+    return SketchFrame(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            '− 删除    ＋ 新增',
+            style: TextStyle(color: SketchColors.muted, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          for (final line in lines.take(300))
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Text(
+                '${switch (line.kind) {
+                  RevisionLineKind.added => '＋',
+                  RevisionLineKind.removed => '−',
+                  RevisionLineKind.same => '  ',
+                }} ${line.text}',
+                style: TextStyle(
+                  color: line.kind == RevisionLineKind.same
+                      ? SketchColors.text
+                      : SketchColors.ink,
+                  fontWeight: line.kind == RevisionLineKind.same
+                      ? FontWeight.normal
+                      : FontWeight.w700,
+                  height: 1.7,
+                ),
+              ),
+            ),
+          if (lines.length > 300)
+            const Text(
+              '差异过长，仅展示前 300 行。',
+              style: TextStyle(color: SketchColors.muted),
+            ),
+        ],
+      ),
     );
   }
 

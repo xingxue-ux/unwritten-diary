@@ -55,6 +55,10 @@ class BridgeDiaryApi implements api.DiaryApi {
     'captures.commit',
     'captures.get',
     'captures.list',
+    'sources.reviseText',
+    'sources.previousRevision',
+    'sources.extractedContent',
+    'sources.extract',
     'search.start',
     'search.nextPage',
     'search.snapshot',
@@ -196,6 +200,45 @@ class BridgeDiaryApi implements api.DiaryApi {
       nextCursor: page.nextCursor,
     );
   }
+
+  @override
+  Future<api.SourceRevision> reviseText({
+    required String sourceId,
+    required String text,
+    required int expectedRevision,
+    required String operationId,
+  }) async => _sourceRevision(
+    await _translate(
+      () => _open.reviseText(
+        sourceId: sourceId,
+        text: text,
+        expectedRevision: expectedRevision,
+        operationId: operationId,
+      ),
+    ),
+  );
+
+  @override
+  Future<api.SourceRevision?> previousSourceRevision(String sourceId) async {
+    final revision = await _translate(
+      () => _open.previousSourceRevision(sourceId: sourceId),
+    );
+    return revision == null ? null : _sourceRevision(revision);
+  }
+
+  @override
+  Future<api.ExtractedContent?> extractedContent(String sourceId) async {
+    final content = await _translate(
+      () => _open.extractedContent(sourceId: sourceId),
+    );
+    return content == null ? null : _extractedContent(content);
+  }
+
+  @override
+  Future<api.ExtractedContent> extractSource(String sourceId) async =>
+      _extractedContent(
+        await _translate(() => _open.extractSource(sourceRef: sourceId)),
+      );
 
   @override
   Future<api.SearchSnapshot> startSearch({
@@ -348,6 +391,31 @@ class BridgeDiaryApi implements api.DiaryApi {
         },
         occurredAt: value.occurredAt,
         // 桥接侧目前不提供 provenance（契约里它是可空字段），如实留空。
+      );
+
+  api.ExtractedContent _extractedContent(bridge.ExtractedContent value) =>
+      api.ExtractedContent(
+        id: value.id,
+        sourceId: value.sourceId,
+        sourceRevisionId: value.sourceRevisionId,
+        extractorId: value.extractorId,
+        extractorVersion: value.extractorVersion,
+        status: api.ProcessingStatus.values.byName(value.status.name),
+        coverage: api.Coverage.values.byName(value.coverage.name),
+        text: value.text,
+        segments: value.segments
+            .map(
+              (segment) => api.ExtractedSegment(
+                text: segment.text,
+                locator: _locator(segment.locator),
+                coverage: api.Coverage.values.byName(value.coverage.name),
+              ),
+            )
+            .toList(growable: false),
+        errorCode: value.errorCode == null
+            ? null
+            : _errorCode(value.errorCode!),
+        coverageReason: value.coverageReason,
       );
 
   api.SearchSnapshot _searchSnapshot(bridge.SearchSnapshot value) =>
