@@ -57,6 +57,8 @@ void main() {
     expect(info.capabilities, contains('indexes.status'));
     // 检索会话在 B3b 接上了。
     expect(info.capabilities, contains('search.start'));
+    // 混合检索的两阶段（#69）：升级入口也接到了桥上。
+    expect(info.capabilities, contains('search.upgrade'));
     // 诚实的能力声明：还没接的不该出现在清单里。
     expect(info.capabilities, isNot(contains('diary.generate')));
     expect(info.recovery.pendingJobs, 0);

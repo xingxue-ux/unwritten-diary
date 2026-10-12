@@ -897,6 +897,20 @@ impl Core {
         search_session::cancel(self, session_id)
     }
 
+    /// 把混合（`mode = hybrid`）会话从关键词阶段升级到融合阶段（#69）。
+    ///
+    /// `start_search(mode = hybrid)` 先只算关键词那一路并报 `keyword_ready`（首屏不等
+    /// 模型）；这里才真正做 RRF 融合，返回**同一会话**的 `hybrid_ready` 快照。升级后
+    /// 翻页给融合结果，翻完报 `done`。**幂等**：重复调用返回当前快照，不重复算。
+    ///
+    /// 语义拿不出可融合的证据（没配模型 / 加载失败 / 没有生效代次 / 没有块）时
+    /// **不声称** `hybrid_ready`：如实返回关键词结果、阶段仍是 `keyword_ready`，
+    /// 并在 `warnings` 里说明。已取消的会话返回 `cancelled` 快照；索引变了报
+    /// `search_expired`；非混合会话报 `invalid_state`。
+    pub fn upgrade_search_to_hybrid(&mut self, session_id: &str) -> Result<SearchSnapshot> {
+        search_session::upgrade(self, session_id)
+    }
+
     // ------------------------------------------------------------ 原件与导入
 
     /// 申请导入暂存位置，契约第 4.2 节 `imports.prepare`。

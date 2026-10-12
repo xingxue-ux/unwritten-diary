@@ -268,6 +268,11 @@ fn empty_query_and_degraded_modes_say_so() {
     hybrid.mode = SearchMode::Hybrid;
     hybrid.filters.include_old_diary_versions = true;
     let downgraded = core.start_search(hybrid, 2).unwrap();
+    assert_eq!(
+        downgraded.phase,
+        SearchPhase::KeywordReady,
+        "没有模型时混合只到关键词就绪（#69），不是 done、更不是 hybrid_ready"
+    );
     assert!(
         downgraded
             .warnings
@@ -290,6 +295,22 @@ fn empty_query_and_degraded_modes_say_so() {
         .results
         .iter()
         .all(|hit| hit.matched_by == vec![MatchedBy::Keyword]));
+
+    // 升级（#69）：没有语义证据就不许假装融合过——阶段仍是 keyword_ready，
+    // 结果不变，只多一句如实的说明。
+    let upgraded = core
+        .upgrade_search_to_hybrid(&downgraded.session_id)
+        .unwrap();
+    assert_eq!(upgraded.phase, SearchPhase::KeywordReady);
+    assert_eq!(upgraded.results, downgraded.results);
+    assert!(
+        upgraded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("没有可融合的语义证据")),
+        "升级也要如实说清：{:?}",
+        upgraded.warnings
+    );
 }
 
 #[test]
