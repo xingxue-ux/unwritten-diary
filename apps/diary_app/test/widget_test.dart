@@ -8,6 +8,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:unwritten_diary/main.dart';
 import 'package:unwritten_diary/src/sketch_ui.dart';
 
+double _contrastRatio(Color foreground, Color background) {
+  final a = foreground.computeLuminance();
+  final b = background.computeLuminance();
+  final lighter = a > b ? a : b;
+  final darker = a > b ? b : a;
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 class CountingMockDiaryApi extends MockDiaryApi {
   int openCount = 0;
 
@@ -209,6 +217,128 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('测试片段 0'), findsNothing);
     expect(find.text('测试片段 1'), findsWidgets);
+  });
+
+  testWidgets('record page meets text contrast and Android touch guidelines', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await openApp(tester, MockDiaryApi());
+    // Flutter's pixel guideline mistakes antialiased CJK placeholder glyphs
+    // for the foreground in CI. Check the declared colors directly instead.
+    for (final label in ['记录', '日记', '搜索', '片段', '我的']) {
+      final text = tester.widget<Text>(find.text(label).last);
+      final foreground = text.style?.color;
+      expect(foreground, isNotNull, reason: label);
+      expect(
+        _contrastRatio(foreground!, SketchColors.paper),
+        greaterThanOrEqualTo(4.5),
+        reason: '$label must remain readable on the navigation paper',
+      );
+    }
+    await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+    for (final label in [
+      '封面与加载动画',
+      '前往记录',
+      '前往日记',
+      '前往搜索',
+      '前往片段',
+      '前往我的',
+      '添加材料',
+    ]) {
+      final node = tester.getSemantics(find.bySemanticsLabel(label));
+      final data = node.getSemanticsData();
+      expect(data.flagsCollection.isButton, isTrue, reason: label);
+      expect(data.hasAction(ui.SemanticsAction.tap), isTrue, reason: label);
+    }
+    final date = tester.getSemantics(find.bySemanticsLabel(RegExp('记录日期')));
+    expect(date.getSemanticsData().flagsCollection.isButton, isTrue);
+    expect(date.getSemanticsData().hasAction(ui.SemanticsAction.tap), isTrue);
+    final disabledFinish = tester.getSemantics(find.bySemanticsLabel('收好这一刻'));
+    expect(
+      disabledFinish.getSemanticsData().flagsCollection.isEnabled,
+      ui.Tristate.isFalse,
+    );
+    expect(
+      disabledFinish.getSemanticsData().hasAction(ui.SemanticsAction.tap),
+      isFalse,
+    );
+    await tester.enterText(find.byKey(const Key('capture-editor')), '今天的一句话');
+    await tester.pump();
+    final enabledFinish = tester.getSemantics(find.bySemanticsLabel('收好这一刻'));
+    expect(
+      enabledFinish.getSemanticsData().flagsCollection.isEnabled,
+      ui.Tristate.isTrue,
+    );
+    expect(
+      enabledFinish.getSemanticsData().hasAction(ui.SemanticsAction.tap),
+      isTrue,
+    );
+    semantics.dispose();
+  });
+
+  testWidgets('reduced motion settles the writing cat', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: MediaQuery(
+            data: MediaQueryData(disableAnimations: true),
+            child: WritingCat(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
+  testWidgets('system dark mode uses the warm ink and paper treatment', (
+    tester,
+  ) async {
+    tester.binding.platformDispatcher.platformBrightnessTestValue =
+        Brightness.dark;
+    addTearDown(
+      tester.binding.platformDispatcher.clearPlatformBrightnessTestValue,
+    );
+    await openApp(tester, MockDiaryApi());
+    expect(find.byType(ColorFiltered), findsOneWidget);
+    expect(
+      tester.widget<ColorFiltered>(find.byType(ColorFiltered)).colorFilter,
+      const ColorFilter.matrix(<double>[
+        0,
+        0,
+        -.88,
+        0,
+        245,
+        0,
+        -.88,
+        0,
+        0,
+        245,
+        -.88,
+        0,
+        0,
+        0,
+        245,
+        0,
+        0,
+        0,
+        1,
+        0,
+      ]),
+    );
+    expect(find.text('今天，想留住什么？'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('light mode keeps the original paper palette', (tester) async {
+    tester.binding.platformDispatcher.platformBrightnessTestValue =
+        Brightness.light;
+    addTearDown(
+      tester.binding.platformDispatcher.clearPlatformBrightnessTestValue,
+    );
+    await openApp(tester, MockDiaryApi());
+    expect(find.byType(ColorFiltered), findsNothing);
   });
 
   testWidgets('real mode reads saved records and hides preview material', (

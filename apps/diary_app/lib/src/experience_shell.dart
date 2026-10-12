@@ -193,7 +193,9 @@ class _ExperienceShellState extends State<ExperienceShell>
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 1240),
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 220),
+            duration: MediaQuery.disableAnimationsOf(context)
+                ? Duration.zero
+                : const Duration(milliseconds: 220),
             child: _currentPage(desktop),
           ),
         ),
@@ -208,11 +210,23 @@ class _ExperienceShellState extends State<ExperienceShell>
     ),
     child: Row(
       children: [
-        InkWell(
+        Semantics(
+          button: true,
+          label: '封面与加载动画',
           onTap: () => _openPanel('cover'),
-          child: SketchFrame(
-            padding: const EdgeInsets.all(5),
-            child: const CatMark(size: 33),
+          excludeSemantics: true,
+          child: InkWell(
+            onTap: () => _openPanel('cover'),
+            excludeFromSemantics: true,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+              child: Center(
+                child: SketchFrame(
+                  padding: const EdgeInsets.all(5),
+                  child: const CatMark(size: 33),
+                ),
+              ),
+            ),
           ),
         ),
         const SizedBox(width: 15),
@@ -302,28 +316,36 @@ class _ExperienceShellState extends State<ExperienceShell>
   );
 
   Widget _navItem(int index, IconData icon, String label) => Expanded(
-    child: InkWell(
+    child: Semantics(
+      button: true,
+      selected: _tab == index && _panel == null && _detail == null,
+      label: '前往$label',
       onTap: () => _go(index),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: 21,
-              color: _tab == index ? SketchColors.ink : SketchColors.muted,
-            ),
-            const SizedBox(height: 3),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 11,
+      excludeSemantics: true,
+      child: InkWell(
+        onTap: () => _go(index),
+        excludeFromSemantics: true,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 21,
                 color: _tab == index ? SketchColors.ink : SketchColors.muted,
-                fontWeight: _tab == index ? FontWeight.w700 : FontWeight.w400,
               ),
-            ),
-          ],
+              const SizedBox(height: 3),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: _tab == index ? SketchColors.ink : SketchColors.muted,
+                  fontWeight: _tab == index ? FontWeight.w700 : FontWeight.w400,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     ),
@@ -480,30 +502,41 @@ class _ExperienceShellState extends State<ExperienceShell>
     final left = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        InkWell(
+        Semantics(
+          button: true,
+          enabled: _capture.canChangeDate,
+          label: '记录日期：${_dateLabel(_capture.occurredAt ?? DateTime.now())}',
           onTap: _capture.canChangeDate ? _chooseDate : null,
-          child: Row(
-            children: [
-              Flexible(
-                child: Text(
-                  _dateLabel(_capture.occurredAt ?? DateTime.now()),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: SketchColors.muted,
-                    fontSize: desktop ? 17 : 14,
+          excludeSemantics: true,
+          child: InkWell(
+            onTap: _capture.canChangeDate ? _chooseDate : null,
+            excludeFromSemantics: true,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 48),
+              child: Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      _dateLabel(_capture.occurredAt ?? DateTime.now()),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: SketchColors.muted,
+                        fontSize: desktop ? 17 : 14,
+                      ),
+                    ),
                   ),
-                ),
+                  if (_capture.canChangeDate) ...[
+                    const SizedBox(width: 6),
+                    const Icon(
+                      Icons.edit_calendar_outlined,
+                      size: 15,
+                      color: SketchColors.muted,
+                    ),
+                  ],
+                ],
               ),
-              if (_capture.canChangeDate) ...[
-                const SizedBox(width: 6),
-                const Icon(
-                  Icons.edit_calendar_outlined,
-                  size: 15,
-                  color: SketchColors.muted,
-                ),
-              ],
-            ],
+            ),
           ),
         ),
         const SizedBox(height: 26),
