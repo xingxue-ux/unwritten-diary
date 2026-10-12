@@ -82,6 +82,38 @@ class LargeCaptureApi extends MockDiaryApi {
   final bool ignorePageSize;
   final int count;
   int pageRequests = 0;
+  int searchRequests = 0;
+
+  @override
+  Future<SearchSnapshot> startSearch({
+    required SearchRequest request,
+    required int queryRevision,
+  }) async {
+    searchRequests++;
+    final query = request.query.toLowerCase();
+    return SearchSnapshot(
+      sessionId: 'test-search-$searchRequests',
+      queryRevision: queryRevision,
+      phase: SearchPhase.done,
+      indexCoverage: Coverage.complete,
+      results: [
+        for (var index = 0; index < count; index++)
+          if ('测试片段 $index'.contains(query))
+            SearchHit(
+              hitId: 'hit-$index',
+              groupId: 'capture-$index',
+              sourceKind: SourceKind.text,
+              matchedBy: const {MatchedBy.keyword},
+              coverage: Coverage.complete,
+              dayKey: '2026-10-12',
+              snippet: '测试片段 $index',
+            ),
+      ],
+    );
+  }
+
+  @override
+  Future<void> cancelSearch(String sessionId) async {}
 
   @override
   Future<CapturePage> listCaptures({
@@ -147,6 +179,9 @@ void main() {
       ..start();
     await tester.tap(find.text('搜索').last);
     await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('global-search')), '测试片段');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.pumpAndSettle();
     stopwatch.stop();
     final searchBuilt = find.textContaining('测试片段').evaluate().length;
     expect(searchBuilt, greaterThan(0));
@@ -203,7 +238,7 @@ void main() {
       ),
     );
     await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('测试片段 0'), findsOneWidget);
+    expect(api.searchRequests, 0);
 
     tester.testTextInput.updateEditingValue(
       const TextEditingValue(
@@ -212,12 +247,33 @@ void main() {
       ),
     );
     await tester.pump(const Duration(milliseconds: 249));
-    expect(find.text('测试片段 0'), findsOneWidget);
+    expect(api.searchRequests, 0);
     await tester.pump(const Duration(milliseconds: 1));
     await tester.pumpAndSettle();
-    expect(find.text('测试片段 0'), findsNothing);
+    expect(api.searchRequests, 1);
     expect(find.text('测试片段 1'), findsWidgets);
   });
+
+  testWidgets(
+    'core search result opens its own excerpt and returns to search',
+    (tester) async {
+      final api = LargeCaptureApi(count: 2);
+      await tester.pumpWidget(DiaryApp(api: api));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('搜索').last);
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('global-search')), '测试片段 1');
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('一段文字记录'));
+      await tester.pumpAndSettle();
+      expect(find.text('返回搜索'), findsOneWidget);
+      expect(find.text('测试片段 1'), findsOneWidget);
+      await tester.tap(find.text('返回搜索'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('global-search')), findsOneWidget);
+    },
+  );
 
   testWidgets('record page meets text contrast and Android touch guidelines', (
     tester,

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'capture_controller.dart';
+import 'search_controller.dart';
 import 'sketch_ui.dart';
 
 /// A navigable preview of the product plan. Only text capture uses DiaryApi;
@@ -22,6 +23,8 @@ class ExperienceShell extends StatefulWidget {
 class _ExperienceShellState extends State<ExperienceShell>
     with WidgetsBindingObserver {
   late final CaptureController _capture;
+  late final DiarySearchController _coreSearch;
+  late final Listenable _contentChanges;
   final _editor = TextEditingController();
   final _search = TextEditingController();
   final _editVersion = TextEditingController();
@@ -41,6 +44,7 @@ class _ExperienceShellState extends State<ExperienceShell>
   String _voice = '第一人称';
   String _searchKind = '全部';
   String _activeQuery = '';
+  SearchHit? _selectedSearchHit;
   String _candidateDraft = _candidateBody;
   String _schedule = '22:30';
   bool _automatic = true;
@@ -60,6 +64,8 @@ class _ExperienceShellState extends State<ExperienceShell>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _capture = CaptureController(widget.api);
+    _coreSearch = DiarySearchController(widget.api);
+    _contentChanges = Listenable.merge([_capture, _coreSearch]);
     _search.addListener(_onSearchValueChanged);
     unawaited(
       _capture.initialize(opened: true).then((_) {
@@ -75,6 +81,7 @@ class _ExperienceShellState extends State<ExperienceShell>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _capture.dispose();
+    _coreSearch.dispose();
     _editor.dispose();
     _search.removeListener(_onSearchValueChanged);
     _search.dispose();
@@ -158,7 +165,7 @@ class _ExperienceShellState extends State<ExperienceShell>
                       ),
                       Expanded(
                         child: AnimatedBuilder(
-                          animation: _capture,
+                          animation: _contentChanges,
                           builder: (context, _) => _scrollContent(desktop),
                         ),
                       ),
@@ -373,6 +380,7 @@ class _ExperienceShellState extends State<ExperienceShell>
   );
 
   Widget _searchScroll(bool desktop) {
+    if (!widget.demoMode) return _coreSearchScroll(desktop);
     final query = _activeQuery;
     final captures = _capture.recent.where(
       (capture) =>
@@ -411,6 +419,153 @@ class _ExperienceShellState extends State<ExperienceShell>
       ],
     );
   }
+
+  Set<SourceKind> _searchKinds() => switch (_searchKind) {
+    '文字' => const {SourceKind.text},
+    '录音' => const {SourceKind.audio},
+    '文件' => const {SourceKind.file},
+    _ => const {},
+  };
+
+  void _setSearchKind(String kind) {
+    setState(() => _searchKind = kind);
+    if (!widget.demoMode) {
+      unawaited(_coreSearch.search(_search.text, kinds: _searchKinds()));
+    }
+  }
+
+  Widget _coreSearchScroll(bool desktop) =>
+      NotificationListener<ScrollNotification>(
+        onNotification: (notification) {
+          if (notification.depth == 0 &&
+              notification.metrics.extentAfter < 400 &&
+              _coreSearch.canLoadMore) {
+            unawaited(_coreSearch.loadMore());
+          }
+          return false;
+        },
+        child: CustomScrollView(
+          key: const PageStorageKey('search-scroll'),
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.only(top: desktop ? 35 : 25),
+                child: _sliverContent(_coreSearchHeader(), desktop),
+              ),
+            ),
+            SliverList.builder(
+              itemCount: _coreSearch.hits.length,
+              itemBuilder: (context, index) {
+                final hit = _coreSearch.hits[index];
+                final kind = switch (hit.sourceKind) {
+                  SourceKind.text => '文字',
+                  SourceKind.audio => '录音',
+                  SourceKind.image => '照片',
+                  SourceKind.video => '视频',
+                  SourceKind.file => '文件',
+                  SourceKind.link => '链接',
+                };
+                return _sliverContent(
+                  _resultTile(
+                    hit.title?.isNotEmpty == true ? hit.title! : '一段$kind记录',
+                    '$kind${hit.dayKey == null ? '' : ' · ${hit.dayKey}'}',
+                    hit.snippet ?? '这项材料暂无可展示的文字摘录。',
+                    () => setState(() {
+                      _selectedSearchHit = hit;
+                      _detail = 'search-hit';
+                    }),
+                  ),
+                  desktop,
+                );
+              },
+            ),
+            SliverToBoxAdapter(
+              child: _sliverContent(
+                _coreSearch.loadingMore
+                    ? const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    : _coreSearch.error != null && _coreSearch.hits.isNotEmpty
+                    ? SketchAction(
+                        label: '加载失败，重试下一页',
+                        onPressed: () => unawaited(_coreSearch.loadMore()),
+                      )
+                    : const SizedBox.shrink(),
+                desktop,
+              ),
+            ),
+            const SliverToBoxAdapter(child: SizedBox(height: 40)),
+          ],
+        ),
+      );
+
+  Widget _coreSearchHeader() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      _title('搜索', '找回本机的文字与原始材料。'),
+      const SizedBox(height: 20),
+      _notice('当前为本地关键词搜索；语义补充与原件定位正在接入。'),
+      const SizedBox(height: 18),
+      SketchFrame(
+        padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 6),
+        child: Row(
+          children: [
+            const Icon(Icons.search, color: SketchColors.ink),
+            const SizedBox(width: 10),
+            Expanded(
+              child: TextField(
+                key: const Key('global-search'),
+                controller: _search,
+                decoration: const InputDecoration(
+                  hintText: '搜索一个词，或一段记忆…',
+                  border: InputBorder.none,
+                ),
+              ),
+            ),
+            if (_search.text.isNotEmpty)
+              IconButton(
+                tooltip: '清除搜索',
+                onPressed: _search.clear,
+                icon: const Icon(Icons.close),
+              ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 13),
+      Wrap(
+        spacing: 7,
+        children: [
+          for (final kind in ['全部', '文字', '录音', '文件'])
+            ChoiceChip(
+              label: Text(kind),
+              selected: _searchKind == kind,
+              onSelected: (_) => _setSearchKind(kind),
+            ),
+        ],
+      ),
+      const SizedBox(height: 22),
+      if (_coreSearch.loading) const LinearProgressIndicator(),
+      if (_coreSearch.error != null && _coreSearch.hits.isEmpty)
+        _notice(_coreSearch.error!, icon: Icons.error_outline),
+      if (!_coreSearch.loading &&
+          _coreSearch.error == null &&
+          _coreSearch.query.isNotEmpty &&
+          _coreSearch.hits.isEmpty)
+        _notice('没有找到匹配内容。尚未处理的材料可能暂时无法检索。', icon: Icons.search_off),
+      if (_coreSearch.snapshot?.warnings.isNotEmpty == true)
+        _notice(_coreSearch.snapshot!.warnings.join(' · ')),
+      if (_coreSearch.hits.isNotEmpty)
+        Text(
+          '找到的片段',
+          style: const TextStyle(
+            color: SketchColors.ink,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      const SizedBox(height: 12),
+    ],
+  );
 
   Widget _timelineScroll(
     bool desktop,
@@ -983,7 +1138,7 @@ class _ExperienceShellState extends State<ExperienceShell>
               ChoiceChip(
                 label: Text(kind),
                 selected: _searchKind == kind,
-                onSelected: (_) => setState(() => _searchKind = kind),
+                onSelected: (_) => _setSearchKind(kind),
               ),
           ],
         ),
@@ -1022,7 +1177,12 @@ class _ExperienceShellState extends State<ExperienceShell>
     if (composing.isValid && !composing.isCollapsed) return;
     final value = _search.text;
     _searchDebounce = Timer(const Duration(milliseconds: 250), () {
-      if (mounted) setState(() => _activeQuery = value.trim().toLowerCase());
+      if (!mounted) return;
+      if (widget.demoMode) {
+        setState(() => _activeQuery = value.trim().toLowerCase());
+      } else {
+        unawaited(_coreSearch.search(value, kinds: _searchKinds()));
+      }
     });
   }
 
@@ -1844,6 +2004,39 @@ class _ExperienceShellState extends State<ExperienceShell>
 
   Widget _detailPage(bool desktop) {
     final detail = _detail!;
+    if (detail == 'search-hit' && _selectedSearchHit != null) {
+      final hit = _selectedSearchHit!;
+      return Column(
+        key: ValueKey('search-hit-${hit.hitId}'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _back,
+              icon: const Icon(Icons.arrow_back),
+              label: const Text('返回搜索'),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _title(hit.title ?? '找到的片段', hit.dayKey ?? '本地原始材料'),
+          const SizedBox(height: 18),
+          SketchFrame(
+            padding: const EdgeInsets.all(27),
+            child: Text(
+              hit.snippet ?? '这项材料暂无可展示的文字摘录。',
+              style: const TextStyle(
+                color: SketchColors.text,
+                fontSize: 17,
+                height: 1.85,
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+          _notice('这里展示搜索摘录。原件全文与播放定位仍在接入。'),
+        ],
+      );
+    }
     final capture = _capture.recent.where((c) => c.id == detail).firstOrNull;
     final title = switch (detail) {
       'source' => '花店门口的片刻',
