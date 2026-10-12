@@ -192,9 +192,17 @@ void main() {
     expect(second.phase, SearchPhase.done);
     expect((await api.searchSnapshot(first.sessionId)).phase, SearchPhase.done);
 
-    await api.cancelSearch(first.sessionId);
+    final cancellable = await api.startSearch(
+      request: const SearchRequest(
+        query: '适配层',
+        mode: SearchMode.keyword,
+        pageSize: 1,
+      ),
+      queryRevision: 43,
+    );
+    await api.cancelSearch(cancellable.sessionId);
     expect(
-      (await api.searchSnapshot(first.sessionId)).phase,
+      (await api.searchSnapshot(cancellable.sessionId)).phase,
       SearchPhase.cancelled,
     );
   });
