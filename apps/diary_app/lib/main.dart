@@ -1,17 +1,25 @@
 import 'package:diary_api/diary_api.dart';
 import 'package:diary_mock/diary_mock.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'src/app_services.dart';
 import 'src/experience_shell.dart';
 import 'src/sketch_ui.dart';
 import 'src/theme.dart';
 
-void main() => runApp(DiaryApp(api: MockDiaryApi(), demoMode: true));
+const _previewMode = bool.fromEnvironment('DIARY_DEMO_MODE');
+
+void main() => runApp(
+  DiaryApp(api: _previewMode ? MockDiaryApi() : null, demoMode: _previewMode),
+);
 
 class DiaryApp extends StatelessWidget {
-  const DiaryApp({super.key, required this.api, required this.demoMode});
+  const DiaryApp({super.key, this.api, this.demoMode = false});
 
-  final DiaryApi api;
+  /// Tests and the deliberate preview can inject a mock. Normal startup uses
+  /// the persistent Rust library through [createProductionDiaryApi].
+  final DiaryApi? api;
   final bool demoMode;
 
   @override
@@ -19,13 +27,30 @@ class DiaryApp extends StatelessWidget {
     title: '不写日记',
     debugShowCheckedModeBanner: false,
     theme: DiaryTheme.light,
+    builder: (context, child) {
+      if (MediaQuery.platformBrightnessOf(context) != Brightness.dark) {
+        return child!;
+      }
+      // The hand-drawn UI is intentionally built from a fixed paper/ink
+      // palette. This warm negative-print transform keeps every stroke and
+      // text shade legible in system dark mode without changing its shapes.
+      return ColorFiltered(
+        colorFilter: const ColorFilter.matrix(<double>[
+          0, 0, -.88, 0, 245,
+          0, -.88, 0, 0, 245,
+          -.88, 0, 0, 0, 245,
+          0, 0, 0, 1, 0,
+        ]),
+        child: child!,
+      );
+    },
     home: _BootGate(api: api, demoMode: demoMode),
   );
 }
 
 class _BootGate extends StatefulWidget {
   const _BootGate({required this.api, required this.demoMode});
-  final DiaryApi api;
+  final DiaryApi? api;
   final bool demoMode;
 
   @override
@@ -33,7 +58,7 @@ class _BootGate extends StatefulWidget {
 }
 
 class _BootGateState extends State<_BootGate> {
-  late Future<CoreSnapshot> _opening;
+  late Future<({DiaryApi api, CoreSnapshot snapshot})> _opening;
 
   @override
   void initState() {
@@ -41,45 +66,64 @@ class _BootGateState extends State<_BootGate> {
     _opening = _open();
   }
 
-  Future<CoreSnapshot> _open() async {
-    final snapshot = await widget.api.open();
-    final appMajor = int.tryParse(kApiVersion.split('.').first);
-    final coreMajor = int.tryParse(
-      snapshot.coreInfo.apiVersion.split('.').first,
-    );
-    if (appMajor == null || coreMajor != appMajor) {
-      throw _CoreUnavailable('资料库接口版本不兼容，请更新应用后再打开。');
+  Future<({DiaryApi api, CoreSnapshot snapshot})> _open() async {
+    try {
+      final api = widget.api ?? await createProductionDiaryApi();
+      final snapshot = await api.open();
+      final appMajor = int.tryParse(kApiVersion.split('.').first);
+      final coreMajor = int.tryParse(
+        snapshot.coreInfo.apiVersion.split('.').first,
+      );
+      if (appMajor == null || coreMajor != appMajor) {
+        throw _CoreUnavailable('资料库接口版本不兼容，请更新应用后再打开。');
+      }
+      const requiredCaptureCapabilities = {
+        'captures.createDraft',
+        'captures.saveDraft',
+        'captures.commit',
+        'captures.list',
+      };
+      if (!snapshot.coreInfo.capabilities.containsAll(
+        requiredCaptureCapabilities,
+      )) {
+        throw _CoreUnavailable('资料库缺少记录所需能力，请更新核心后再打开。');
+      }
+      return (api: api, snapshot: snapshot);
+    } catch (failure, stackTrace) {
+      // The release UI stays concise; debug runs retain the actual bridge or
+      // SQLite error so a mismatched Rust/Dart build can be diagnosed.
+      if (kDebugMode) {
+        debugPrint(
+          'Diary core startup failed (${failure.runtimeType}): $failure',
+        );
+        debugPrintStack(stackTrace: stackTrace);
+      }
+      rethrow;
     }
-    const requiredCaptureCapabilities = {
-      'captures.createDraft',
-      'captures.saveDraft',
-      'captures.commit',
-      'captures.list',
-    };
-    if (!snapshot.coreInfo.capabilities.containsAll(
-      requiredCaptureCapabilities,
-    )) {
-      throw _CoreUnavailable('资料库缺少记录所需能力，请更新核心后再打开。');
-    }
-    return snapshot;
   }
 
   @override
-  Widget build(BuildContext context) => FutureBuilder<CoreSnapshot>(
+  Widget build(BuildContext context) =>
+      FutureBuilder<({DiaryApi api, CoreSnapshot snapshot})>(
     future: _opening,
     builder: (context, result) {
       if (result.hasData) {
-        return ExperienceShell(api: widget.api, demoMode: widget.demoMode);
+        return ExperienceShell(
+          api: result.data!.api,
+          demoMode: widget.demoMode,
+        );
       }
       if (result.hasError) {
         final failure = result.error;
         final message = switch (failure) {
           _CoreUnavailable(:final message) => message,
+          ProductionCoreUnavailable(:final message) => message,
           DiaryException(:final message) => message,
           _ => '资料库暂时没能打开，请稍后再试。',
         };
         final retryable = switch (failure) {
           _CoreUnavailable() => false,
+          ProductionCoreUnavailable() => false,
           DiaryException(:final retryable) => retryable,
           _ => true,
         };

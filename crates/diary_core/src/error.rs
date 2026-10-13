@@ -12,6 +12,8 @@ pub enum ErrorCode {
     NotFound,
     /// 当前状态不允许这个操作。
     InvalidState,
+    /// 输入本身不合法（例如 `indexes.rebuild` 的 `scope` 编码解析不了）。
+    InvalidArgument,
     /// 乐观锁版本不匹配。
     RevisionConflict,
     /// 同一个 operationId 被用于不同内容。
@@ -37,6 +39,7 @@ impl ErrorCode {
         match self {
             Self::NotFound => "not_found",
             Self::InvalidState => "invalid_state",
+            Self::InvalidArgument => "invalid_argument",
             Self::RevisionConflict => "revision_conflict",
             Self::IdempotencyConflict => "idempotency_conflict",
             Self::StorageFull => "storage_full",
@@ -62,6 +65,9 @@ pub enum CoreError {
         id: String,
         state: String,
     },
+
+    #[error("输入不合法：{reason}")]
+    InvalidArgument { reason: String },
 
     #[error("版本冲突：期望 revision {expected}，实际 {actual}")]
     RevisionConflict { expected: i64, actual: i64 },
@@ -106,6 +112,7 @@ impl CoreError {
         match self {
             Self::NotFound { .. } => ErrorCode::NotFound,
             Self::InvalidState { .. } => ErrorCode::InvalidState,
+            Self::InvalidArgument { .. } => ErrorCode::InvalidArgument,
             Self::RevisionConflict { .. } => ErrorCode::RevisionConflict,
             Self::IdempotencyConflict { .. } => ErrorCode::IdempotencyConflict,
             Self::StorageFull => ErrorCode::StorageFull,

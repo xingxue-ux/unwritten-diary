@@ -14,7 +14,9 @@ use chrono::{DateTime, Utc};
 use diary_core::{
     Capture, CapturePage, CommitResult, Core, CoreError, DomainEvent, DraftSaveResult,
     ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job,
-    JobState, SearchRequest, SearchSnapshot, SourceLocation, SourceLocator, SourceRevision,
+    JobRunSummary, JobState, JobStatus, SearchRequest, SearchSnapshot, SourceLocation,
+    SourceLocator,
+    SourceRevision,
 };
 use flutter_rust_bridge::frb;
 
@@ -70,6 +72,13 @@ pub struct BridgeSession {
     inner: Mutex<Core>,
     library_id: String,
 }
+
+/// 一轮驱动最多跑几条任务（防御性上限）。
+///
+/// 契约 `jobs.runDue` 只给毫秒预算、不给条数，所以这个上限由桥接层拍：预算挡的是
+/// 长尾，它挡的是「队列很长 + 多条短任务」把一轮拖成没完没了。没跑上的任务留在
+/// 队列里、如实计入摘要的 `dueBacklog`，下一轮接着跑——不会丢。
+const RUN_DUE_MAX_JOBS: usize = 64;
 
 impl BridgeSession {
     /// 打开（或创建）资料库。
@@ -272,6 +281,25 @@ impl BridgeSession {
         Ok(core.index_status(source_scope.as_deref())?)
     }
 
+    /// 排一条关键词索引重建任务，契约第 4.4 节 `indexes.rebuild`。
+    ///
+    /// **异步**：只排任务并返回它（`targetIds` 为空表示整库），不做同步重建——同步
+    /// 重建会阻塞界面，而队列的退避、补做与依赖闸门已经就绪。`scope` 的编码见契约
+    /// 第 4.4 节：`all` 整库，`sources:<id>[,<id>]*` 指定来源（顺序无语义，空列表 /
+    /// 非法字符报 `invalid_argument`，不存在的来源报 `not_found`）。
+    ///
+    /// 幂等：同一个 `(scope, reason, operationId)` 重复调用返回同一条任务；同一个
+    /// operationId 换了 scope 或原因报 `idempotency_conflict`。
+    pub fn rebuild_indexes(
+        &self,
+        scope: String,
+        reason: String,
+        operation_id: String,
+    ) -> Result<Job, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.schedule_index_rebuild(&scope, &reason, &operation_id)?)
+    }
+
     // ------------------------------------------------------------ 检索会话
 
     /// 发起一次检索，契约第 4.4 节 `search.start`。
@@ -327,6 +355,39 @@ impl BridgeSession {
     pub fn get_job(&self, job_id: String) -> Result<Job, BridgeError> {
         let core = self.lock()?;
         Ok(core.get_job(&job_id)?)
+    }
+
+    /// 任务面板状态：各状态计数、到期积压、下次唤醒与最近错误。
+    ///
+    /// 最近错误只有 kind + 错误码 + 时间（外加不透明的任务 ID），**没有用户内容**。
+    pub fn job_status(&self) -> Result<JobStatus, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.job_status()?)
+    }
+
+    /// **跑一轮到期任务**（驱动），返回本轮摘要：跑了几条、成功/失败各几条、其中多少条是
+    /// **补做**（本轮领取时排期已过期）、还有多少到期未跑（被预算/条数截住）、有多少在等
+    /// 依赖、下一个唤醒时刻，以及本次的唤醒来源。
+    ///
+    /// - `budget_ms` 是平台授予的**时间预算**（毫秒），对齐契约 `jobs.runDue` 的
+    ///   `budgetMs`；`0` 表示这一轮一条都不跑。预算**只在任务之间判断**：已经在跑的
+    ///   任务不打断（核心不做抢占），所以一条任务本身可以比预算还长；
+    /// - `trigger` 是唤醒来源（`startup` / `foreground` / `wake` / `manual` …），
+    ///   核心如实记进摘要但不改变行为；什么时候调用由平台层决定（#19）；
+    /// - 条数上限由这一层夹一个防御性常量 `RUN_DUE_MAX_JOBS`（契约没给这个参数）：
+    ///   没跑上的任务留在队列里、如实计入 `dueBacklog`，下一轮接着跑。
+    pub fn run_due_jobs(
+        &self,
+        budget_ms: u32,
+        trigger: String,
+    ) -> Result<JobRunSummary, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.run_due_jobs(
+            Utc::now(),
+            u64::from(budget_ms),
+            &trigger,
+            RUN_DUE_MAX_JOBS,
+        )?)
     }
 
     /// 建议的下次唤醒时刻；没有待办时为空。
@@ -400,6 +461,7 @@ fn wired_capabilities() -> Vec<String> {
         "sources.previousRevision",
         "sources.locate",
         "indexes.status",
+        "indexes.rebuild",
         "search.start",
         "search.nextPage",
         "search.snapshot",
@@ -407,6 +469,8 @@ fn wired_capabilities() -> Vec<String> {
         "search.upgrade",
         "jobs.list",
         "jobs.get",
+        "jobs.status",
+        "jobs.runDue",
         "jobs.nextWakeup",
         "core.events",
     ]

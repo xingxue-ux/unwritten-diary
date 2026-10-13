@@ -92,4 +92,24 @@ void main() {
     expect(capabilities, isNot(contains('search.upgrade')));
     expect(capabilities, isNot(contains('search.start')));
   });
+
+  test('索引重建在 Mock 里明确拒绝，不伪造成功', () {
+    // Mock 没有队列、没有索引，也不写盘。它做不到 `indexes.rebuild` 就如实报未实现，
+    // 绝不返回一个假的 jobId 让界面以为排上了。`noSuchMethod` 是同步抛的，所以用
+    // 闭包断言，而不是 await 一个永远不会返回的 Future。
+    final api = MockDiaryApi(clock: () => now);
+    expect(
+      () => api.rebuildIndexes(scope: 'all', reason: 'manual', operationId: 'op-1'),
+      throwsA(isA<UnsupportedError>()),
+    );
+    // 契约声明的 scope 编码在 Mock 里也不被「顺便实现」成别的东西。
+    expect(
+      () => api.rebuildIndexes(
+        scope: 'sources:src_0000',
+        reason: 'manual',
+        operationId: 'op-2',
+      ),
+      throwsA(isA<UnsupportedError>()),
+    );
+  });
 }

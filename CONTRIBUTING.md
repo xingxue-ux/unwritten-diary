@@ -211,3 +211,28 @@ indicating out-of-sync code.
   `NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost python3 …`。
 
 **通用原则**：本机失败先看「是不是挂载盘/工具链」，再怀疑改动；但**不要把本机通过当验收**——最终以 CI 与（开发完成后的）真机为准。
+
+### 10.6 合并 `main` 之后必须**重跑 codegen**
+
+**症状**：合并 `main` 后一切测试都过，但应用一启动就报 10.4 里那个内容哈希不一致。
+
+**原因**：`frb_generated.rs` / `frb_generated.dart` 是**生成产物**，两边分支都改过桥接时，git 会
+**自动合并**它们——结果语法上没问题、也能编译，但与合并后的 `api.rs` **不同源**。我在这几条 PR 上
+连着踩了两次。
+
+**规则**：
+
+1. 合并 `main`（或任何改过 `crates/diary_bridge/**` 的分支）之后，**重跑**
+   `flutter_rust_bridge_codegen generate`，并看 `git status` 是否有产物变化——**有变化就说明刚才那份是错的**，
+   连同产物一起提交；
+2. 提交前跑一次桥接测试（它会触发内容哈希校验）：
+   `cargo build --release -p diary_bridge && (cd packages/diary_bridge && dart test)`；
+3. **不要手工合并生成产物**，冲突时先取一侧再重跑生成（第 4 节已要求生成命令与产物同 PR）。
+
+### 10.7 依赖解析与构建产物的两个坑
+
+- **`flutter pub get` 拉不到包**（代理/网络抽风）会让整个构建**卡住或失败**。用本地缓存离线解析：
+  `flutter pub get --offline`（需要缓存里已有这些版本，正常开发机上都有）。
+- **关机/重启会清掉 `/tmp` 下的东西**：`CARGO_TARGET_DIR=/tmp/...` 的产物、放在 `/tmp` 的
+  `git worktree` 都会消失（worktree 会变成 `prunable`）。重启后按需 `git worktree prune` 再重建；
+  安卓模拟器是宿主进程，也会一起被杀掉，重新启动即可。

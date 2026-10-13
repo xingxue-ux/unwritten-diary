@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'capture_controller.dart';
+import 'search_controller.dart';
 import 'sketch_ui.dart';
 
 /// A navigable preview of the product plan. Only text capture uses DiaryApi;
@@ -19,8 +20,11 @@ class ExperienceShell extends StatefulWidget {
   State<ExperienceShell> createState() => _ExperienceShellState();
 }
 
-class _ExperienceShellState extends State<ExperienceShell> {
+class _ExperienceShellState extends State<ExperienceShell>
+    with WidgetsBindingObserver {
   late final CaptureController _capture;
+  late final DiarySearchController _coreSearch;
+  late final Listenable _contentChanges;
   final _editor = TextEditingController();
   final _search = TextEditingController();
   final _editVersion = TextEditingController();
@@ -40,6 +44,7 @@ class _ExperienceShellState extends State<ExperienceShell> {
   String _voice = '第一人称';
   String _searchKind = '全部';
   String _activeQuery = '';
+  SearchHit? _selectedSearchHit;
   String _candidateDraft = _candidateBody;
   String _schedule = '22:30';
   bool _automatic = true;
@@ -57,7 +62,11 @@ class _ExperienceShellState extends State<ExperienceShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _capture = CaptureController(widget.api);
+    _coreSearch = DiarySearchController(widget.api);
+    _contentChanges = Listenable.merge([_capture, _coreSearch]);
+    _search.addListener(_onSearchValueChanged);
     unawaited(
       _capture.initialize(opened: true).then((_) {
         if (mounted && _editor.text.isEmpty && _capture.text.isNotEmpty) {
@@ -70,8 +79,11 @@ class _ExperienceShellState extends State<ExperienceShell> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _capture.dispose();
+    _coreSearch.dispose();
     _editor.dispose();
+    _search.removeListener(_onSearchValueChanged);
     _search.dispose();
     _editVersion.dispose();
     _responseText.dispose();
@@ -80,21 +92,41 @@ class _ExperienceShellState extends State<ExperienceShell> {
     super.dispose();
   }
 
-  void _go(int tab) => setState(() {
-    _tab = tab;
-    _panel = null;
-    _detail = null;
-  });
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      _flushDraft();
+    }
+  }
 
-  void _openPanel(String panel) => setState(() {
-    _panel = panel;
-    _detail = null;
-  });
+  void _flushDraft() => unawaited(_capture.saveNow().then<void>((_) {}));
 
-  void _openDetail(String detail) => setState(() {
-    _detail = detail;
-    _panel = null;
-  });
+  void _go(int tab) {
+    _flushDraft();
+    setState(() {
+      _tab = tab;
+      _panel = null;
+      _detail = null;
+    });
+  }
+
+  void _openPanel(String panel) {
+    _flushDraft();
+    setState(() {
+      _panel = panel;
+      _detail = null;
+    });
+  }
+
+  void _openDetail(String detail) {
+    _flushDraft();
+    setState(() {
+      _detail = detail;
+      _panel = null;
+    });
+  }
 
   void _back() => setState(() {
     _panel = null;
@@ -106,67 +138,77 @@ class _ExperienceShellState extends State<ExperienceShell> {
   );
 
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: _capture,
-    builder: (context, _) => LayoutBuilder(
-      builder: (context, bounds) {
-        final desktop = bounds.maxWidth >= 850;
-        return Scaffold(
-          backgroundColor: SketchColors.canvas,
-          body: SafeArea(
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 1500),
-                child: Padding(
-                  padding: EdgeInsets.all(desktop ? 22 : 0),
-                  child: SketchFrame(
-                    fill: SketchColors.canvas,
-                    padding: EdgeInsets.zero,
-                    child: Column(
-                      children: [
-                        _header(desktop),
-                        if (widget.demoMode) _demoBanner(desktop),
-                        const Divider(
-                          color: SketchColors.ink,
-                          thickness: 1,
-                          height: 1,
-                          indent: 24,
-                          endIndent: 24,
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, bounds) {
+      final desktop = bounds.maxWidth >= 850;
+      return Scaffold(
+        backgroundColor: SketchColors.canvas,
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1500),
+              child: Padding(
+                padding: EdgeInsets.all(desktop ? 22 : 0),
+                child: SketchFrame(
+                  fill: SketchColors.canvas,
+                  padding: EdgeInsets.zero,
+                  child: Column(
+                    children: [
+                      _header(desktop),
+                      if (widget.demoMode) _demoBanner(desktop),
+                      const Divider(
+                        color: SketchColors.ink,
+                        thickness: 1,
+                        height: 1,
+                        indent: 24,
+                        endIndent: 24,
+                      ),
+                      Expanded(
+                        child: AnimatedBuilder(
+                          animation: _contentChanges,
+                          builder: (context, _) => _scrollContent(desktop),
                         ),
-                        Expanded(
-                          child: SingleChildScrollView(
-                            key: ValueKey('${_tab}_${_panel ?? _detail ?? ''}'),
-                            padding: EdgeInsets.fromLTRB(
-                              desktop ? 46 : 22,
-                              desktop ? 35 : 25,
-                              desktop ? 46 : 22,
-                              40,
-                            ),
-                            child: Center(
-                              child: ConstrainedBox(
-                                constraints: const BoxConstraints(
-                                  maxWidth: 1240,
-                                ),
-                                child: AnimatedSwitcher(
-                                  duration: const Duration(milliseconds: 220),
-                                  child: _currentPage(desktop),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                        if (!desktop) _bottomNav(),
-                      ],
-                    ),
+                      ),
+                      if (!desktop) _bottomNav(),
+                    ],
                   ),
                 ),
               ),
             ),
           ),
-        );
-      },
-    ),
+        ),
+      );
+    },
   );
+
+  Widget _scrollContent(bool desktop) {
+    if (_panel == null && _detail == null && _tab == 2) {
+      return _searchScroll(desktop);
+    }
+    if (_panel == null && _detail == null && _tab == 3) {
+      return _timelineScroll(desktop);
+    }
+    return SingleChildScrollView(
+      key: PageStorageKey('page-${_tab}_${_panel ?? _detail ?? ''}'),
+      padding: EdgeInsets.fromLTRB(
+        desktop ? 46 : 22,
+        desktop ? 35 : 25,
+        desktop ? 46 : 22,
+        40,
+      ),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1240),
+          child: AnimatedSwitcher(
+            duration: MediaQuery.disableAnimationsOf(context)
+                ? Duration.zero
+                : const Duration(milliseconds: 220),
+            child: _currentPage(desktop),
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _header(bool desktop) => Padding(
     padding: EdgeInsets.symmetric(
@@ -175,11 +217,23 @@ class _ExperienceShellState extends State<ExperienceShell> {
     ),
     child: Row(
       children: [
-        InkWell(
+        Semantics(
+          button: true,
+          label: '封面与加载动画',
           onTap: () => _openPanel('cover'),
-          child: SketchFrame(
-            padding: const EdgeInsets.all(5),
-            child: const CatMark(size: 33),
+          excludeSemantics: true,
+          child: InkWell(
+            onTap: () => _openPanel('cover'),
+            excludeFromSemantics: true,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+              child: Center(
+                child: SketchFrame(
+                  padding: const EdgeInsets.all(5),
+                  child: const CatMark(size: 33),
+                ),
+              ),
+            ),
           ),
         ),
         const SizedBox(width: 15),
@@ -269,28 +323,36 @@ class _ExperienceShellState extends State<ExperienceShell> {
   );
 
   Widget _navItem(int index, IconData icon, String label) => Expanded(
-    child: InkWell(
+    child: Semantics(
+      button: true,
+      selected: _tab == index && _panel == null && _detail == null,
+      label: '前往$label',
       onTap: () => _go(index),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: 21,
-              color: _tab == index ? SketchColors.ink : SketchColors.muted,
-            ),
-            const SizedBox(height: 3),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 11,
+      excludeSemantics: true,
+      child: InkWell(
+        onTap: () => _go(index),
+        excludeFromSemantics: true,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 21,
                 color: _tab == index ? SketchColors.ink : SketchColors.muted,
-                fontWeight: _tab == index ? FontWeight.w700 : FontWeight.w400,
               ),
-            ),
-          ],
+              const SizedBox(height: 3),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: _tab == index ? SketchColors.ink : SketchColors.muted,
+                  fontWeight: _tab == index ? FontWeight.w700 : FontWeight.w400,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     ),
@@ -302,11 +364,250 @@ class _ExperienceShellState extends State<ExperienceShell> {
     return switch (_tab) {
       0 => _recordPage(desktop),
       1 => _diaryPage(desktop),
-      2 => _searchPage(desktop),
-      3 => _timelinePage(desktop),
+      2 || 3 => const SizedBox.shrink(),
       _ => _profilePage(desktop),
     };
   }
+
+  Widget _sliverContent(Widget child, bool desktop) => Center(
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 1240),
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: desktop ? 46 : 22),
+        child: child,
+      ),
+    ),
+  );
+
+  Widget _searchScroll(bool desktop) {
+    if (!widget.demoMode) return _coreSearchScroll(desktop);
+    final query = _activeQuery;
+    final captures = _capture.recent.where(
+      (capture) =>
+          capture.state == CaptureState.committed &&
+          (query.isEmpty || capture.draftText.toLowerCase().contains(query)),
+    );
+    final results =
+        _searchKind == '日记' || _searchKind == '录音' || _searchKind == '文件'
+        ? <Capture>[]
+        : captures.toList();
+    return CustomScrollView(
+      key: const PageStorageKey('search-scroll'),
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.only(top: desktop ? 35 : 25),
+            child: _sliverContent(_searchHeader(desktop), desktop),
+          ),
+        ),
+        SliverList.builder(
+          itemCount: results.length,
+          itemBuilder: (context, index) {
+            final capture = results[index];
+            return _sliverContent(
+              _resultTile(
+                '刚刚收好的记录',
+                '${widget.demoMode ? '本次会话文字' : '本地文字'} · ${_dateLabel(capture.occurredAt.toLocal())}',
+                capture.draftText,
+                () => _openDetail(capture.id),
+              ),
+              desktop,
+            );
+          },
+        ),
+        const SliverToBoxAdapter(child: SizedBox(height: 40)),
+      ],
+    );
+  }
+
+  Set<SourceKind> _searchKinds() => switch (_searchKind) {
+    '文字' => const {SourceKind.text},
+    '录音' => const {SourceKind.audio},
+    '文件' => const {SourceKind.file},
+    _ => const {},
+  };
+
+  void _setSearchKind(String kind) {
+    setState(() => _searchKind = kind);
+    if (!widget.demoMode) {
+      unawaited(_coreSearch.search(_search.text, kinds: _searchKinds()));
+    }
+  }
+
+  Widget _coreSearchScroll(bool desktop) =>
+      NotificationListener<ScrollNotification>(
+        onNotification: (notification) {
+          if (notification.depth == 0 &&
+              notification.metrics.extentAfter < 400 &&
+              _coreSearch.canLoadMore) {
+            unawaited(_coreSearch.loadMore());
+          }
+          return false;
+        },
+        child: CustomScrollView(
+          key: const PageStorageKey('search-scroll'),
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.only(top: desktop ? 35 : 25),
+                child: _sliverContent(_coreSearchHeader(), desktop),
+              ),
+            ),
+            SliverList.builder(
+              itemCount: _coreSearch.hits.length,
+              itemBuilder: (context, index) {
+                final hit = _coreSearch.hits[index];
+                final kind = switch (hit.sourceKind) {
+                  SourceKind.text => '文字',
+                  SourceKind.audio => '录音',
+                  SourceKind.image => '照片',
+                  SourceKind.video => '视频',
+                  SourceKind.file => '文件',
+                  SourceKind.link => '链接',
+                };
+                return _sliverContent(
+                  _resultTile(
+                    hit.title?.isNotEmpty == true ? hit.title! : '一段$kind记录',
+                    '$kind${hit.dayKey == null ? '' : ' · ${hit.dayKey}'}',
+                    hit.snippet ?? '这项材料暂无可展示的文字摘录。',
+                    () => setState(() {
+                      _selectedSearchHit = hit;
+                      _detail = 'search-hit';
+                    }),
+                  ),
+                  desktop,
+                );
+              },
+            ),
+            SliverToBoxAdapter(
+              child: _sliverContent(
+                _coreSearch.loadingMore
+                    ? const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    : _coreSearch.error != null && _coreSearch.hits.isNotEmpty
+                    ? SketchAction(
+                        label: '加载失败，重试下一页',
+                        onPressed: () => unawaited(_coreSearch.loadMore()),
+                      )
+                    : const SizedBox.shrink(),
+                desktop,
+              ),
+            ),
+            const SliverToBoxAdapter(child: SizedBox(height: 40)),
+          ],
+        ),
+      );
+
+  Widget _coreSearchHeader() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      _title('搜索', '找回本机的文字与原始材料。'),
+      const SizedBox(height: 20),
+      _notice('当前为本地关键词搜索；语义补充与原件定位正在接入。'),
+      const SizedBox(height: 18),
+      SketchFrame(
+        padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 6),
+        child: Row(
+          children: [
+            const Icon(Icons.search, color: SketchColors.ink),
+            const SizedBox(width: 10),
+            Expanded(
+              child: TextField(
+                key: const Key('global-search'),
+                controller: _search,
+                decoration: const InputDecoration(
+                  hintText: '搜索一个词，或一段记忆…',
+                  border: InputBorder.none,
+                ),
+              ),
+            ),
+            if (_search.text.isNotEmpty)
+              IconButton(
+                tooltip: '清除搜索',
+                onPressed: _search.clear,
+                icon: const Icon(Icons.close),
+              ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 13),
+      Wrap(
+        spacing: 7,
+        children: [
+          for (final kind in ['全部', '文字', '录音', '文件'])
+            ChoiceChip(
+              label: Text(kind),
+              selected: _searchKind == kind,
+              onSelected: (_) => _setSearchKind(kind),
+            ),
+        ],
+      ),
+      const SizedBox(height: 22),
+      if (_coreSearch.loading) const LinearProgressIndicator(),
+      if (_coreSearch.error != null && _coreSearch.hits.isEmpty)
+        _notice(_coreSearch.error!, icon: Icons.error_outline),
+      if (!_coreSearch.loading &&
+          _coreSearch.error == null &&
+          _coreSearch.query.isNotEmpty &&
+          _coreSearch.hits.isEmpty)
+        _notice('没有找到匹配内容。尚未处理的材料可能暂时无法检索。', icon: Icons.search_off),
+      if (_coreSearch.snapshot?.warnings.isNotEmpty == true)
+        _notice(_coreSearch.snapshot!.warnings.join(' · ')),
+      if (_coreSearch.hits.isNotEmpty)
+        Text(
+          '找到的片段',
+          style: const TextStyle(
+            color: SketchColors.ink,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      const SizedBox(height: 12),
+    ],
+  );
+
+  Widget _timelineScroll(
+    bool desktop,
+  ) => NotificationListener<ScrollNotification>(
+    onNotification: (notification) {
+      if (notification.depth == 0 &&
+          notification.metrics.extentAfter < 400 &&
+          _capture.hasMore &&
+          !_capture.loadingMore) {
+        unawaited(_capture.loadMore());
+      }
+      return false;
+    },
+    child: CustomScrollView(
+      key: const PageStorageKey('timeline-scroll'),
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.only(top: desktop ? 35 : 25),
+            child: _sliverContent(_timelineHeader(desktop), desktop),
+          ),
+        ),
+        SliverList.builder(
+          itemCount: _capture.recent.length,
+          itemBuilder: (context, index) {
+            final capture = _capture.recent[index];
+            return _sliverContent(
+              _resultTile(
+                capture.state == CaptureState.draft ? '正在写的草稿' : '刚刚收好的记录',
+                '${widget.demoMode ? '本次会话文字' : '本地文字'} · ${capture.state == CaptureState.draft ? '草稿' : '已提交'} · ${_dateLabel(capture.occurredAt.toLocal())}',
+                capture.draftText,
+                () => _openDetail(capture.id),
+              ),
+              desktop,
+            );
+          },
+        ),
+        SliverToBoxAdapter(child: _sliverContent(_timelineFooter(), desktop)),
+        const SliverToBoxAdapter(child: SizedBox(height: 40)),
+      ],
+    ),
+  );
 
   Widget _title(String title, String subtitle, {Widget? trailing}) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
@@ -356,30 +657,41 @@ class _ExperienceShellState extends State<ExperienceShell> {
     final left = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        InkWell(
+        Semantics(
+          button: true,
+          enabled: _capture.canChangeDate,
+          label: '记录日期：${_dateLabel(_capture.occurredAt ?? DateTime.now())}',
           onTap: _capture.canChangeDate ? _chooseDate : null,
-          child: Row(
-            children: [
-              Flexible(
-                child: Text(
-                  _dateLabel(_capture.occurredAt ?? DateTime.now()),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: SketchColors.muted,
-                    fontSize: desktop ? 17 : 14,
+          excludeSemantics: true,
+          child: InkWell(
+            onTap: _capture.canChangeDate ? _chooseDate : null,
+            excludeFromSemantics: true,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 48),
+              child: Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      _dateLabel(_capture.occurredAt ?? DateTime.now()),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: SketchColors.muted,
+                        fontSize: desktop ? 17 : 14,
+                      ),
+                    ),
                   ),
-                ),
+                  if (_capture.canChangeDate) ...[
+                    const SizedBox(width: 6),
+                    const Icon(
+                      Icons.edit_calendar_outlined,
+                      size: 15,
+                      color: SketchColors.muted,
+                    ),
+                  ],
+                ],
               ),
-              if (_capture.canChangeDate) ...[
-                const SizedBox(width: 6),
-                const Icon(
-                  Icons.edit_calendar_outlined,
-                  size: 15,
-                  color: SketchColors.muted,
-                ),
-              ],
-            ],
+            ),
           ),
         ),
         const SizedBox(height: 26),
@@ -463,6 +775,10 @@ class _ExperienceShellState extends State<ExperienceShell> {
                 key: const Key('capture-editor'),
                 controller: _editor,
                 onChanged: _capture.updateText,
+                onTapOutside: (_) {
+                  FocusManager.instance.primaryFocus?.unfocus();
+                  _flushDraft();
+                },
                 readOnly: _capture.finishing,
                 minLines: desktop ? 9 : 6,
                 maxLines: desktop ? 12 : 10,
@@ -507,13 +823,17 @@ class _ExperienceShellState extends State<ExperienceShell> {
                   label: '添加材料',
                   icon: Icons.attach_file,
                   compact: true,
-                  onPressed: _showAttachmentChoices,
+                  onPressed: widget.demoMode
+                      ? _showAttachmentChoices
+                      : () => _toast('材料导入正在接入，当前只能保存文字。'),
                 ),
                 SketchAction(
                   label: '录音',
                   icon: Icons.mic_none,
                   compact: true,
-                  onPressed: () => _openPanel('recording'),
+                  onPressed: widget.demoMode
+                      ? () => _openPanel('recording')
+                      : () => _toast('录音正在接入，当前只能保存文字。'),
                 ),
               ],
             ),
@@ -556,7 +876,19 @@ class _ExperienceShellState extends State<ExperienceShell> {
             style: const TextStyle(color: SketchColors.muted, fontSize: 13),
           ),
         ),
-        if (_capture.phase == SavePhase.failed && !_capture.finishing)
+        if (_capture.phase == SavePhase.failed &&
+            _capture.needsManualRecovery &&
+            _capture.text.isNotEmpty)
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: _capture.text));
+              if (mounted) _toast('文字已复制，可以重新打开应用。');
+            },
+            child: const Text('复制文字'),
+          ),
+        if (_capture.phase == SavePhase.failed &&
+            !_capture.needsManualRecovery &&
+            !_capture.finishing)
           TextButton(onPressed: _capture.saveNow, child: const Text('重试')),
       ],
     );
@@ -623,128 +955,153 @@ class _ExperienceShellState extends State<ExperienceShell> {
     ),
   );
 
-  Widget _diaryPage(bool desktop) => Column(
-    key: const ValueKey('diary'),
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _title(
-        '日记',
-        '让原本零散的片刻，慢慢成为一页。',
-        trailing: SketchAction(
-          label: '版本',
-          compact: true,
-          icon: Icons.history,
-          onPressed: () => _openPanel('versions'),
+  Widget _diaryPage(bool desktop) {
+    if (!widget.demoMode) {
+      return Column(
+        key: const ValueKey('diary'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _title('日记', '让原本零散的片刻，慢慢成为一页。'),
+          const SizedBox(height: 24),
+          _notice('日记整理正在接入。原始文字已经保存在「片段」中，可以随时回看。'),
+        ],
+      );
+    }
+    return Column(
+      key: const ValueKey('diary'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _title(
+          '日记',
+          '让原本零散的片刻，慢慢成为一页。',
+          trailing: SketchAction(
+            label: '版本',
+            compact: true,
+            icon: Icons.history,
+            onPressed: () => _openPanel('versions'),
+          ),
         ),
-      ),
-      const SizedBox(height: 24),
-      _notice('以下为示例日记。真实整理、转写和来源关联要在后续接入本地核心。'),
-      const SizedBox(height: 22),
-      SketchFrame(
-        padding: EdgeInsets.all(desktop ? 34 : 23),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        const SizedBox(height: 24),
+        _notice('以下为示例日记。真实整理、转写和来源关联要在后续接入本地核心。'),
+        const SizedBox(height: 22),
+        SketchFrame(
+          padding: EdgeInsets.all(desktop ? 34 : 23),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '示例日记 · 无实际日期',
+                style: const TextStyle(color: SketchColors.muted),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                '普通的一天，也有光',
+                style: TextStyle(
+                  fontFamily: SketchFonts.display,
+                  color: SketchColors.ink,
+                  fontSize: 38,
+                ),
+              ),
+              const SizedBox(height: 24),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 690),
+                child: Text(
+                  _adopted ? _candidateDraft : _demoBody,
+                  style: const TextStyle(
+                    color: SketchColors.text,
+                    fontSize: 17,
+                    height: 1.9,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              const Divider(color: SketchColors.ink),
+              InkWell(
+                onTap: () => _openDetail('source'),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 7),
+                  child: Row(
+                    children: [
+                      Icon(Icons.description_outlined, size: 18),
+                      SizedBox(width: 9),
+                      Expanded(child: Text('查看示例来源 · 文字 1 项')),
+                      Icon(Icons.arrow_forward, size: 17),
+                    ],
+                  ),
+                ),
+              ),
+              const Text(
+                '还有 2 项材料待处理 · 示例状态',
+                style: TextStyle(color: SketchColors.muted, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+        if (_candidate) ...[
+          const SizedBox(height: 15),
+          _notice('有一版新的整理候选。当前阅读版不会自动替换。', icon: Icons.auto_stories_outlined),
+        ],
+        const SizedBox(height: 18),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
           children: [
-            Text(
-              '示例日记 · 无实际日期',
-              style: const TextStyle(color: SketchColors.muted),
+            SketchAction(
+              label: '编辑为新版',
+              icon: Icons.edit_outlined,
+              onPressed: () => _openPanel('edit'),
             ),
-            const SizedBox(height: 12),
-            const Text(
-              '普通的一天，也有光',
-              style: TextStyle(
-                fontFamily: SketchFonts.display,
-                color: SketchColors.ink,
-                fontSize: 38,
-              ),
+            SketchAction(
+              label: _candidate ? '查看候选版本' : '模拟重新整理',
+              icon: Icons.auto_fix_high_outlined,
+              onPressed: () => _candidate
+                  ? _openPanel('versions')
+                  : setState(() {
+                      _candidateDraft = _candidateBody;
+                      _candidate = true;
+                    }),
             ),
-            const SizedBox(height: 24),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 690),
-              child: Text(
-                _adopted ? _candidateDraft : _demoBody,
-                style: const TextStyle(
-                  color: SketchColors.text,
-                  fontSize: 17,
-                  height: 1.9,
-                ),
-              ),
-            ),
-            const SizedBox(height: 24),
-            const Divider(color: SketchColors.ink),
-            InkWell(
-              onTap: () => _openDetail('source'),
-              child: const Padding(
-                padding: EdgeInsets.symmetric(vertical: 7),
-                child: Row(
-                  children: [
-                    Icon(Icons.description_outlined, size: 18),
-                    SizedBox(width: 9),
-                    Expanded(child: Text('查看示例来源 · 文字 1 项')),
-                    Icon(Icons.arrow_forward, size: 17),
-                  ],
-                ),
-              ),
-            ),
-            const Text(
-              '还有 2 项材料待处理 · 示例状态',
-              style: TextStyle(color: SketchColors.muted, fontSize: 12),
+            SketchAction(
+              label: '主动请求回应',
+              icon: Icons.chat_bubble_outline,
+              onPressed: () => _openPanel('response'),
             ),
           ],
         ),
-      ),
-      if (_candidate) ...[
-        const SizedBox(height: 15),
-        _notice('有一版新的整理候选。当前阅读版不会自动替换。', icon: Icons.auto_stories_outlined),
       ],
-      const SizedBox(height: 18),
-      Wrap(
-        spacing: 10,
-        runSpacing: 10,
-        children: [
-          SketchAction(
-            label: '编辑为新版',
-            icon: Icons.edit_outlined,
-            onPressed: () => _openPanel('edit'),
-          ),
-          SketchAction(
-            label: _candidate ? '查看候选版本' : '模拟重新整理',
-            icon: Icons.auto_fix_high_outlined,
-            onPressed: () => _candidate
-                ? _openPanel('versions')
-                : setState(() {
-                    _candidateDraft = _candidateBody;
-                    _candidate = true;
-                  }),
-          ),
-          SketchAction(
-            label: '主动请求回应',
-            icon: Icons.chat_bubble_outline,
-            onPressed: () => _openPanel('response'),
-          ),
-        ],
-      ),
-    ],
-  );
-
-  Widget _searchPage(bool desktop) {
-    final query = _activeQuery;
-    final captures = _capture.recent.where(
-      (c) =>
-          c.state == CaptureState.committed &&
-          (query.isEmpty || c.draftText.toLowerCase().contains(query)),
     );
+  }
+
+  Widget _searchHeader(bool desktop) {
+    final query = _activeQuery;
     final sampleMatches =
         query.isEmpty || '今天路过花店看到一束橘色花普通的一天也有光'.contains(query);
     final showSample =
-        sampleMatches && _searchKind != '录音' && _searchKind != '文件';
+        widget.demoMode &&
+        sampleMatches &&
+        _searchKind != '录音' &&
+        _searchKind != '文件';
+    final showCaptureResults =
+        _searchKind != '日记' && _searchKind != '录音' && _searchKind != '文件';
+    final hasLoadedMatches =
+        showCaptureResults &&
+        _capture.recent.any(
+          (capture) =>
+              capture.state == CaptureState.committed &&
+              (query.isEmpty ||
+                  capture.draftText.toLowerCase().contains(query)),
+        );
     return Column(
       key: const ValueKey('search'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _title('搜索', '一个入口找回日记和原始材料。'),
         const SizedBox(height: 22),
-        _notice('当前只演示本次会话文字的关键词匹配；语义检索与文件内容检索尚未接入。'),
+        _notice(
+          widget.demoMode
+              ? '当前只演示本次会话文字的关键词匹配；语义检索与文件内容检索尚未接入。'
+              : '当前仅搜索已加载的最近文字记录；完整检索与文件内容检索正在接入。',
+        ),
         const SizedBox(height: 18),
         SketchFrame(
           padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 6),
@@ -756,7 +1113,6 @@ class _ExperienceShellState extends State<ExperienceShell> {
                 child: TextField(
                   key: const Key('global-search'),
                   controller: _search,
-                  onChanged: _onSearchChanged,
                   decoration: const InputDecoration(
                     hintText: '搜索一个词，或一段记忆…',
                     border: InputBorder.none,
@@ -768,7 +1124,6 @@ class _ExperienceShellState extends State<ExperienceShell> {
                   tooltip: '清除搜索',
                   onPressed: () {
                     _search.clear();
-                    _onSearchChanged('');
                   },
                   icon: const Icon(Icons.close),
                 ),
@@ -783,7 +1138,7 @@ class _ExperienceShellState extends State<ExperienceShell> {
               ChoiceChip(
                 label: Text(kind),
                 selected: _searchKind == kind,
-                onSelected: (_) => setState(() => _searchKind = kind),
+                onSelected: (_) => _setSearchKind(kind),
               ),
           ],
         ),
@@ -810,27 +1165,24 @@ class _ExperienceShellState extends State<ExperienceShell> {
             '今天路过花店，看到一束橘色花。',
             () => _openDetail('source'),
           ),
-        if (_searchKind != '日记' && _searchKind != '录音' && _searchKind != '文件')
-          for (final capture in captures)
-            _resultTile(
-              '刚刚收好的记录',
-              '本次会话文字 · ${_dateLabel(capture.occurredAt.toLocal())}',
-              capture.draftText,
-              () => _openDetail(capture.id),
-            ),
-        if (!showSample || _searchKind == '录音' || _searchKind == '文件')
-          if (captures.isEmpty || _searchKind == '录音' || _searchKind == '文件')
-            _notice('当前范围没有匹配项。待处理或未解析的材料，不等于内容不存在。', icon: Icons.search_off),
+        if (!showSample && !hasLoadedMatches)
+          _notice('当前范围没有匹配项。待处理或未解析的材料，不等于内容不存在。', icon: Icons.search_off),
       ],
     );
   }
 
-  void _onSearchChanged(String value) {
+  void _onSearchValueChanged() {
     _searchDebounce?.cancel();
     final composing = _search.value.composing;
     if (composing.isValid && !composing.isCollapsed) return;
+    final value = _search.text;
     _searchDebounce = Timer(const Duration(milliseconds: 250), () {
-      if (mounted) setState(() => _activeQuery = value.trim().toLowerCase());
+      if (!mounted) return;
+      if (widget.demoMode) {
+        setState(() => _activeQuery = value.trim().toLowerCase());
+      } else {
+        unawaited(_coreSearch.search(value, kinds: _searchKinds()));
+      }
     });
   }
 
@@ -874,65 +1226,109 @@ class _ExperienceShellState extends State<ExperienceShell> {
     ),
   );
 
-  Widget _timelinePage(bool desktop) => Column(
+  Widget _timelineHeader(bool desktop) => Column(
     key: const ValueKey('timeline'),
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       _title('留下的片段', '原始材料和日记分开保存，随时可以回看。'),
       const SizedBox(height: 23),
-      _notice('这页混合展示示例材料和本次运行新写的文字；真实原件库后续接入。'),
+      _notice(
+        widget.demoMode
+            ? '这页混合展示示例材料和本次运行新写的文字；真实原件库后续接入。'
+            : '这里显示本地资料库的最近记录；完整时间线正在接入。',
+      ),
       const SizedBox(height: 18),
-      for (final capture in _capture.recent)
-        _resultTile(
-          capture.state == CaptureState.draft ? '正在写的草稿' : '刚刚收好的记录',
-          '本次会话文字 · ${capture.state == CaptureState.draft ? '草稿' : '已提交'} · ${_dateLabel(capture.occurredAt.toLocal())}',
-          capture.draftText,
-          () => _openDetail(capture.id),
-        ),
-      _resultTile(
-        '花店门口的片刻',
-        '示例 · 文字 · 无实际日期',
-        '今天路过花店，看到一束橘色花。',
-        () => _openDetail('source'),
-      ),
-      _resultTile(
-        '傍晚的街角',
-        '示例 · 照片 · 待处理',
-        '原图已保存的展示位置；画面描述尚未生成。',
-        () => _openDetail('photo'),
-      ),
-      _resultTile(
-        '回家路上的声音',
-        '示例 · 录音 · 待转写',
-        '声音原件可播放；文字检索范围取决于转写状态。',
-        () => _openDetail('audio'),
-      ),
+      if (_capture.recent.isEmpty && !_capture.loading)
+        _notice('还没有记录。从「记录」开始，留下第一句话。'),
     ],
   );
 
-  Widget _profilePage(bool desktop) => Column(
-    key: const ValueKey('profile'),
+  Widget _timelineFooter() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      _title('我的小天地', '预览资料与整理方式，慢慢布置自己的空间。'),
-      const SizedBox(height: 23),
-      _notice('这是单设备演示资料库，没有账号与自动同步。'),
-      const SizedBox(height: 18),
-      _section('创作与整理', [
-        ('风格偏好', '篇幅、语气与叙述方式', 'style', Icons.tune),
-        ('模型服务', '能力、连接与使用范围', 'model', Icons.auto_awesome_outlined),
-        ('整理时机', '安静地安排每天的整理', 'schedule', Icons.schedule),
-        ('任务中心', '等待、处理中与需要处理', 'tasks', Icons.inbox_outlined),
-      ]),
-      const SizedBox(height: 18),
-      _section('资料与应用', [
-        ('插件', '查看权限与启停', 'plugins', Icons.extension_outlined),
-        ('备份与恢复', '完整备份和阅读导出', 'backup', Icons.backup_outlined),
-        ('存储与回收站', '原件、缓存、索引的边界', 'storage', Icons.folder_outlined),
-        ('封面与加载动画', '回看小纸团', 'cover', Icons.pets_outlined),
-      ]),
+      if (_capture.loadingMore)
+        const Center(
+          child: Padding(
+            padding: EdgeInsets.all(16),
+            child: CircularProgressIndicator(),
+          ),
+        ),
+      if (_capture.loadMoreError != null)
+        TextButton(
+          onPressed: _capture.loadMore,
+          child: Text('更多记录加载失败，点此重试：${_capture.loadMoreError}'),
+        ),
+      if (widget.demoMode) ...[
+        _resultTile(
+          '花店门口的片刻',
+          '示例 · 文字 · 无实际日期',
+          '今天路过花店，看到一束橘色花。',
+          () => _openDetail('source'),
+        ),
+        _resultTile(
+          '傍晚的街角',
+          '示例 · 照片 · 待处理',
+          '原图已保存的展示位置；画面描述尚未生成。',
+          () => _openDetail('photo'),
+        ),
+        _resultTile(
+          '回家路上的声音',
+          '示例 · 录音 · 待转写',
+          '声音原件可播放；文字检索范围取决于转写状态。',
+          () => _openDetail('audio'),
+        ),
+      ],
     ],
   );
+
+  Widget _profilePage(bool desktop) {
+    if (!widget.demoMode) {
+      return Column(
+        key: const ValueKey('profile'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _title('我的小天地', '你的记录安静地留在这台设备上。'),
+          const SizedBox(height: 23),
+          _notice('当前资料保存在本机。请勿把卸载应用当作清理缓存；备份恢复功能正在接入。'),
+          const SizedBox(height: 18),
+          SketchFrame(
+            padding: const EdgeInsets.all(20),
+            child: Text(
+              '最近记录 · ${_capture.recent.length} 条',
+              style: const TextStyle(
+                color: SketchColors.ink,
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+    return Column(
+      key: const ValueKey('profile'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _title('我的小天地', '预览资料与整理方式，慢慢布置自己的空间。'),
+        const SizedBox(height: 23),
+        _notice('这是单设备演示资料库，没有账号与自动同步。'),
+        const SizedBox(height: 18),
+        _section('创作与整理', [
+          ('风格偏好', '篇幅、语气与叙述方式', 'style', Icons.tune),
+          ('模型服务', '能力、连接与使用范围', 'model', Icons.auto_awesome_outlined),
+          ('整理时机', '安静地安排每天的整理', 'schedule', Icons.schedule),
+          ('任务中心', '等待、处理中与需要处理', 'tasks', Icons.inbox_outlined),
+        ]),
+        const SizedBox(height: 18),
+        _section('资料与应用', [
+          ('插件', '查看权限与启停', 'plugins', Icons.extension_outlined),
+          ('备份与恢复', '完整备份和阅读导出', 'backup', Icons.backup_outlined),
+          ('存储与回收站', '原件、缓存、索引的边界', 'storage', Icons.folder_outlined),
+          ('封面与加载动画', '回看小纸团', 'cover', Icons.pets_outlined),
+        ]),
+      ],
+    );
+  }
 
   Widget _section(
     String title,
@@ -1608,6 +2004,39 @@ class _ExperienceShellState extends State<ExperienceShell> {
 
   Widget _detailPage(bool desktop) {
     final detail = _detail!;
+    if (detail == 'search-hit' && _selectedSearchHit != null) {
+      final hit = _selectedSearchHit!;
+      return Column(
+        key: ValueKey('search-hit-${hit.hitId}'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _back,
+              icon: const Icon(Icons.arrow_back),
+              label: const Text('返回搜索'),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _title(hit.title ?? '找到的片段', hit.dayKey ?? '本地原始材料'),
+          const SizedBox(height: 18),
+          SketchFrame(
+            padding: const EdgeInsets.all(27),
+            child: Text(
+              hit.snippet ?? '这项材料暂无可展示的文字摘录。',
+              style: const TextStyle(
+                color: SketchColors.text,
+                fontSize: 17,
+                height: 1.85,
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+          _notice('这里展示搜索摘录。原件全文与播放定位仍在接入。'),
+        ],
+      );
+    }
     final capture = _capture.recent.where((c) => c.id == detail).firstOrNull;
     final title = switch (detail) {
       'source' => '花店门口的片刻',
@@ -1634,12 +2063,21 @@ class _ExperienceShellState extends State<ExperienceShell> {
           ),
         ),
         const SizedBox(height: 12),
-        _title(title, capture == null ? '示例原始材料 · 无实际日期' : '本次会话文字 · 仅在本次运行保留'),
+        _title(
+          title,
+          capture == null
+              ? (widget.demoMode ? '示例原始材料 · 无实际日期' : '记录暂时无法打开')
+              : (widget.demoMode
+                    ? '本次会话文字 · 仅在本次运行保留'
+                    : '本地文字 · ${_dateLabel(capture.occurredAt.toLocal())}'),
+        ),
         const SizedBox(height: 20),
         _notice(
           capture == null
-              ? '来源详情与定位是交互预览；真实文件和播放器需要平台能力接入。'
-              : '这是本次会话中写下的文字；演示不会永久保存。',
+              ? (widget.demoMode
+                    ? '来源详情与定位是交互预览；真实文件和播放器需要平台能力接入。'
+                    : '这条记录暂时无法读取，请返回后重试。')
+              : (widget.demoMode ? '这是本次会话中写下的文字；演示不会永久保存。' : '这段文字保存在本机资料库中。'),
         ),
         const SizedBox(height: 18),
         SketchFrame(
@@ -1659,8 +2097,8 @@ class _ExperienceShellState extends State<ExperienceShell> {
               const Divider(color: SketchColors.line),
               Text(
                 capture == null
-                    ? '处理状态：示例 · 部分材料仍待处理'
-                    : '状态：本次会话文字 · ${capture.state == CaptureState.draft ? '草稿' : '已提交'}',
+                    ? (widget.demoMode ? '处理状态：示例 · 部分材料仍待处理' : '状态：未能读取')
+                    : '状态：${widget.demoMode ? '本次会话文字' : '本地文字'} · ${capture.state == CaptureState.draft ? '草稿' : '已提交'}',
                 style: const TextStyle(color: SketchColors.muted),
               ),
             ],

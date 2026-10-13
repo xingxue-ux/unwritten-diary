@@ -166,6 +166,54 @@ void main() {
     controller.dispose();
   });
 
+  test('clearing a saved draft is persisted before leaving the editor', () async {
+    final api = MockDiaryApi();
+    final controller = CaptureController(api);
+    await controller.initialize();
+    controller.updateText('决定重新写');
+    expect(await controller.saveNow(), isTrue);
+
+    controller.updateText('');
+    expect(await controller.saveNow(), isTrue);
+    expect((await api.listCaptures()).captures.single.draftText, isEmpty);
+    expect(await controller.finish(), isFalse);
+    expect(
+      (await api.listCaptures()).captures.single.state,
+      CaptureState.draft,
+    );
+    controller.dispose();
+  });
+
+  for (final code in [
+    DiaryErrorCode.revisionConflict,
+    DiaryErrorCode.idempotencyConflict,
+    DiaryErrorCode.invalidState,
+  ]) {
+    test('$code preserves text and blocks stale write retries', () async {
+      final api = MockDiaryApi()
+        ..nextSaveFailure = DiaryException(
+          code: code,
+          message: 'core detail',
+        );
+      final controller = CaptureController(api);
+      await controller.initialize();
+      controller.updateText('还没收好的文字');
+
+      expect(await controller.saveNow(), isFalse);
+      expect(controller.needsManualRecovery, isTrue);
+      expect(controller.error, contains('请先复制'));
+      controller.updateText('还没收好的文字，继续写');
+      expect(await controller.saveNow(), isFalse);
+      expect(await controller.finish(), isFalse);
+      expect(controller.text, '还没收好的文字，继续写');
+      expect(
+        (await api.listCaptures()).captures.single.state,
+        CaptureState.draft,
+      );
+      controller.dispose();
+    });
+  }
+
   test(
     'commit retry reuses operationId after a lost acknowledgement',
     () async {

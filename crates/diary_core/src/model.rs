@@ -594,6 +594,10 @@ pub struct Job {
 }
 
 /// 入队参数。
+///
+/// 没有 `business_key` 字段：业务键由 `(kind, target_ids, input_snapshot_hash)`
+/// 拼出来，队列在同一个事务里按它查重（见 `jobs::enqueue_in_tx`）。
+/// 这一片不改 schema，DB 级的唯一索引留给下一次 schema 变更一起做。
 #[derive(Debug, Clone)]
 pub struct NewJob {
     pub kind: String,
@@ -601,6 +605,12 @@ pub struct NewJob {
     pub target_ids: Vec<String>,
     pub input_snapshot_hash: Option<String>,
     pub max_attempts: i64,
+    /// 首次到期时刻。为空（默认）表示入队即到期。
+    ///
+    /// 为什么要有它：E29 的「补做」需要一个真实的应跑时刻。平台在崩溃恢复或
+    /// 系统唤醒后重建任务时可能已经知道它本该更早跑，记下来才可能如实回答
+    /// 「这次是补做」而不是「准时完成」。
+    pub next_attempt_at: Option<DateTime<Utc>>,
 }
 
 impl NewJob {
@@ -611,6 +621,7 @@ impl NewJob {
             target_ids: Vec::new(),
             input_snapshot_hash: None,
             max_attempts: 5,
+            next_attempt_at: None,
         }
     }
 
@@ -623,6 +634,101 @@ impl NewJob {
         self.input_snapshot_hash = Some(hash.into());
         self
     }
+
+    /// 指定首次到期时刻（例如「本该在半小时前跑」的补做任务）。
+    pub fn scheduled_at(mut self, at: DateTime<Utc>) -> Self {
+        self.next_attempt_at = Some(at);
+        self
+    }
+}
+
+/// 一次「跑到期任务」的结果摘要。
+///
+/// 数字都是真实统计：**没有跑的任务绝不会被算成跑过**；被预算或条数上限截住的
+/// 到期任务在 `due_backlog` 里如实报出来，在等前置的任务在 `waiting_dependency`
+/// 里如实报出来。契约 `runDueJobs` 的返回值就是它（`packages/diary_api` 的
+/// `DueRunSummary` 字段与这里一一对应）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobRunSummary {
+    /// 本次运行开始的时刻（调用方给的 `now`）。「补做」以它为界。
+    pub started_at: DateTime<Utc>,
+    /// 唤醒来源，调用方给什么就如实记什么（例如 startup / foreground / wake / manual）。
+    /// 核心只用它做观察与排查，不用它改变行为。
+    pub trigger: String,
+    /// 本次领取并执行的任务数，不超过调用方给的条数上限。
+    pub processed: i64,
+    /// 其中执行成功、进入 `succeeded` 的数量。
+    pub succeeded: i64,
+    /// 其中用完额度或没有处理器、进入「已放弃」（`failed`）的数量。
+    pub failed: i64,
+    /// 其中这次失败但还有额度、已经排了退避重试（`retry_wait`）的数量。
+    pub retrying: i64,
+    /// 其中属于「补做」的数量：领取时它的 `next_attempt_at` 已经早于 `started_at`。
+    ///
+    /// 口径与理由见 `jobs::run_due`；我们只说「补做」，不说「准时完成」。
+    pub backfilled: i64,
+    /// 运行开始时回收的「上次没跑完」（`state=running`）任务数。
+    pub recovered: i64,
+    /// 本次运行结束后仍然到期、但这次没跑上的任务数（被预算或条数上限截住）。
+    ///
+    /// `due_backlog > 0` 就说明这一轮是**提前收手**的（不是没有活了）；预算耗尽
+    /// 不是一个单独的字段，因为它和这个数字说的是一件事，留两个字段只会互相矛盾。
+    pub due_backlog: i64,
+    /// 本次运行结束时还在等前置条件的任务数（现在只有 `index` 等 `extract`）。
+    ///
+    /// 这些任务**没有**被领取、没有消耗重试额度，所以也不在 `processed` 里。
+    pub waiting_dependency: i64,
+    /// 本次运行里被**闸门**判定「前置不可能再满足」而终态失败的任务数。
+    ///
+    /// 这些任务同样不在 `processed` 里（一行执行者代码都没跑）；它们是被闸门在
+    /// 事务里落成「已放弃」的，`job_status().failed` / `recent_errors` 里看得到。
+    /// 单独报出来，是为了让摘要不必把「这一轮什么都没跑」说成「一切正常」。
+    pub dependency_failed: i64,
+    /// 下一个到期时刻；没有待办时为 None。等前置到期的任务不算「待办」：
+    /// 它们要等的是别人跑完，不是时间到（见 `jobs::next_wakeup`）。
+    pub next_wakeup: Option<DateTime<Utc>>,
+}
+
+/// 任务面板里的一行最近错误。
+///
+/// **只带错误码与时间，不带任何用户内容**：`job_attempts.message` 里可能有文件
+/// 路径或原始报错，那是排查用的，故意不往外给。`job_id` 是不透明 ID，供人工重试
+/// 时定位，不是用户内容。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobErrorSummary {
+    pub job_id: String,
+    pub kind: String,
+    pub error_code: String,
+    /// 这个错误最后一次出现的时刻（任务的 `updated_at`）。
+    pub occurred_at: DateTime<Utc>,
+    /// 是否已经放弃自动重试、在等用户处理。
+    pub requires_user_action: bool,
+}
+
+/// 任务状态摘要，任务面板用。
+///
+/// `indexes.status` 只报索引覆盖，不报任务数；「排队中/进行中/失败可重试/已放弃」
+/// 这些数字由这里给。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobStatus {
+    pub queued: i64,
+    pub running: i64,
+    pub retry_wait: i64,
+    pub waiting_configuration: i64,
+    pub waiting_dependency: i64,
+    pub waiting_network: i64,
+    /// 「已放弃」：尝试用完或没有处理器，等用户决定要不要重试。
+    pub failed: i64,
+    pub cancelled: i64,
+    pub succeeded: i64,
+    /// 到期积压：现在就该跑、但还没跑的任务数（含退避已经到点的重试）。
+    ///
+    /// 与 `queued + retry_wait` 的区别：后者包含排在未来、还没到点的任务。
+    pub due_backlog: i64,
+    /// 建议的下次唤醒时刻；没有待办时为 None。
+    pub next_wakeup: Option<DateTime<Utc>>,
+    /// 最近错误，最新在前，最多 `jobs::RECENT_ERROR_LIMIT` 条。
+    pub recent_errors: Vec<JobErrorSummary>,
 }
 
 /// 覆盖程度，契约第 2.4 节。用户可见原因放在 coverage_reason 里，不靠枚举表达。

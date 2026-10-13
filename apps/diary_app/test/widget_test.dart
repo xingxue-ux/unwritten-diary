@@ -1,9 +1,20 @@
+import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:diary_api/diary_api.dart';
 import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:unwritten_diary/main.dart';
 import 'package:unwritten_diary/src/sketch_ui.dart';
+
+double _contrastRatio(Color foreground, Color background) {
+  final a = foreground.computeLuminance();
+  final b = background.computeLuminance();
+  final lighter = a > b ? a : b;
+  final darker = a > b ? b : a;
+  return (lighter + 0.05) / (darker + 0.05);
+}
 
 class CountingMockDiaryApi extends MockDiaryApi {
   int openCount = 0;
@@ -65,12 +76,369 @@ class ConflictSaveApi extends MockDiaryApi {
   );
 }
 
+class LargeCaptureApi extends MockDiaryApi {
+  LargeCaptureApi({this.ignorePageSize = false, this.count = 1001});
+
+  final bool ignorePageSize;
+  final int count;
+  int pageRequests = 0;
+  int searchRequests = 0;
+
+  @override
+  Future<SearchSnapshot> startSearch({
+    required SearchRequest request,
+    required int queryRevision,
+  }) async {
+    searchRequests++;
+    final query = request.query.toLowerCase();
+    return SearchSnapshot(
+      sessionId: 'test-search-$searchRequests',
+      queryRevision: queryRevision,
+      phase: SearchPhase.done,
+      indexCoverage: Coverage.complete,
+      results: [
+        for (var index = 0; index < count; index++)
+          if ('测试片段 $index'.contains(query))
+            SearchHit(
+              hitId: 'hit-$index',
+              groupId: 'capture-$index',
+              sourceKind: SourceKind.text,
+              matchedBy: const {MatchedBy.keyword},
+              coverage: Coverage.complete,
+              dayKey: '2026-10-12',
+              snippet: '测试片段 $index',
+            ),
+      ],
+    );
+  }
+
+  @override
+  Future<void> cancelSearch(String sessionId) async {}
+
+  @override
+  Future<CapturePage> listCaptures({
+    String? dayKey,
+    String? cursor,
+    int pageSize = 20,
+  }) async {
+    pageRequests++;
+    final start = int.tryParse(cursor ?? '0') ?? 0;
+    final end = (start + (ignorePageSize ? count : pageSize)).clamp(0, count);
+    final when = DateTime.utc(2026, 10, 12);
+    return CapturePage(
+      captures: [
+        for (var index = start; index < end; index++)
+          Capture(
+            id: 'large-$index',
+            revision: 1,
+            state: CaptureState.committed,
+            occurredAt: when.subtract(Duration(minutes: index)),
+            createdAt: when,
+            updatedAt: when,
+            timeZone: 'Asia/Shanghai',
+            utcOffsetMinutes: 480,
+            dayKey: '2026-10-12',
+            draftText: '测试片段 $index',
+          ),
+      ],
+      nextCursor: end < count ? '$end' : null,
+    );
+  }
+}
+
 Future<void> openApp(WidgetTester tester, MockDiaryApi api) async {
   await tester.pumpWidget(DiaryApp(api: api, demoMode: true));
   await tester.pumpAndSettle();
 }
 
 void main() {
+  testWidgets('timeline builds only visible tiles from 1001 records', (
+    tester,
+  ) async {
+    final api = LargeCaptureApi(ignorePageSize: true);
+    final stopwatch = Stopwatch()..start();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('片段').last);
+    await tester.pumpAndSettle();
+    stopwatch.stop();
+
+    final built = find.textContaining('测试片段').evaluate().length;
+    expect(built, greaterThan(0));
+    expect(built, lessThan(30));
+    // Diagnostic numbers make regressions visible without imposing a machine-
+    // specific timing or memory threshold on CI.
+    // ignore: avoid_print
+    print(
+      'timeline 1001: ${stopwatch.elapsedMilliseconds} ms, '
+      '$built built tiles, ${ProcessInfo.currentRss ~/ (1024 * 1024)} MiB RSS',
+    );
+
+    stopwatch
+      ..reset()
+      ..start();
+    await tester.tap(find.text('搜索').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('global-search')), '测试片段');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.pumpAndSettle();
+    stopwatch.stop();
+    final searchBuilt = find.textContaining('测试片段').evaluate().length;
+    expect(searchBuilt, greaterThan(0));
+    expect(searchBuilt, lessThan(30));
+    // ignore: avoid_print
+    print(
+      'search 1001: ${stopwatch.elapsedMilliseconds} ms, '
+      '$searchBuilt built tiles, ${ProcessInfo.currentRss ~/ (1024 * 1024)} MiB RSS',
+    );
+  });
+
+  testWidgets('timeline loads another page and keeps position after detail', (
+    tester,
+  ) async {
+    final api = LargeCaptureApi(count: 60);
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('片段').last);
+    await tester.pumpAndSettle();
+    expect(api.pageRequests, 1);
+
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -2200));
+    await tester.pumpAndSettle();
+    expect(api.pageRequests, greaterThan(1));
+    final scrollable = find.descendant(
+      of: find.byType(CustomScrollView),
+      matching: find.byType(Scrollable),
+    );
+    final before = tester.state<ScrollableState>(scrollable).position.pixels;
+    expect(before, greaterThan(0));
+
+    await tester.tap(find.textContaining('测试片段').at(2));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('返回'));
+    await tester.pumpAndSettle();
+    final after = tester.state<ScrollableState>(scrollable).position.pixels;
+    expect(after, closeTo(before, 2));
+  });
+
+  testWidgets('search waits for IME commit and then debounces once', (
+    tester,
+  ) async {
+    final api = LargeCaptureApi(count: 2);
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('搜索').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('global-search')));
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '测试片段 1',
+        selection: TextSelection.collapsed(offset: 6),
+        composing: ui.TextRange(start: 0, end: 6),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(api.searchRequests, 0);
+
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '测试片段 1',
+        selection: TextSelection.collapsed(offset: 6),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 249));
+    expect(api.searchRequests, 0);
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.pumpAndSettle();
+    expect(api.searchRequests, 1);
+    expect(find.text('测试片段 1'), findsWidgets);
+  });
+
+  testWidgets(
+    'core search result opens its own excerpt and returns to search',
+    (tester) async {
+      final api = LargeCaptureApi(count: 2);
+      await tester.pumpWidget(DiaryApp(api: api));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('搜索').last);
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('global-search')), '测试片段 1');
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('一段文字记录'));
+      await tester.pumpAndSettle();
+      expect(find.text('返回搜索'), findsOneWidget);
+      expect(find.text('测试片段 1'), findsOneWidget);
+      await tester.tap(find.text('返回搜索'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('global-search')), findsOneWidget);
+    },
+  );
+
+  testWidgets('record page meets text contrast and Android touch guidelines', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await openApp(tester, MockDiaryApi());
+    // Flutter's pixel guideline mistakes antialiased CJK placeholder glyphs
+    // for the foreground in CI. Check the declared colors directly instead.
+    for (final label in ['记录', '日记', '搜索', '片段', '我的']) {
+      final text = tester.widget<Text>(find.text(label).last);
+      final foreground = text.style?.color;
+      expect(foreground, isNotNull, reason: label);
+      expect(
+        _contrastRatio(foreground!, SketchColors.paper),
+        greaterThanOrEqualTo(4.5),
+        reason: '$label must remain readable on the navigation paper',
+      );
+    }
+    await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+    for (final label in [
+      '封面与加载动画',
+      '前往记录',
+      '前往日记',
+      '前往搜索',
+      '前往片段',
+      '前往我的',
+      '添加材料',
+    ]) {
+      final node = tester.getSemantics(find.bySemanticsLabel(label));
+      final data = node.getSemanticsData();
+      expect(data.flagsCollection.isButton, isTrue, reason: label);
+      expect(data.hasAction(ui.SemanticsAction.tap), isTrue, reason: label);
+    }
+    final date = tester.getSemantics(find.bySemanticsLabel(RegExp('记录日期')));
+    expect(date.getSemanticsData().flagsCollection.isButton, isTrue);
+    expect(date.getSemanticsData().hasAction(ui.SemanticsAction.tap), isTrue);
+    final disabledFinish = tester.getSemantics(find.bySemanticsLabel('收好这一刻'));
+    expect(
+      disabledFinish.getSemanticsData().flagsCollection.isEnabled,
+      ui.Tristate.isFalse,
+    );
+    expect(
+      disabledFinish.getSemanticsData().hasAction(ui.SemanticsAction.tap),
+      isFalse,
+    );
+    await tester.enterText(find.byKey(const Key('capture-editor')), '今天的一句话');
+    await tester.pump();
+    final enabledFinish = tester.getSemantics(find.bySemanticsLabel('收好这一刻'));
+    expect(
+      enabledFinish.getSemanticsData().flagsCollection.isEnabled,
+      ui.Tristate.isTrue,
+    );
+    expect(
+      enabledFinish.getSemanticsData().hasAction(ui.SemanticsAction.tap),
+      isTrue,
+    );
+    semantics.dispose();
+  });
+
+  testWidgets('reduced motion settles the writing cat', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: MediaQuery(
+            data: MediaQueryData(disableAnimations: true),
+            child: WritingCat(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
+  testWidgets('system dark mode uses the warm ink and paper treatment', (
+    tester,
+  ) async {
+    tester.binding.platformDispatcher.platformBrightnessTestValue =
+        Brightness.dark;
+    addTearDown(
+      tester.binding.platformDispatcher.clearPlatformBrightnessTestValue,
+    );
+    await openApp(tester, MockDiaryApi());
+    expect(find.byType(ColorFiltered), findsOneWidget);
+    expect(
+      tester.widget<ColorFiltered>(find.byType(ColorFiltered)).colorFilter,
+      const ColorFilter.matrix(<double>[
+        0,
+        0,
+        -.88,
+        0,
+        245,
+        0,
+        -.88,
+        0,
+        0,
+        245,
+        -.88,
+        0,
+        0,
+        0,
+        245,
+        0,
+        0,
+        0,
+        1,
+        0,
+      ]),
+    );
+    expect(find.text('今天，想留住什么？'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('light mode keeps the original paper palette', (tester) async {
+    tester.binding.platformDispatcher.platformBrightnessTestValue =
+        Brightness.light;
+    addTearDown(
+      tester.binding.platformDispatcher.clearPlatformBrightnessTestValue,
+    );
+    await openApp(tester, MockDiaryApi());
+    expect(find.byType(ColorFiltered), findsNothing);
+  });
+
+  testWidgets('real mode reads saved records and hides preview material', (
+    tester,
+  ) async {
+    final api = MockDiaryApi();
+    await api.open();
+    final draft = await api.createDraft(operationId: 'seed-create');
+    final saved = await api.saveDraft(
+      id: draft.id,
+      text: '重启后仍能看到的文字。',
+      expectedRevision: draft.revision,
+      operationId: 'seed-save',
+    );
+    await api.commit(
+      id: draft.id,
+      expectedRevision: saved.revision,
+      operationId: 'seed-commit',
+    );
+
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('片段').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('重启后仍能看到的文字。'), findsOneWidget);
+    expect(find.text('花店门口的片刻'), findsNothing);
+    expect(find.text('傍晚的街角'), findsNothing);
+  });
+
+  testWidgets('backgrounding immediately flushes an edited draft', (
+    tester,
+  ) async {
+    final api = MockDiaryApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('capture-editor')), '切到后台前写的字');
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pumpAndSettle();
+
+    final captures = (await api.listCaptures()).captures;
+    expect(captures.single.draftText, '切到后台前写的字');
+  });
+
   testWidgets(
     'record page opens immediately and committed text appears in timeline',
     (tester) async {
@@ -196,6 +564,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('记录版本冲突'), findsWidgets);
     expect(find.text('没有丢失'), findsOneWidget);
+    expect(find.text('复制文字'), findsOneWidget);
+    expect(find.text('重试'), findsNothing);
   });
 
   testWidgets('two times text scale keeps a committed capture reachable', (
@@ -217,6 +587,14 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('片段').last);
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('放大字体的记录'),
+      250,
+      scrollable: find.descendant(
+        of: find.byType(CustomScrollView),
+        matching: find.byType(Scrollable),
+      ),
+    );
     expect(find.text('放大字体的记录'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
