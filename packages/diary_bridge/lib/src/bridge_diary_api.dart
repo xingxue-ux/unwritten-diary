@@ -235,9 +235,9 @@ class BridgeDiaryApi implements api.DiaryApi {
   }
 
   @override
-  Future<api.ExtractedContent> extractSource(String sourceId) async =>
+  Future<api.ExtractedContent> extractSource(String sourceRef) async =>
       _extractedContent(
-        await _translate(() => _open.extractSource(sourceRef: sourceId)),
+        await _translate(() => _open.extractSource(sourceRef: sourceRef)),
       );
 
   @override

@@ -137,6 +137,36 @@ void main() {
     );
   });
 
+  test('正文修订经契约适配层保存并只返回当前正文与上一版', () async {
+    await api.open();
+    final draft = await api.createDraft(operationId: 'adapter-revise-create');
+    final saved = await api.saveDraft(
+      id: draft.id,
+      text: '散步时看见旧路灯。',
+      expectedRevision: draft.revision,
+      operationId: 'adapter-revise-draft',
+    );
+    final committed = await api.commit(
+      id: draft.id,
+      expectedRevision: saved.revision,
+      operationId: 'adapter-revise-commit',
+    );
+    final sourceId = committed.originalTextRevision!.sourceId;
+    expect(await api.previousSourceRevision(sourceId), isNull);
+    await api.extractSource(sourceId);
+
+    final revision = await api.reviseText(
+      sourceId: sourceId,
+      text: '散步时看见新路灯。',
+      expectedRevision: committed.capture.revision,
+      operationId: 'adapter-revise-text',
+    );
+    expect(revision.text, '散步时看见新路灯。');
+    expect((await api.previousSourceRevision(sourceId))?.text, '散步时看见旧路灯。');
+    expect((await api.extractedContent(sourceId))?.text, '散步时看见新路灯。');
+    expect((await api.getCapture(draft.id)).draftText, '散步时看见新路灯。');
+  });
+
   test('错误码翻成契约枚举，不会变成 unknown', () async {
     await expectLater(
       api.getCapture('cap_不存在'),

@@ -141,7 +141,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         _revisions.open(
           sourceId: capture.orderedSourceIds.first,
           captureId: capture.id,
-        captureRevision: capture.revision,
+          captureRevision: capture.revision,
           initialText: capture.draftText,
         ),
       );
@@ -2182,6 +2182,9 @@ class _ExperienceShellState extends State<ExperienceShell>
           _notice('读取正文失败：${revisions.error}', icon: Icons.error_outline),
         if (revisions.indexWarning != null)
           _notice(revisions.indexWarning!, icon: Icons.info_outline),
+        if (revisions.previousLoading) const LinearProgressIndicator(),
+        if (revisions.previousError != null)
+          _notice(revisions.previousError!, icon: Icons.info_outline),
         if (current == null && !revisions.loading && revisions.error == null)
           _notice(fallback ?? '当前正文仍在处理，暂时无法展示完整内容。'),
         if (current != null) ...[
@@ -2192,16 +2195,21 @@ class _ExperienceShellState extends State<ExperienceShell>
             children: [
               for (final view in [
                 '正文',
-                if (previous != null) '看原正文',
-                if (previous != null) '看改了什么',
+                if (revisions.hasPrevious) '看原正文',
+                if (revisions.hasPrevious) '看改了什么',
               ])
                 ChoiceChip(
                   label: Text(view),
                   selected: _revisionView == view,
-                  onSelected: (_) => setState(() {
-                    _revisionView = view;
-                    _editingRevision = false;
-                  }),
+                  onSelected: (_) {
+                    setState(() {
+                      _revisionView = view;
+                      _editingRevision = false;
+                    });
+                    if (view != '正文') {
+                      unawaited(revisions.loadPreviousText());
+                    }
+                  },
                 ),
             ],
           ),
@@ -2226,22 +2234,34 @@ class _ExperienceShellState extends State<ExperienceShell>
                   onPressed: revisions.saving
                       ? null
                       : () async {
-                          final saved = await revisions.save(
+                          final editingSource = revisions.sourceId;
+                          final editingDetail = _detail;
+                          final result = await revisions.save(
                             _revisionEditor.text,
                           );
-                          if (!mounted) return;
-                          if (saved) {
-                            try {
-                              await _capture.refresh();
-                            } catch (_) {
-                              // The durable revision was already confirmed.
+                          if (!mounted ||
+                              revisions.sourceId != editingSource ||
+                              _detail != editingDetail) {
+                            return;
+                          }
+                          if (result != RevisionSaveResult.failed) {
+                            if (result == RevisionSaveResult.saved) {
+                              try {
+                                await _capture.refresh();
+                              } catch (_) {
+                                // The durable revision was already confirmed.
+                              }
                             }
                             if (!mounted) return;
                             setState(() {
                               _editingRevision = false;
                               _revisionView = '正文';
                             });
-                            _toast('新版正文已保存');
+                            _toast(
+                              result == RevisionSaveResult.saved
+                                  ? '新版正文已保存'
+                                  : '内容没有变化，未创建新版本',
+                            );
                           }
                         },
                 ),
@@ -2253,6 +2273,18 @@ class _ExperienceShellState extends State<ExperienceShell>
             ),
           ] else if (_revisionView == '看改了什么' && previous != null)
             _revisionDiffCard(previous, current)
+          else if (_revisionView == '看改了什么' && revisions.previousIsAsset)
+            _notice(
+              revisions.previousLoading
+                  ? '正在读取修改前的原件文字。'
+                  : '原件文字暂时无法展示，点「看改了什么」重试。',
+            )
+          else if (_revisionView == '看原正文' && revisions.previousIsAsset)
+            _notice(
+              revisions.previousLoading
+                  ? '正在读取修改前的原件文字。'
+                  : '原件文字暂时无法展示，点「看原正文」重试。',
+            )
           else
             SketchFrame(
               padding: const EdgeInsets.all(27),
@@ -2288,42 +2320,49 @@ class _ExperienceShellState extends State<ExperienceShell>
   }
 
   Widget _revisionDiffCard(String previous, String current) {
-    final lines = revisionDiff(previous, current);
+    final parts = revisionDiff(previous, current);
     return SketchFrame(
       padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const Text(
-            '− 删除    ＋ 新增',
+            '划线是删去的文字，浅色标记是新增的文字',
             style: TextStyle(color: SketchColors.muted, fontSize: 12),
           ),
           const SizedBox(height: 12),
-          for (final line in lines.take(300))
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 2),
-              child: Text(
-                '${switch (line.kind) {
-                  RevisionLineKind.added => '＋',
-                  RevisionLineKind.removed => '−',
-                  RevisionLineKind.same => '  ',
-                }} ${line.text}',
-                style: TextStyle(
-                  color: line.kind == RevisionLineKind.same
-                      ? SketchColors.text
-                      : SketchColors.ink,
-                  fontWeight: line.kind == RevisionLineKind.same
-                      ? FontWeight.normal
-                      : FontWeight.w700,
-                  height: 1.7,
-                ),
-              ),
+          Text.rich(
+            TextSpan(
+              children: [
+                for (final part in parts)
+                  TextSpan(
+                    text: part.text,
+                    semanticsLabel: switch (part.kind) {
+                      RevisionLineKind.added => '新增：${part.text}',
+                      RevisionLineKind.removed => '删去：${part.text}',
+                      RevisionLineKind.same => part.text,
+                    },
+                    style: TextStyle(
+                      color: part.kind == RevisionLineKind.same
+                          ? SketchColors.text
+                          : SketchColors.ink,
+                      backgroundColor: switch (part.kind) {
+                        RevisionLineKind.added => SketchColors.soft,
+                        RevisionLineKind.removed => SketchColors.blush,
+                        RevisionLineKind.same => null,
+                      },
+                      decoration: part.kind == RevisionLineKind.removed
+                          ? TextDecoration.lineThrough
+                          : null,
+                      fontWeight: part.kind == RevisionLineKind.same
+                          ? FontWeight.normal
+                          : FontWeight.w700,
+                    ),
+                  ),
+              ],
             ),
-          if (lines.length > 300)
-            const Text(
-              '差异过长，仅展示前 300 行。',
-              style: TextStyle(color: SketchColors.muted),
-            ),
+            style: const TextStyle(fontSize: 17, height: 1.8),
+          ),
         ],
       ),
     );

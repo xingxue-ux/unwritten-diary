@@ -87,8 +87,9 @@ abstract class DiaryApi {
   /// 当前修订的上一版，供原正文和修改对比；首次提交时返回空。
   Future<SourceRevision?> previousSourceRevision(String sourceId);
 
-  /// 对当前来源重新提取并更新检索索引。正文修订后应调用。
-  Future<ExtractedContent> extractSource(String sourceId);
+  /// 提取来源当前修订，或按修订 ID 读取原件型历史正文。
+  /// 历史修订仍被默认检索的“仅当前版”规则排除。
+  Future<ExtractedContent> extractSource(String sourceRef);
 
   /// 调整日记归属日期。调整不改录音时间戳，也不静默搬动历史。
   Future<Capture> moveDay({

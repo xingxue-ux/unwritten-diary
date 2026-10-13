@@ -6,42 +6,71 @@ class RevisionLine {
   final String text;
 }
 
-/// Line diff for a read-only review. Bounds memory for unusually long notes.
+/// Character-level diff so a one-word edit does not mark the whole paragraph.
+/// The bounded middle avoids quadratic memory use on unusually long notes.
 List<RevisionLine> revisionDiff(String oldText, String newText) {
-  final before = oldText.split('\n');
-  final after = newText.split('\n');
-  if (before.length * after.length > 160000) {
-    return [
-      for (final line in before) RevisionLine(RevisionLineKind.removed, line),
-      for (final line in after) RevisionLine(RevisionLineKind.added, line),
-    ];
+  final before = oldText.runes.toList(growable: false);
+  final after = newText.runes.toList(growable: false);
+  var prefix = 0;
+  while (prefix < before.length &&
+      prefix < after.length &&
+      before[prefix] == after[prefix]) {
+    prefix++;
   }
-  final lengths = List.generate(
-    before.length + 1,
-    (_) => List<int>.filled(after.length + 1, 0),
-  );
-  for (var i = before.length - 1; i >= 0; i--) {
-    for (var j = after.length - 1; j >= 0; j--) {
-      lengths[i][j] = before[i] == after[j]
-          ? lengths[i + 1][j + 1] + 1
-          : (lengths[i + 1][j] > lengths[i][j + 1]
-                ? lengths[i + 1][j]
-                : lengths[i][j + 1]);
-    }
+  var suffix = 0;
+  while (suffix < before.length - prefix &&
+      suffix < after.length - prefix &&
+      before[before.length - suffix - 1] == after[after.length - suffix - 1]) {
+    suffix++;
   }
-  final lines = <RevisionLine>[];
-  var i = 0;
-  var j = 0;
-  while (i < before.length || j < after.length) {
-    if (i < before.length && j < after.length && before[i] == after[j]) {
-      lines.add(RevisionLine(RevisionLineKind.same, before[i++]));
-      j++;
-    } else if (j < after.length &&
-        (i == before.length || lengths[i][j + 1] > lengths[i + 1][j])) {
-      lines.add(RevisionLine(RevisionLineKind.added, after[j++]));
+
+  final oldMiddle = before.sublist(prefix, before.length - suffix);
+  final newMiddle = after.sublist(prefix, after.length - suffix);
+  final result = <RevisionLine>[];
+  void append(RevisionLineKind kind, Iterable<int> runes) {
+    final text = String.fromCharCodes(runes);
+    if (text.isEmpty) return;
+    if (result.isNotEmpty && result.last.kind == kind) {
+      result[result.length - 1] = RevisionLine(kind, result.last.text + text);
     } else {
-      lines.add(RevisionLine(RevisionLineKind.removed, before[i++]));
+      result.add(RevisionLine(kind, text));
     }
   }
-  return lines;
+
+  append(RevisionLineKind.same, before.take(prefix));
+  if (oldMiddle.length * newMiddle.length > 160000) {
+    append(RevisionLineKind.removed, oldMiddle);
+    append(RevisionLineKind.added, newMiddle);
+  } else {
+    final lengths = List.generate(
+      oldMiddle.length + 1,
+      (_) => List<int>.filled(newMiddle.length + 1, 0),
+    );
+    for (var i = oldMiddle.length - 1; i >= 0; i--) {
+      for (var j = newMiddle.length - 1; j >= 0; j--) {
+        lengths[i][j] = oldMiddle[i] == newMiddle[j]
+            ? lengths[i + 1][j + 1] + 1
+            : (lengths[i + 1][j] > lengths[i][j + 1]
+                  ? lengths[i + 1][j]
+                  : lengths[i][j + 1]);
+      }
+    }
+    var i = 0;
+    var j = 0;
+    while (i < oldMiddle.length || j < newMiddle.length) {
+      if (i < oldMiddle.length &&
+          j < newMiddle.length &&
+          oldMiddle[i] == newMiddle[j]) {
+        append(RevisionLineKind.same, [oldMiddle[i++]]);
+        j++;
+      } else if (j < newMiddle.length &&
+          (i == oldMiddle.length || lengths[i][j + 1] > lengths[i + 1][j])) {
+        append(RevisionLineKind.added, [newMiddle[j++]]);
+      } else {
+        append(RevisionLineKind.removed, [oldMiddle[i++]]);
+      }
+    }
+  }
+  append(RevisionLineKind.same, before.skip(before.length - suffix));
+  return result;
 }
