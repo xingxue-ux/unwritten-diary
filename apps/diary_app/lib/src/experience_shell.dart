@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'capture_controller.dart';
+import 'core_wakeup.dart';
 import 'search_controller.dart';
 import 'sketch_ui.dart';
 
@@ -896,6 +897,9 @@ class _ExperienceShellState extends State<ExperienceShell>
 
   Future<void> _finish() async {
     final success = await _capture.finish();
+    if (success && !widget.demoMode) {
+      unawaited(CoreWakeupScheduler.afterCoreMutation(widget.api));
+    }
     if (!mounted) return;
     if (success) {
       _editor.clear();

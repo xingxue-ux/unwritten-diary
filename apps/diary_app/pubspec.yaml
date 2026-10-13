@@ -18,6 +18,7 @@ dependencies:
   flutter_timezone: ^5.1.1
   path: ^1.9.1
   path_provider: ^2.1.6
+  workmanager: ^0.10.10
 
 dev_dependencies:
   flutter_test:

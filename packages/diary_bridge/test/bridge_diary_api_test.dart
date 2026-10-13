@@ -224,6 +224,18 @@ void main() {
     // 但适配层的 `_wiredMethods` 这一片没动，所以这里同样必须是「没有」。
     expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.rebuild')));
   });
+
+  test('到期任务入口经 DiaryApi 返回真实核心摘要', () async {
+    final snapshot = await api.snapshot();
+    expect(snapshot.coreInfo.capabilities, contains('jobs.nextWakeup'));
+    expect(snapshot.coreInfo.capabilities, contains('jobs.runDue'));
+    final before = await api.nextWakeup();
+    final result = await api.runDueJobs(budgetMs: 0, trigger: 'adapter-wake');
+    expect(result.trigger, 'adapter-wake');
+    expect(result.processed, 0);
+    expect(result.startedAt, isA<DateTime>());
+    expect(result.nextWakeup, before);
+  });
 }
 
 String _defaultLibraryPath() {

@@ -59,6 +59,8 @@ class BridgeDiaryApi implements api.DiaryApi {
     'search.nextPage',
     'search.snapshot',
     'search.cancel',
+    'jobs.nextWakeup',
+    'jobs.runDue',
   };
 
   /// 幂等地初始化 frb 运行时。
@@ -244,6 +246,33 @@ class BridgeDiaryApi implements api.DiaryApi {
   @override
   Future<void> cancelSearch(String sessionId) async {
     await _translate(() => _open.cancelSearch(sessionId: sessionId));
+  }
+
+  @override
+  Future<DateTime?> nextWakeup() => _translate(() => _open.nextWakeup());
+
+  @override
+  Future<api.DueRunSummary> runDueJobs({
+    required int budgetMs,
+    required String trigger,
+  }) async {
+    final result = await _translate(
+      () => _open.runDueJobs(budgetMs: budgetMs, trigger: trigger),
+    );
+    return api.DueRunSummary(
+      startedAt: result.startedAt,
+      trigger: result.trigger,
+      processed: result.processed,
+      succeeded: result.succeeded,
+      failed: result.failed,
+      retrying: result.retrying,
+      backfilled: result.backfilled,
+      recovered: result.recovered,
+      dueBacklog: result.dueBacklog,
+      waitingDependency: result.waitingDependency,
+      dependencyFailed: result.dependencyFailed,
+      nextWakeup: result.nextWakeup,
+    );
   }
 
   /// 没接的方法一律明确报错——照 `diary_mock` 的做法，避免悄悄返回空数据。
