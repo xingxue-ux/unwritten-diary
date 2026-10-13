@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -74,6 +75,57 @@ class ConflictSaveApi extends MockDiaryApi {
     code: DiaryErrorCode.revisionConflict,
     message: '记录版本冲突，输入仍留在页面上。',
   );
+}
+
+class HybridPreviewApi extends MockDiaryApi {
+  final upgraded = Completer<SearchSnapshot>();
+
+  @override
+  Future<CoreSnapshot> snapshot({Set<String>? scopes}) async =>
+      const CoreSnapshot(
+        coreInfo: CoreInfo(
+          apiVersion: kApiVersion,
+          dataSchemaVersion: 0,
+          buildVersion: 'hybrid-widget-test',
+          libraryId: 'hybrid-widget-test',
+          capabilities: {
+            'search.start',
+            'search.upgrade',
+            'captures.createDraft',
+            'captures.saveDraft',
+            'captures.commit',
+            'captures.list',
+          },
+        ),
+        recovery: RecoverySummary(),
+      );
+
+  @override
+  Future<SearchSnapshot> startSearch({
+    required SearchRequest request,
+    required int queryRevision,
+  }) async {
+    expect(request.mode, SearchMode.hybrid);
+    return SearchSnapshot(
+      sessionId: 'hybrid-preview',
+      queryRevision: queryRevision,
+      phase: SearchPhase.keywordReady,
+      results: const [
+        SearchHit(
+          hitId: 'keyword',
+          groupId: 'keyword',
+          sourceKind: SourceKind.text,
+          matchedBy: {MatchedBy.keyword},
+          coverage: Coverage.complete,
+          snippet: '关键词阶段的旧片段',
+        ),
+      ],
+    );
+  }
+
+  @override
+  Future<SearchSnapshot> upgradeSearch({required String sessionId}) =>
+      upgraded.future;
 }
 
 class LargeCaptureApi extends MockDiaryApi {
@@ -274,6 +326,43 @@ void main() {
       expect(find.byKey(const Key('global-search')), findsOneWidget);
     },
   );
+
+  testWidgets('search screen replaces keyword cards after hybrid upgrade', (
+    tester,
+  ) async {
+    final api = HybridPreviewApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('搜索').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('global-search')), '花');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.pump();
+    expect(find.text('关键词阶段的旧片段'), findsOneWidget);
+    expect(find.text('先显示关键词结果，语义补充就绪后会更新排序。'), findsOneWidget);
+
+    api.upgraded.complete(
+      const SearchSnapshot(
+        sessionId: 'hybrid-preview',
+        queryRevision: 1,
+        phase: SearchPhase.hybridReady,
+        results: [
+          SearchHit(
+            hitId: 'semantic',
+            groupId: 'semantic',
+            sourceKind: SourceKind.text,
+            matchedBy: {MatchedBy.semantic},
+            coverage: Coverage.complete,
+            snippet: '融合阶段的新片段',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('融合阶段的新片段'), findsOneWidget);
+    expect(find.text('关键词阶段的旧片段'), findsNothing);
+    expect(find.text('已结合关键词和语义结果。'), findsOneWidget);
+  });
 
   testWidgets('record page meets text contrast and Android touch guidelines', (
     tester,
