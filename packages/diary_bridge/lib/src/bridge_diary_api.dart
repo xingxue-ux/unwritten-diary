@@ -61,6 +61,9 @@ class BridgeDiaryApi implements api.DiaryApi {
     'search.cancel',
     'jobs.nextWakeup',
     'jobs.runDue',
+    'imports.prepare',
+    'imports.finish',
+    'imports.status',
   };
 
   /// 幂等地初始化 frb 运行时。
@@ -250,6 +253,66 @@ class BridgeDiaryApi implements api.DiaryApi {
 
   @override
   Future<DateTime?> nextWakeup() => _translate(() => _open.nextWakeup());
+
+  @override
+  Future<api.ImportTicket> prepareImport({
+    required String captureId,
+    required String displayName,
+    String? mimeHint,
+    int? sizeHint,
+    required String operationId,
+  }) async {
+    final ticket = await _translate(
+      () => _open.prepareImport(
+        captureId: captureId,
+        displayName: displayName,
+        mimeHint: mimeHint,
+        sizeHint: sizeHint,
+        origin: bridge.ImportOrigin.picker,
+        operationId: operationId,
+      ),
+    );
+    return api.ImportTicket(
+      importId: ticket.importId,
+      stagingTicket: ticket.stagingTicket,
+      maxBytes: ticket.maxBytes,
+    );
+  }
+
+  @override
+  Future<api.ImportStatus> finishImport({
+    required String importId,
+    required String ticket,
+    required api.ImportManifest manifest,
+  }) async => _importStatus(
+    await _translate(
+      () => _open.finishImport(
+        importId: importId,
+        stagingTicket: ticket,
+        manifest: bridge.ImportManifest(
+          copiedBytes: manifest.copiedBytes,
+          sha256: manifest.sha256,
+          detectedMime: manifest.detectedMime,
+          originalName: manifest.originalName,
+        ),
+      ),
+    ),
+  );
+
+  @override
+  Future<api.ImportStatus> importStatus(String importId) async =>
+      _importStatus(await _translate(() => _open.importStatus(importId: importId)));
+
+  static api.ImportStatus _importStatus(bridge.ImportStatus status) =>
+      api.ImportStatus(
+        importId: status.importId,
+        state: api.ImportState.values.byName(status.state.name),
+        copiedBytes: status.copiedBytes,
+        totalBytes: status.totalBytes,
+        assetId: status.assetId,
+        errorCode: status.errorCode == null ? null : _errorCode(status.errorCode!),
+        message: status.message,
+      );
 
   @override
   Future<api.DueRunSummary> runDueJobs({
