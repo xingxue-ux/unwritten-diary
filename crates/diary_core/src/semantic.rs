@@ -40,6 +40,17 @@
 //! 分数从高到低排，再按篇折叠。**全表扫描**是这一片的诚实做法：没有 ANN 索引、
 //! 也没有 mmap（见文档「存储方案评估」与「没有做到的」），10 万块的规模数字是
 //! 算出来的投影，不是实测。
+//!
+//! # 口径判据（换模型未重建）
+//!
+//! 生效代次的口径（`model_version` / `dims` / `storage`）与**当前嵌入器**不一致时
+//! （`Single(旧模型)` 或历史遗留的 `Mixed`），查询向量与新库向量来自两个向量空间，
+//! 余弦相似度**全是垃圾但看起来正常**——有排序、有分数。所以 `candidates` 在生成查询
+//! 向量之前先核对整代口径（`caliber_mismatch`），不一致就返回 `ForeignSpace`：
+//! **语义这一路不作数**（不当成证据、不拿它的分排序），由调用方如实说出原因
+//! （纯语义空结果 + 警告；混合退化为关键词、阶段停在 `keyword_ready`）。
+//! 重建语义索引即可按当前模型整代重算并恢复。判据的完整说明见
+//! `docs/architecture/m2-向量索引与换代.md`。
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -134,6 +145,18 @@ impl Core {
             EmbedderSlot::Configured(_) => EmbedderReadiness::Configured,
             EmbedderSlot::Ready(_) => EmbedderReadiness::Ready,
             EmbedderSlot::Failed(reason) => EmbedderReadiness::Failed(reason.clone()),
+        }
+    }
+
+    /// **已经加载好**的嵌入器（不触发懒加载）。
+    ///
+    /// 给「不进计算、也不加载模型就能做的口径核对」用：slot 是 `Configured` 时这里给
+    /// `None`——那时要比口径只能真的加载模型，由检索路径在 `core.embedder()` 之后核对
+    /// （见 `search_session::upgrade`）。`Arc` 是克隆，不移动 slot。
+    pub(crate) fn loaded_embedder(&self) -> Option<Arc<dyn Embedder>> {
+        match &self.semantic.slot {
+            EmbedderSlot::Ready(embedder) => Some(Arc::clone(embedder)),
+            _ => None,
         }
     }
 
@@ -236,16 +259,42 @@ impl Caliber<'_> {
     }
 }
 
-/// 这个代次里有没有与当前口径不一致的向量。有一条不一致就说明这一代是**上一个模型**
-/// （或上一种存储格式）留下的半成品，不能在其基础上续算。
-fn has_foreign_vectors(core: &Core, generation: i64, caliber: &Caliber<'_>) -> Result<bool> {
+/// 这个代次里与 `caliber` 口径不一致的向量**行数**（`model_version` / `dims` /
+/// `storage` 三项一起比）。有一条不一致就说明这一代里混进了**另一个向量空间**的向量。
+fn foreign_row_count(core: &Core, generation: i64, caliber: &Caliber<'_>) -> Result<i64> {
     let foreign: i64 = core.conn.query_row(
         "SELECT COUNT(*) FROM chunk_vectors WHERE generation = ?1 \
            AND (model_version <> ?2 OR dims <> ?3 OR storage <> ?4)",
         params![generation, caliber.model_version, caliber.dims, caliber.storage],
         |row| row.get(0),
     )?;
-    Ok(foreign > 0)
+    Ok(foreign)
+}
+
+/// 这个代次里有没有与当前口径不一致的向量。有一条不一致就说明这一代是**上一个模型**
+/// （或上一种存储格式）留下的半成品，不能在其基础上续算。
+fn has_foreign_vectors(core: &Core, generation: i64, caliber: &Caliber<'_>) -> Result<bool> {
+    Ok(foreign_row_count(core, generation, caliber)? > 0)
+}
+
+/// 一个代次里某一列的**去重取值**（有序，便于日志与测试稳定）。
+///
+/// `column` 只由本模块的常量字符串传入（"model_version" / "dims" / "storage"），
+/// 不是调用方数据；这里的字符串拼接因此不构成注入面。
+fn distinct_values<T: rusqlite::types::FromSql>(
+    core: &Core,
+    column: &str,
+    generation: i64,
+) -> Result<Vec<T>> {
+    let mut statement = core
+        .conn
+        .prepare(&format!(
+            "SELECT DISTINCT {column} FROM chunk_vectors WHERE generation = ?1 ORDER BY {column}"
+        ))?;
+    let values = statement
+        .query_map(params![generation], |row| row.get::<_, T>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(values)
 }
 
 /// 丢弃一个代次：按 `generation` 清掉它的**全部**向量。
@@ -277,8 +326,9 @@ fn build_generation(core: &mut Core, embedder: &dyn Embedder) -> Result<Semantic
     // 不一致，就说明中途换过模型或换过存储格式——整代废弃、清干净，按当前模型从零重算。
     //
     // 不核对会怎样（评审在 #58 指出的）：旧模型的半成品被 `missing_chunks` 当成
-    // 「已完成」，剩下的块由新模型补算，最后切出一个**混合代次**。搜索会把不同模型
-    // 空间的向量放在一起打分，`index_status.model_version` 也只能挑其中一行误报。
+    // 「已完成」，剩下的块由新模型补算，最后切出一个**混合代次**——一个不是同一个
+    // 向量空间的代次（#80 之前搜索会跨空间打分；现在语义这一路整路不作数），
+    // 而 `index_status.model_version` 也只能挑其中一行误报。
     if let Some(value) = building {
         if has_foreign_vectors(core, value, &caliber)? {
             discard_generation(core, value)?;
@@ -425,6 +475,18 @@ fn write_vector(
 
 // ------------------------------------------------------------ 语义检索
 
+/// `candidates` 的结果：**口径一致、算出来的候选**，还是**口径不一致、根本不该算**。
+///
+/// 做成显式的二分（而不是「返回空 Vec，让调用方猜原因」）是因为两者要说的话不一样：
+/// 「算出来是空」是「没有相近的内容」，口径不一致是「这一路不作数，重建索引即可恢复」。
+/// 后者绝不能静默变成空结果——那会把「跨空间算分」换成另一种静默。
+pub(crate) enum SemanticCandidates {
+    /// 口径一致：这是算出来的候选（可能为空——没有相近的内容）。
+    Scored(Vec<SemanticCandidate>),
+    /// 生效代次与当前嵌入器不是同一个向量空间：**没有进入计算**，语义这一路不作数。
+    ForeignSpace(CaliberMismatch),
+}
+
 /// 一条「块 × 篇」候选。分数属于整块，按 span 归属到各自的篇。
 #[derive(Debug, Clone)]
 pub(crate) struct SemanticCandidate {
@@ -452,6 +514,11 @@ pub(crate) fn active_generation(core: &Core) -> Result<Option<i64>> {
 
 /// 语义候选：算查询向量 → 全表扫当前代次的向量 → 按 span 展开 → 过滤 → 排序 → 折叠。
 ///
+/// **口径判据在进入计算之前**（见 `caliber_mismatch`）：生效代次与当前嵌入器不是同一个
+/// 向量空间时，这里**直接返回 `ForeignSpace`**——不生成查询向量、不读一行向量、不算
+/// 一次余弦。这不是逐行 dims 检查能兜住的（逐行只能发现「这一行坏了」，发现不了
+/// 「整代是另一个模型建的」；而跨空间的余弦会给出**看起来正常**的分数）。
+///
 /// **折叠在分页之前**：同一篇的多个块命中只留得分最高的那一个，所以「一篇长材料」
 /// 不会在结果里出现十次（消费契约第 1 条）。
 pub(crate) fn candidates(
@@ -459,12 +526,15 @@ pub(crate) fn candidates(
     embedder: &dyn Embedder,
     query: &str,
     filters: &SearchFilters,
-) -> Result<Vec<SemanticCandidate>> {
+) -> Result<SemanticCandidates> {
     let Some(generation) = active_generation(core)? else {
-        return Ok(Vec::new());
+        return Ok(SemanticCandidates::Scored(Vec::new()));
     };
+    if let Some(mismatch) = caliber_mismatch(core, embedder)? {
+        return Ok(SemanticCandidates::ForeignSpace(mismatch));
+    }
     if query.trim().is_empty() {
-        return Ok(Vec::new());
+        return Ok(SemanticCandidates::Scored(Vec::new()));
     }
     let query_vector = embedder.embed_query(query)?;
     if query_vector.len() != embedder.dims() {
@@ -550,6 +620,23 @@ pub(crate) fn candidates(
                 ),
             });
         }
+        // 兜底（正常走不到）：整代口径已经在进计算前核对过，所以这里的每一行**应当**
+        // 与查询向量同维。真的不同维时**如实报错**，绝不退回 `cosine` 的静默 `zip`
+        // ——那会把两条不同空间的向量截到短的那一段，给出一个看起来正常的分数
+        // （原来 `cosine` 的隐患正是这一条）。口径写在
+        // `docs/architecture/m2-向量索引与换代.md` 的「消费契约」里。
+        if vector.len() != query_vector.len() {
+            return Err(CoreError::CorruptedData {
+                message: format!(
+                    "块 {} 的向量是 {} 维、行上记的是 {} 维，查询向量是 {} 维：\
+                     两者不是同一个向量空间，不做余弦",
+                    row.3,
+                    vector.len(),
+                    row.1,
+                    query_vector.len()
+                ),
+            });
+        }
         let score = cosine(&query_vector, &vector);
         scored.push(SemanticCandidate {
             group_id: row.6.clone(),
@@ -597,12 +684,21 @@ pub(crate) fn candidates(
         .into_iter()
         .filter(|candidate| seen.insert(candidate.group_id.clone()))
         .collect();
-    Ok(folded)
+    Ok(SemanticCandidates::Scored(folded))
 }
 
 /// 余弦相似度。向量已经 L2 归一化，所以正常情况下就是内积；仍然按真余弦算，
 /// 免得将来出现没归一化的行就悄悄错掉。
+///
+/// **前置条件：两个切片同维**。调用方（`candidates`）在算之前就核对过；这里再
+/// `debug_assert` 一次是为了钉住「不许静默 `zip` 到短的那一段」这条口径——真出现
+/// 不同维时，`debug` 构建直接炸出来，而不是返回一个 0 分或半截分数。
 fn cosine(left: &[f32], right: &[f32]) -> f32 {
+    debug_assert_eq!(
+        left.len(),
+        right.len(),
+        "不同维的向量不能算余弦（口径详见 m2-向量索引与换代.md 的消费契约）"
+    );
     let mut dot = 0_f32;
     let mut left_norm = 0_f32;
     let mut right_norm = 0_f32;
@@ -784,10 +880,15 @@ pub fn ranking(
         return Ok(Vec::new());
     }
     let embedder = core.embedder()?;
-    Ok(candidates(core, &*embedder, query, filters)?
-        .into_iter()
-        .map(|candidate| (candidate.group_id, candidate.score))
-        .collect())
+    // 口径不一致时给**空排名**：与产品路径「语义这一路不作数」同一口径，
+    // 而不是把跨空间的分数当成量测结果报出去。
+    match candidates(core, &*embedder, query, filters)? {
+        SemanticCandidates::ForeignSpace(_) => Ok(Vec::new()),
+        SemanticCandidates::Scored(candidates) => Ok(candidates
+            .into_iter()
+            .map(|candidate| (candidate.group_id, candidate.score))
+            .collect()),
+    }
 }
 
 /// 生效代次那一批向量的模型口径（状态里要报的**真值**）。
@@ -795,8 +896,8 @@ pub fn ranking(
 /// 为什么不是「读一行 `model_version` 就完事」：`chunk_vectors` 的主键是
 /// `(chunk_id, generation)`，一个代次里理论上可以混进不止一种模型版本（本片修复前的
 /// 「A 写一半 → 换成 B 续跑」就会产出这种代次，历史库里也可能留下）。这时候
-/// 随便挑一行报出去是**撒谎**——它既不代表整代，也掩盖了「搜索正在把不同模型空间的
-/// 向量放在一起打分」这件事。
+/// 随便挑一行报出去是**撒谎**——它既不代表整代，也掩盖了「这一代不是同一个向量空间」
+/// 这件事（检索路径从 #80 起会整路不作数，绝不拿跨空间的分数）。
 ///
 /// 本仓库的口径是「宁可如实说、不要假装干净」，所以按整代给三种结果：
 /// `Absent`（没有生效代次，或那一代一行向量都没有——没有版本可报）、
@@ -820,17 +921,105 @@ pub(crate) fn active_model_version(core: &Core) -> Result<ActiveModelVersion> {
     let Some(generation) = active_generation(core)? else {
         return Ok(ActiveModelVersion::Absent);
     };
-    let mut statement = core.conn.prepare(
-        "SELECT DISTINCT model_version FROM chunk_vectors WHERE generation = ?1 \
-         ORDER BY model_version",
-    )?;
-    let versions = statement
-        .query_map(params![generation], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let versions: Vec<String> = distinct_values(core, "model_version", generation)?;
     Ok(match versions.len() {
         0 => ActiveModelVersion::Absent,
         // `len() == 1` 时 `next()` 一定有值。
         1 => ActiveModelVersion::Single(versions.into_iter().next().expect("长度是 1")),
         _ => ActiveModelVersion::Mixed(versions),
     })
+}
+
+/// 生效代次与**当前嵌入器**不是同一个向量空间时的如实说法（检索路径唯一的判据来源）。
+///
+/// 什么时候会不一样（都是真实会发生的）：
+/// - `Single(旧模型)`：用户换了模型配置、还没重建索引。**最常见的真实情形**；
+/// - `Mixed`：历史遗留的混合代次（#58 修复前激活的）；
+/// - 三项里任意一项不同：`model_version`（模型文件变了）/ `dims`（维度变了）/
+///   `storage`（存储格式变了）。三者**全同**才算同一个向量空间。
+///
+/// 这样一批向量的余弦相似度**全是垃圾但看起来正常**（有排序、有分数），所以判据必须
+/// 在进入计算之前生效：`candidates` 一发现不一致就整路不作数。
+pub(crate) struct CaliberMismatch {
+    /// 生效代次里出现的模型版本（去重、字典序）：整代是旧模型时一个，混合代次多个。
+    pub versions: Vec<String>,
+    /// 生效代次里出现的维度（去重、升序）。
+    pub dims: Vec<i64>,
+    /// 生效代次里出现的存储格式（去重、字典序）。
+    pub storages: Vec<String>,
+    /// 与当前嵌入器口径不一致的向量行数。
+    pub foreign_rows: i64,
+    /// 当前嵌入器的三个口径字段（消息里的另一半）。
+    pub current_version: String,
+    pub current_dims: i64,
+    pub current_storage: String,
+}
+
+impl CaliberMismatch {
+    /// 给人看的、**可执行**的一句话。纯语义与混合共用同一套措辞（判据只有一处）。
+    ///
+    /// 必须说清三件事：生效的是什么、与当前什么不一样、怎么恢复（重建）。
+    pub(crate) fn reason(&self) -> String {
+        let stored = match self.versions.as_slice() {
+            [] => "（一代里一行向量都没有）".to_owned(),
+            [only] => format!("模型 {only}"),
+            many => format!(
+                "历史遗留的混合代次（{} 种模型版本：{}）",
+                many.len(),
+                many.join(" / ")
+            ),
+        };
+        format!(
+            "当前生效的向量代次是用另一个模型（或另一套口径）建的：{stored}\
+             （维度 {}、存储 {}），其中 {} 行与当前嵌入器 {}（维度 {}、存储 {}）\
+             口径不一致，两边不是同一个向量空间；跨空间的余弦相似度不作数，\
+             所以语义这一路不参与。\
+             重建语义索引（build_semantic_index）即可按当前模型整代重算并恢复",
+            join_numbers(&self.dims),
+            self.storages.join(" / "),
+            self.foreign_rows,
+            self.current_version,
+            self.current_dims,
+            self.current_storage,
+        )
+    }
+}
+
+/// `[512, 384]` → `"512 / 384"`（消息里用的维度串）。
+fn join_numbers(values: &[i64]) -> String {
+    values
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// 生效代次与当前嵌入器的口径对照：`Some` = **不是同一个向量空间，语义这一路不作数**。
+///
+/// `None` 有两种情形，都不算跨空间：没有生效代次，或生效代次里一行向量都没有
+/// （没有可算的东西）——那两条路由各自既有的「没有生效代次 / 没有块」分支处理。
+///
+/// 判据是**整代**的：一条与当前口径不一致就整路不作数。不做「挑出坏行、留下好行」
+/// 这种混合——整代里出现另一种口径本身就说明这一代不是当前模型建的。
+pub(crate) fn caliber_mismatch(
+    core: &Core,
+    embedder: &dyn Embedder,
+) -> Result<Option<CaliberMismatch>> {
+    let Some(generation) = active_generation(core)? else {
+        return Ok(None);
+    };
+    let caliber = Caliber::of(embedder);
+    let foreign_rows = foreign_row_count(core, generation, &caliber)?;
+    if foreign_rows == 0 {
+        return Ok(None);
+    }
+    Ok(Some(CaliberMismatch {
+        versions: distinct_values(core, "model_version", generation)?,
+        dims: distinct_values(core, "dims", generation)?,
+        storages: distinct_values(core, "storage", generation)?,
+        foreign_rows,
+        current_version: caliber.model_version.to_owned(),
+        current_dims: caliber.dims,
+        current_storage: caliber.storage.to_owned(),
+    }))
 }

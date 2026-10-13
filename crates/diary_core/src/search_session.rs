@@ -28,6 +28,21 @@
 //!   （正文哈希，不用任何 UUID）。语义未就绪时**退化为关键词并在 `warnings` 里明说**，
 //!   不静默；升级这一步也**绝不**在没有语义证据时假装融合过——模型不可用、候选全被
 //!   证据门槛滤掉、查询是空的，一律保留关键词快照与 `keyword_ready`。
+//!
+//! # 换模型未重建时的口径判据（issue #80）
+//!
+//! 生效代次的口径（`model_version` / `dims` / `storage`）与**当前嵌入器**不一致时
+//! （`Single(旧模型)`——用户换了模型配置但还没重建，最常见的真实情形；或历史遗留的
+//! `Mixed`），查询向量与新库向量来自两个向量空间，余弦相似度全是垃圾但看起来正常。
+//! 这三条模式都遵守同一条规则：**语义这一路不作数**——
+//!
+//! - `Semantic`：空结果 + 明确警告（`semantic::SemanticCandidates::ForeignSpace`）；
+//! - `Hybrid`：退化为关键词（`hybrid_evidence` 在已加载嵌入器时先拦，`upgrade` 在
+//!   模型加载之后再拦一次），阶段如实停在 `keyword_ready`，**不返回** `hybrid_ready`；
+//! - `Keyword`：照常可用（本地优先功能不被它挡住）。
+//!
+//! 判据在**进入计算前**（生成查询向量与读向量行之前）生效，见
+//! `semantic::caliber_mismatch`；重建语义索引即可按当前模型整代重算并恢复。
 
 use std::collections::{HashMap, HashSet};
 
@@ -139,8 +154,9 @@ struct FusedCandidate {
 pub(crate) enum HybridUpgrade {
     /// 还只算了关键词那一路：`start_search(mode = hybrid)` 之后的默认态。
     Pending,
-    /// 语义这一路**不可用**（没配模型 / 加载失败 / 没有生效代次 / 没有块）：升不了级，
-    /// 继续如实报关键词结果与 `keyword_ready`，并在 `warnings` 里说明。
+    /// 语义这一路**不可用**（没配模型 / 加载失败 / 没有生效代次 / 没有块 / **生效代次
+    /// 的口径与当前嵌入器不一致**）：升不了级，继续如实报关键词结果与 `keyword_ready`，
+    /// 并在 `warnings` 里说明。
     Unavailable,
     /// 语义**可用**（代次在、块在、模型可用），但这一路拿不出**可融合的证据**：候选全被
     /// `HYBRID_SEMANTIC_MIN_SCORE` 滤掉，或查询是空的、一条候选都没有。这种「尝试过升级、
@@ -297,7 +313,19 @@ fn semantic_search(
             return Ok((Vec::new(), coverage, SearchPhase::Done));
         }
     };
-    let candidates = semantic::candidates(core, &*embedder, needle, &request.filters)?;
+    let candidates = match semantic::candidates(core, &*embedder, needle, &request.filters)? {
+        // 口径不一致（生效代次是另一个模型建的）：**不进入计算**，也不拿跨空间的分数
+        // 冒充结果。空结果 + 明确、可执行的原因——与「语义未就绪」同一条「不假装」的路。
+        semantic::SemanticCandidates::ForeignSpace(mismatch) => {
+            warnings.push(format!(
+                "语义检索没有结果：{}；这次没有结果（没有退化成关键词，\
+                 也没有拿跨空间的分数当结果）",
+                mismatch.reason()
+            ));
+            return Ok((Vec::new(), coverage, SearchPhase::Done));
+        }
+        semantic::SemanticCandidates::Scored(candidates) => candidates,
+    };
     if candidates.is_empty() {
         // 「没有结果」就要说「没有结果」，不要伪装成「没有内容」。
         warnings.push("语义检索没有找到相近的内容".to_owned());
@@ -393,6 +421,10 @@ fn as_keyword_only_hybrid(ordered: Vec<RankedRef>) -> Vec<RankedRef> {
 /// 只读库状态与 env/stat（`embedder_readiness` **不加载模型**），所以调用它不会把
 /// 关键词首屏拖进模型加载。「模型配了但加载失败」要到升级那一刻才知道——那时
 /// `upgrade` 会如实把它归到 `Unavailable`，绝不假装已经融合过。
+///
+/// 口径判据（#80）也在这里做，但只在嵌入器**已经加载**（`Ready`）时——那时拿它的
+/// `model_version` / `dims` 与生效代次比一次是免费的（不加载模型）。slot 还在
+/// `Configured` 时这里比不了，由 `upgrade` 加载模型之后再核对（那一步一定跑到）。
 fn hybrid_evidence(core: &Core) -> Result<Option<String>> {
     if semantic::active_generation(core)?.is_none() {
         return Ok(Some(
@@ -403,6 +435,15 @@ fn hybrid_evidence(core: &Core) -> Result<Option<String>> {
         return Ok(Some(
             "语义索引还没有可用的文本块（先跑一次 build_semantic_index）".to_owned(),
         ));
+    }
+    // 口径判据：生效代次是用**另一个模型**（或另一套口径）建的时候，语义这一路连候选
+    // 都不该算——跨空间的余弦全是垃圾。嵌入器**已经加载**（`Ready`，测试与长驻进程走这条）
+    // 时在这里就能核对，且不加载模型；slot 还是 `Configured`（产品里刚重启、模型还没加载）
+    // 时比不了，留到 `upgrade` 真正加载模型之后再核对（那一步一定跑到）。
+    if let Some(embedder) = core.loaded_embedder() {
+        if let Some(mismatch) = semantic::caliber_mismatch(core, &*embedder)? {
+            return Ok(Some(mismatch.reason()));
+        }
     }
     match core.embedder_readiness() {
         EmbedderReadiness::NotConfigured => Ok(Some(
@@ -528,7 +569,19 @@ fn fuse_hybrid(
     let keyword_groups = keyword_groups(core, needle, filters)?;
 
     // —— 语义那一路：候选已按篇折叠，过门槛，再截断 ——
-    let mut semantic_candidates = semantic::candidates(core, embedder, needle, filters)?;
+    let mut semantic_candidates = match semantic::candidates(core, embedder, needle, filters)? {
+        // 兜底（正常走不到：`hybrid_evidence` 与 `upgrade` 都先在加载模型之后核对过口径）。
+        // 口径不一致 ⇒ 语义这一路不作数：**不融合**，保留关键词那份快照，
+        // 原因写进 `warnings`（调用方据此停在 `keyword_ready`）。
+        semantic::SemanticCandidates::ForeignSpace(mismatch) => {
+            warnings.push(format!("{}；语义这一路没有贡献结果", mismatch.reason()));
+            if keyword_groups.is_empty() {
+                warnings.push("关键词那一路也没有命中，这次没有结果".to_owned());
+            }
+            return Ok(None);
+        }
+        semantic::SemanticCandidates::Scored(candidates) => candidates,
+    };
     let top_score = semantic_candidates.first().map(|candidate| candidate.score);
     let min_score = core.hybrid_min_score();
     semantic_candidates.retain(|candidate| candidate.score >= min_score);
@@ -689,6 +742,15 @@ pub(crate) fn upgrade(core: &mut Core, session_id: &str) -> Result<SearchSnapsho
                 return mark_unavailable(core, &mut state, format!("语义检索不可用：{error}"));
             }
         };
+        // **口径判据**：模型真的加载出来之后，比一次生效代次与当前嵌入器的口径。
+        // 不一致（换了模型还没重建索引，或历史遗留的混合代次）就整路不作数——不融合、
+        // 不拿跨空间的分数排序，阶段如实停在 `keyword_ready`，原因说清怎么恢复。
+        // 这一步在 `fuse_hybrid`（也就是查询向量与全表余弦）之前，所以是「进入计算前」
+        // 挡住，不是逐行 dims 兜底。`hybrid_evidence` 已经拦下 `Ready` 的情形，
+        // 这里补的是「模型刚被这一次调用加载出来」的常见真实路径。
+        if let Some(mismatch) = semantic::caliber_mismatch(core, &*embedder)? {
+            return mark_unavailable(core, &mut state, mismatch.reason());
+        }
 
         let mut warnings = state.warnings.clone();
         let fused = fuse_hybrid(core, &*embedder, &needle, &state.request.filters, &mut warnings)?;

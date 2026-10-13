@@ -658,8 +658,8 @@ fn an_interrupted_generation_resumes_without_activating_half_a_build() {
 /// （`model_version` 与 `dims` 都不同）再调 `build_semantic_index`。
 ///
 /// 修复前：A 的半成品被 `missing_chunks` 当成「已完成」，只有剩下的块由 B 补算，
-/// 最后切出一个**混合代次**——搜索把两个模型空间的向量放在一起打分，
-/// `index_status.model_version` 也只挑其中一行报出去。
+/// 最后切出一个**混合代次**——搜索把两个模型空间的向量放在一起打分（#80 之前；现在
+/// 这种代次会让语义这一路整路不作数），`index_status.model_version` 也只挑其中一行报出去。
 ///
 /// 修复后：续跑前核对口径，只要有一条与当前嵌入器不一致就整代清理、按 B 从零重算。
 #[test]
@@ -934,6 +934,410 @@ fn a_mixed_active_generation_is_reported_honestly() {
     let healed = core.index_status(None).unwrap();
     assert_eq!(healed.model_version.as_deref(), Some(A_VERSION));
     assert!(healed.semantic_index_ready);
+}
+
+// ------------------------------------------------------------ 跨向量空间的口径判据（#80）
+
+/// issue #80：**换了模型、还没重建索引就搜索**——语义那一路原来会跨向量空间算分。
+///
+/// 这是最常见的真实情形（用户换了模型配置但还没重建）：生效代次是 `Single(模型 A)`，
+/// 当前嵌入器是模型 B（`model_version` 与 `dims` 都不同）。查询向量来自 B、库向量来自
+/// A，余弦全是垃圾但**看起来像正常结果**（有排序、有分数）。
+///
+/// 口径不一致时语义这一路不作数：混合退化为关键词、阶段如实停在 `keyword_ready`、
+/// 警告说清「另一个模型 + 重建即可恢复」；纯语义空结果 + 同一条警告；关键词照常。
+/// 整代重算重建之后自动恢复。
+#[test]
+fn switching_models_without_rebuild_keeps_semantic_out_of_both_paths() {
+    const A_VERSION: &str = "stub-embedder@aaaaaaaaaaaa";
+    const B_VERSION: &str = "stub-embedder@bbbbbbbbbbbb";
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+
+    // 模型 A（512 维）：查询「失眠」与两篇正文都映到 e0——A 的空间里两篇都「像」。
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        A_VERSION,
+        512,
+        &counters,
+        vec![("失眠", unit(0)), ("翻来覆去", unit(0))],
+    )));
+    let a_capture = write_capture(&mut core, at(2026, 9, 20), "最近总是失眠。", "opA");
+    // B 篇不含查询词：「失眠」召不到它，**只有语义那一路**能召到。
+    let b_capture = write_capture(&mut core, at(2026, 9, 21), "夜里翻来覆去。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    // 换成模型 B（384 维、另一个 model_version），**不重建**。B 的查询向量落在 e0
+    // （384 维）——修复前拿它和 A 的 512 维 e0 算余弦（`zip` 截到前 384 位）正好是
+    // 1.0、稳稳过证据门槛：这就是「跨空间算分看起来很正常」的样子。
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        B_VERSION,
+        384,
+        &counters,
+        vec![("失眠", unit_in(384, 0)), ("翻来覆去", unit_in(384, 0))],
+    )));
+
+    // —— 关键词：照常可用，本地优先功能不被它挡住 ——
+    let keyword = search_mode(&mut core, "失眠", SearchMode::Keyword, 20);
+    let keyword_groups: Vec<&str> = keyword
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert_eq!(
+        keyword_groups,
+        vec![a_capture.as_str()],
+        "前提：关键词只中 A 那篇"
+    );
+
+    // —— 混合：退化为关键词，阶段 keyword_ready，结果里没有只有语义能召回的 B ——
+    let started = search_mode(&mut core, "失眠", SearchMode::Hybrid, 20);
+    assert_eq!(
+        started.phase,
+        SearchPhase::KeywordReady,
+        "口径不一致时首屏仍是 keyword_ready"
+    );
+    assert_eq!(
+        started.results, keyword.results,
+        "混合的结果等于关键词那一路（B 那篇不许被跨空间的分数带进来）"
+    );
+    assert!(
+        !started.results.iter().any(|hit| hit.group_id == b_capture),
+        "只被语义召回的那篇不许出现：{:?}",
+        started
+            .results
+            .iter()
+            .map(|hit| &hit.group_id)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        started
+            .results
+            .iter()
+            .all(|hit| hit.matched_by == vec![MatchedBy::Keyword]),
+        "matchedBy 只能如实是关键词：{:?}",
+        started
+            .results
+            .iter()
+            .map(|hit| (&hit.group_id, &hit.matched_by))
+            .collect::<Vec<_>>()
+    );
+
+    let upgraded = core.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(
+        upgraded.phase,
+        SearchPhase::KeywordReady,
+        "跨空间的口径 ⇒ 不融合、不返回 hybrid_ready：{:?}",
+        upgraded.warnings
+    );
+    assert_eq!(
+        upgraded.results, started.results,
+        "保留关键词那份快照（不是被跨空间分数重排过的融合结果）"
+    );
+    assert!(
+        started
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("另一个模型") || warning.contains("口径不一致")),
+        "混合退化要说清是「另一个模型/口径不一致」：{:?}",
+        started.warnings
+    );
+    assert!(
+        upgraded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("另一个模型") && warning.contains("重建")),
+        "升级的警告也要说清原因与恢复办法：{:?}",
+        upgraded.warnings
+    );
+
+    // —— 纯语义：空结果 + 同一条警告，**不是错分** ——
+    let semantic = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+    assert!(
+        semantic.results.is_empty(),
+        "跨空间的语义结果必须为空（B 那篇不许出现）：{:?} · {:?}",
+        semantic
+            .results
+            .iter()
+            .map(|hit| (&hit.group_id, &hit.matched_by))
+            .collect::<Vec<_>>(),
+        semantic.warnings
+    );
+    assert!(
+        semantic
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("另一个模型") && warning.contains("重建")),
+        "纯语义也要说清原因与恢复办法：{:?}",
+        semantic.warnings
+    );
+
+    // —— 重建（整代重算）之后自动恢复：警告消失，语义/混合回到正常 ——
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.reused_chunks, 0, "口径不一致，A 的向量一条都不复用");
+    assert_eq!(report.embedded_chunks, 2, "两块都按 B 重算");
+
+    let healed = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+    assert!(
+        !healed
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("另一个模型")),
+        "重建后警告必须消失：{:?}",
+        healed.warnings
+    );
+    assert!(
+        healed.results.iter().any(|hit| hit.group_id == b_capture),
+        "重建后 B 那篇回到语义结果里：{:?}",
+        healed
+            .results
+            .iter()
+            .map(|hit| &hit.group_id)
+            .collect::<Vec<_>>()
+    );
+
+    let hybrid = hybrid_mode(&mut core, "失眠", 20);
+    assert_eq!(
+        hybrid.phase,
+        SearchPhase::HybridReady,
+        "重建后混合回到 hybrid_ready：{:?}",
+        hybrid.warnings
+    );
+    assert!(
+        hybrid.results.iter().any(|hit| hit.group_id == b_capture),
+        "重建后 B 那篇参与融合：{:?}",
+        hybrid
+            .results
+            .iter()
+            .map(|hit| (&hit.group_id, &hit.matched_by))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !hybrid
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("另一个模型")),
+        "重建后混合的警告里也不该再有口径不一致：{:?}",
+        hybrid.warnings
+    );
+}
+
+/// issue #80：**历史遗留的 `Mixed` 生效代次**同样不作数——判据不是只处理
+/// `Single(旧模型)`。整代里只要有一行属于另一个模型/维度/存储格式，就不是当前模型的
+/// 向量空间：不许「挑出口径一致的那几行接着算」。
+///
+/// 构造与 `a_mixed_active_generation_is_reported_honestly` 同一个办法：A 建好一代，
+/// 直接改掉其中一行的 `model_version`（模拟 #58 修复前切出来的混合代次），当前嵌入器
+/// 仍是 A。
+#[test]
+fn a_mixed_generation_keeps_semantic_out_of_both_paths_until_rebuild() {
+    const A_VERSION: &str = "stub-embedder@aaaaaaaaaaaa";
+    const B_VERSION: &str = "stub-embedder@bbbbbbbbbbbb";
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        A_VERSION,
+        512,
+        &counters,
+        vec![("失眠", unit(0)), ("翻来覆去", unit(0))],
+    )));
+    let a_capture = write_capture(&mut core, at(2026, 9, 20), "最近总是失眠。", "opA");
+    let b_capture = write_capture(&mut core, at(2026, 9, 21), "夜里翻来覆去。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    // 改掉其中一行的 model_version：生效代次成了历史遗留的混合代次。
+    {
+        let conn = open(&path);
+        conn.execute(
+            "UPDATE chunk_vectors SET model_version = ?1 WHERE chunk_id = \
+             (SELECT chunk_id FROM chunk_vectors ORDER BY chunk_id LIMIT 1)",
+            params![B_VERSION],
+        )
+        .unwrap();
+    }
+
+    // —— 混合：不融合、停在 keyword_ready，B 那篇不许出现 ——
+    let started = search_mode(&mut core, "失眠", SearchMode::Hybrid, 20);
+    assert_eq!(started.phase, SearchPhase::KeywordReady);
+    assert!(
+        !started.results.iter().any(|hit| hit.group_id == b_capture),
+        "{:?}",
+        started
+            .results
+            .iter()
+            .map(|hit| &hit.group_id)
+            .collect::<Vec<_>>()
+    );
+    let upgraded = core.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(
+        upgraded.phase,
+        SearchPhase::KeywordReady,
+        "混合代次 ⇒ 不融合：{:?}",
+        upgraded.warnings
+    );
+    assert_eq!(upgraded.results, started.results);
+    assert!(
+        upgraded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("混合代次") && warning.contains("重建")),
+        "要把「历史遗留的混合代次」点名说出来：{:?}",
+        upgraded.warnings
+    );
+
+    // —— 纯语义：空结果 + 警告，不是「拿口径一致的那几行接着算」 ——
+    let semantic = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+    assert!(
+        semantic.results.is_empty(),
+        "混合代次下语义整路不作数：{:?} · {:?}",
+        semantic
+            .results
+            .iter()
+            .map(|hit| &hit.group_id)
+            .collect::<Vec<_>>(),
+        semantic.warnings
+    );
+    assert!(
+        semantic
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("混合代次")),
+        "{:?}",
+        semantic.warnings
+    );
+
+    // —— 关键词照常 ——
+    let keyword = search_mode(&mut core, "失眠", SearchMode::Keyword, 20);
+    assert_eq!(keyword.results.len(), 1, "关键词那一路不受混合代次影响");
+    assert_eq!(
+        keyword.results[0].group_id, a_capture,
+        "关键词那一路照常命中 A 那篇"
+    );
+
+    // —— 重建后恢复 ——
+    core.build_semantic_index(None).unwrap();
+    let healed = hybrid_mode(&mut core, "失眠", 20);
+    assert_eq!(
+        healed.phase,
+        SearchPhase::HybridReady,
+        "重建后混合回到 hybrid_ready：{:?}",
+        healed.warnings
+    );
+    assert!(
+        !healed
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("混合代次")),
+        "重建后警告消失：{:?}",
+        healed.warnings
+    );
+}
+
+/// issue #80 第 2 条：**`dims` 不一致**的向量行不能静默 `zip` 算分。
+///
+/// 构造：A（512 维）建好一代，把其中一行的 `dims` 与字节一起改成 384 维的 e0
+/// （行内自洽：记录 384、字节也是 384）。修复前这条会通过「字节 vs 行上记录」的检查
+/// （384 = 384），然后 `cosine` 把 512 维查询 `zip` 到前 384 位，得到 1.0 的
+/// 「相似度」——跨空间错分，而且看起来正常。
+///
+/// 修复后：整代口径判据在**进入计算前**发现 `dims` 不是 512，语义这一路整路不作数
+/// （空结果 + 口径警告），不依赖逐行检查兜底。逐行那条只余下「行内自洽但字节与记录
+/// 不符」这类坏数据的**如实报错**——绝不退回 0 分。
+#[test]
+fn a_dims_mismatch_is_blocked_before_any_cosine() {
+    const A_VERSION: &str = "stub-embedder@aaaaaaaaaaaa";
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        A_VERSION,
+        512,
+        &counters,
+        vec![("失眠", unit(0)), ("翻来覆去", unit(0))],
+    )));
+    let a_capture = write_capture(&mut core, at(2026, 9, 20), "最近总是失眠。", "opA");
+    let b_capture = write_capture(&mut core, at(2026, 9, 21), "夜里翻来覆去。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    let chunk_id: String = {
+        let conn = open(&path);
+        conn.query_row(
+            "SELECT chunk_id FROM chunk_vectors ORDER BY chunk_id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    // 行内自洽的 384 维向量：记录 384、字节 384。
+    {
+        let conn = open(&path);
+        conn.execute(
+            "UPDATE chunk_vectors SET dims = 384, vector = ?1 WHERE chunk_id = ?2",
+            params![diary_core::vector_bytes(&unit_in(384, 0)), chunk_id],
+        )
+        .unwrap();
+    }
+
+    // —— 整代 dims 不一致 ⇒ 进计算前就整路不作数（不是逐行检查、也不是 0 分） ——
+    let semantic = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+    assert!(
+        semantic.results.is_empty(),
+        "dims 不一致的整代不许出结果（修复前这里会拿到 1.0 的跨空间错分）：{:?} · {:?}",
+        semantic
+            .results
+            .iter()
+            .map(|hit| (&hit.group_id, &hit.matched_by))
+            .collect::<Vec<_>>(),
+        semantic.warnings
+    );
+    assert!(
+        semantic
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("口径不一致") && warning.contains("384")),
+        "警告要说清是口径/维度不一致：{:?}",
+        semantic.warnings
+    );
+    let hybrid = hybrid_mode(&mut core, "失眠", 20);
+    assert_eq!(
+        hybrid.phase,
+        SearchPhase::KeywordReady,
+        "dims 不一致 ⇒ 混合也退化为关键词：{:?}",
+        hybrid.warnings
+    );
+    assert!(!hybrid.results.iter().any(|hit| hit.group_id == b_capture));
+    assert!(hybrid.results.iter().any(|hit| hit.group_id == a_capture));
+
+    // —— 行内自洽但字节与记录不符（坏数据）：如实报错，绝不静默算分 ——
+    {
+        let conn = open(&path);
+        conn.execute(
+            "UPDATE chunk_vectors SET dims = 512, vector = ?1 WHERE chunk_id = ?2",
+            params![diary_core::vector_bytes(&[0.0_f32; 8]), chunk_id],
+        )
+        .unwrap();
+    }
+    let error = core
+        .start_search(
+            SearchRequest {
+                query: "失眠".to_owned(),
+                mode: SearchMode::Semantic,
+                filters: SearchFilters::default(),
+                page_size: 20,
+            },
+            1,
+        )
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("8 维") && error.to_string().contains("512"),
+        "坏向量要如实报错（字节解出 8 维、行上记 512），不能给 0 分：{error}"
+    );
 }
 
 // ------------------------------------------------------------ 消费契约
