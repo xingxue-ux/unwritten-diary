@@ -19,6 +19,9 @@ dependencies:
   path: ^1.9.1
   path_provider: ^2.1.6
   workmanager: ^0.10.10
+  file_selector: ^1.1.0
+  platform_host:
+    path: ../../packages/platform_host
 
 dev_dependencies:
   flutter_test:
