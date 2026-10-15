@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 import 'package:platform_host/platform_host.dart';
 import 'package:test/test.dart';
 
@@ -10,6 +11,27 @@ void main() {
     target = File('${directory.path}/ticket');
   });
   tearDown(() => directory.delete(recursive: true));
+  test(
+    'cancels while the source is stalled without waiting for more bytes',
+    () async {
+      final source = StreamController<List<int>>();
+      final cancellation = CopyCancellation();
+      final started = Completer<void>();
+      final result = copyToStaging(
+        source: source.stream,
+        destination: target,
+        cancellation: cancellation,
+        onProgress: (_) => started.complete(),
+      );
+      source.add([1]);
+      await started.future;
+      final assertion = expectLater(result, throwsA(isA<CopyCancelled>()));
+      cancellation.cancel();
+      await assertion.timeout(const Duration(seconds: 2));
+      expect(source.hasListener, isFalse);
+      await source.close();
+    },
+  );
   test('hashes and flushes multiple chunks without changing bytes', () async {
     final progress = <int>[];
     final result = await copyToStaging(

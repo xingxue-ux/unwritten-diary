@@ -5,5 +5,7 @@ environment:
   sdk: '>=3.9.0 <4.0.0'
 dependencies:
   crypto: ^3.0.7
+  diary_api:
+    path: ../diary_api
 dev_dependencies:
   test: ^1.32.0
