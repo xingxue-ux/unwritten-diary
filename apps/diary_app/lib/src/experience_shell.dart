@@ -1,12 +1,16 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:diary_api/diary_api.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
 
 import 'capture_controller.dart';
 import 'file_import_controller.dart';
+import 'file_import_journal.dart';
 import 'core_wakeup.dart';
 import 'search_controller.dart';
 import 'sketch_ui.dart';
@@ -30,6 +34,7 @@ class _ExperienceShellState extends State<ExperienceShell>
   late final FileImportController _fileImports;
   bool _importsAvailable = false;
   bool _pickingFiles = false;
+  bool _importsRecoveryWarning = false;
   late final Listenable _contentChanges;
   final _editor = TextEditingController();
   final _search = TextEditingController();
@@ -74,21 +79,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     _fileImports = FileImportController(widget.api);
     _contentChanges = Listenable.merge([_capture, _coreSearch, _fileImports]);
     if (!widget.demoMode) {
-      unawaited(
-        widget.api
-            .snapshot()
-            .then((snapshot) {
-              if (!mounted) return;
-              setState(
-                () => _importsAvailable = const {
-                  'imports.prepare',
-                  'imports.finish',
-                  'imports.status',
-                }.every(snapshot.coreInfo.capabilities.contains),
-              );
-            })
-            .catchError((Object _) {}),
-      );
+      unawaited(_initializeImports());
     }
     _search.addListener(_onSearchValueChanged);
     unawaited(
@@ -99,6 +90,33 @@ class _ExperienceShellState extends State<ExperienceShell>
       }),
     );
     _editVersion.text = _demoBody;
+  }
+
+  Future<void> _initializeImports() async {
+    try {
+      final snapshot = await widget.api.snapshot();
+      final available = const {
+        'imports.prepare',
+        'imports.finish',
+        'imports.status',
+      }.every(snapshot.coreInfo.capabilities.contains);
+      if (!available) return;
+      try {
+        final support = await getApplicationSupportDirectory();
+        _fileImports.attachJournal(
+          FileImportJournal(
+            File(path.join(support.path, 'file-import-recovery.jsonl')),
+          ),
+        );
+        await _fileImports.restore();
+      } catch (_) {
+        if (mounted) setState(() => _importsRecoveryWarning = true);
+        return;
+      }
+      if (mounted) setState(() => _importsAvailable = true);
+    } catch (_) {
+      // The core remains unavailable; the existing text capture error is shown.
+    }
   }
 
   @override
@@ -161,6 +179,28 @@ class _ExperienceShellState extends State<ExperienceShell>
     }
   }
 
+  Future<void> _reselectImport(FileImportEntry entry) async {
+    try {
+      final file = await openFile();
+      if (file == null || !mounted) return;
+      if (file.name != entry.file.name) {
+        _toast('请选择同名的原文件；不同文件请使用“导入文件”新建记录。');
+        return;
+      }
+      await _fileImports.retryWithFile(
+        entry,
+        SelectedImportFile(
+          name: file.name,
+          mimeHint: file.mimeType,
+          openRead: () => file.openRead(),
+        ),
+      );
+      if (mounted) await _capture.refresh();
+    } catch (_) {
+      if (mounted) _toast('重新选择文件未完成，原材料状态没有改变。');
+    }
+  }
+
   Widget _importCard(FileImportEntry entry) {
     final state = switch (entry.phase) {
       FileImportPhase.queued => '等待导入',
@@ -183,13 +223,26 @@ class _ExperienceShellState extends State<ExperienceShell>
               onPressed: () => _fileImports.cancel(entry),
               child: const Text('停止复制'),
             ),
-          if (entry.phase == FileImportPhase.verifying)
+          if (entry.canRefresh)
             TextButton(
               onPressed: () async {
                 await _fileImports.refresh(entry);
                 if (mounted) await _capture.refresh();
               },
               child: const Text('刷新校验状态'),
+            ),
+          if (entry.canRetry)
+            TextButton(
+              onPressed: () async {
+                await _fileImports.retry(entry);
+                if (mounted) await _capture.refresh();
+              },
+              child: const Text('重试导入'),
+            ),
+          if (entry.needsReselection)
+            TextButton(
+              onPressed: () => _reselectImport(entry),
+              child: const Text('重新选择原文件'),
             ),
         ],
       ),
@@ -853,6 +906,8 @@ class _ExperienceShellState extends State<ExperienceShell>
             ),
             const SizedBox(height: 16),
             const Divider(color: SketchColors.ink, thickness: .8),
+            if (_importsRecoveryWarning)
+              const Text('导入恢复记录暂时不可用；请检查应用存储空间后重试。'),
             if (!widget.demoMode)
               for (final entry in _fileImports.entries) _importCard(entry),
             CallbackShortcuts(

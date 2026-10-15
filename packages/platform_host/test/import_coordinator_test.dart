@@ -97,4 +97,22 @@ void main() {
     );
     expect(api.finishes, 0);
   });
+  test(
+    'cancellation at the copy-to-verification boundary never calls finish',
+    () async {
+      final cancellation = CopyCancellation();
+      await expectLater(
+        FileImportCoordinator(api).importFile(
+          captureId: 'capture',
+          displayName: 'test',
+          operationId: 'op',
+          openRead: () => Stream.value([97, 98, 99]),
+          cancellation: cancellation,
+          onCopyComplete: cancellation.cancel,
+        ),
+        throwsA(isA<ImportInterrupted>()),
+      );
+      expect(api.finishes, 0);
+    },
+  );
 }

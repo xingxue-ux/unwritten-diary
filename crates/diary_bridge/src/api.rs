@@ -14,9 +14,9 @@ use chrono::{DateTime, Utc};
 use diary_core::{
     Capture, CapturePage, CommitResult, Core, CoreError, DomainEvent, DraftSaveResult,
     ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job,
-    JobRunSummary, JobState, JobStatus, SearchRequest, SearchSnapshot, SourceLocation,
-    SourceLocator,
-    SourceRevision,
+    JobRunSummary, JobState, JobStatus, NativeRecordingStatus, RecordingFinalizeResult,
+    RecordingRecovery, RecordingSession, RecordingTicket, SearchRequest, SearchSnapshot,
+    SegmentManifest, SegmentReceipt, SourceLocation, SourceLocator, SourceRevision,
 };
 use flutter_rust_bridge::frb;
 
@@ -212,6 +212,58 @@ impl BridgeSession {
         Ok(core.import_status(&import_id)?)
     }
 
+    pub fn cancel_import(&self, import_id: String) -> Result<(), BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.cancel_import(&import_id)?)
+    }
+
+    // ------------------------------------------------------------ 录音交接
+
+    pub fn prepare_recording(
+        &self,
+        capture_id: String,
+        operation_id: String,
+    ) -> Result<RecordingTicket, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.prepare_recording(&capture_id, &operation_id)?)
+    }
+
+    pub fn register_segment(
+        &self,
+        recording_id: String,
+        segment_index: i64,
+        segment: SegmentManifest,
+    ) -> Result<SegmentReceipt, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.register_segment(&recording_id, segment_index, segment)?)
+    }
+
+    pub fn update_recording_state(
+        &self,
+        status: NativeRecordingStatus,
+    ) -> Result<RecordingSession, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.update_recording_state(status)?)
+    }
+
+    pub fn finalize_recording(
+        &self,
+        recording_id: String,
+        last_segment_index: i64,
+        end_reason: String,
+    ) -> Result<RecordingFinalizeResult, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.finalize_recording(&recording_id, last_segment_index, &end_reason)?)
+    }
+
+    pub fn recover_recording(
+        &self,
+        recording_id: Option<String>,
+    ) -> Result<RecordingRecovery, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.recover_recording(recording_id.as_deref())?)
+    }
+
     // ------------------------------------------------------------ 提取与定位
 
     /// 对某个来源（来源 id 或修订 id 都行）跑一次提取。
@@ -376,12 +428,7 @@ impl BridgeSession {
         trigger: String,
     ) -> Result<JobRunSummary, BridgeError> {
         let mut core = self.lock()?;
-        Ok(core.run_due_jobs(
-            Utc::now(),
-            u64::from(budget_ms),
-            &trigger,
-            RUN_DUE_MAX_JOBS,
-        )?)
+        Ok(core.run_due_jobs(Utc::now(), u64::from(budget_ms), &trigger, RUN_DUE_MAX_JOBS)?)
     }
 
     /// 建议的下次唤醒时刻；没有待办时为空。
@@ -415,9 +462,7 @@ fn recovery_summary(core: &Core) -> Result<RecoverySummary, CoreError> {
     let recoverable_imports = core.count_imports_in_flight()? as u32;
     let open_recordings = core.count_open_recordings()? as u32;
     // 走精确计数：`list_jobs` 的 limit 会被夹到 200，拿它当计数会在任务多时少报。
-    let pending_jobs = core
-        .count_jobs(Some(&[JobState::Queued, JobState::RetryWait]))?
-        as u32;
+    let pending_jobs = core.count_jobs(Some(&[JobState::Queued, JobState::RetryWait]))? as u32;
 
     let mut notes = Vec::new();
     if recoverable_imports > 0 {
@@ -449,6 +494,12 @@ fn wired_capabilities() -> Vec<String> {
         "imports.prepare",
         "imports.finish",
         "imports.status",
+        "imports.cancel",
+        "recordings.prepare",
+        "recordings.registerSegment",
+        "recordings.updateState",
+        "recordings.finalize",
+        "recordings.recover",
         "sources.extract",
         "sources.extractedContent",
         "sources.reviseText",

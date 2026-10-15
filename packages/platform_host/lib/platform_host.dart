@@ -55,6 +55,8 @@ class FileImportCoordinator {
     String? mimeHint,
     int? sizeHint,
     void Function(int copiedBytes)? onProgress,
+    Future<void> Function(ImportTicket ticket)? onPrepared,
+    void Function()? onCopyComplete,
   }) async {
     if (!_active.add(operationId)) {
       throw StateError('This import operation is already running.');
@@ -69,6 +71,7 @@ class FileImportCoordinator {
         sizeHint: sizeHint,
         operationId: operationId,
       );
+      if (onPrepared != null) await onPrepared(ticket);
       cancellation.check();
       final existing = await api.importStatus(ticket.importId);
       // An idempotent retry must never truncate an already accepted asset.
@@ -86,6 +89,8 @@ class FileImportCoordinator {
         maxBytes: ticket.maxBytes,
         onProgress: onProgress,
       );
+      cancellation.check();
+      onCopyComplete?.call();
       cancellation.check();
       // The core detects the real MIME and verifies bytes/hash; a picker hint
       // is not evidence of a valid file. Only its ready response means accepted.
