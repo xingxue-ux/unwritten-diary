@@ -4,6 +4,8 @@ import 'package:diary_api/diary_api.dart';
 import 'package:flutter/foundation.dart';
 import 'package:platform_host/platform_host.dart';
 
+import 'core_wakeup.dart';
+
 class SelectedImportFile {
   const SelectedImportFile({
     required this.name,
@@ -105,6 +107,7 @@ class FileImportController extends ChangeNotifier {
         },
       );
       entry.importId = result.importId;
+      unawaited(CoreWakeupScheduler.afterCoreMutation(api));
       if (result.state != ImportState.ready) {
         entry.phase = result.state == ImportState.verifying
             ? FileImportPhase.verifying
