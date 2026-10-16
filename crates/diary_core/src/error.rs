@@ -93,6 +93,19 @@ pub enum CoreError {
     #[error("版本冲突：期望 revision {expected}，实际 {actual}")]
     RevisionConflict { expected: i64, actual: i64 },
 
+    /// 日记版本的乐观锁冲突（B4c）：与 `RevisionConflict` 同一个错误码，
+    /// 但把「哪一天、现在有几版」写进消息里——这一天的 revision 就是版本数，
+    /// 只报两个裸数字用户看不懂发生了什么。
+    #[error(
+        "版本冲突：{day_key} 的 revision 期望是 {expected}，实际是 {actual}\
+         （这一天在你读取之后又新增了版本）；请重新读取这一天再试，核心不会覆盖任何已有版本"
+    )]
+    DiaryRevisionConflict {
+        day_key: String,
+        expected: i64,
+        actual: i64,
+    },
+
     #[error("幂等冲突：operationId {operation_id} 已经用于不同的内容")]
     IdempotencyConflict { operation_id: String },
 
@@ -167,7 +180,9 @@ impl CoreError {
             Self::NotFound { .. } => ErrorCode::NotFound,
             Self::InvalidState { .. } => ErrorCode::InvalidState,
             Self::InvalidArgument { .. } => ErrorCode::InvalidArgument,
-            Self::RevisionConflict { .. } => ErrorCode::RevisionConflict,
+            Self::RevisionConflict { .. } | Self::DiaryRevisionConflict { .. } => {
+                ErrorCode::RevisionConflict
+            }
             Self::IdempotencyConflict { .. } => ErrorCode::IdempotencyConflict,
             Self::StorageFull => ErrorCode::StorageFull,
             Self::AssetMissing { .. } => ErrorCode::AssetMissing,

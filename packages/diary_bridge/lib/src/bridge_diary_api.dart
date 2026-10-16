@@ -14,7 +14,8 @@ import '../diary_bridge.dart' as bridge;
 /// 记录 CRUD / `startSearch` / `nextPage` / `searchSnapshot` / `cancelSearch` /
 /// `listProviders` / `saveProvider` / `removeProvider` / `testProvider` /
 /// `requestResponse` / `getResponse` /
-/// `getDay` / `generateDiary` / `listVersions` / `getVersion`。其余契约方法一律抛
+/// `getDay` / `generateDiary` / `listVersions` / `getVersion` /
+/// `saveDiaryEdit` / `setCurrentVersion` / `mergeDiary`。其余契约方法一律抛
 /// [UnsupportedError]（和 `diary_mock` 的做法一致），并且**不出现在
 /// [api.CoreInfo.capabilities] 里**——能力清单是窄化过的，界面据此决定显示哪些入口。
 ///
@@ -73,6 +74,9 @@ class BridgeDiaryApi implements api.DiaryApi {
     'diary.generate',
     'diary.listVersions',
     'diary.getVersion',
+    'diary.saveEdit',
+    'diary.setCurrent',
+    'diary.merge',
   };
 
   /// 幂等地初始化 frb 运行时。
@@ -444,6 +448,78 @@ class BridgeDiaryApi implements api.DiaryApi {
     final session = _open;
     final version = await _translate(
       () => session.getDiaryVersion(versionId: versionId),
+    );
+    return _diaryVersion(version);
+  }
+
+  // ------------------------------------------------- 编辑 / 指定当前 / 合并（B4c）
+
+  /// 保存人工编辑：**新写一条 `user_edit` 版本**（基版一个字节都不动），并让它成为当前。
+  ///
+  /// `expectedRevision` 是这一天的版本数：`getDay` 的
+  /// `candidateVersionIds.length + (currentVersionId == null ? 0 : 1)`。
+  /// 不符 → `revisionConflict`（核心零改动）；同一条 `operationId` 重试返回原版本，
+  /// 换了内容 → `idempotencyConflict`。
+  @override
+  Future<api.DiaryVersion> saveDiaryEdit({
+    required String baseVersionId,
+    required String body,
+    required int expectedRevision,
+    required String operationId,
+  }) async {
+    final session = _open;
+    final version = await _translate(
+      () => session.saveDiaryEdit(
+        baseVersionId: baseVersionId,
+        body: body,
+        expectedRevision: expectedRevision,
+        operationId: operationId,
+      ),
+    );
+    return _diaryVersion(version);
+  }
+
+  /// 指定某一天的当前版本（用户想退回上一版）。只允许这一天自己的版本。
+  ///
+  /// 旧当前版变成候选、不删除；切到已经是当前的版本是无操作。
+  @override
+  Future<api.DiaryDay> setCurrentVersion({
+    required String dayKey,
+    required String versionId,
+    required int expectedRevision,
+  }) async {
+    final session = _open;
+    final day = await _translate(
+      () => session.setDiaryCurrent(
+        dayKey: dayKey,
+        versionId: versionId,
+        expectedRevision: expectedRevision,
+      ),
+    );
+    return _diaryDay(day);
+  }
+
+  /// 把两版（或多版）合成一条新的 `merge` 版本，`body` 是用户确认后的正文。
+  ///
+  /// 来源记在新版本的 `generationInfo.generationOptions.mergeSourceVersionIds`；
+  /// 参与合并的版本全部保留、随时可取回原文；新版本成为当前。
+  @override
+  Future<api.DiaryVersion> mergeDiary({
+    required String baseVersionId,
+    required List<String> candidateVersionIds,
+    required String body,
+    required int expectedRevision,
+    required String operationId,
+  }) async {
+    final session = _open;
+    final version = await _translate(
+      () => session.mergeDiaryVersions(
+        baseVersionId: baseVersionId,
+        candidateVersionIds: candidateVersionIds,
+        body: body,
+        expectedRevision: expectedRevision,
+        operationId: operationId,
+      ),
     );
     return _diaryVersion(version);
   }

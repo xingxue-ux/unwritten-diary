@@ -124,6 +124,18 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required SourceLocator locator,
   });
 
+  /// 把两版（或多版）合并成一条新版本，契约 `diary.merge`。
+  ///
+  /// `body` 是用户确认后的正文（核心不调模型）；来源记在
+  /// `generationInfo.generationOptions.mergeSourceVersionIds`；参与合并的版本全部保留。
+  Future<DiaryVersion> mergeDiaryVersions({
+    required String baseVersionId,
+    required List<String> candidateVersionIds,
+    required String body,
+    required PlatformInt64 expectedRevision,
+    required String operationId,
+  });
+
   /// 建议的下次唤醒时刻；没有待办时为空。
   Future<DateTime?> nextWakeup();
 
@@ -204,6 +216,18 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String trigger,
   });
 
+  /// 保存人工编辑：新写一条 `user_edit` 版本并让它成为当前，契约 `diary.saveEdit`。
+  ///
+  /// **不原地改基版**（基版一个字节都不动），旧当前版退成候选。`expectedRevision`
+  /// 是这一天的版本数（`candidateVersionIds.length + (currentVersionId == null ? 0 : 1)`），
+  /// 不符报 `revision_conflict` 且零改动；同一条 `operationId` 重试返回原版本。
+  Future<DiaryVersion> saveDiaryEdit({
+    required String baseVersionId,
+    required String body,
+    required PlatformInt64 expectedRevision,
+    required String operationId,
+  });
+
   /// 保存草稿。只有核心确认落盘后才返回 `durable = true`。
   Future<DraftSaveResult> saveDraft({
     required String captureId,
@@ -229,6 +253,17 @@ abstract class BridgeSession implements RustOpaqueInterface {
 
   /// 读当前快照；会话不存在或索引变了报 `search_expired`。
   Future<SearchSnapshot> searchSnapshot({required String sessionId});
+
+  /// 指定某一天的当前版本，契约 `diary.setCurrent`。
+  ///
+  /// 只能指向这一天自己的版本（不存在 `not_found`、跨天 `invalid_argument`）；
+  /// `expectedRevision` 不符 `revision_conflict`；切到已经是当前的版本是**无操作**，
+  /// 所以这一行契约没有 `operationId`（不产生任何东西，重复调用收敛到同一状态）。
+  Future<DiaryDay> setDiaryCurrent({
+    required String dayKey,
+    required String versionId,
+    required PlatformInt64 expectedRevision,
+  });
 
   /// 发起一次检索，契约第 4.4 节 `search.start`。
   Future<SearchSnapshot> startSearch({

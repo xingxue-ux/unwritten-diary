@@ -1,11 +1,13 @@
-//! 日记生成与版本（B4b，issue [#64]）：冻结输入快照、候选/当前语义、防提示注入、
-//! 长材料两步走、去重与幂等、来源标记。
+//! 日记生成与版本（B4b，issue [#64]；B4c 的编辑/指定当前/合并见 issue [#87]）：
+//! 冻结输入快照、候选/当前语义、防提示注入、长材料两步走、去重与幂等、来源标记，
+//! 以及**用户自己的版本**（`user_edit` / `merge`）如何成为新的当前版本。
 //!
 //! 消费契约见 `docs/architecture/m3-日记生成与版本.md`，这里只把口径写成代码。
 //!
 //! [#64]: https://github.com/xingxue-ux/unwritten-diary/issues/64
+//! [#87]: https://github.com/xingxue-ux/unwritten-diary/issues/87
 //!
-//! # 五条不可动摇的口径
+//! # 六条不可动摇的口径
 //!
 //! 1. **先冻结，再生成**：`diary.generate` 在返回票据**之前**就把这一天的材料清单
 //!    （来源 ID、修订 ID、提取版本、覆盖范围）写成不可变的快照行并算好哈希。作业执行时
@@ -21,7 +23,11 @@
 //!    其余一律候选。当前版本永不因为一次生成而改变；
 //! 5. **失败如实**：没配服务 / 鉴权失败 / 超时走 #66 已有的错误码与队列处置
 //!    （`waiting_configuration` / `retry_wait`），**不写空正文冒充成功**，两步走中途失败
-//!    也不落半截版本。
+//!    也不落半截版本；
+//! 6. **用户版本只新增、不原地改**（B4c）：`diary.saveEdit` / `diary.merge` 写的是**新版本**
+//!    （`user_edit` / `merge`），基版一个字节都不动；新版本成为当前，旧当前版退成候选。
+//!    编辑/合并同样带 `expectedRevision` 与 `operationId`：过期报 `revision_conflict`、
+//!    重放返回原结果、换内容报 `idempotency_conflict`，**从不静默覆盖**。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -48,6 +54,13 @@ pub(crate) const KIND_DIARY_GENERATE: &str = "diary_generate";
 
 /// 提示词版本。它进输入快照（同一份材料配不同提示词版本算不同的输入）。
 pub const PROMPT_VERSION: &str = "b4b-1";
+
+/// 合并版本的审计标记：`generationInfo.promptVersion` 写这个值，表示**没有提示词参与**。
+///
+/// `diary.merge` 落的是「用户确认后的正文」，核心在这一片不调用任何模型
+/// （`providerId` / `model` 都是 `None`、`generationOptions.modelCalls = "0"`）。
+/// 写一个像提示词版本的名字会假装有过一次生成，所以这里明确写「没有」。
+pub const MERGE_PROMPT_VERSION: &str = "none";
 
 /// 直接送进模型材料的上限（Unicode 标量值）。超过就走两步：先按事件提炼中间事实。
 pub const DIRECT_INPUT_CHAR_LIMIT: usize = 6_000;
@@ -1754,78 +1767,42 @@ pub(crate) fn get_version(core: &Core, version_id: &str) -> Result<DiaryVersion>
     load_version(&core.conn, version_id)
 }
 
-// ------------------------------------------------------------------ 用户版本的写入缝（#87）
+// ------------------------------------------------------------------ 编辑 / 指定当前 / 合并（B4c，#87）
 
-/// 写一条**用户自己的**版本（`user_edit` / `merge`）。这是 #87（B4c）将来要用的写入缝：
-/// 它只写版本、**不动当前版本**——切换当前是 `diary.setCurrent` 的事，两者分开。
+/// 这一天的 `revision`：`diary_versions` 里属于这一天的版本数。
 ///
-/// 现在只暴露给测试（`Core::save_diary_version_for_test`），桥接与能力清单里都没有它：
-/// 用户编辑/切换/合并的操作面明确属于 B4c。
-pub(crate) fn insert_user_version(
-    core: &mut Core,
-    day_key: &str,
-    base_version_id: Option<&str>,
-    body: &str,
-    origin: DiaryVersionOrigin,
-) -> Result<DiaryVersion> {
-    parse_day_key(day_key)?;
-    if !origin.is_user_authored() {
-        return Err(CoreError::InvalidArgument {
-            reason: format!(
-                "这条写入缝只写用户自己的版本（user_edit / merge），不能写 {}——\
-                 生成版本只能由生成路径产出",
-                origin.wire()
-            ),
-        });
-    }
-    if body.trim().is_empty() {
-        return Err(CoreError::InvalidArgument {
-            reason: "用户版本不能是空正文".to_owned(),
-        });
-    }
-    if let Some(base) = base_version_id {
-        let base_version = load_version(&core.conn, base)?;
-        if base_version.day_key != day_key {
-            return Err(CoreError::InvalidArgument {
-                reason: format!("基版 {base} 属于 {}，不是 {day_key}", base_version.day_key),
-            });
-        }
-    }
-
-    let tx = core.conn.transaction()?;
-    let version = insert_version(
-        &tx,
-        &NewVersion {
-            day_key,
-            parent_version_id: base_version_id,
-            origin,
-            body,
-            source_snapshot_id: None,
-            style_snapshot_id: None,
-            generation_info: None,
-            provenance_links: &[],
-            operation_id: None,
-        },
+/// 它随每一次「新增一版」（生成、编辑、合并）单调 +1；`setCurrent` 不新增版本，
+/// 所以不改变它。契约的 `DiaryDay`（2.5）没有 revision 字段，调用方从
+/// `diary.getDay` 的结果就能算出这个数字：
+/// `candidateVersionIds.length + (currentVersionId == null ? 0 : 1)`。
+///
+/// 为什么不另存一个计数器列：那要动 schema（B4b 刚把表结构定在 v10），而且 B4b 已经
+/// 把「这一天推进到第几步」定义成版本数（`diary.currentChanged` 事件的 `revision`）。
+/// 这里沿用同一个定义，不引入第二套「版本号」。
+fn day_revision(conn: &rusqlite::Connection, day_key: &str) -> Result<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM diary_versions WHERE day_key = ?1",
+        params![day_key],
+        |row| row.get(0),
     )?;
-    tx.commit()?;
-    Ok(version)
+    Ok(count)
 }
 
-/// 切换某一天的当前版本（`diary.setCurrent` 的写入缝，#87 用）。
-///
-/// **只由明确的用户操作调用**：生成路径永远不会用它去覆盖一个用户版本——
-/// 那条路径只在「首次」时把当前版本指向自己新写的候选。
-pub(crate) fn set_current(core: &mut Core, day_key: &str, version_id: &str) -> Result<DiaryDay> {
-    parse_day_key(day_key)?;
-    let version = load_version(&core.conn, version_id)?;
-    if version.day_key != day_key {
-        return Err(CoreError::InvalidArgument {
-            reason: format!(
-                "版本 {version_id} 属于 {}，不是 {day_key}",
-                version.day_key
-            ),
+/// `expectedRevision` 的闸门：不匹配就报版本冲突，**一个字节都不写**。
+fn ensure_day_revision(conn: &rusqlite::Connection, day_key: &str, expected: i64) -> Result<()> {
+    let actual = day_revision(conn, day_key)?;
+    if actual != expected {
+        return Err(CoreError::DiaryRevisionConflict {
+            day_key: day_key.to_owned(),
+            expected,
+            actual,
         });
     }
+    Ok(())
+}
+
+/// 这一天的时区名：`diary_days` 里有就用它，没有就从材料归属推（与生成路径同一口径）。
+fn day_time_zone(core: &Core, day_key: &str) -> Result<String> {
     let stored: Option<String> = core
         .conn
         .query_row(
@@ -1834,14 +1811,288 @@ pub(crate) fn set_current(core: &mut Core, day_key: &str, version_id: &str) -> R
             |row| row.get(0),
         )
         .optional()?;
-    let time_zone = match stored {
+    Ok(match stored {
         Some(zone) => zone,
         None => collect_materials(core, day_key)?.window.time_zone,
-    };
+    })
+}
+
+/// `diary.saveEdit`：用户编辑后的正文写成**新修订**，契约第 4.3 节。
+///
+/// 口径：
+/// - **绝不原地改**：基版（`baseVersionId`）一个字节都不动，新版本 `parentVersionId`
+///   指向它、`origin = user_edit`，修订链因此可回溯；
+/// - **新版本成为当前**：用户手写编辑就是「我要用这一版」；旧当前版退成候选
+///   （`diary.getDay` 的 `candidateVersionIds`），不删除、可按需取回；
+/// - **过期就拒绝**：`expectedRevision` 必须等于这一天当前的版本数，不符报
+///   `revision_conflict`（零改动，不静默覆盖）；
+/// - **幂等**：同一条 `operationId` 重试返回**原版本**（`operation_receipts` 先行，
+///   所以即使 revision 已经变了，重试也返回原结果）；同一条 `operationId` 换了正文/基版/
+///   `expectedRevision` 报 `idempotency_conflict`；
+/// - **空正文拒绝**（`invalid_argument`）：空正文不是一次编辑；正文本身**不设长度上限**，
+///   用户写下多少就是多少（契约没有给 `body` 定上限，核心也不截断用户的话）。
+pub(crate) fn save_edit(
+    core: &mut Core,
+    base_version_id: &str,
+    body: &str,
+    expected_revision: i64,
+    operation_id: &str,
+) -> Result<DiaryVersion> {
+    if operation_id.trim().is_empty() {
+        return Err(CoreError::InvalidArgument {
+            reason: "diary.saveEdit 需要一个 operationId（幂等靠它）".to_owned(),
+        });
+    }
+    if base_version_id.trim().is_empty() {
+        return Err(CoreError::InvalidArgument {
+            reason: "diary.saveEdit 需要 baseVersionId（被编辑的那一版）".to_owned(),
+        });
+    }
+    if body.trim().is_empty() {
+        return Err(CoreError::InvalidArgument {
+            reason: "日记正文不能是空的：空正文不是一次编辑。要删掉这一版请走明确的删除操作，\
+                     核心不会把空字符串写成一版日记"
+                .to_owned(),
+        });
+    }
+
+    // 幂等先行（契约 1.2：先查已完成操作，再检查 revision）。
+    let fingerprint = support::fingerprint(&[
+        "diary.saveEdit",
+        base_version_id,
+        body,
+        &expected_revision.to_string(),
+    ]);
+    if let Some(json) = core.receipt("diary.saveEdit", &fingerprint, operation_id.trim())? {
+        return Ok(serde_json::from_str(&json)?);
+    }
+
+    let base = load_version(&core.conn, base_version_id)?;
+    ensure_day_revision(&core.conn, &base.day_key, expected_revision)?;
+    let time_zone = day_time_zone(core, &base.day_key)?;
+
+    // 新版本 + 当前版本切换 + 幂等回执在**同一个事务**里：要么都成，要么都不成。
+    let tx = core.conn.transaction()?;
+    let version = insert_version(
+        &tx,
+        &NewVersion {
+            day_key: &base.day_key,
+            parent_version_id: Some(base_version_id),
+            origin: DiaryVersionOrigin::UserEdit,
+            body,
+            source_snapshot_id: None,
+            style_snapshot_id: None,
+            generation_info: None,
+            provenance_links: &[],
+            operation_id: Some(operation_id.trim()),
+        },
+    )?;
+    set_current_in_tx(&tx, &base.day_key, &time_zone, &version.id)?;
+    crate::store_receipt(
+        &tx,
+        operation_id.trim(),
+        "diary.saveEdit",
+        &fingerprint,
+        &serde_json::to_string(&version)?,
+    )?;
+    tx.commit()?;
+    Ok(version)
+}
+
+/// `diary.setCurrent`：在一天的版本之间指定当前版本，契约第 4.3 节。
+///
+/// 口径：
+/// - **只能指向这一天自己的版本**：版本不存在报 `not_found`；版本属于别的天报
+///   `invalid_argument`（消息里写清它属于哪一天）；
+/// - **过期就拒绝**：`expectedRevision` 必须等于这一天当前的版本数，不符报
+///   `revision_conflict`（零改动）；
+/// - **旧当前版变候选**：版本一行都不删，随时能切回来（`candidateVersionIds` 里还在）；
+/// - **按目标状态幂等**：契约这一行没有 `operationId`（`dayKey、versionId、expectedRevision`），
+///   因为它**不产生任何东西**——重复调用收敛到同一个状态：已经是当前就什么都不做
+///   （不重复发 `diary.currentChanged`、不新增版本）。换成另一个版本是**另一次合法操作**，
+///   不是幂等冲突。
+pub(crate) fn set_current(
+    core: &mut Core,
+    day_key: &str,
+    version_id: &str,
+    expected_revision: i64,
+) -> Result<DiaryDay> {
+    parse_day_key(day_key)?;
+    let version = load_version(&core.conn, version_id)?;
+    if version.day_key != day_key {
+        return Err(CoreError::InvalidArgument {
+            reason: format!(
+                "版本 {version_id} 属于 {}，不是 {day_key}：只能把当前版本指向这一天自己的版本",
+                version.day_key
+            ),
+        });
+    }
+    ensure_day_revision(&core.conn, day_key, expected_revision)?;
+    let time_zone = day_time_zone(core, day_key)?;
+
     let tx = core.conn.transaction()?;
     set_current_in_tx(&tx, day_key, &time_zone, version_id)?;
     tx.commit()?;
     get_day(core, day_key)
+}
+
+/// 合并版本的审计信息：**由哪几版合成**，以及「没有模型参与」这两件事。
+///
+/// 契约的 `DiaryVersion`（2.5）没有「由哪些版本合并而来」的字段，所以来源记在
+/// `generationInfo.generationOptions` 里（B4b 的 `steps` / `modelCalls` 走的是同一个位置）：
+/// `mergeSourceVersionIds`（基版在前，候选版本按字典序）、`mergeBaseVersionId`、
+/// `mergeCandidateVersionIds`、`mergedBy = user_confirmed`。
+///
+/// `promptVersion` 写 [`MERGE_PROMPT_VERSION`]（`"none"`）、`providerId` / `model` 为空、
+/// `modelCalls = "0"`：这一版**没有发生过任何模型调用**，正文是用户确认后的那一份。
+fn merge_generation_info(base_version_id: &str, candidates: &[String]) -> GenerationInfo {
+    let mut source_ids: Vec<String> = Vec::with_capacity(candidates.len() + 1);
+    source_ids.push(base_version_id.to_owned());
+    source_ids.extend(candidates.iter().cloned());
+
+    let mut generation_options = HashMap::new();
+    generation_options.insert("mergeBaseVersionId".to_owned(), base_version_id.to_owned());
+    generation_options.insert(
+        "mergeCandidateVersionIds".to_owned(),
+        candidates.join(","),
+    );
+    generation_options.insert("mergeSourceVersionIds".to_owned(), source_ids.join(","));
+    generation_options.insert("mergedBy".to_owned(), "user_confirmed".to_owned());
+    generation_options.insert("modelCalls".to_owned(), "0".to_owned());
+
+    GenerationInfo {
+        prompt_version: MERGE_PROMPT_VERSION.to_owned(),
+        provider_id: None,
+        model: None,
+        generation_options,
+        // 没有材料快照：合并的输入是版本，不是这一天的材料。0/0 是事实，不是省略。
+        covered_source_count: 0,
+        unprocessed_source_count: 0,
+    }
+}
+
+/// `diary.merge`：把两版（或多版）合成一条**新版本**，契约第 4.3 节。
+///
+/// 口径：
+/// - `body` 是**用户确认后的正文**：核心在这一片不替用户合并、不调模型（`modelCalls = 0`）。
+///   「AI 辅助合并出一份草稿」需要新的契约入口（有 `providerId` 的生成式合并），不在这一片；
+/// - **来源可追溯**：新版本 `origin = merge`、`parentVersionId = baseVersionId`，
+///   参与合并的全部版本 id 记在 `generationInfo.generationOptions.mergeSourceVersionIds`；
+/// - **参与合并的版本全部保留**：一行都不改，仍可 `diary.getVersion` 取回原文；
+/// - 候选列表不能是空的、不能重复、不能包含基版自己、必须都属于这一天——各自报
+///   `invalid_argument` / `not_found`；
+/// - `expectedRevision` 与 `operationId` 的语义与 `diary.saveEdit` 完全一致
+///   （冲突零改动；同一条 `operationId` 重放返回原版本，换内容报 `idempotency_conflict`）；
+/// - 新版本成为当前，旧当前版退成候选。
+pub(crate) fn merge_versions(
+    core: &mut Core,
+    base_version_id: &str,
+    candidate_version_ids: &[String],
+    body: &str,
+    expected_revision: i64,
+    operation_id: &str,
+) -> Result<DiaryVersion> {
+    if operation_id.trim().is_empty() {
+        return Err(CoreError::InvalidArgument {
+            reason: "diary.merge 需要一个 operationId（幂等靠它）".to_owned(),
+        });
+    }
+    if base_version_id.trim().is_empty() {
+        return Err(CoreError::InvalidArgument {
+            reason: "diary.merge 需要 baseVersionId（合并的基版）".to_owned(),
+        });
+    }
+    if body.trim().is_empty() {
+        return Err(CoreError::InvalidArgument {
+            reason: "合并后的正文不能是空的：合并要么给出一份用户确认过的正文，\
+                     要么就别落这一版"
+                .to_owned(),
+        });
+    }
+    if candidate_version_ids.is_empty() {
+        return Err(CoreError::InvalidArgument {
+            reason: "diary.merge 至少要有一个候选版本：只有一个来源的「合并」不改变任何东西，\
+                     存草稿请用 diary.saveEdit"
+                .to_owned(),
+        });
+    }
+
+    // 顺序没有语义（合并的是同一个集合），所以规范形按字典序：`[b, a]` 与 `[a, b]` 是同一次操作。
+    let mut canonical: Vec<String> = candidate_version_ids.to_vec();
+    canonical.sort();
+    for pair in canonical.windows(2) {
+        if pair[0] == pair[1] {
+            return Err(CoreError::InvalidArgument {
+                reason: format!(
+                    "diary.merge 的候选版本里有重复的 {}：来源是一个集合，重复是调用方的错，\
+                     静默去重会把它藏起来",
+                    pair[0]
+                ),
+            });
+        }
+    }
+    if canonical.iter().any(|id| id == base_version_id) {
+        return Err(CoreError::InvalidArgument {
+            reason: format!(
+                "diary.merge 的候选版本里出现了基版自己（{base_version_id}）：\
+                 基版已经是一个来源了，不要再列一遍"
+            ),
+        });
+    }
+
+    // 幂等先行（契约 1.2）：同一次操作重试返回原版本，即使 revision 已经变了。
+    let fingerprint = support::fingerprint(&[
+        "diary.merge",
+        base_version_id,
+        &canonical.join(","),
+        body,
+        &expected_revision.to_string(),
+    ]);
+    if let Some(json) = core.receipt("diary.merge", &fingerprint, operation_id.trim())? {
+        return Ok(serde_json::from_str(&json)?);
+    }
+
+    let base = load_version(&core.conn, base_version_id)?;
+    for candidate_id in &canonical {
+        let candidate = load_version(&core.conn, candidate_id)?;
+        if candidate.day_key != base.day_key {
+            return Err(CoreError::InvalidArgument {
+                reason: format!(
+                    "候选版本 {candidate_id} 属于 {}，不是 {}：只能合并同一天的版本",
+                    candidate.day_key, base.day_key
+                ),
+            });
+        }
+    }
+    ensure_day_revision(&core.conn, &base.day_key, expected_revision)?;
+    let time_zone = day_time_zone(core, &base.day_key)?;
+
+    let audit = merge_generation_info(base_version_id, &canonical);
+    let tx = core.conn.transaction()?;
+    let version = insert_version(
+        &tx,
+        &NewVersion {
+            day_key: &base.day_key,
+            parent_version_id: Some(base_version_id),
+            origin: DiaryVersionOrigin::Merge,
+            body,
+            source_snapshot_id: None,
+            style_snapshot_id: None,
+            generation_info: Some(&audit),
+            provenance_links: &[],
+            operation_id: Some(operation_id.trim()),
+        },
+    )?;
+    set_current_in_tx(&tx, &base.day_key, &time_zone, &version.id)?;
+    crate::store_receipt(
+        &tx,
+        operation_id.trim(),
+        "diary.merge",
+        &fingerprint,
+        &serde_json::to_string(&version)?,
+    )?;
+    tx.commit()?;
+    Ok(version)
 }
 
 // ------------------------------------------------------------------ 测试

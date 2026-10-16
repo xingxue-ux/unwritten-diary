@@ -72,8 +72,8 @@ pub use model::{
 };
 pub use provider::CapabilityGate;
 pub use diary::{
-    DEFAULT_STYLE_SNAPSHOT_ID, DIRECT_INPUT_CHAR_LIMIT, MAX_INTERMEDIATE_CALLS, PROMPT_VERSION,
-    SYSTEM_INSTRUCTIONS,
+    DEFAULT_STYLE_SNAPSHOT_ID, DIRECT_INPUT_CHAR_LIMIT, MAX_INTERMEDIATE_CALLS,
+    MERGE_PROMPT_VERSION, PROMPT_VERSION, SYSTEM_INSTRUCTIONS,
 };
 pub use chunker::{
     chunks_for, pack_pieces, Chunk, ChunkSpan, Piece, CHUNKER_VERSION, CHUNK_OVERLAP_CHARS,
@@ -1329,32 +1329,66 @@ impl Core {
         diary::get_version(self, version_id)
     }
 
-    /// 仅供测试：写一条**用户自己的**版本（`user_edit` / `merge`）。
+    /// 保存人工编辑：写一条新的 `user_edit` 版本，契约第 4.3 节 `diary.saveEdit`。
     ///
-    /// 这是 #87（B4c `diary.saveEdit` / `diary.merge`）将来要用的写入缝：只写版本、
-    /// 不动当前版本。桥接与能力清单里**没有**它——用户编辑/切换/合并的操作面属于 B4c。
-    /// 生成路径不会调用它，测试用它来构造「用户手写版本不被 AI 覆盖」的场景。
-    #[doc(hidden)]
-    pub fn save_diary_version_for_test(
+    /// **绝不原地改**：基版（`baseVersionId`）一个字节都不动，新版本的 `parentVersionId`
+    /// 指向它、`origin = user_edit`；新版本**成为当前**（用户手写编辑就是「我要用这一版」），
+    /// 旧当前版退成候选、不删除（`diary.getDay` 的 `candidateVersionIds`）。
+    ///
+    /// `expectedRevision` 是这一天的版本数（`candidateVersionIds.length +
+    /// (currentVersionId == null ? 0 : 1)`）：不符报 `revision_conflict`，**零改动**。
+    /// 同一条 `operationId` 重试返回原版本；换了正文/基版/`expectedRevision` 报
+    /// `idempotency_conflict`。空正文报 `invalid_argument`；正文**不设长度上限**。
+    pub fn save_diary_edit(
         &mut self,
-        day_key: &str,
-        base_version_id: Option<&str>,
+        base_version_id: &str,
         body: &str,
-        origin: DiaryVersionOrigin,
+        expected_revision: i64,
+        operation_id: &str,
     ) -> Result<DiaryVersion> {
-        diary::insert_user_version(self, day_key, base_version_id, body, origin)
+        diary::save_edit(self, base_version_id, body, expected_revision, operation_id)
     }
 
-    /// 仅供测试：切换某一天的当前版本（#87 `diary.setCurrent` 的写入缝）。
+    /// 指定某一天的当前版本，契约第 4.3 节 `diary.setCurrent`。
     ///
-    /// **只由明确的用户操作调用**；生成路径永远不会用它去覆盖用户版本。
-    #[doc(hidden)]
-    pub fn set_diary_current_for_test(
+    /// **只允许指向这一天自己的版本**：版本不存在报 `not_found`，属于别的天报
+    /// `invalid_argument`。`expectedRevision`（版本数）不符报 `revision_conflict`，零改动。
+    /// 旧当前版变候选、仍可取回；按目标状态幂等：切到已经是当前的版本是**无操作**
+    /// （不重复发事件、不新增版本），所以这一行契约没有 `operationId`。
+    pub fn set_diary_current(
         &mut self,
         day_key: &str,
         version_id: &str,
+        expected_revision: i64,
     ) -> Result<DiaryDay> {
-        diary::set_current(self, day_key, version_id)
+        diary::set_current(self, day_key, version_id, expected_revision)
+    }
+
+    /// 把两版（或多版）合并成一条新版本，契约第 4.3 节 `diary.merge`。
+    ///
+    /// `body` 是**用户确认后的正文**（核心不替用户合并、不调模型：`modelCalls = 0`）。
+    /// 新版本 `origin = merge`、`parentVersionId = baseVersionId`，参与合并的全部版本 id
+    /// 记在 `generationInfo.generationOptions.mergeSourceVersionIds`（来源可追溯）；
+    /// **参与合并的版本一行都不改**，随时可以取回原文。新版本成为当前。
+    ///
+    /// 候选列表为空 / 有重复 / 包含基版自己 / 版本不属于这一天 → `invalid_argument`
+    /// （版本不存在 → `not_found`）；`expectedRevision` 与 `operationId` 的语义同 `saveEdit`。
+    pub fn merge_diary_versions(
+        &mut self,
+        base_version_id: &str,
+        candidate_version_ids: &[String],
+        body: &str,
+        expected_revision: i64,
+        operation_id: &str,
+    ) -> Result<DiaryVersion> {
+        diary::merge_versions(
+            self,
+            base_version_id,
+            candidate_version_ids,
+            body,
+            expected_revision,
+            operation_id,
+        )
     }
 
     // ------------------------------------------------------------ 幂等回执
