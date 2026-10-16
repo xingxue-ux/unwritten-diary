@@ -56,6 +56,7 @@ const Map<String, String> kContractToDartMethod = {
   'responses.request': 'requestResponse',
   'responses.get': 'getResponse',
   'search.start': 'startSearch',
+  'search.upgrade': 'upgradeSearch',
   'search.nextPage': 'nextPage',
   'search.snapshot': 'searchSnapshot',
   'search.cancel': 'cancelSearch',

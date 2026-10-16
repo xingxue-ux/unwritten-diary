@@ -57,6 +57,8 @@ void main() {
     expect(info.capabilities, contains('indexes.status'));
     // 检索会话在 B3b 接上了。
     expect(info.capabilities, contains('search.start'));
+    // 混合检索的两阶段（#69）：升级入口也接到了桥上。
+    expect(info.capabilities, contains('search.upgrade'));
     // B5 的任务状态摘要接上了。
     expect(info.capabilities, contains('jobs.status'));
     // B5 的驱动入口也接上了（什么时候调用由平台层决定）。
@@ -177,6 +179,12 @@ void main() {
     expect(index.semanticIndexReady, isFalse);
     expect(index.modelVersion, isNull);
     expect(index.reasons.join(), contains('语义'));
+    // 块与向量这一片（B3c-2 前半）只建了存储：`chunkerVersion` 从这一片起不再是
+    // null（块真的会进库），但没有向量——`embeddedChunks` 恒为 0。桥接这一片还没有
+    // 重建块的入口，所以 `totalChunks` 也是 0；有块时它同样恒为 0 的是 embeddedChunks。
+    expect(index.chunkerVersion, isNotNull);
+    expect(index.totalChunks, 0);
+    expect(index.embeddedChunks, 0);
 
     // 范围过滤：限定了来源就只看这个来源；空范围是「什么都不看」。
     final scoped = await session.indexStatus(sourceScope: [content.sourceId]);
