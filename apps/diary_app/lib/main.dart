@@ -111,6 +111,8 @@ class _BootGateState extends State<_BootGate> {
         return ExperienceShell(
           api: result.data!.api,
           demoMode: widget.demoMode,
+          supportsHybridUpgrade: result.data!.snapshot.coreInfo.capabilities
+              .contains('search.upgrade'),
         );
       }
       if (result.hasError) {

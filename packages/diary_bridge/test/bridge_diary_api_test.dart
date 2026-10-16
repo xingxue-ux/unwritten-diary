@@ -215,6 +215,39 @@ void main() {
     );
   });
 
+  test('混合会话的升级经适配层转发并如实返回阶段', () async {
+    await api.open();
+    final draft = await api.createDraft(operationId: 'adapter-upgrade-create');
+    final saved = await api.saveDraft(
+      id: draft.id,
+      text: '升级检索的独立文字。',
+      expectedRevision: draft.revision,
+      operationId: 'adapter-upgrade-save',
+    );
+    await api.commit(
+      id: draft.id,
+      expectedRevision: saved.revision,
+      operationId: 'adapter-upgrade-commit',
+    );
+    final opened = await api.snapshot();
+    expect(opened.coreInfo.capabilities, contains('search.upgrade'));
+    final keyword = await api.startSearch(
+      request: const SearchRequest(query: '升级检索', mode: SearchMode.hybrid),
+      queryRevision: 52,
+    );
+    expect(keyword.phase, SearchPhase.keywordReady);
+    final upgraded = await api.upgradeSearch(sessionId: keyword.sessionId);
+    expect(upgraded.sessionId, keyword.sessionId);
+    expect(upgraded.queryRevision, keyword.queryRevision);
+    expect(
+      upgraded.phase,
+      anyOf(SearchPhase.keywordReady, SearchPhase.hybridReady),
+    );
+    if (upgraded.phase == SearchPhase.keywordReady) {
+      expect(upgraded.warnings, isNotEmpty);
+    }
+  });
+
   test('没接的方法明确报错，且不在能力清单里', () async {
     final snapshot = await api.snapshot();
     expect(snapshot.coreInfo.capabilities, contains('captures.list'));

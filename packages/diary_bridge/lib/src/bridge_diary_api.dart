@@ -59,6 +59,7 @@ class BridgeDiaryApi implements api.DiaryApi {
     'search.nextPage',
     'search.snapshot',
     'search.cancel',
+    'search.upgrade',
   };
 
   /// 幂等地初始化 frb 运行时。
@@ -224,6 +225,12 @@ class BridgeDiaryApi implements api.DiaryApi {
     );
     return _searchSnapshot(result);
   }
+
+  @override
+  Future<api.SearchSnapshot> upgradeSearch({required String sessionId}) async =>
+      _searchSnapshot(
+        await _translate(() => _open.upgradeSearch(sessionId: sessionId)),
+      );
 
   @override
   Future<api.SearchSnapshot> nextPage({
