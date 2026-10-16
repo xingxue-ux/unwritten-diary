@@ -1340,3 +1340,173 @@ pub struct AiResponse {
     pub provider_id: Option<String>,
     pub model: Option<String>,
 }
+
+// ---------------------------------------------------------------- 日记与版本（B4b）
+
+/// 生成日记的原因，契约 4.3 节 `diary.generate` 的入参。
+///
+/// 它进幂等指纹（同一个 operationId 换了原因就是换了内容），也进快照的审计信息。
+/// `Regenerate` 是唯一被允许「同一份输入再产一版」的原因——用户明确说了要再来一版，
+/// 其余原因对同一快照哈希**不重复产版本**（见 `diary` 模块）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiaryGenerationReason {
+    Manual,
+    Scheduled,
+    Automatic,
+    Regenerate,
+}
+
+impl DiaryGenerationReason {
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Scheduled => "scheduled",
+            Self::Automatic => "automatic",
+            Self::Regenerate => "regenerate",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "manual" => Some(Self::Manual),
+            "scheduled" => Some(Self::Scheduled),
+            "automatic" => Some(Self::Automatic),
+            "regenerate" => Some(Self::Regenerate),
+            _ => None,
+        }
+    }
+}
+
+/// 日记版本的来源，契约 2.5 节。
+///
+/// **AI 生成的正文永远是 `Generated`**，绝不写成 `UserEdit`——`source_revisions`
+/// 的 `AuthorType` 只有 user/import，AI 文本也不写进用户原件（见 `diary` 模块）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiaryVersionOrigin {
+    Generated,
+    UserEdit,
+    Merge,
+}
+
+impl DiaryVersionOrigin {
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Generated => "generated",
+            Self::UserEdit => "user_edit",
+            Self::Merge => "merge",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "generated" => Some(Self::Generated),
+            "user_edit" => Some(Self::UserEdit),
+            "merge" => Some(Self::Merge),
+            _ => None,
+        }
+    }
+
+    /// 是不是用户自己写的（手写或用户确认后的合并）。
+    ///
+    /// 「首次生成可成为 current」这条例外的边界靠它：只要这一天有用户自己的版本，
+    /// 自动生成的版本就**不会**被设成当前版本。
+    pub fn is_user_authored(self) -> bool {
+        matches!(self, Self::UserEdit | Self::Merge)
+    }
+}
+
+/// 当天的材料统计，契约 2.5 节。数字都是真值，不是估计。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MaterialCounts {
+    /// 当天的记录数（不含回收站）。
+    pub captures: i64,
+    /// 已经有可用正文的材料数（用户的文字天然算「已处理」）。
+    pub processed: i64,
+    /// 还在等提取的材料数。
+    pub pending: i64,
+    /// 提取失败、暂无可读正文的材料数。
+    pub failed: i64,
+}
+
+/// 某一天的日记聚合视图，契约 2.5 节 `DiaryDay`。
+///
+/// **候选与当前只在这里区分**：契约的 `DiaryVersion` 没有状态字段，所以「哪一版是当前、
+/// 哪些是候选」由 `current_version_id` 与 `candidate_version_ids` 表达，不给版本另造状态。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiaryDay {
+    pub day_key: String,
+    /// 这一天的时区名。没有任何材料也没有生成过时是 `UTC`（缺省，不是推测）。
+    pub time_zone: String,
+    /// 当前版本；这一天还没有任何版本时为 None。
+    pub current_version_id: Option<String>,
+    /// 候选版本（这一天的全部版本里除当前版本之外的那些），最新在前。
+    pub candidate_version_ids: Vec<String>,
+    pub material_counts: MaterialCounts,
+    pub coverage: Coverage,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 生成过程的审计信息，契约 2.5 节。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationInfo {
+    pub prompt_version: String,
+    pub provider_id: Option<String>,
+    pub model: Option<String>,
+    /// 生成选项：固定的协议参数与**如实记录的步数**
+    /// （`steps` / `intermediateCalls` / `repairCalls`），不虚构。
+    pub generation_options: std::collections::HashMap<String, String>,
+    /// 快照里已处理的材料数。
+    pub covered_source_count: i64,
+    /// 快照里明确记为「暂未处理」的材料数（不假装完整）。
+    pub unprocessed_source_count: i64,
+}
+
+/// 正文与来源的关联，契约 2.5 节。涉及事实的内容要能追溯；不要求每句修辞都有引用。
+///
+/// 长材料两步走时，第一步提炼出来的**中间事实**也记在这里（`note` 是那条派生事实，
+/// 来源是它真正来自的记录/片段），所以中间结果不脱离来源独立存在。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProvenanceLink {
+    pub source_id: String,
+    pub source_revision_id: String,
+    pub locator: SourceLocator,
+    /// 正文中对应的字符区间；整段关联或位置不可靠时为空（不伪造）。
+    pub body_range: Option<TextRange>,
+    pub note: Option<String>,
+}
+
+/// 日记版本，契约 2.5 节。正文是自然段，来源关联放在独立字段。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiaryVersion {
+    pub id: String,
+    pub day_key: String,
+    pub parent_version_id: Option<String>,
+    pub origin: DiaryVersionOrigin,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    /// 不可变的输入清单快照（用了哪些材料、哪些修订、覆盖范围的真相）。
+    pub source_snapshot_id: Option<String>,
+    pub style_snapshot_id: Option<String>,
+    pub generation_info: Option<GenerationInfo>,
+    pub provenance_links: Vec<ProvenanceLink>,
+}
+
+/// 分页的版本列表，契约 4.3 节 `diary.listVersions`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiaryVersionPage {
+    pub versions: Vec<DiaryVersion>,
+    pub next_cursor: Option<String>,
+}
+
+/// 一次日记生成的票据，契约 4.3 节 `diary.generate`。
+///
+/// 输入在**返回之前**就已经冻结（快照已落库、哈希已算），真正的调用由队列驱动执行。
+/// Provider 还没配好时**照样返回票据**：那条任务会停在 `waiting_configuration` 等配置，
+/// 而不是把「还没有配置服务」说成一次调用失败（与 #66 的队列闸门同一口径）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiaryGenerationTicket {
+    pub job_id: String,
+    pub source_snapshot_id: String,
+}

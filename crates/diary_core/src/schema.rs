@@ -7,7 +7,7 @@
 use rusqlite::{params, Connection};
 
 /// 本构建支持的 schema 版本。
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -62,6 +62,13 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 老库升级前没有任何 Provider 配置，也就没有东西可搬：迁移后 `providers` 为空，
         // 核心因此仍然「一个服务都没配」——默认不联网的口径在升级路径上同样成立。
         // 更不能在这里替用户猜一个服务填进去。
+    }
+    if current < 10 {
+        tx.execute_batch(V10)?;
+        // **不回填、不迁移任何旧数据**：v10 只加四张全新的表（日记快照、版本、当日状态、
+        // 生成记录）。老库里没有任何日记版本——B4b 之前核心根本没有日记表。也**不能**
+        // 在迁移里替用户把旧记录「补生成」一版：那会凭空造出用户没有确认过的正文，
+        // 与「AI 正文不冒充用户手写」直接冲突。
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.execute(
@@ -551,4 +558,83 @@ CREATE TABLE ai_responses (
     updated_at   TEXT NOT NULL
 );
 CREATE INDEX idx_ai_responses_created ON ai_responses(created_at DESC, id DESC);
+"#;
+
+/// v10：日记输入快照、日记版本、当日状态与生成记录（B4b）。
+///
+/// 消费契约见 `docs/architecture/m3-日记生成与版本.md`，别处不要另立一套解释。
+///
+/// - `diary_source_snapshots`：**冻结下来的输入清单**。`body` 是规范化的 JSON
+///   （当天用了哪些材料、各自的来源与修订、每个提取版本、覆盖范围、风格与提示词版本、
+///   生成选项），`snapshot_hash` 是对**同一份规范形**算出的 sha256。行是不可变的：
+///   材料后来变了也不会回头改它，所以「这一版是根据什么生成的」永远答得出来。
+///   `(day_key, snapshot_hash)` 唯一：同一份输入重复冻结只留一行，`snapshot_id` 因此稳定。
+///   `provider_id` / `model` 是**冻结时选中的执行者**，只进 `body` 之外的这两列（审计用），
+///   **不进哈希**——换一个服务不该被当成「换了输入」。
+/// - `diary_versions`：正文与来源分开存。`origin` 是 `generated` / `user_edit` / `merge`；
+///   **AI 正文永远是 `generated`**，绝不写成用户来源。候选/当前**不在这张表上**：
+///   契约的 `DiaryVersion` 没有状态字段，状态由 `diary_days.current_version_id` 表达。
+/// - `diary_days`：一天的当前版本与时间语义。一行只在真有版本或真读过这一天时创建。
+///   当前版本为空 = 还没有任何版本被选为当前。
+/// - `diary_generations`：一次生成请求的业务行（任务的目标就是它）。它记着快照、
+///   用户点名的服务、原因、operationId、两步走的实际步数与最终版本。
+///   `operationId` 的幂等由 `operation_receipts` 收口（同一操作重试返回原票据），
+///   这张表负责「同一份快照不重复产版本」与「任务 → 快照 → 版本」的追溯。
+const V10: &str = r#"
+CREATE TABLE diary_source_snapshots (
+    id                  TEXT PRIMARY KEY,
+    day_key             TEXT NOT NULL,
+    snapshot_hash       TEXT NOT NULL,
+    body                TEXT NOT NULL,
+    prompt_version      TEXT NOT NULL,
+    provider_id         TEXT,
+    model               TEXT,
+    generation_options  TEXT NOT NULL DEFAULT '{}',
+    covered_sources     INTEGER NOT NULL DEFAULT 0,
+    unprocessed_sources INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL,
+    UNIQUE (day_key, snapshot_hash)
+);
+CREATE INDEX idx_diary_snapshots_day ON diary_source_snapshots(day_key, created_at DESC, id DESC);
+
+CREATE TABLE diary_versions (
+    id                 TEXT PRIMARY KEY,
+    day_key            TEXT NOT NULL,
+    parent_version_id  TEXT,
+    origin             TEXT NOT NULL,
+    body               TEXT NOT NULL,
+    source_snapshot_id TEXT REFERENCES diary_source_snapshots(id),
+    style_snapshot_id  TEXT,
+    generation_info    TEXT,
+    provenance_links   TEXT NOT NULL DEFAULT '[]',
+    operation_id       TEXT,
+    created_at         TEXT NOT NULL
+);
+CREATE INDEX idx_diary_versions_day ON diary_versions(day_key, created_at DESC, id DESC);
+
+CREATE TABLE diary_days (
+    day_key            TEXT PRIMARY KEY,
+    time_zone          TEXT NOT NULL,
+    current_version_id TEXT REFERENCES diary_versions(id),
+    updated_at         TEXT NOT NULL
+);
+
+CREATE TABLE diary_generations (
+    id          TEXT PRIMARY KEY,
+    day_key     TEXT NOT NULL,
+    style_id    TEXT,
+    reason      TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL REFERENCES diary_source_snapshots(id),
+    provider_id TEXT,
+    job_id      TEXT,
+    version_id  TEXT,
+    state       TEXT NOT NULL,
+    error_code  TEXT,
+    steps       INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX idx_diary_generations_snapshot ON diary_generations(snapshot_id, created_at, id);
+CREATE INDEX idx_diary_generations_day ON diary_generations(day_key, created_at DESC, id DESC);
 "#;

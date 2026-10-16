@@ -50,7 +50,31 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required ImportManifest manifest,
   });
 
+  /// 生成一篇日记，契约 `diary.generate`。
+  ///
+  /// **输入在返回之前就冻结**（`sourceSnapshotId` 指的那一行），真正的调用由
+  /// `run_due_jobs` 执行。首次生成可成为当前版本；之后一律候选，**当前版本不会被
+  /// 生成改写**（`reason = regenerate` 是「用户明确再要一版」的例外，产新候选）。
+  ///
+  /// 没有配好服务**照样返回票据**：那条任务会停在 `waiting_configuration` 等配置，
+  /// 由 `jobs.get` 看得到状态；不是一次调用失败，也不产生任何版本。
+  Future<DiaryGenerationTicket> generateDiary({
+    required String dayKey,
+    String? styleId,
+    required DiaryGenerationReason reason,
+    required String operationId,
+  });
+
   Future<Capture> getCapture({required String captureId});
+
+  /// 某一天的日记聚合视图，契约 `diary.getDay`。
+  ///
+  /// **候选与当前只在这里区分**：契约的 `DiaryVersion` 没有状态字段，所以
+  /// `currentVersionId` / `candidateVersionIds` 是唯一的口径。空日报 `not_found`。
+  Future<DiaryDay> getDiaryDay({required String dayKey});
+
+  /// 读一条完整的日记版本（含生成信息与来源关联），契约 `diary.getVersion`。
+  Future<DiaryVersion> getDiaryVersion({required String versionId});
 
   Future<Job> getJob({required String jobId});
 
@@ -75,6 +99,13 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 分页读取记录。cursor 对调用方不透明。
   Future<CapturePage> listCaptures({
     String? dayKey,
+    String? cursor,
+    required int limit,
+  });
+
+  /// 分页读某一天的日记版本，契约 `diary.listVersions`。最新在前。
+  Future<DiaryVersionPage> listDiaryVersions({
+    required String dayKey,
     String? cursor,
     required int limit,
   });

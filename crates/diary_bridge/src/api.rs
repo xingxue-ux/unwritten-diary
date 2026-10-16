@@ -12,10 +12,12 @@ use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use diary_core::{
-    AiResponse, Capture, CapturePage, CommitResult, Core, CoreError, DomainEvent, DraftSaveResult,
-    ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job,
-    JobRunSummary, JobState, JobStatus, Provider, ProviderCapability, ProviderTestReport,
-    ResponseTicket, SearchRequest, SearchSnapshot, SourceLocation, SourceLocator, SourceRevision,
+    AiResponse, Capture, CapturePage, CommitResult, Core, CoreError, DiaryDay,
+    DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion, DiaryVersionPage, DomainEvent,
+    DraftSaveResult, ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket,
+    IndexStatus, Job, JobRunSummary, JobState, JobStatus, Provider, ProviderCapability,
+    ProviderTestReport, ResponseTicket, SearchRequest, SearchSnapshot, SourceLocation,
+    SourceLocator, SourceRevision,
 };
 use flutter_rust_bridge::frb;
 
@@ -468,6 +470,53 @@ impl BridgeSession {
         Ok(core.get_response(&response_id)?)
     }
 
+    // ------------------------------------------------------------ 日记生成与版本（B4b）
+
+    /// 某一天的日记聚合视图，契约 `diary.getDay`。
+    ///
+    /// **候选与当前只在这里区分**：契约的 `DiaryVersion` 没有状态字段，所以
+    /// `currentVersionId` / `candidateVersionIds` 是唯一的口径。空日报 `not_found`。
+    pub fn get_diary_day(&self, day_key: String) -> Result<DiaryDay, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.get_diary_day(&day_key)?)
+    }
+
+    /// 生成一篇日记，契约 `diary.generate`。
+    ///
+    /// **输入在返回之前就冻结**（`sourceSnapshotId` 指的那一行），真正的调用由
+    /// `run_due_jobs` 执行。首次生成可成为当前版本；之后一律候选，**当前版本不会被
+    /// 生成改写**（`reason = regenerate` 是「用户明确再要一版」的例外，产新候选）。
+    ///
+    /// 没有配好服务**照样返回票据**：那条任务会停在 `waiting_configuration` 等配置，
+    /// 由 `jobs.get` 看得到状态；不是一次调用失败，也不产生任何版本。
+    pub fn generate_diary(
+        &self,
+        day_key: String,
+        style_id: Option<String>,
+        reason: DiaryGenerationReason,
+        operation_id: String,
+    ) -> Result<DiaryGenerationTicket, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.generate_diary(&day_key, style_id.as_deref(), reason, &operation_id)?)
+    }
+
+    /// 分页读某一天的日记版本，契约 `diary.listVersions`。最新在前。
+    pub fn list_diary_versions(
+        &self,
+        day_key: String,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<DiaryVersionPage, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.list_diary_versions(&day_key, cursor.as_deref(), limit as usize)?)
+    }
+
+    /// 读一条完整的日记版本（含生成信息与来源关联），契约 `diary.getVersion`。
+    pub fn get_diary_version(&self, version_id: String) -> Result<DiaryVersion, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.get_diary_version(&version_id)?)
+    }
+
     /// 已经接到桥上的契约方法名。
     pub fn capabilities(&self) -> Vec<String> {
         wired_capabilities()
@@ -544,6 +593,10 @@ fn wired_capabilities() -> Vec<String> {
         "providers.test",
         "responses.request",
         "responses.get",
+        "diary.getDay",
+        "diary.generate",
+        "diary.listVersions",
+        "diary.getVersion",
         "core.events",
     ]
     .iter()

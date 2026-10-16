@@ -40,6 +40,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DateTime dco_decode_Chrono_Utc(dynamic raw);
 
   @protected
+  Map<String, String> dco_decode_Map_String_String_None(dynamic raw);
+
+  @protected
   Map<ProviderCapability, ProviderTestStatus>
   dco_decode_Map_provider_capability_provider_test_status_None(dynamic raw);
 
@@ -83,10 +86,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Coverage dco_decode_box_autoadd_coverage(dynamic raw);
 
   @protected
+  DiaryGenerationReason dco_decode_box_autoadd_diary_generation_reason(
+    dynamic raw,
+  );
+
+  @protected
+  DiaryVersionOrigin dco_decode_box_autoadd_diary_version_origin(dynamic raw);
+
+  @protected
   EventType dco_decode_box_autoadd_event_type(dynamic raw);
 
   @protected
   ExtractedContent dco_decode_box_autoadd_extracted_content(dynamic raw);
+
+  @protected
+  GenerationInfo dco_decode_box_autoadd_generation_info(dynamic raw);
 
   @protected
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
@@ -143,6 +157,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SourceRevision dco_decode_box_autoadd_source_revision(dynamic raw);
 
   @protected
+  TextRange dco_decode_box_autoadd_text_range(dynamic raw);
+
+  @protected
   BridgeError dco_decode_bridge_error(dynamic raw);
 
   @protected
@@ -159,6 +176,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Coverage dco_decode_coverage(dynamic raw);
+
+  @protected
+  DiaryDay dco_decode_diary_day(dynamic raw);
+
+  @protected
+  DiaryGenerationReason dco_decode_diary_generation_reason(dynamic raw);
+
+  @protected
+  DiaryGenerationTicket dco_decode_diary_generation_ticket(dynamic raw);
+
+  @protected
+  DiaryVersion dco_decode_diary_version(dynamic raw);
+
+  @protected
+  DiaryVersionOrigin dco_decode_diary_version_origin(dynamic raw);
+
+  @protected
+  DiaryVersionPage dco_decode_diary_version_page(dynamic raw);
 
   @protected
   DomainEvent dco_decode_domain_event(dynamic raw);
@@ -180,6 +215,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   F64Array4 dco_decode_f_64_array_4(dynamic raw);
+
+  @protected
+  GenerationInfo dco_decode_generation_info(dynamic raw);
 
   @protected
   int dco_decode_i_32(dynamic raw);
@@ -236,6 +274,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<Capture> dco_decode_list_capture(dynamic raw);
 
   @protected
+  List<DiaryVersion> dco_decode_list_diary_version(dynamic raw);
+
+  @protected
   List<DomainEvent> dco_decode_list_domain_event(dynamic raw);
 
   @protected
@@ -260,6 +301,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<ProvenanceLink> dco_decode_list_provenance_link(dynamic raw);
+
+  @protected
   List<Provider> dco_decode_list_provider(dynamic raw);
 
   @protected
@@ -268,6 +312,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<(ProviderCapability, ProviderTestStatus)>
   dco_decode_list_record_provider_capability_provider_test_status(dynamic raw);
+
+  @protected
+  List<(String, String)> dco_decode_list_record_string_string(dynamic raw);
 
   @protected
   List<SearchHit> dco_decode_list_search_hit(dynamic raw);
@@ -283,6 +330,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MatchedBy dco_decode_matched_by(dynamic raw);
+
+  @protected
+  MaterialCounts dco_decode_material_counts(dynamic raw);
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
@@ -305,10 +355,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Coverage? dco_decode_opt_box_autoadd_coverage(dynamic raw);
 
   @protected
+  DiaryGenerationReason? dco_decode_opt_box_autoadd_diary_generation_reason(
+    dynamic raw,
+  );
+
+  @protected
+  DiaryVersionOrigin? dco_decode_opt_box_autoadd_diary_version_origin(
+    dynamic raw,
+  );
+
+  @protected
   EventType? dco_decode_opt_box_autoadd_event_type(dynamic raw);
 
   @protected
   ExtractedContent? dco_decode_opt_box_autoadd_extracted_content(dynamic raw);
+
+  @protected
+  GenerationInfo? dco_decode_opt_box_autoadd_generation_info(dynamic raw);
 
   @protected
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
@@ -360,6 +423,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SourceRevision? dco_decode_opt_box_autoadd_source_revision(dynamic raw);
 
   @protected
+  TextRange? dco_decode_opt_box_autoadd_text_range(dynamic raw);
+
+  @protected
   F64Array4? dco_decode_opt_f_64_array_4(dynamic raw);
 
   @protected
@@ -373,6 +439,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ProcessingSummary dco_decode_processing_summary(dynamic raw);
+
+  @protected
+  ProvenanceLink dco_decode_provenance_link(dynamic raw);
 
   @protected
   Provider dco_decode_provider(dynamic raw);
@@ -389,6 +458,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   (ProviderCapability, ProviderTestStatus)
   dco_decode_record_provider_capability_provider_test_status(dynamic raw);
+
+  @protected
+  (String, String) dco_decode_record_string_string(dynamic raw);
 
   @protected
   RecordingState dco_decode_recording_state(dynamic raw);
@@ -460,6 +532,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DateTime sse_decode_Chrono_Utc(SseDeserializer deserializer);
 
   @protected
+  Map<String, String> sse_decode_Map_String_String_None(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Map<ProviderCapability, ProviderTestStatus>
   sse_decode_Map_provider_capability_provider_test_status_None(
     SseDeserializer deserializer,
@@ -513,10 +590,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Coverage sse_decode_box_autoadd_coverage(SseDeserializer deserializer);
 
   @protected
+  DiaryGenerationReason sse_decode_box_autoadd_diary_generation_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DiaryVersionOrigin sse_decode_box_autoadd_diary_version_origin(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   EventType sse_decode_box_autoadd_event_type(SseDeserializer deserializer);
 
   @protected
   ExtractedContent sse_decode_box_autoadd_extracted_content(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  GenerationInfo sse_decode_box_autoadd_generation_info(
     SseDeserializer deserializer,
   );
 
@@ -593,6 +685,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  TextRange sse_decode_box_autoadd_text_range(SseDeserializer deserializer);
+
+  @protected
   BridgeError sse_decode_bridge_error(SseDeserializer deserializer);
 
   @protected
@@ -609,6 +704,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Coverage sse_decode_coverage(SseDeserializer deserializer);
+
+  @protected
+  DiaryDay sse_decode_diary_day(SseDeserializer deserializer);
+
+  @protected
+  DiaryGenerationReason sse_decode_diary_generation_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DiaryGenerationTicket sse_decode_diary_generation_ticket(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DiaryVersion sse_decode_diary_version(SseDeserializer deserializer);
+
+  @protected
+  DiaryVersionOrigin sse_decode_diary_version_origin(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DiaryVersionPage sse_decode_diary_version_page(SseDeserializer deserializer);
 
   @protected
   DomainEvent sse_decode_domain_event(SseDeserializer deserializer);
@@ -630,6 +749,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   F64Array4 sse_decode_f_64_array_4(SseDeserializer deserializer);
+
+  @protected
+  GenerationInfo sse_decode_generation_info(SseDeserializer deserializer);
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
@@ -686,6 +808,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<Capture> sse_decode_list_capture(SseDeserializer deserializer);
 
   @protected
+  List<DiaryVersion> sse_decode_list_diary_version(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<DomainEvent> sse_decode_list_domain_event(SseDeserializer deserializer);
 
   @protected
@@ -714,6 +841,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<ProvenanceLink> sse_decode_list_provenance_link(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<Provider> sse_decode_list_provider(SseDeserializer deserializer);
 
   @protected
@@ -724,6 +856,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<(ProviderCapability, ProviderTestStatus)>
   sse_decode_list_record_provider_capability_provider_test_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<(String, String)> sse_decode_list_record_string_string(
     SseDeserializer deserializer,
   );
 
@@ -741,6 +878,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MatchedBy sse_decode_matched_by(SseDeserializer deserializer);
+
+  @protected
+  MaterialCounts sse_decode_material_counts(SseDeserializer deserializer);
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
@@ -767,12 +907,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Coverage? sse_decode_opt_box_autoadd_coverage(SseDeserializer deserializer);
 
   @protected
+  DiaryGenerationReason? sse_decode_opt_box_autoadd_diary_generation_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DiaryVersionOrigin? sse_decode_opt_box_autoadd_diary_version_origin(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   EventType? sse_decode_opt_box_autoadd_event_type(
     SseDeserializer deserializer,
   );
 
   @protected
   ExtractedContent? sse_decode_opt_box_autoadd_extracted_content(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  GenerationInfo? sse_decode_opt_box_autoadd_generation_info(
     SseDeserializer deserializer,
   );
 
@@ -848,6 +1003,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  TextRange? sse_decode_opt_box_autoadd_text_range(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   F64Array4? sse_decode_opt_f_64_array_4(SseDeserializer deserializer);
 
   @protected
@@ -861,6 +1021,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ProcessingSummary sse_decode_processing_summary(SseDeserializer deserializer);
+
+  @protected
+  ProvenanceLink sse_decode_provenance_link(SseDeserializer deserializer);
 
   @protected
   Provider sse_decode_provider(SseDeserializer deserializer);
@@ -883,6 +1046,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   (ProviderCapability, ProviderTestStatus)
   sse_decode_record_provider_capability_provider_test_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  (String, String) sse_decode_record_string_string(
     SseDeserializer deserializer,
   );
 
@@ -958,6 +1126,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_Chrono_Utc(DateTime self, SseSerializer serializer);
 
   @protected
+  void sse_encode_Map_String_String_None(
+    Map<String, String> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_Map_provider_capability_provider_test_status_None(
     Map<ProviderCapability, ProviderTestStatus> self,
     SseSerializer serializer,
@@ -1022,6 +1196,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_coverage(Coverage self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_diary_generation_reason(
+    DiaryGenerationReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_diary_version_origin(
+    DiaryVersionOrigin self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_event_type(
     EventType self,
     SseSerializer serializer,
@@ -1030,6 +1216,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_extracted_content(
     ExtractedContent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_generation_info(
+    GenerationInfo self,
     SseSerializer serializer,
   );
 
@@ -1139,6 +1331,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_text_range(
+    TextRange self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_error(BridgeError self, SseSerializer serializer);
 
   @protected
@@ -1155,6 +1353,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_coverage(Coverage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_diary_day(DiaryDay self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_diary_generation_reason(
+    DiaryGenerationReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_diary_generation_ticket(
+    DiaryGenerationTicket self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_diary_version(DiaryVersion self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_diary_version_origin(
+    DiaryVersionOrigin self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_diary_version_page(
+    DiaryVersionPage self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_domain_event(DomainEvent self, SseSerializer serializer);
@@ -1185,6 +1413,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_f_64_array_4(F64Array4 self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_generation_info(
+    GenerationInfo self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
@@ -1247,6 +1481,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_capture(List<Capture> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_diary_version(
+    List<DiaryVersion> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_domain_event(
     List<DomainEvent> self,
     SseSerializer serializer,
@@ -1289,6 +1529,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_provenance_link(
+    List<ProvenanceLink> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_provider(List<Provider> self, SseSerializer serializer);
 
   @protected
@@ -1300,6 +1546,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_record_provider_capability_provider_test_status(
     List<(ProviderCapability, ProviderTestStatus)> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_record_string_string(
+    List<(String, String)> self,
     SseSerializer serializer,
   );
 
@@ -1326,6 +1578,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_matched_by(MatchedBy self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_material_counts(
+    MaterialCounts self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
@@ -1361,6 +1619,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_diary_generation_reason(
+    DiaryGenerationReason? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_diary_version_origin(
+    DiaryVersionOrigin? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_event_type(
     EventType? self,
     SseSerializer serializer,
@@ -1369,6 +1639,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_extracted_content(
     ExtractedContent? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_generation_info(
+    GenerationInfo? self,
     SseSerializer serializer,
   );
 
@@ -1463,6 +1739,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_text_range(
+    TextRange? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_f_64_array_4(F64Array4? self, SseSerializer serializer);
 
   @protected
@@ -1483,6 +1765,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_processing_summary(
     ProcessingSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_provenance_link(
+    ProvenanceLink self,
     SseSerializer serializer,
   );
 
@@ -1510,6 +1798,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_record_provider_capability_provider_test_status(
     (ProviderCapability, ProviderTestStatus) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_record_string_string(
+    (String, String) self,
     SseSerializer serializer,
   );
 

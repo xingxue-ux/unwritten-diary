@@ -617,7 +617,7 @@ fn v6_library_migrates_and_backfills_capture_text() {
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
         // 「退回 v6」要把它之后的版本建的东西都拿掉，否则迁移会重复建表
-        // （v7 的两张索引表、v8 的块与换代表、v9 的服务配置与回应表）。这些表
+        // （v7 的两张索引表、v8 的块与换代表、v9 的服务配置与回应表、v10 的日记表）。这些表
         // 没有外键指向 v5–v7，但先删子表更稳。
         conn.execute_batch(
             "DROP TABLE search_capture_grams;
@@ -628,6 +628,10 @@ fn v6_library_migrates_and_backfills_capture_text() {
              DROP TABLE chunk_spans;
              DROP TABLE text_chunks;
              DROP TABLE index_meta;
+             DROP TABLE diary_generations;
+             DROP TABLE diary_days;
+             DROP TABLE diary_versions;
+             DROP TABLE diary_source_snapshots;
              UPDATE schema_migrations SET version = 6;
              PRAGMA user_version = 6;",
         )

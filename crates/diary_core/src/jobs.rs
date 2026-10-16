@@ -1105,6 +1105,7 @@ fn execute(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailure
         KIND_EXTRACT => run_extract(core, job),
         KIND_INDEX => run_index(core, job),
         kind if kind == provider::KIND_RESPOND => run_respond(core, job),
+        kind if kind == crate::diary::KIND_DIARY_GENERATE => run_diary_generate(core, job),
         _ => Err(HandlerFailure::terminal(
             "no_handler",
             format!(
@@ -1152,6 +1153,23 @@ fn run_respond(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFai
         ));
     }
     provider::run_respond(core, job).map_err(HandlerFailure::from_error)
+}
+
+/// `diary_generate` 的执行者：只读冻结快照，调用模型，把正文落成新版本（B4b）。
+///
+/// 失败处置与 `respond` 同一套（`HandlerFailure::from_error`，时间语义只由错误码决定）：
+/// 没配好/鉴权失败/额度用尽 → `waiting_configuration`（不消耗额度）；超时/断网/限流 →
+/// 退避重试；模型或端点不对 → 终态失败。**任何一条失败都不会留下版本**。
+///
+/// 空目标是结构性错误：没有生成记录就没有快照，重试也不会变好。
+fn run_diary_generate(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailure> {
+    if job.target_ids.is_empty() {
+        return Err(HandlerFailure::terminal(
+            provider::ERROR_NO_TARGET,
+            "日记生成任务没有目标（生成记录），重试也不会变好".to_owned(),
+        ));
+    }
+    crate::diary::run_generate(core, job).map_err(HandlerFailure::from_error)
 }
 
 /// `index` 的执行者：对任务 `target_ids` 里的**来源**重跑关键词索引重建。

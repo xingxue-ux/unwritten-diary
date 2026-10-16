@@ -10,10 +10,11 @@ import '../diary_bridge.dart' as bridge;
 
 /// 把桥接的 `BridgeSession` 适配成契约的 [api.DiaryApi]。
 ///
-/// **覆盖记录、检索与远端服务路径**：`open` / `snapshot` / `close` / 记录 CRUD /
-/// `startSearch` / `nextPage` / `searchSnapshot` / `cancelSearch` /
+/// **覆盖记录、检索、远端服务与日记生成路径**：`open` / `snapshot` / `close` /
+/// 记录 CRUD / `startSearch` / `nextPage` / `searchSnapshot` / `cancelSearch` /
 /// `listProviders` / `saveProvider` / `removeProvider` / `testProvider` /
-/// `requestResponse` / `getResponse`。其余契约方法一律抛
+/// `requestResponse` / `getResponse` /
+/// `getDay` / `generateDiary` / `listVersions` / `getVersion`。其余契约方法一律抛
 /// [UnsupportedError]（和 `diary_mock` 的做法一致），并且**不出现在
 /// [api.CoreInfo.capabilities] 里**——能力清单是窄化过的，界面据此决定显示哪些入口。
 ///
@@ -68,6 +69,10 @@ class BridgeDiaryApi implements api.DiaryApi {
     'providers.test',
     'responses.request',
     'responses.get',
+    'diary.getDay',
+    'diary.generate',
+    'diary.listVersions',
+    'diary.getVersion',
   };
 
   /// 幂等地初始化 frb 运行时。
@@ -379,6 +384,70 @@ class BridgeDiaryApi implements api.DiaryApi {
     );
   }
 
+  // ------------------------------------------------------- 日记生成与版本（B4b）
+
+  @override
+  Future<api.DiaryDay> getDay(String dayKey) async {
+    final session = _open;
+    final day = await _translate(() => session.getDiaryDay(dayKey: dayKey));
+    return _diaryDay(day);
+  }
+
+  /// 生成一篇日记。**输入在返回前已冻结**；真正的调用由 `runDueJobs` 执行。
+  ///
+  /// 首次生成可成为当前版本，之后一律候选（`regenerate` 是用户明确再要一版的例外）。
+  /// 没有配好服务也返回票据：任务会停在 `waiting_configuration`，用 `getJob` 看状态。
+  @override
+  Future<api.DiaryGenerationTicket> generateDiary({
+    required String dayKey,
+    String? styleId,
+    api.DiaryGenerationReason reason = api.DiaryGenerationReason.manual,
+    required String operationId,
+  }) async {
+    final session = _open;
+    final ticket = await _translate(
+      () => session.generateDiary(
+        dayKey: dayKey,
+        styleId: styleId,
+        reason: bridge.DiaryGenerationReason.values.byName(reason.name),
+        operationId: operationId,
+      ),
+    );
+    return api.DiaryGenerationTicket(
+      jobId: ticket.jobId,
+      sourceSnapshotId: ticket.sourceSnapshotId,
+    );
+  }
+
+  @override
+  Future<api.DiaryVersionPage> listVersions(
+    String dayKey, {
+    String? cursor,
+    int pageSize = 20,
+  }) async {
+    final session = _open;
+    final page = await _translate(
+      () => session.listDiaryVersions(
+        dayKey: dayKey,
+        cursor: cursor,
+        limit: pageSize,
+      ),
+    );
+    return api.DiaryVersionPage(
+      versions: page.versions.map(_diaryVersion).toList(growable: false),
+      nextCursor: page.nextCursor,
+    );
+  }
+
+  @override
+  Future<api.DiaryVersion> getVersion(String versionId) async {
+    final session = _open;
+    final version = await _translate(
+      () => session.getDiaryVersion(versionId: versionId),
+    );
+    return _diaryVersion(version);
+  }
+
   /// 没接的方法一律明确报错——照 `diary_mock` 的做法，避免悄悄返回空数据。
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
@@ -552,6 +621,65 @@ class BridgeDiaryApi implements api.DiaryApi {
         indexCoverage: api.Coverage.values.byName(value.indexCoverage.name),
         warnings: value.warnings,
       );
+
+  api.DiaryDay _diaryDay(bridge.DiaryDay value) => api.DiaryDay(
+    dayKey: value.dayKey,
+    timeZone: value.timeZone,
+    updatedAt: value.updatedAt,
+    currentVersionId: value.currentVersionId,
+    candidateVersionIds: value.candidateVersionIds,
+    materialCounts: api.MaterialCounts(
+      captures: value.materialCounts.captures.toInt(),
+      processed: value.materialCounts.processed.toInt(),
+      pending: value.materialCounts.pending.toInt(),
+      failed: value.materialCounts.failed.toInt(),
+    ),
+    coverage: api.Coverage.values.byName(value.coverage.name),
+  );
+
+  api.DiaryVersion _diaryVersion(bridge.DiaryVersion value) => api.DiaryVersion(
+    id: value.id,
+    dayKey: value.dayKey,
+    parentVersionId: value.parentVersionId,
+    origin: switch (value.origin) {
+      bridge.DiaryVersionOrigin.generated => api.DiaryVersionOrigin.generated,
+      bridge.DiaryVersionOrigin.userEdit => api.DiaryVersionOrigin.userEdit,
+      bridge.DiaryVersionOrigin.merge => api.DiaryVersionOrigin.merge,
+    },
+    body: value.body,
+    createdAt: value.createdAt,
+    sourceSnapshotId: value.sourceSnapshotId,
+    styleSnapshotId: value.styleSnapshotId,
+    generationInfo: value.generationInfo == null
+        ? null
+        : api.GenerationInfo(
+            promptVersion: value.generationInfo!.promptVersion,
+            providerId: value.generationInfo!.providerId,
+            model: value.generationInfo!.model,
+            generationOptions: value.generationInfo!.generationOptions,
+            coveredSourceCount: value.generationInfo!.coveredSourceCount.toInt(),
+            unprocessedSourceCount: value
+                .generationInfo!
+                .unprocessedSourceCount
+                .toInt(),
+          ),
+    provenanceLinks: value.provenanceLinks
+        .map(
+          (link) => api.ProvenanceLink(
+            sourceId: link.sourceId,
+            sourceRevisionId: link.sourceRevisionId,
+            locator: _locator(link.locator),
+            bodyRange: link.bodyRange == null
+                ? null
+                : api.TextRange(
+                    start: link.bodyRange!.start.toInt(),
+                    end: link.bodyRange!.end.toInt(),
+                  ),
+            note: link.note,
+          ),
+        )
+        .toList(growable: false),
+  );
 
   api.SourceLocator _locator(bridge.SourceLocator value) => api.SourceLocator(
     type: api.LocatorType.values.byName(value.locatorType.name),

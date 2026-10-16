@@ -833,6 +833,10 @@ fn v7_library_migrates_to_v8_without_backfilling_chunks() {
              DROP TABLE chunk_spans;
              DROP TABLE text_chunks;
              DROP TABLE index_meta;
+             DROP TABLE diary_generations;
+             DROP TABLE diary_days;
+             DROP TABLE diary_versions;
+             DROP TABLE diary_source_snapshots;
              UPDATE schema_migrations SET version = 7;
              PRAGMA user_version = 7;",
         )
@@ -847,7 +851,7 @@ fn v7_library_migrates_to_v8_without_backfilling_chunks() {
     assert_eq!(
         core.schema_version().unwrap(),
         diary_core::SCHEMA_VERSION,
-        "打开时要升到最新（v8 建块表、v9 建服务配置表，都不碰旧数据）"
+        "打开时要升到最新（v8 建块表、v9 建服务配置表、v10 建日记表，都不碰旧数据）"
     );
 
     // 旧数据一行未动。

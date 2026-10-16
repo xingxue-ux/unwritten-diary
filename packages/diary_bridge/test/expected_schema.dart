@@ -7,4 +7,4 @@
 ///
 /// 为什么不干脆写成「大于等于某个数」：这条断言的意义是「桥接报出来的版本与核心
 /// 真的一致」，放松成范围就测不到「升级了但桥接没跟上」这类问题。
-const int expectedDataSchemaVersion = 9;
+const int expectedDataSchemaVersion = 10;

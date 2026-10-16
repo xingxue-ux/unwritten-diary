@@ -8,7 +8,7 @@ import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NativeRecordingStatus`, `NewJob`, `RecordingFinalizeResult`, `RecordingRecovery`, `RecordingSession`, `RecordingTicket`, `SegmentManifest`, `SegmentReceipt`, `SourceItem`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`, `partial_cmp`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`, `partial_cmp`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
 
 /// 独立保存的 AI 回应，契约第 4.3 节 `responses.get`。
@@ -216,6 +216,207 @@ enum Coverage {
       RustLib.instance.api.diaryCoreModelCoverageWire(that: this);
 }
 
+/// 某一天的日记聚合视图，契约 2.5 节 `DiaryDay`。
+///
+/// **候选与当前只在这里区分**：契约的 `DiaryVersion` 没有状态字段，所以「哪一版是当前、
+/// 哪些是候选」由 `current_version_id` 与 `candidate_version_ids` 表达，不给版本另造状态。
+class DiaryDay {
+  final String dayKey;
+
+  /// 这一天的时区名。没有任何材料也没有生成过时是 `UTC`（缺省，不是推测）。
+  final String timeZone;
+
+  /// 当前版本；这一天还没有任何版本时为 None。
+  final String? currentVersionId;
+
+  /// 候选版本（这一天的全部版本里除当前版本之外的那些），最新在前。
+  final List<String> candidateVersionIds;
+  final MaterialCounts materialCounts;
+  final Coverage coverage;
+  final DateTime updatedAt;
+
+  const DiaryDay({
+    required this.dayKey,
+    required this.timeZone,
+    this.currentVersionId,
+    required this.candidateVersionIds,
+    required this.materialCounts,
+    required this.coverage,
+    required this.updatedAt,
+  });
+
+  @override
+  int get hashCode =>
+      dayKey.hashCode ^
+      timeZone.hashCode ^
+      currentVersionId.hashCode ^
+      candidateVersionIds.hashCode ^
+      materialCounts.hashCode ^
+      coverage.hashCode ^
+      updatedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DiaryDay &&
+          runtimeType == other.runtimeType &&
+          dayKey == other.dayKey &&
+          timeZone == other.timeZone &&
+          currentVersionId == other.currentVersionId &&
+          candidateVersionIds == other.candidateVersionIds &&
+          materialCounts == other.materialCounts &&
+          coverage == other.coverage &&
+          updatedAt == other.updatedAt;
+}
+
+/// 生成日记的原因，契约 4.3 节 `diary.generate` 的入参。
+///
+/// 它进幂等指纹（同一个 operationId 换了原因就是换了内容），也进快照的审计信息。
+/// `Regenerate` 是唯一被允许「同一份输入再产一版」的原因——用户明确说了要再来一版，
+/// 其余原因对同一快照哈希**不重复产版本**（见 `diary` 模块）。
+enum DiaryGenerationReason {
+  manual,
+  scheduled,
+  automatic,
+  regenerate;
+
+  static Future<DiaryGenerationReason?> fromWire({required String value}) =>
+      RustLib.instance.api.diaryCoreModelDiaryGenerationReasonFromWire(
+        value: value,
+      );
+
+  Future<void> wire() =>
+      RustLib.instance.api.diaryCoreModelDiaryGenerationReasonWire(that: this);
+}
+
+/// 一次日记生成的票据，契约 4.3 节 `diary.generate`。
+///
+/// 输入在**返回之前**就已经冻结（快照已落库、哈希已算），真正的调用由队列驱动执行。
+/// Provider 还没配好时**照样返回票据**：那条任务会停在 `waiting_configuration` 等配置，
+/// 而不是把「还没有配置服务」说成一次调用失败（与 #66 的队列闸门同一口径）。
+class DiaryGenerationTicket {
+  final String jobId;
+  final String sourceSnapshotId;
+
+  const DiaryGenerationTicket({
+    required this.jobId,
+    required this.sourceSnapshotId,
+  });
+
+  @override
+  int get hashCode => jobId.hashCode ^ sourceSnapshotId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DiaryGenerationTicket &&
+          runtimeType == other.runtimeType &&
+          jobId == other.jobId &&
+          sourceSnapshotId == other.sourceSnapshotId;
+}
+
+/// 日记版本，契约 2.5 节。正文是自然段，来源关联放在独立字段。
+class DiaryVersion {
+  final String id;
+  final String dayKey;
+  final String? parentVersionId;
+  final DiaryVersionOrigin origin;
+  final String body;
+  final DateTime createdAt;
+
+  /// 不可变的输入清单快照（用了哪些材料、哪些修订、覆盖范围的真相）。
+  final String? sourceSnapshotId;
+  final String? styleSnapshotId;
+  final GenerationInfo? generationInfo;
+  final List<ProvenanceLink> provenanceLinks;
+
+  const DiaryVersion({
+    required this.id,
+    required this.dayKey,
+    this.parentVersionId,
+    required this.origin,
+    required this.body,
+    required this.createdAt,
+    this.sourceSnapshotId,
+    this.styleSnapshotId,
+    this.generationInfo,
+    required this.provenanceLinks,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      dayKey.hashCode ^
+      parentVersionId.hashCode ^
+      origin.hashCode ^
+      body.hashCode ^
+      createdAt.hashCode ^
+      sourceSnapshotId.hashCode ^
+      styleSnapshotId.hashCode ^
+      generationInfo.hashCode ^
+      provenanceLinks.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DiaryVersion &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          dayKey == other.dayKey &&
+          parentVersionId == other.parentVersionId &&
+          origin == other.origin &&
+          body == other.body &&
+          createdAt == other.createdAt &&
+          sourceSnapshotId == other.sourceSnapshotId &&
+          styleSnapshotId == other.styleSnapshotId &&
+          generationInfo == other.generationInfo &&
+          provenanceLinks == other.provenanceLinks;
+}
+
+/// 日记版本的来源，契约 2.5 节。
+///
+/// **AI 生成的正文永远是 `Generated`**，绝不写成 `UserEdit`——`source_revisions`
+/// 的 `AuthorType` 只有 user/import，AI 文本也不写进用户原件（见 `diary` 模块）。
+enum DiaryVersionOrigin {
+  generated,
+  userEdit,
+  merge;
+
+  static Future<DiaryVersionOrigin?> fromWire({required String value}) =>
+      RustLib.instance.api.diaryCoreModelDiaryVersionOriginFromWire(
+        value: value,
+      );
+
+  /// 是不是用户自己写的（手写或用户确认后的合并）。
+  ///
+  /// 「首次生成可成为 current」这条例外的边界靠它：只要这一天有用户自己的版本，
+  /// 自动生成的版本就**不会**被设成当前版本。
+  Future<bool> isUserAuthored() => RustLib.instance.api
+      .diaryCoreModelDiaryVersionOriginIsUserAuthored(that: this);
+
+  Future<void> wire() =>
+      RustLib.instance.api.diaryCoreModelDiaryVersionOriginWire(that: this);
+}
+
+/// 分页的版本列表，契约 4.3 节 `diary.listVersions`。
+class DiaryVersionPage {
+  final List<DiaryVersion> versions;
+  final String? nextCursor;
+
+  const DiaryVersionPage({required this.versions, this.nextCursor});
+
+  @override
+  int get hashCode => versions.hashCode ^ nextCursor.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DiaryVersionPage &&
+          runtimeType == other.runtimeType &&
+          versions == other.versions &&
+          nextCursor == other.nextCursor;
+}
+
 /// 持久业务事件。
 class DomainEvent {
   final String eventId;
@@ -392,6 +593,53 @@ class ExtractedSegment {
           ordinal == other.ordinal &&
           text == other.text &&
           locator == other.locator;
+}
+
+/// 生成过程的审计信息，契约 2.5 节。
+class GenerationInfo {
+  final String promptVersion;
+  final String? providerId;
+  final String? model;
+
+  /// 生成选项：固定的协议参数与**如实记录的步数**
+  /// （`steps` / `intermediateCalls` / `repairCalls`），不虚构。
+  final Map<String, String> generationOptions;
+
+  /// 快照里已处理的材料数。
+  final PlatformInt64 coveredSourceCount;
+
+  /// 快照里明确记为「暂未处理」的材料数（不假装完整）。
+  final PlatformInt64 unprocessedSourceCount;
+
+  const GenerationInfo({
+    required this.promptVersion,
+    this.providerId,
+    this.model,
+    required this.generationOptions,
+    required this.coveredSourceCount,
+    required this.unprocessedSourceCount,
+  });
+
+  @override
+  int get hashCode =>
+      promptVersion.hashCode ^
+      providerId.hashCode ^
+      model.hashCode ^
+      generationOptions.hashCode ^
+      coveredSourceCount.hashCode ^
+      unprocessedSourceCount.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is GenerationInfo &&
+          runtimeType == other.runtimeType &&
+          promptVersion == other.promptVersion &&
+          providerId == other.providerId &&
+          model == other.model &&
+          generationOptions == other.generationOptions &&
+          coveredSourceCount == other.coveredSourceCount &&
+          unprocessedSourceCount == other.unprocessedSourceCount;
 }
 
 /// 复制完成信息：调用方声明它写了多少、算出的哈希是什么。
@@ -1097,6 +1345,48 @@ enum MatchedBy {
       RustLib.instance.api.diaryCoreModelMatchedByWire(that: this);
 }
 
+/// 当天的材料统计，契约 2.5 节。数字都是真值，不是估计。
+class MaterialCounts {
+  /// 当天的记录数（不含回收站）。
+  final PlatformInt64 captures;
+
+  /// 已经有可用正文的材料数（用户的文字天然算「已处理」）。
+  final PlatformInt64 processed;
+
+  /// 还在等提取的材料数。
+  final PlatformInt64 pending;
+
+  /// 提取失败、暂无可读正文的材料数。
+  final PlatformInt64 failed;
+
+  const MaterialCounts({
+    required this.captures,
+    required this.processed,
+    required this.pending,
+    required this.failed,
+  });
+
+  static Future<MaterialCounts> default_() =>
+      RustLib.instance.api.diaryCoreModelMaterialCountsDefault();
+
+  @override
+  int get hashCode =>
+      captures.hashCode ^
+      processed.hashCode ^
+      pending.hashCode ^
+      failed.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MaterialCounts &&
+          runtimeType == other.runtimeType &&
+          captures == other.captures &&
+          processed == other.processed &&
+          pending == other.pending &&
+          failed == other.failed;
+}
+
 /// 派生内容的处理状态。取值沿用契约第 3 节「索引」行。
 enum ProcessingStatus {
   pending,
@@ -1148,6 +1438,47 @@ class ProcessingSummary {
           processing == other.processing &&
           searchable == other.searchable &&
           needsAttention == other.needsAttention;
+}
+
+/// 正文与来源的关联，契约 2.5 节。涉及事实的内容要能追溯；不要求每句修辞都有引用。
+///
+/// 长材料两步走时，第一步提炼出来的**中间事实**也记在这里（`note` 是那条派生事实，
+/// 来源是它真正来自的记录/片段），所以中间结果不脱离来源独立存在。
+class ProvenanceLink {
+  final String sourceId;
+  final String sourceRevisionId;
+  final SourceLocator locator;
+
+  /// 正文中对应的字符区间；整段关联或位置不可靠时为空（不伪造）。
+  final TextRange? bodyRange;
+  final String? note;
+
+  const ProvenanceLink({
+    required this.sourceId,
+    required this.sourceRevisionId,
+    required this.locator,
+    this.bodyRange,
+    this.note,
+  });
+
+  @override
+  int get hashCode =>
+      sourceId.hashCode ^
+      sourceRevisionId.hashCode ^
+      locator.hashCode ^
+      bodyRange.hashCode ^
+      note.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ProvenanceLink &&
+          runtimeType == other.runtimeType &&
+          sourceId == other.sourceId &&
+          sourceRevisionId == other.sourceRevisionId &&
+          locator == other.locator &&
+          bodyRange == other.bodyRange &&
+          note == other.note;
 }
 
 /// 脱敏后的远端服务配置，契约第 2.7 节。

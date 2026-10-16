@@ -1088,6 +1088,10 @@ fn v8_library_migrates_to_v9_and_keeps_old_data_intact() {
         conn.execute_batch(
             "DROP TABLE ai_responses;
              DROP TABLE providers;
+             DROP TABLE diary_generations;
+             DROP TABLE diary_days;
+             DROP TABLE diary_versions;
+             DROP TABLE diary_source_snapshots;
              UPDATE schema_migrations SET version = 8;
              PRAGMA user_version = 8;",
         )
@@ -1152,6 +1156,10 @@ fn a_migrated_library_can_still_configure_and_call() {
         conn.execute_batch(
             "DROP TABLE ai_responses;
              DROP TABLE providers;
+             DROP TABLE diary_generations;
+             DROP TABLE diary_days;
+             DROP TABLE diary_versions;
+             DROP TABLE diary_source_snapshots;
              UPDATE schema_migrations SET version = 8;
              PRAGMA user_version = 8;",
         )

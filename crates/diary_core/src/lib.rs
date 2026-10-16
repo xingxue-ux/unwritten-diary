@@ -15,6 +15,11 @@
 mod assets;
 mod chunker;
 mod chunks;
+/// 日记生成与版本（B4b）：冻结输入快照、候选/当前语义、防注入、两步走、去重。
+///
+/// 公开是为了让集成测试能直接断言提示词拼装（`SYSTEM_INSTRUCTIONS` /
+/// `DIRECT_INPUT_CHAR_LIMIT`）——产品代码只走 `Core::generate_diary` 与队列。
+pub mod diary;
 mod error;
 /// 本地向量模型接入（B3c-2）。公开是为了让测试与 `tools/probe` 能显式注入 stub 或
 /// 指定模型包——这是给测试/量测的入口，不是让产品代码去直接碰 ORT。
@@ -53,17 +58,23 @@ pub use provider::transport::{
 };
 pub use model::{
     AiResponse, Asset, AssetLease, AssetStorageState, AuthorType, Capture, CapturePage,
-    CaptureState, CommitResult, Coverage, DomainEvent, DraftSaveResult, EventType,
-    ExtractedContent, ExtractedSegment, ImportManifest, ImportOrigin, ImportState, ImportStatus,
-    ImportTicket, IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress, JobRunSummary,
-    JobState, JobStatus, LocatorType, MatchedBy, NativeRecordingStatus, NewJob,
-    ProcessingStatus, ProcessingSummary, Provider, ProviderCapability, ProviderTestReport,
-    ProviderTestStatus, RecordingFinalizeResult, RecordingRecovery, RecordingSession,
-    RecordingState, RecordingTicket, ResponseTicket, SearchFilters, SearchHit, SearchMode,
-    SearchPhase, SearchRequest, SearchSnapshot, SegmentManifest, SegmentReceipt, SourceItem,
-    SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
+    CaptureState, CommitResult, Coverage, DiaryDay, DiaryGenerationReason, DiaryGenerationTicket,
+    DiaryVersion, DiaryVersionOrigin, DiaryVersionPage, DomainEvent, DraftSaveResult, EventType,
+    ExtractedContent, ExtractedSegment, GenerationInfo, ImportManifest, ImportOrigin, ImportState,
+    ImportStatus, ImportTicket, IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress,
+    JobRunSummary, JobState, JobStatus, LocatorType, MatchedBy, MaterialCounts,
+    NativeRecordingStatus, NewJob, ProcessingStatus, ProcessingSummary, Provider,
+    ProviderCapability, ProviderTestReport, ProviderTestStatus, ProvenanceLink,
+    RecordingFinalizeResult, RecordingRecovery, RecordingSession, RecordingState, RecordingTicket,
+    ResponseTicket, SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
+    SegmentManifest, SegmentReceipt, SourceItem, SourceKind, SourceLocation, SourceLocator,
+    SourceRevision, TextRange,
 };
 pub use provider::CapabilityGate;
+pub use diary::{
+    DEFAULT_STYLE_SNAPSHOT_ID, DIRECT_INPUT_CHAR_LIMIT, MAX_INTERMEDIATE_CALLS, PROMPT_VERSION,
+    SYSTEM_INSTRUCTIONS,
+};
 pub use chunker::{
     chunks_for, pack_pieces, Chunk, ChunkSpan, Piece, CHUNKER_VERSION, CHUNK_OVERLAP_CHARS,
     MAX_CHUNK_CHARS,
@@ -1269,6 +1280,81 @@ impl Core {
     /// 读取一条回应，契约第 4.3 节 `responses.get`。
     pub fn get_response(&self, response_id: &str) -> Result<AiResponse> {
         provider::get_response(self, response_id)
+    }
+
+    // ------------------------------------------------------------ 日记生成与版本（B4b）
+
+    /// 生成一篇日记，契约第 4.3 节 `diary.generate`。
+    ///
+    /// **输入在返回之前就冻结**：这一天的材料清单（来源、修订、提取版本、覆盖范围、
+    /// 时间范围、风格、提示词版本与生成选项）写进不可变的快照行并算出哈希，返回的
+    /// `source_snapshot_id` 指的就是它。真正的调用由队列在 `run_due_jobs` 里执行，
+    /// 执行时**只读快照**——事后改了材料也不会改变这一版基于什么。
+    ///
+    /// 候选/当前：首次（这一天没有当前版本、也没有用户自己的版本）生成的结果会成为
+    /// 当前版本；其余一律候选，**当前版本不会被生成改写**。同一份快照哈希与同一条
+    /// `operationId` 不重复产版本（`reason = regenerate` 是「用户明确要再来一版」的例外）。
+    ///
+    /// 没有可用的服务**照样返回票据**：那条任务由队列停在 `waiting_configuration`
+    /// 等配置（与 #66 的能力闸门同一口径），不是一次调用失败。
+    pub fn generate_diary(
+        &mut self,
+        day_key: &str,
+        style_id: Option<&str>,
+        reason: DiaryGenerationReason,
+        operation_id: &str,
+    ) -> Result<DiaryGenerationTicket> {
+        diary::request_generation(self, day_key, style_id, reason, operation_id)
+    }
+
+    /// 某一天的当前/候选与材料覆盖，契约第 4.3 节 `diary.getDay`。
+    ///
+    /// 候选与当前只在这里区分（契约的 `DiaryVersion` 没有状态字段）。空日报 `not_found`。
+    pub fn get_diary_day(&self, day_key: &str) -> Result<DiaryDay> {
+        diary::get_day(self, day_key)
+    }
+
+    /// 分页读某一天的日记版本，契约第 4.3 节 `diary.listVersions`。最新在前。
+    pub fn list_diary_versions(
+        &self,
+        day_key: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<DiaryVersionPage> {
+        diary::list_versions(self, day_key, cursor, limit)
+    }
+
+    /// 读一条完整的日记版本（含生成信息与来源关联），契约第 4.3 节 `diary.getVersion`。
+    pub fn get_diary_version(&self, version_id: &str) -> Result<DiaryVersion> {
+        diary::get_version(self, version_id)
+    }
+
+    /// 仅供测试：写一条**用户自己的**版本（`user_edit` / `merge`）。
+    ///
+    /// 这是 #87（B4c `diary.saveEdit` / `diary.merge`）将来要用的写入缝：只写版本、
+    /// 不动当前版本。桥接与能力清单里**没有**它——用户编辑/切换/合并的操作面属于 B4c。
+    /// 生成路径不会调用它，测试用它来构造「用户手写版本不被 AI 覆盖」的场景。
+    #[doc(hidden)]
+    pub fn save_diary_version_for_test(
+        &mut self,
+        day_key: &str,
+        base_version_id: Option<&str>,
+        body: &str,
+        origin: DiaryVersionOrigin,
+    ) -> Result<DiaryVersion> {
+        diary::insert_user_version(self, day_key, base_version_id, body, origin)
+    }
+
+    /// 仅供测试：切换某一天的当前版本（#87 `diary.setCurrent` 的写入缝）。
+    ///
+    /// **只由明确的用户操作调用**；生成路径永远不会用它去覆盖用户版本。
+    #[doc(hidden)]
+    pub fn set_diary_current_for_test(
+        &mut self,
+        day_key: &str,
+        version_id: &str,
+    ) -> Result<DiaryDay> {
+        diary::set_current(self, day_key, version_id)
     }
 
     // ------------------------------------------------------------ 幂等回执
