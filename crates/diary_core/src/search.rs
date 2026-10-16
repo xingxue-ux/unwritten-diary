@@ -593,8 +593,9 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
     let chunk_counts = crate::chunks::counts(core, source_scope)?;
     // 生效代次那一批向量的口径。**不能只看任意一行**：整代一致才报一个版本；混了不止
     // 一种就是历史遗留的混合代次（`Mixed`）——既不给单一 `model_version`，也不说「就绪」。
-    // 搜索这时候正在把不同模型空间的向量放在一起打分，说就绪等于骗人（详见
-    // `semantic::ActiveModelVersion` 的说明）。
+    // 混合代次不是同一个向量空间，说就绪等于骗人；检索路径从 #80 起也**不拿它的分数**
+    // （整路不作数，见 `semantic::caliber_mismatch`）。详见
+    // `semantic::ActiveModelVersion` 的说明。
     let (model_version, mixed_versions) = match crate::semantic::active_model_version(core)? {
         crate::semantic::ActiveModelVersion::Absent => (None, None),
         crate::semantic::ActiveModelVersion::Single(version) => (Some(version), None),
@@ -666,7 +667,8 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
         Some("语义索引未就绪：范围内还没有文本块".to_owned())
     } else if let Some(versions) = &mixed_versions {
         // 混合代次：整代里不止一种模型口径。这是**如实报出来**而不是挑一行装作干净
-        // ——不同模型空间的向量放在一起打分，结果本身就不作数。
+        // ——不同模型空间的向量放在一起打分，结果本身就不作数（检索路径从 #80 起
+        // 也整路不作数，不拿它的分数）。
         Some(format!(
             "语义索引未就绪：生效代次里的向量有 {} 种模型口径（{}），已经不是同一个向量空间；\
              重建语义索引会按当前模型整代重算",
