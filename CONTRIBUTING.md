@@ -236,3 +236,21 @@ indicating out-of-sync code.
 - **关机/重启会清掉 `/tmp` 下的东西**：`CARGO_TARGET_DIR=/tmp/...` 的产物、放在 `/tmp` 的
   `git worktree` 都会消失（worktree 会变成 `prunable`）。重启后按需 `git worktree prune` 再重建；
   安卓模拟器是宿主进程，也会一起被杀掉，重新启动即可。
+
+### 10.8 E 盘空间与 `/tmp` 易失（两条都会让长任务**无声失败**）
+
+仓库在 `/mnt/e`（**E 盘**）。**E 盘满过之后出现的错误往往不是代码问题**：构建产物写不进去、git 对象写坏、
+探针跑一半的结果丢失，而且报错经常指向别处，很难查。
+
+- **长任务开始前先看盘**：`df -h /mnt/e`。全量 `cargo build`、codegen、hvigor、探针都会写大量字节，
+  可用空间低于 ~10G 就先清理。
+- 仓库里 `target/` 常驻可达 **~18G**（给 Dart 测试用的 release `.so` 在里面，别整个删）；
+  必要时 `cargo clean` 或只保留 `target/release/libdiary_bridge.so`。
+
+`/tmp` **会在关机/重启后被清空**：`git worktree list` 里那些工作树会变成 `prunable`，
+自编的耗时产物（例如一次 **33 分钟**的 ONNX Runtime）与探针中间件**一起消失**。所以：
+
+- **并行任务的工作树放 `$HOME/wt/<name>`**，**耗时的自编产物放 `$HOME/dev/caches/<name>`**，
+  `/tmp` 只放可再生的临时文件（编译中间件可以放，但**别放只此一份的东西**）；
+- **未提交的改动不要过夜**：我们因此在一天里丢过一次完整实现。改完就先提交（哪怕信息写得糙），
+  再继续下一步。
