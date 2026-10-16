@@ -1067,7 +1067,7 @@ fn generation_arguments_are_checked_before_anything_is_queued() {
 // ------------------------------------------------------------------ 迁移
 
 #[test]
-fn v9_library_migrates_to_v10_and_keeps_old_data_intact() {
+fn v9_library_migrates_to_current_and_keeps_old_data_intact() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("library.sqlite");
     let (capture_id, provider_id) = {
@@ -1102,10 +1102,14 @@ fn v9_library_migrates_to_v10_and_keeps_old_data_intact() {
     {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
+            // 把一个已经升到最新版的库退回 v9：v10（日记四张表）与 v11（整理设置、
+            // 调用账本）都是 v9 之后加的，都要拆掉，才是一次真的 v9 → 最新。
             "DROP TABLE diary_generations;
              DROP TABLE diary_days;
              DROP TABLE diary_versions;
              DROP TABLE diary_source_snapshots;
+             DROP TABLE diary_model_calls;
+             DROP TABLE organize_settings;
              UPDATE schema_migrations SET version = 9;
              PRAGMA user_version = 9;",
         )
@@ -1127,6 +1131,11 @@ fn v9_library_migrates_to_v10_and_keeps_old_data_intact() {
     assert_eq!(before, after, "迁移不动旧数据");
     // 没有回填：迁移后没有任何日记版本（不替用户凭空补一版）。
     assert!(core.list_diary_versions("2026-10-16", None, 10).unwrap().versions.is_empty());
+    // v11 种下的整理设置是**默认关**：升级不替用户打开自动整理，也没有任何用量记录。
+    let settings = core.organize_settings().unwrap();
+    assert!(!settings.enabled, "从旧库升上来的整理开关必须是关的");
+    assert_eq!(settings.revision, 1);
+    assert!(core.organize_status().unwrap().quota.calls_last_24h == 0);
     assert_eq!(core.get_capture(&capture_id).unwrap().draft_text, "妈妈打电话来。");
     assert_eq!(core.list_providers().unwrap()[0].id, provider_id);
 

@@ -7,7 +7,7 @@
 use rusqlite::{params, Connection};
 
 /// 本构建支持的 schema 版本。
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -69,6 +69,15 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 生成记录）。老库里没有任何日记版本——B4b 之前核心根本没有日记表。也**不能**
         // 在迁移里替用户把旧记录「补生成」一版：那会凭空造出用户没有确认过的正文，
         // 与「AI 正文不冒充用户手写」直接冲突。
+    }
+    if current < 11 {
+        tx.execute_batch(V11)?;
+        // v11 只加两张全新的表（整理设置、调用账本），并**种一行默认设置**。
+        // 种下去的那一行是 `enabled = 0`：从 v10 升上来的库与刚建的新库一样，
+        // 自动整理**默认关**，核心不会自己去调用任何服务。这里没有、也不能有
+        // 「替用户开启」的逻辑——开启是用户显式做的事（`settings.update` 那一路）。
+        crate::organize::seed_default_settings(&tx, crate::support::now())
+            .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.execute(
@@ -638,3 +647,57 @@ CREATE TABLE diary_generations (
 CREATE INDEX idx_diary_generations_snapshot ON diary_generations(snapshot_id, created_at, id);
 CREATE INDEX idx_diary_generations_day ON diary_generations(day_key, created_at DESC, id DESC);
 "#;
+
+/// v11：自动整理的开关、模板、上限与调用账本（B4e，issue #92）。
+///
+/// 消费契约见 `docs/architecture/m4-整理与自动化.md`，别处不要另立一套解释。
+///
+/// 为什么必须动 schema（而不是塞进某张已有的表）：这三样东西都是**要跨重启活下来的
+/// 用户配置与用量事实**，而 v1–v10 里没有一张键值配置表，也没有一张「真的发出去了
+/// 几次调用」的账本。
+///
+/// - `organize_settings`：**单行**（`CHECK (id = 1)`，与 `index_meta` /
+///   `search_index_epoch` 同一个写法）。`enabled` 默认 0——**默认关**是这一条的硬要求：
+///   没有用户显式开启，核心绝不自动调用 Provider。`revision` 是乐观锁（同契约
+///   `settings.update` 的 `expectedRevision`）。`template_params` 存 JSON 对象，
+///   值只有整数与布尔（**不接受自由文本**，见 `OrganizeTemplateParam` 的文档）。
+/// - `diary_model_calls`：**每一次真的发出去的**日记模型调用一行（成功与失败都记）。
+///   配额与失败率只认这张表：估算、意图、任务条数都不算「花掉的调用」。`reason` 让
+///   自动整理（`scheduled` / `automatic`）与用户主动要一版（`manual` / `regenerate`）
+///   的用量分开算——用户自己点的生成不该吃掉自动整理的额度。
+///
+/// 两张表在迁移里都**不回填旧数据**：升级前没有这些配置与账本，替用户猜一个开关或
+/// 编几条用量记录都是错的。默认设置那一行由 `organize::seed_default_settings` 写入，
+/// 值只有一个来源（`organize.rs` 的常量），不在 SQL 里再抄一遍。
+const V11: &str = r#"
+CREATE TABLE organize_settings (
+    id                        INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled                   INTEGER NOT NULL DEFAULT 0,
+    template_id               TEXT NOT NULL,
+    template_params           TEXT NOT NULL DEFAULT '{}',
+    max_materials             INTEGER NOT NULL,
+    max_chars                 INTEGER NOT NULL,
+    max_calls_per_run         INTEGER NOT NULL,
+    max_calls_per_day         INTEGER NOT NULL,
+    max_failure_rate          REAL NOT NULL,
+    auto_organize_time        TEXT NOT NULL,
+    supplement_on_new_materials INTEGER NOT NULL DEFAULT 1,
+    revision                  INTEGER NOT NULL DEFAULT 1,
+    updated_at                TEXT NOT NULL
+);
+
+CREATE TABLE diary_model_calls (
+    id          TEXT PRIMARY KEY,
+    run_id      TEXT,
+    day_key     TEXT,
+    reason      TEXT NOT NULL,
+    provider_id TEXT,
+    model       TEXT,
+    outcome     TEXT NOT NULL,
+    error_code  TEXT,
+    called_at   TEXT NOT NULL
+);
+CREATE INDEX idx_diary_model_calls_time ON diary_model_calls(called_at, id);
+CREATE INDEX idx_diary_model_calls_run ON diary_model_calls(run_id, called_at);
+"#;
+

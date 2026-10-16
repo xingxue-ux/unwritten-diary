@@ -29,6 +29,11 @@ mod index_rebuild;
 mod jobs;
 /// 数据对象。公开是为了让桥接层的 codegen 能扫描它们（见 flutter_rust_bridge.yaml）。
 pub mod model;
+/// 整理与自动化（B4e，issue #92）：整理模板、开关与触发边界、待处理判据、配额上限。
+///
+/// 公开是为了让集成测试能直接断言模板规则与判据（`render_rule` / `LIMITS` /
+/// `candidates`）——产品代码只走 `Core::organize_*` 与驱动。
+pub mod organize;
 /// Provider 适配与配置（B4a）：配置、密钥托管、能力协商、连接测试与可注入传输层。
 ///
 /// 公开是为了让测试与 `tools/probe` 能注入回放/记账传输层——这是给测试与量测的
@@ -63,10 +68,12 @@ pub use model::{
     ExtractedContent, ExtractedSegment, GenerationInfo, ImportManifest, ImportOrigin, ImportState,
     ImportStatus, ImportTicket, IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress,
     JobRunSummary, JobState, JobStatus, LocatorType, MatchedBy, MaterialCounts,
-    NativeRecordingStatus, NewJob, ProcessingStatus, ProcessingSummary, Provider,
-    ProviderCapability, ProviderTestReport, ProviderTestStatus, ProvenanceLink,
-    RecordingFinalizeResult, RecordingRecovery, RecordingSession, RecordingState, RecordingTicket,
-    ResponseTicket, SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
+    NativeRecordingStatus, NewJob, OrganizePendingDay, OrganizePlanSummary, OrganizeQuota,
+    OrganizeRunInfo, OrganizeSettings, OrganizeSkippedDay, OrganizeStatus, OrganizeTemplate,
+    OrganizeTemplateParam, ProcessingStatus, ProcessingSummary, Provider, ProviderCapability,
+    ProviderTestReport, ProviderTestStatus, ProvenanceLink, RecordingFinalizeResult,
+    RecordingRecovery, RecordingSession, RecordingState, RecordingTicket, ResponseTicket,
+    SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
     SegmentManifest, SegmentReceipt, SourceItem, SourceKind, SourceLocation, SourceLocator,
     SourceRevision, TextRange,
 };
@@ -74,6 +81,10 @@ pub use provider::CapabilityGate;
 pub use diary::{
     DEFAULT_STYLE_SNAPSHOT_ID, DIRECT_INPUT_CHAR_LIMIT, MAX_INTERMEDIATE_CALLS,
     MERGE_PROMPT_VERSION, PROMPT_VERSION, SYSTEM_INSTRUCTIONS,
+};
+pub use organize::{
+    DEFAULT_AUTO_ORGANIZE_TIME, DEFAULT_TEMPLATE_ID, FAILURE_WINDOW_HOURS, LIMITS, LOOKBACK_DAYS,
+    MIN_FAILURE_SAMPLES, ORGANIZE_PROMPT_VERSION,
 };
 pub use chunker::{
     chunks_for, pack_pieces, Chunk, ChunkSpan, Piece, CHUNKER_VERSION, CHUNK_OVERLAP_CHARS,
@@ -1389,6 +1400,55 @@ impl Core {
             expected_revision,
             operation_id,
         )
+    }
+
+    // ------------------------------------------------------------ 整理与自动化（B4e）
+
+    /// 全部可用整理模板（现在只有三个核心内置的；插件模板见 #88）。
+    ///
+    /// 模板规则是**产品指令**，参数只接受整数与布尔——两者都不接受自由文本，
+    /// 所以调用方（或将来的插件）没有地方能把「指令」塞进提示词的指令槽。
+    pub fn organize_templates(&self) -> Vec<OrganizeTemplate> {
+        organize::list_templates()
+    }
+
+    /// 整理设置：开关（**默认关**）、模板与参数、各项上限、计划触发时间。
+    pub fn organize_settings(&self) -> Result<OrganizeSettings> {
+        organize::load_settings(self)
+    }
+
+    /// 更新整理设置，契约第 4.4 节 `settings.update` 的落地（整理这一段）。
+    ///
+    /// 口径：
+    /// - **必须显式开启**：`enabled` 默认是 `false`，只有调用方明确传 `true` 才会打开；
+    /// - **校验先行**：模板不存在 `not_found`；参数类型/范围、各项上限、`HH:mm`
+    ///   不合法都是 `invalid_argument`，且**零改动**；
+    /// - **过期就拒绝**：`expectedRevision` 不符报 `revision_conflict`，零改动；
+    /// - **按目标状态幂等**：值没变就是无操作（`revision` 不 +1）。
+    ///
+    /// 传入对象里的 `revision` / `updatedAt` 是**只读结论，会被忽略**（与
+    /// `providers.save` 忽略 `testStatus` 同一个口径）。
+    pub fn update_organize_settings(
+        &mut self,
+        settings: &OrganizeSettings,
+        expected_revision: i64,
+    ) -> Result<OrganizeSettings> {
+        organize::update_settings(self, settings, expected_revision)
+    }
+
+    /// 整理状态：开关、模板、**什么时候会跑、会跑哪些材料**、配额用量与最近一次结果。
+    ///
+    /// **只读**：不发请求、不排任务、不改任何东西。没开启时也能看出「开启后会跑什么」。
+    pub fn organize_status(&self) -> Result<OrganizeStatus> {
+        organize::status(self)
+    }
+
+    /// 排一轮自动整理：把「该整理」的日子冻结成快照、排成 `diary_generate` 任务。
+    ///
+    /// 驱动（`run_due_jobs`）每轮开始时会自己调它；单独暴露是为了测试与将来的界面
+    /// （例如用户刚打开开关，想立刻看看会排什么）。**默认关时它什么都不做**。
+    pub fn plan_organize(&mut self, now: DateTime<Utc>) -> Result<OrganizePlanSummary> {
+        organize::plan_due(self, now)
     }
 
     // ------------------------------------------------------------ 幂等回执

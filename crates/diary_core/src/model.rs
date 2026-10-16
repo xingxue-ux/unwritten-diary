@@ -1376,6 +1376,16 @@ impl DiaryGenerationReason {
             _ => None,
         }
     }
+
+    /// 是不是**自动整理**这一路（B4e）。
+    ///
+    /// 这一路与用户主动要一版（`manual` / `regenerate`）有三处不同：
+    /// 1. 用设置里选中的**整理模板**（写进冻结快照）拼提示词；
+    /// 2. 结果**一律进候选**，绝不成为当前版本（用户确认走 `diary.setCurrent`）；
+    /// 3. 受整理设置里的**配额上限**约束（单次/每日调用次数、材料条数与字数、失败率）。
+    pub fn is_organize(self) -> bool {
+        matches!(self, Self::Scheduled | Self::Automatic)
+    }
 }
 
 /// 日记版本的来源，契约 2.5 节。
@@ -1510,3 +1520,186 @@ pub struct DiaryGenerationTicket {
     pub job_id: String,
     pub source_snapshot_id: String,
 }
+
+// ------------------------------------------------------------ 整理与自动化（B4e，#92）
+
+/// 整理模板的一个可选参数：**只允许整数与布尔**，不接受自由文本。
+///
+/// 为什么参数不能是文本：模板规则属于**产品指令**，只在 system 消息里。如果参数能带
+/// 任意文字，调用方（或将来某个插件）就能把「忽略上面的指令」写进指令槽——那正是
+/// #64 花力气堵住的那条路（材料是数据，不是指令）。限定成整数/布尔之后，参数**没有
+/// 地方**可以承载指令文本。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizeTemplateParam {
+    /// 参数键（wire 名，例如 `targetChars`）。
+    pub key: String,
+    /// 中文短名，设置页直接用。
+    pub label: String,
+    /// 参数类型：`integer` 或 `boolean`。
+    pub kind: String,
+    /// 整数参数的取值范围（布尔参数两者都为空）。
+    pub minimum: Option<i64>,
+    pub maximum: Option<i64>,
+    /// 默认值（字符串形式，`true` / `false` 或十进制整数）。
+    pub default_value: String,
+    pub description: String,
+}
+
+/// 一个整理模板：核心内置规则，或将来由 #88 的声明式插件提供的规则。
+///
+/// **这一片只实现内置三类**（`source = "builtin"`）。`source` 字段就是留给 #88 的
+/// 对接点：插件模板进来时，`source = "plugin"` 并且 `plugin_id` 有值——解析、校验、
+/// 提示词拼装的路径都不变（见 `docs/architecture/m4-整理与自动化.md`「#88 的对接点」）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizeTemplate {
+    /// 模板 id（不透明字符串，进冻结快照）。
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    /// 规则文本：**产品指令**，只在 system 消息里出现，由核心常量拼出。
+    pub rule: String,
+    pub params: Vec<OrganizeTemplateParam>,
+    /// `builtin`（核心内置）或 `plugin`（#88 的声明式插件，尚未实现）。
+    pub source: String,
+    /// 插件模板所属的插件 id；内置模板为空。
+    pub plugin_id: Option<String>,
+}
+
+/// 整理设置。默认**全关**：`enabled = false`，核心不会自动调用任何服务。
+///
+/// 这是「必须由用户显式开启」的落点：`Core::open` 建出来的资料库（含从旧版本升级上来
+/// 的）都是关的，只有显式 `update_organize_settings` 才能打开。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrganizeSettings {
+    pub enabled: bool,
+    pub template_id: String,
+    /// 显式覆盖的参数（生效值 = 覆盖 + 模板默认值）。**只允许整数与布尔**。
+    pub template_params: std::collections::HashMap<String, String>,
+    /// 单次整理的材料条数上限。
+    pub max_materials: i64,
+    /// 单次整理的材料字数上限（Unicode 标量值）。
+    pub max_chars: i64,
+    /// 单次整理的模型调用次数上限（含两步走与格式修复）。
+    pub max_calls_per_run: i64,
+    /// 最近 24 小时内自动整理的模型调用次数上限。
+    pub max_calls_per_day: i64,
+    /// 失败率上限（0.0–1.0）：最近窗口内样本 ≥3 且失败比例超过它就停下。
+    pub max_failure_rate: f64,
+    /// 计划触发时间 `HH:mm`（本地时间，按当天材料的 UTC 偏移折算）。**不是完成承诺**。
+    pub auto_organize_time: String,
+    /// 当天已有当前版本、之后又来了新材料时，是否自动补做一份候选。关掉就只手动。
+    pub supplement_on_new_materials: bool,
+    /// 设置版本（乐观锁；每次真的改动 +1）。
+    pub revision: i64,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 自动整理的配额与用量现状。数字都来自**真实的调用账本**，不是估算。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrganizeQuota {
+    /// 最近 24 小时（滚动窗口）真的发出去的整理调用次数。
+    pub calls_last_24h: i64,
+    pub max_calls_per_day: i64,
+    /// 还能发几次（不会小于 0）。
+    pub calls_remaining: i64,
+    /// 失败率窗口里的样本数（最近 24 小时的整理调用，最多取最近 20 条）。
+    pub failure_samples: i64,
+    /// 窗口里的失败比例（0.0–1.0）；没有样本时为 0。
+    pub failure_rate: f64,
+    pub max_failure_rate: f64,
+    pub last_call_at: Option<DateTime<Utc>>,
+}
+
+/// 一个「该整理」的日子，以及它为什么该整理。
+///
+/// 判据全是可判定的（见 `docs/architecture/m4-整理与自动化.md`），没有一条是
+/// 「AI 觉得该整理」。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrganizePendingDay {
+    pub day_key: String,
+    /// 该整理的理由：`first`（这一天还没有任何版本）/ `supplement`（已有版本，之后又来了新材料）。
+    pub reason: String,
+    /// 可读正文的材料条数。
+    pub materials: i64,
+    /// 这些材料的字符总数（Unicode 标量值）。
+    pub chars: i64,
+    /// 按现有材料估算的模型调用次数（1 = 一步；N+1 = 两步走）。
+    pub estimated_calls: i64,
+    /// 这一天的计划触发时刻（`autoOrganizeTime` 折成 UTC）。
+    pub due_at: DateTime<Utc>,
+    /// 这一天的当前版本（没有就是空）。
+    pub current_version_id: Option<String>,
+}
+
+/// 被跳过的日子与原因（超限、材料有问题……），如实报出来。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizeSkippedDay {
+    pub day_key: String,
+    /// 契约第 7 节的错误码（现在只会用到 `quota_exceeded`）。
+    pub code: String,
+    /// 可执行的说明：哪一条上限、已经做了什么、下一步怎么办。
+    pub message: String,
+}
+
+/// 最近一次自动整理的真实结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizeRunInfo {
+    pub day_key: String,
+    /// 生成行的状态：`pending`（还在队列里）/ `ready`（产出了版本）/ `failed`（如实失败）。
+    pub state: String,
+    pub error_code: Option<String>,
+    pub version_id: Option<String>,
+    /// 这次真的发出去了几次调用（来自账本，不是估算）。
+    pub calls: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 自动整理的状态：开关、模板、**什么时候会跑、会跑哪些材料**、配额与最近结果。
+///
+/// 这是「开启后要能说清会跑什么、什么时候跑」的落点。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrganizeStatus {
+    pub settings: OrganizeSettings,
+    /// 选中的模板（含规则与参数声明）。
+    pub template: OrganizeTemplate,
+    /// 生效参数（覆盖 + 默认值），键有序。
+    pub effective_params: std::collections::HashMap<String, String>,
+    /// 现在就该跑的日子。
+    pub due_days: Vec<OrganizePendingDay>,
+    /// 已经该整理、但还没到计划触发时刻的日子（`nextRunAt` 就是其中最早的）。
+    pub scheduled_days: Vec<OrganizePendingDay>,
+    /// 下一次计划触发时刻；没有待办时为空。
+    pub next_run_at: Option<DateTime<Utc>>,
+    pub quota: OrganizeQuota,
+    /// Provider 能力闸门（没配好时给出原因与可执行的下一步）。**只读，不发请求**。
+    pub provider_code: Option<String>,
+    pub provider_reason: Option<String>,
+    pub provider_next_step: Option<String>,
+    /// 全局停下时的错误码与说明（例如 `quota_exceeded`：失败率过高）。
+    pub blocked_code: Option<String>,
+    pub blocked_reason: Option<String>,
+    /// 被跳过的日子（单日超限等）。
+    pub skipped_days: Vec<OrganizeSkippedDay>,
+    pub last_run: Option<OrganizeRunInfo>,
+    /// 如实补充说明（观察窗、默认关、哪些不算待处理……）。
+    pub notes: Vec<String>,
+}
+
+/// 一轮自动整理的排期结果（驱动每轮开始时调用一次）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizePlanSummary {
+    /// 观察窗内被盘点过的日子数。
+    pub considered_days: i64,
+    /// 这一轮排出去的日子（已入队 `diary_generate`）。
+    pub queued_days: Vec<String>,
+    /// 现在就该跑、但因为全局上限被挡住的日子。
+    pub blocked_days: Vec<String>,
+    /// 被跳过的日子与原因。
+    pub skipped_days: Vec<OrganizeSkippedDay>,
+    /// 全局停下的错误码与说明；没有全局停下时为空。
+    pub blocked_code: Option<String>,
+    pub blocked_reason: Option<String>,
+    pub notes: Vec<String>,
+}
+

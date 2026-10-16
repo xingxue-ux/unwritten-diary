@@ -109,6 +109,14 @@ pub enum CoreError {
     #[error("幂等冲突：operationId {operation_id} 已经用于不同的内容")]
     IdempotencyConflict { operation_id: String },
 
+    /// 整理设置的乐观锁冲突（B4e）：与 `RevisionConflict` 同一个错误码，但把
+    /// 「整理设置」写清楚——只报两个裸数字，用户不知道是哪一个对象过期了。
+    #[error(
+        "版本冲突：整理设置的 revision 期望是 {expected}，实际是 {actual}\
+         （设置在你读取之后又被改过）；请重新读取设置再试，核心不会用旧设置覆盖新的"
+    )]
+    SettingsRevisionConflict { expected: i64, actual: i64 },
+
     #[error("磁盘空间不足")]
     StorageFull,
 
@@ -183,6 +191,7 @@ impl CoreError {
             Self::RevisionConflict { .. } | Self::DiaryRevisionConflict { .. } => {
                 ErrorCode::RevisionConflict
             }
+            Self::SettingsRevisionConflict { .. } => ErrorCode::RevisionConflict,
             Self::IdempotencyConflict { .. } => ErrorCode::IdempotencyConflict,
             Self::StorageFull => ErrorCode::StorageFull,
             Self::AssetMissing { .. } => ErrorCode::AssetMissing,
