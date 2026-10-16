@@ -18,4 +18,4 @@ entry/src/main/resources/rawfile/model_quantized.onnx
 entry/src/main/resources/rawfile/tokenizer.json
 
 # 设备侧原始日志与解析结果**要进仓库**（是证据），只有拼装中间产物不进
-evidence/device-wrapper.json
+evidence/device-wrapper*.json
