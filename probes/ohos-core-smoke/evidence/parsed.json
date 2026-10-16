@@ -1,0 +1,42 @@
+{
+  "filesDir": {
+    "dlopen_ok": true,
+    "dlopen_used": "libdiary_core_smoke.so",
+    "dlopen_attempts": [
+      {
+        "name": "libdiary_core_smoke.so",
+        "ok": true,
+        "err": ""
+      },
+      {
+        "name": "/data/storage/el1/bundle/libs/arm64/libdiary_core_smoke.so",
+        "ok": true,
+        "err": ""
+      }
+    ],
+    "dlsym_ok": true,
+    "abi": "diary_core_smoke/1 ohos-cdylib",
+    "core_loaded_at": "/data/storage/el1/bundle/libs/arm64/libdiary_core_smoke.so",
+    "core": "{\"core_capture_count\":1,\"core_capture_id\":\"cap_01a1443c97c2766db6382790c2b31f83\",\"core_chunk_count\":1,\"core_chunks_ms\":0.522,\"core_create_draft_ms\":0.426,\"core_db_bytes\":278528,\"core_db_bytes_after_migrate\":4096,\"core_db_bytes_open\":4096,\"core_db_shm_bytes\":0,\"core_db_shm_bytes_open\":32768,\"core_db_wal_bytes\":0,\"core_db_wal_bytes_open\":416152,\"core_index_ms\":0.459,\"core_indexed_sources\":1,\"core_open_cold_ms\":9.249,\"core_open_warm_ms\":0.787,\"core_read_back_ms\":0.08,\"core_read_back_ok\":true,\"core_read_back_sha256\":\"c4853a93bbe38ac61b99a9f1ef8ac10ba62b56bc34ff589196bb303c3881342d\",\"core_read_back_text\":\"鸿蒙沙箱里写进去的第一条记录：SQLite 在 el2 里能读能写。\",\"core_save_draft_ms\":131.34,\"core_save_durable\":true,\"core_save_revision\":2,\"core_schema_version\":8,\"core_search_candidates_鸿蒙\":0,\"core_search_hits_鸿蒙\":0,\"dir\":\"/data/storage/el2/base/haps/entry/files/coredb\",\"dir_listing\":[{\"bytes\":278528,\"is_dir\":false,\"name\":\"core.db\"},{\"bytes\":282624,\"is_dir\":false,\"name\":\"raw_smoke.db\"}],\"errors\":[],\"raw_db_bytes\":282624,\"raw_insert10000_ms\":23.824,\"raw_insert1000_ms\":2.64,\"raw_insert1_ms\":0.168,\"raw_journal_mode\":\"wal\",\"raw_open_ms\":0.415,\"raw_pragma_create_ms\":12.36,\"raw_read_ms\":0.068,\"raw_row7\":\"沙箱记录-6\",\"raw_rows\":11001,\"sqlite_version\":\"3.53.2\",\"stage\":\"ok\",\"total_ms\":184.703}"
+  },
+  "databaseDir": {
+    "dlopen_ok": true,
+    "dlopen_used": "libdiary_core_smoke.so",
+    "dlopen_attempts": [
+      {
+        "name": "libdiary_core_smoke.so",
+        "ok": true,
+        "err": ""
+      },
+      {
+        "name": "/data/storage/el1/bundle/libs/arm64/libdiary_core_smoke.so",
+        "ok": true,
+        "err": ""
+      }
+    ],
+    "dlsym_ok": true,
+    "abi": "diary_core_smoke/1 ohos-cdylib",
+    "core_loaded_at": "/data/storage/el1/bundle/libs/arm64/libdiary_core_smoke.so",
+    "core": "{\"core_capture_count\":1,\"core_capture_id\":\"cap_01a1443c98797198b1bcad7bcc54b158\",\"core_chunk_count\":1,\"core_chunks_ms\":0.444,\"core_create_draft_ms\":0.355,\"core_db_bytes\":278528,\"core_db_bytes_after_migrate\":4096,\"core_db_bytes_open\":4096,\"core_db_shm_bytes\":0,\"core_db_shm_bytes_open\":32768,\"core_db_wal_bytes\":0,\"core_db_wal_bytes_open\":416152,\"core_index_ms\":0.443,\"core_indexed_sources\":1,\"core_open_cold_ms\":9.435,\"core_open_warm_ms\":0.794,\"core_read_back_ms\":0.066,\"core_read_back_ok\":true,\"core_read_back_sha256\":\"c4853a93bbe38ac61b99a9f1ef8ac10ba62b56bc34ff589196bb303c3881342d\",\"core_read_back_text\":\"鸿蒙沙箱里写进去的第一条记录：SQLite 在 el2 里能读能写。\",\"core_save_draft_ms\":0.465,\"core_save_durable\":true,\"core_save_revision\":2,\"core_schema_version\":8,\"core_search_candidates_鸿蒙\":0,\"core_search_hits_鸿蒙\":0,\"dir\":\"/data/storage/el2/database/entry/coredb\",\"dir_listing\":[{\"bytes\":278528,\"is_dir\":false,\"name\":\"core.db\"},{\"bytes\":282624,\"is_dir\":false,\"name\":\"raw_smoke.db\"}],\"errors\":[],\"raw_db_bytes\":282624,\"raw_insert10000_ms\":23.54,\"raw_insert1000_ms\":2.505,\"raw_insert1_ms\":0.162,\"raw_journal_mode\":\"wal\",\"raw_open_ms\":0.113,\"raw_pragma_create_ms\":10.875,\"raw_read_ms\":0.057,\"raw_row7\":\"沙箱记录-6\",\"raw_rows\":11001,\"sqlite_version\":\"3.53.2\",\"stage\":\"ok\",\"total_ms\":52.224}"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "libdiary_napi.so",
+  "types": "./index.d.ts",
+  "version": "1.0.0",
+  "description": "OHOS core smoke probe: C++ NAPI shim that dlopens libdiary_core_smoke.so (Rust)."
+}
