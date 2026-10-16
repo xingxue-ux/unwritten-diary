@@ -86,6 +86,16 @@ pub use organize::{
     DEFAULT_AUTO_ORGANIZE_TIME, DEFAULT_TEMPLATE_ID, FAILURE_WINDOW_HOURS, LIMITS, LOOKBACK_DAYS,
     MIN_FAILURE_SAMPLES, ORGANIZE_PROMPT_VERSION,
 };
+
+/// 仅供测试：某一天的整理计划时刻（本地 `HH:mm` 按当天偏移折成 UTC）。
+#[doc(hidden)]
+pub fn organize_due_at_for_test(
+    day_key: &str,
+    time: &str,
+    utc_offset_minutes: i64,
+) -> Result<DateTime<Utc>> {
+    organize::due_at(day_key, time, utc_offset_minutes)
+}
 pub use chunker::{
     chunks_for, pack_pieces, Chunk, ChunkSpan, Piece, CHUNKER_VERSION, CHUNK_OVERLAP_CHARS,
     MAX_CHUNK_CHARS,
@@ -1449,6 +1459,35 @@ impl Core {
     /// （例如用户刚打开开关，想立刻看看会排什么）。**默认关时它什么都不做**。
     pub fn plan_organize(&mut self, now: DateTime<Utc>) -> Result<OrganizePlanSummary> {
         organize::plan_due(self, now)
+    }
+
+    /// 仅供测试/量测：按一句只读查询取一行文本。
+    ///
+    /// 产品代码不调它：核心的读取入口都有自己的方法与语义（例如快照 `body` 是内部
+    /// 形状，不在契约里）。测试用它核对**落库的原始事实**，不另造一套读取路径。
+    #[doc(hidden)]
+    pub fn debug_query_text(&self, sql: &str, param: Option<&str>) -> Result<Option<String>> {
+        let mut statement = self.conn.prepare(sql)?;
+        let value = match param {
+            Some(value) => statement
+                .query_row(params![value], |row| row.get::<_, String>(0))
+                .optional()?,
+            None => statement
+                .query_row([], |row| row.get::<_, String>(0))
+                .optional()?,
+        };
+        Ok(value)
+    }
+
+    /// 仅供测试/量测：按一句只读查询取一个计数。
+    #[doc(hidden)]
+    pub fn debug_query_count(&self, sql: &str, param: Option<&str>) -> Result<i64> {
+        let mut statement = self.conn.prepare(sql)?;
+        let value = match param {
+            Some(value) => statement.query_row(params![value], |row| row.get::<_, i64>(0))?,
+            None => statement.query_row([], |row| row.get::<_, i64>(0))?,
+        };
+        Ok(value)
     }
 
     // ------------------------------------------------------------ 幂等回执

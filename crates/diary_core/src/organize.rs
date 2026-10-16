@@ -908,7 +908,7 @@ pub(crate) fn ensure_call_allowed(
     }
     let settings = load_settings(core)?;
     if calls_so_far >= settings.max_calls_per_run {
-        return Err(CoreError::QuotaExceeded {
+        return Err(CoreError::OrganizeStopped {
             reason: format!(
                 "单次整理的模型调用次数上限是 {} 次，这次已经发出去 {} 次调用；\
                  核心在这里停下，**没有**把半截结果当成一篇日记，也没有产出任何版本。\
@@ -919,7 +919,7 @@ pub(crate) fn ensure_call_allowed(
     }
     let quota = quota_snapshot(core, &settings)?;
     if quota.calls_last_24h >= settings.max_calls_per_day {
-        return Err(CoreError::QuotaExceeded {
+        return Err(CoreError::OrganizeStopped {
             reason: format!(
                 "最近 {} 小时已经发出 {} 次整理调用，到达每日上限 {} 次；\
                  核心在这里停下，没有继续发请求，也没有产出任何版本。\
@@ -929,7 +929,7 @@ pub(crate) fn ensure_call_allowed(
         });
     }
     if let Some((_, message)) = failure_rate_blocked(&quota) {
-        return Err(CoreError::QuotaExceeded { reason: message });
+        return Err(CoreError::OrganizeStopped { reason: message });
     }
     Ok(())
 }
@@ -1065,7 +1065,8 @@ pub(crate) fn candidates(
             continue;
         }
         if input.snapshot_frozen {
-            // 这份输入已经冻结过：产出过版本、或排过任务（成功/失败/还在队列里）。
+            // 这份输入已经冻结过：产出过版本、排过任务（成功或失败）、或者还在队列里。
+            // 不再自动重排——重试走任务自己的退避（`retry_wait`）或人工 `jobs.retry`。
             continue;
         }
         let current = current_version_of(core, &day_key)?;
@@ -1141,24 +1142,30 @@ pub(crate) fn plan_due(core: &mut Core, now: DateTime<Utc>) -> Result<OrganizePl
 
     let params = effective_params(&settings.template_id, &settings.template_params)?;
     let freeze = freeze(&settings.template_id, &params)?;
+    // 先盘出待处理的日子（纯查询，不发请求）：这样即便全局上限把整轮挡住，状态里
+    // 也能如实列出「在等额度的日子」，而不是只说一句「停下了」。
+    let (pending, skipped, notes) = candidates(core, &settings, &freeze, now)?;
+    summary.considered_days = candidate_day_keys(core, now)?.len() as i64;
+    summary.skipped_days = skipped;
+    summary.notes = notes;
+    let blocked_days: Vec<String> = pending
+        .iter()
+        .filter(|candidate| candidate.due_at <= now)
+        .map(|candidate| candidate.day_key.clone())
+        .collect();
     let quota = quota_snapshot(core, &settings)?;
     if let Some((code, reason)) = failure_rate_blocked(&quota) {
         summary.blocked_code = Some(code);
         summary.blocked_reason = Some(reason);
-        summary.considered_days = candidate_day_keys(core, now)?.len() as i64;
+        summary.blocked_days = blocked_days;
         return Ok(summary);
     }
     if let Some((code, reason)) = daily_quota_blocked(&quota) {
         summary.blocked_code = Some(code);
         summary.blocked_reason = Some(reason);
-        summary.considered_days = candidate_day_keys(core, now)?.len() as i64;
+        summary.blocked_days = blocked_days;
         return Ok(summary);
     }
-
-    let (pending, skipped, notes) = candidates(core, &settings, &freeze, now)?;
-    summary.considered_days = candidate_day_keys(core, now)?.len() as i64;
-    summary.skipped_days = skipped;
-    summary.notes = notes;
     let mut remaining = quota.calls_remaining;
 
     for candidate in pending {
@@ -1188,6 +1195,19 @@ pub(crate) fn plan_due(core: &mut Core, now: DateTime<Utc>) -> Result<OrganizePl
                      没有排任务、没有发出任何调用。下一步：调高单次字数上限，\
                      或先精简这一天的材料",
                     candidate.day_key, candidate.chars, settings.max_chars
+                ),
+            });
+            continue;
+        }
+        if candidate.estimated_calls > settings.max_calls_per_run {
+            // 「不排一条注定跑不完的任务」：单次调用上限比这一天预计需要的次数还小，
+            // 排出去只会跑到一半停在同一个上限上（还要花掉已经发出去的那几次）。
+            summary.skipped_days.push(OrganizeSkippedDay {
+                day_key: candidate.day_key.clone(),
+                code: "quota_exceeded".to_owned(),
+                message: format!(
+                    "{} 这一天的输入预计需要 {} 次模型调用，而单次整理上限只有 {} 次；                     没有排任务、没有发出任何调用。下一步：调高单次调用上限，                     或缩小这一天的材料（字数/条数上限）后重试",
+                    candidate.day_key, candidate.estimated_calls, settings.max_calls_per_run
                 ),
             });
             continue;

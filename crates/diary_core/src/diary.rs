@@ -1195,6 +1195,11 @@ pub(crate) struct PlannedInput {
     pub estimated_calls: i64,
     pub utc_offset_minutes: i64,
     /// `(day_key, 快照哈希)` 是不是已经冻结过——这一条就是「这份输入处理过没有」。
+    ///
+    /// 判据是「有没有快照行」，不是「有没有版本」：冻结过就意味着这份输入已经
+    /// **产出过版本、排过任务（成功或失败）、或者还在队列里**。同一份输入永远只自动
+    /// 排一次；重试靠任务自己的退避（`retry_wait`）或用户人工重试（`jobs.retry`），
+    /// 不靠计划器一遍遍重排——那会在配额停下时每一轮都偷偷烧掉上限内的调用。
     pub snapshot_frozen: bool,
 }
 
@@ -1234,6 +1239,7 @@ pub(crate) fn inspect_day(
     })
 }
 
+/// 这一天在某个模板下的输入有没有冻结过（`(day_key, snapshot_hash)`）。
 fn snapshot_id_for(core: &Core, day_key: &str, hash: &str) -> Result<Option<String>> {
     let found: Option<String> = core
         .conn
@@ -1314,6 +1320,10 @@ pub(crate) fn request_generation(
     if freeze.is_some() {
         let settings = organize::load_settings(core)?;
         ensure_material_caps(day_materials.materials.len() as i64, &day_materials, &settings)?;
+        // 配额预检：每日调用额度用完、或失败率过高时**直接拒绝**，不排一条注定停在
+        // 上限上的任务（与 #66 的「不排注定失败的任务」同一口径）。真正逐次的判断
+        // 在执行期（`call_generate`），那才是「绝不静默刷爆配额」的落点。
+        organize::ensure_call_allowed(core, reason, 0)?;
     }
 
     // 先算规范形与哈希、查幂等回执，**再**落库：被拒掉的调用不留副作用。
@@ -1361,7 +1371,7 @@ fn ensure_material_caps(
     settings: &crate::model::OrganizeSettings,
 ) -> Result<()> {
     if materials > settings.max_materials {
-        return Err(CoreError::QuotaExceeded {
+        return Err(CoreError::OrganizeStopped {
             reason: format!(
                 "这一天的材料有 {materials} 条，超过单次整理的材料条数上限 {} 条；\
                  没有排任务、没有发出任何调用。下一步：调高单次材料条数上限，\
@@ -1377,7 +1387,7 @@ fn ensure_material_caps(
         .map(|material| material.chars)
         .sum();
     if chars > settings.max_chars {
-        return Err(CoreError::QuotaExceeded {
+        return Err(CoreError::OrganizeStopped {
             reason: format!(
                 "这一天的材料有 {chars} 字，超过单次整理的字数上限 {} 字；\
                  没有排任务、没有发出任何调用。下一步：调高单次字数上限，或先精简这一天的材料",
@@ -1552,15 +1562,32 @@ pub(crate) fn run_generate(core: &mut Core, job: &Job) -> std::result::Result<()
     if let Err(error) = &outcome {
         // 任务状态才是失败的权威（`retry_wait` / `waiting_configuration` / `failed`
         // 由队列裁决）；生成行如实记下最近一次错误码，便于排查。
-        let _ = mark_generation_error(core, &generation_id, error.code().wire());
+        //
+        // **终态**失败（重试不会好、也不是「等配置」）同时把生成行标成 `failed`：
+        // 一行「没有版本、错误码是 quota_exceeded、状态却还写着 pending」的记录
+        // 是在骗人——`OrganizeStatus.lastRun` 就是按这一列如实报最近一次结果的。
+        // 非终态（退避重试 / 等配置）保留 `pending`：它确实还没有结论。
+        let terminal = !error.retryable() && !error.waits_for_configuration();
+        let _ = mark_generation_error(core, &generation_id, error.code().wire(), terminal);
     }
     outcome
 }
 
-fn mark_generation_error(core: &mut Core, generation_id: &str, error_code: &str) -> Result<()> {
+fn mark_generation_error(
+    core: &mut Core,
+    generation_id: &str,
+    error_code: &str,
+    terminal: bool,
+) -> Result<()> {
     core.conn.execute(
-        "UPDATE diary_generations SET error_code = ?1, updated_at = ?2 WHERE id = ?3",
-        params![error_code, support::to_iso(support::now()), generation_id],
+        "UPDATE diary_generations SET error_code = ?1, \
+         state = CASE WHEN ?2 THEN 'failed' ELSE state END, updated_at = ?3 WHERE id = ?4",
+        params![
+            error_code,
+            i64::from(terminal),
+            support::to_iso(support::now()),
+            generation_id
+        ],
     )?;
     Ok(())
 }

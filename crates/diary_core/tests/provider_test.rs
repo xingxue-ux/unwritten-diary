@@ -1092,6 +1092,8 @@ fn v8_library_migrates_to_v9_and_keeps_old_data_intact() {
              DROP TABLE diary_days;
              DROP TABLE diary_versions;
              DROP TABLE diary_source_snapshots;
+             DROP TABLE diary_model_calls;
+             DROP TABLE organize_settings;
              UPDATE schema_migrations SET version = 8;
              PRAGMA user_version = 8;",
         )
@@ -1160,6 +1162,8 @@ fn a_migrated_library_can_still_configure_and_call() {
              DROP TABLE diary_days;
              DROP TABLE diary_versions;
              DROP TABLE diary_source_snapshots;
+             DROP TABLE diary_model_calls;
+             DROP TABLE organize_settings;
              UPDATE schema_migrations SET version = 8;
              PRAGMA user_version = 8;",
         )

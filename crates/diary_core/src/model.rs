@@ -1645,7 +1645,8 @@ pub struct OrganizeSkippedDay {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrganizeRunInfo {
     pub day_key: String,
-    /// 生成行的状态：`pending`（还在队列里）/ `ready`（产出了版本）/ `failed`（如实失败）。
+    /// 生成行的状态：`pending`（还没有结论：在队列里、在等配置、或在退避重试）/
+    /// `ready`（产出了版本）/ `failed`（终态失败，**没有**版本）。
     pub state: String,
     pub error_code: Option<String>,
     pub version_id: Option<String>,
