@@ -18,10 +18,16 @@ import 'sketch_ui.dart';
 /// A navigable preview of the product plan. Only text capture uses DiaryApi;
 /// all other content is clearly identified as a local, disposable simulation.
 class ExperienceShell extends StatefulWidget {
-  const ExperienceShell({super.key, required this.api, required this.demoMode});
+  const ExperienceShell({
+    super.key,
+    required this.api,
+    required this.demoMode,
+    this.supportsHybridUpgrade = false,
+  });
 
   final DiaryApi api;
   final bool demoMode;
+  final bool supportsHybridUpgrade;
 
   @override
   State<ExperienceShell> createState() => _ExperienceShellState();
@@ -76,7 +82,10 @@ class _ExperienceShellState extends State<ExperienceShell>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _capture = CaptureController(widget.api);
-    _coreSearch = DiarySearchController(widget.api);
+    _coreSearch = DiarySearchController(
+      widget.api,
+      supportsHybridUpgrade: widget.supportsHybridUpgrade,
+    );
     _fileImports = FileImportController(widget.api);
     _contentChanges = Listenable.merge([_capture, _coreSearch, _fileImports]);
     if (!widget.demoMode) {
@@ -668,7 +677,11 @@ class _ExperienceShellState extends State<ExperienceShell>
     children: [
       _title('搜索', '找回本机的文字与原始材料。'),
       const SizedBox(height: 20),
-      _notice('当前为本地关键词搜索；语义补充与原件定位正在接入。'),
+      _notice(
+        widget.supportsHybridUpgrade
+            ? '先显示关键词结果，语义补充就绪后会更新排序。'
+            : '当前为本地关键词搜索；语义补充尚未接入。',
+      ),
       const SizedBox(height: 18),
       SketchFrame(
         padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 6),
@@ -709,6 +722,11 @@ class _ExperienceShellState extends State<ExperienceShell>
       ),
       const SizedBox(height: 22),
       if (_coreSearch.loading) const LinearProgressIndicator(),
+      if (_coreSearch.upgrading) const LinearProgressIndicator(),
+      if (_coreSearch.upgradeWarning != null)
+        _notice(_coreSearch.upgradeWarning!, icon: Icons.info_outline),
+      if (_coreSearch.snapshot?.phase == SearchPhase.hybridReady)
+        _notice('已结合关键词和语义结果。', icon: Icons.auto_awesome_outlined),
       if (_coreSearch.error != null && _coreSearch.hits.isEmpty)
         _notice(_coreSearch.error!, icon: Icons.error_outline),
       if (!_coreSearch.loading &&
@@ -716,7 +734,8 @@ class _ExperienceShellState extends State<ExperienceShell>
           _coreSearch.query.isNotEmpty &&
           _coreSearch.hits.isEmpty)
         _notice('没有找到匹配内容。尚未处理的材料可能暂时无法检索。', icon: Icons.search_off),
-      if (_coreSearch.snapshot?.warnings.isNotEmpty == true)
+      if (_coreSearch.snapshot?.warnings.isNotEmpty == true &&
+          _coreSearch.upgradeWarning == null)
         _notice(_coreSearch.snapshot!.warnings.join(' · ')),
       if (_coreSearch.hits.isNotEmpty)
         Text(

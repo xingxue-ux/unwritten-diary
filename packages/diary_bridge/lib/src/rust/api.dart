@@ -8,7 +8,7 @@ import 'lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'third_party/diary_core/model.dart';
 
-// These functions are ignored because they are not marked as `pub`: `lock`, `recovery_summary`, `wired_capabilities`
+// These functions are ignored because they are not marked as `pub`: `library_key`, `lock`, `recovery_summary`, `wired_capabilities`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>>
@@ -199,6 +199,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
   Future<RecordingSession> updateRecordingState({
     required NativeRecordingStatus status,
   });
+
+  /// 把混合会话从关键词阶段升级到融合阶段（#69）；幂等，重复调用不重复算。
+  Future<SearchSnapshot> upgradeSearch({required String sessionId});
 }
 
 /// 桥接错误：`code` 是契约第 7 节的错误码，`message` 给用户看。

@@ -48,6 +48,19 @@ pub fn day_key(at: DateTime<Utc>, offset_minutes: i32) -> String {
         .to_string()
 }
 
+/// 内容哈希：**只由正文决定**的稳定键。混合检索的同分兜底用它（见
+/// `search_session` 的 `hybrid_search`）。
+///
+/// 为什么不能拿 `chunk_id` / `source_id` / `hit_id` 当同分键：它们的哈希输入（或本身）
+/// 里有每库不同的 v7 UUID，同一份内容重新建库就会换一批值，排序跟着抛硬币
+/// （issue [#57](https://github.com/xingxue-ux/unwritten-diary/issues/57) 的教训）。
+/// 正文哈希只由内容决定，跨库/跨进程一致。
+pub(crate) fn content_hash(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 /// 请求指纹：把操作名与关键入参哈希成一个稳定字符串。
 ///
 /// 幂等回执用它区分「同一个操作的重复提交」与「同一个 operationId 被换了内容」。

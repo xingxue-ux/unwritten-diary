@@ -492,10 +492,18 @@ class ImportTicket {
 
 /// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
 ///
-/// 核心只建关键词索引，所以 `semantic_index_ready` 恒为 false、
-/// `model_version` 恒为空——照实说，而不是留一个看起来「都就绪」的默认值。
-/// 数字的单位不完全一样：片段（`*_segments`）、记录数（`*_captures`）、
-/// 材料数（`failed_sources`）各自的名字里写清楚，避免前端把它们相加。
+/// 这个状态把两条路分开报：**关键词这一路**（`coverage`、`keyword_index_ready`、
+/// 各种 `*_segments` / `*_captures`）与**语义这一路**（`semantic_index_ready`、
+/// `model_version`、`total_chunks` / `embedded_chunks`）。语义这一路的每个数字都是
+/// **算出来的真值**：没有一代向量生效时 `model_version` 是 `None` 而不是一个假装
+/// 的字符串，`semantic_index_ready` 要求生效代次真的覆盖了范围内的每一块。
+///
+/// 两条路**不共用一个 `coverage`**：`coverage` 仍然只描述关键词索引的覆盖程度。
+/// 在检索会话里，`semantic` 模式的 `index_coverage` 才按语义那一路的覆盖算
+/// （见 `search_session`）。
+///
+/// 数字的单位不完全一样：片段（`*_segments`）、记录数（`*_captures`）、材料数
+/// （`failed_sources`）、块数（`*_chunks`）各自的名字里写清楚，避免前端把它们相加。
 class IndexStatus {
   final Coverage coverage;
   final bool keywordIndexReady;
@@ -503,8 +511,34 @@ class IndexStatus {
 
   /// 建索引时用的分词器版本；与库里行不一致的片段或记录文字会被算成待重建。
   final String tokenizerVersion;
+
+  /// 语义索引用的模型版本：**生效代次**里所有向量共有的那个 `chunk_vectors.model_version`
+  /// （含模型文件的 sha256 前缀）。
+  ///
+  /// 三种情况是 `None`：还没有生效代次；生效代次里一行向量都没有；生效代次里混了
+  /// **不止一种**模型版本（历史遗留的混合代次）——后一种没有单一版本可报，此时
+  /// `semantic_index_ready` 为 `false`，`reasons` 里会点名口径不一致并提示重建。
+  /// 正常操作（`build_semantic_index`）不会再产出混合代次：续跑前核对口径，
+  /// 不一致就整代废弃按当前模型重算。
   final String? modelVersion;
+
+  /// 切块规则版本（`chunker::CHUNKER_VERSION`）。
+  ///
+  /// B3c-1 里它还是 `None`（那时没有任何块进索引）；从这一片起块真的进库了，所以
+  /// 它有值。库里块的 `chunker_version` 与它不一致，就说明块要按新规则重算。
   final String? chunkerVersion;
+
+  /// 范围内的文本块数（`text_chunks`）。
+  ///
+  /// 范围语义与关键词那一路一致：一条记录属于范围，当且仅当它拥有范围内的来源；
+  /// 空白范围是「什么都不看」，得到 0。单位是块数，不是篇数——一块可能含多篇。
+  final PlatformInt64 totalChunks;
+
+  /// 其中有**当前生效代次**向量的块数（`chunk_vectors.generation = active_generation`）。
+  ///
+  /// 它是 `total_chunks` 的下界：两者相等才谈得上「语义索引覆盖完了」。没有模型、
+  /// 或还没建过语义索引时是 0——那是算出来的（没有可算的代次），不是写死的。
+  final PlatformInt64 embeddedChunks;
 
   /// 已进关键词索引的片段数。
   final PlatformInt64 indexedSegments;
@@ -544,6 +578,10 @@ class IndexStatus {
 
   /// **整库**索引表实际占用的字节数（来自 dbstat）。
   ///
+  /// 它把**两条路的表都算进去**：关键词那几张（`search_*`）+ 块与向量
+  /// （`text_chunks` / `chunk_spans` / `chunk_vectors` / `index_meta` 及它们的索引）。
+  /// 只算关键词那几张会把占用低估一大块——512 维 f32 向量是每块约 2 KiB。
+  ///
   /// 它不随 `source_scope` 变化：dbstat 按表汇总页数，页在来源之间共享，拆不出来。
   /// 范围查询里它仍是整库值，并在 `reasons` 里写明。读不到 dbstat 时是 0，同样在
   /// `reasons` 里说明。
@@ -559,6 +597,8 @@ class IndexStatus {
     required this.tokenizerVersion,
     this.modelVersion,
     this.chunkerVersion,
+    required this.totalChunks,
+    required this.embeddedChunks,
     required this.indexedSegments,
     required this.totalSegments,
     required this.pendingSegments,
@@ -581,6 +621,8 @@ class IndexStatus {
       tokenizerVersion.hashCode ^
       modelVersion.hashCode ^
       chunkerVersion.hashCode ^
+      totalChunks.hashCode ^
+      embeddedChunks.hashCode ^
       indexedSegments.hashCode ^
       totalSegments.hashCode ^
       pendingSegments.hashCode ^
@@ -605,6 +647,8 @@ class IndexStatus {
           tokenizerVersion == other.tokenizerVersion &&
           modelVersion == other.modelVersion &&
           chunkerVersion == other.chunkerVersion &&
+          totalChunks == other.totalChunks &&
+          embeddedChunks == other.embeddedChunks &&
           indexedSegments == other.indexedSegments &&
           totalSegments == other.totalSegments &&
           pendingSegments == other.pendingSegments &&
@@ -992,7 +1036,8 @@ enum LocatorType {
       RustLib.instance.api.diaryCoreModelLocatorTypeWire(that: this);
 }
 
-/// 一条命中是靠什么匹配上的，契约第 2.6 节。这一片只产出 `Keyword`。
+/// 一条命中是靠什么匹配上的，契约第 2.6 节。关键词那一路全是 `Keyword`，语义那一路
+/// 全是 `Semantic`；混合那一路**如实**标：两路都有就是 `[Keyword, Semantic]`。
 enum MatchedBy {
   keyword,
   semantic,
@@ -1398,7 +1443,10 @@ class SearchHit {
           locator == other.locator;
 }
 
-/// 检索模式，契约第 2.6 节。这一片只实现 `Keyword`。
+/// 检索模式，契约第 2.6 节。三种都实现了：`Hybrid` 是 RRF 融合（#51，B3c-3），
+/// **分两阶段给**（#69）——`start_search` 先只算关键词那一路并报 `keyword_ready`，
+/// 显式调用 `upgrade_search_to_hybrid(sessionId)` 才融合并报 `hybrid_ready`。
+/// 语义未就绪时**退化为关键词并在 `warnings` 里明说**（不静默，也不假装跑过混合）。
 enum SearchMode {
   keyword,
   semantic,
@@ -1412,6 +1460,11 @@ enum SearchMode {
 }
 
 /// 检索阶段，契约第 2.6 节。
+///
+/// 混合检索的阶段流程（#69）：`start_search(mode = hybrid)` → `keyword_ready`
+/// （只有关键词那一路的结果）→ `upgrade_search_to_hybrid(sessionId)` → `hybrid_ready`
+/// （融合 + 重排后的结果）→ 翻完最后一页 `done`。语义拿不出证据时升级**不会**给出
+/// `hybrid_ready`，阶段如实停在 `keyword_ready`。取消 → `cancelled`。
 enum SearchPhase {
   initial,
   keywordReady,

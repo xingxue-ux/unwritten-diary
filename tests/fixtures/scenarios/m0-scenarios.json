@@ -259,6 +259,7 @@
         "indexes.rebuild(scope=all)",
         "search.start(mode=hybrid, query=人工标注的模糊描述)",
         "断开网络后重复上一步",
+        "search.upgrade(sessionId=上一步的混合检索会话)",
         "search.start(mode=semantic, query=同上)"
       ],
       "expected": {
@@ -267,10 +268,13 @@
         "worksOffline": true,
         "noRemoteEmbeddingCall": true,
         "similarityNotShownAsConfidence": true,
-        "coverageReportedHonestly": true
+        "coverageReportedHonestly": true,
+        "hybridStartPhaseIsKeywordReady": true,
+        "hybridUpgradePhaseIsHybridReady": true,
+        "upgradedResultsComeFromRrfFusion": true
       },
       "covers": ["E19", "E20"],
-      "note": "质量集与阈值尚未建立，本场景先固定\"能召回人工标注项\"这一可判定条件。"
+      "note": "质量集与阈值尚未建立，本场景先固定\"能召回人工标注项\"这一可判定条件。升级一步固定两阶段：hybrid 的 search.start 先 keyword_ready，显式 search.upgrade 后才 hybrid_ready（融合结果）；语义不可用时保持 keyword_ready 的退化路径不在本场景（本场景离线但有本地模型）。"
     },
     {
       "id": "contradictory-statements",

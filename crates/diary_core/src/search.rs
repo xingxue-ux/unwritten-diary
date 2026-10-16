@@ -548,7 +548,11 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
         let sql = "SELECT COALESCE(SUM(pgsize), 0) FROM dbstat WHERE name IN \
                    ('search_docs', 'search_grams', 'sqlite_autoindex_search_docs_1', \
                     'search_capture_docs', 'search_capture_grams', \
-                    'sqlite_autoindex_search_capture_docs_1')";
+                    'sqlite_autoindex_search_capture_docs_1', \
+                    'text_chunks', 'idx_text_chunks_day', 'sqlite_autoindex_text_chunks_1', \
+                    'chunk_spans', 'idx_chunk_spans_source', 'idx_chunk_spans_capture', \
+                    'idx_chunk_spans_revision', 'sqlite_autoindex_chunk_spans_1', \
+                    'chunk_vectors', 'sqlite_autoindex_chunk_vectors_1', 'index_meta')";
         core.conn
             .query_row(sql, [], |row| row.get::<_, i64>(0))
             .unwrap_or_default()
@@ -579,6 +583,28 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
     } else {
         Coverage::Partial
     };
+
+    // ------------------------------------------------------------ 语义这一路
+    //
+    // 语义这一路的数字全部**算出来**：生效代次、块数与其中有这一代向量的块数、
+    // 生效代次那一批向量的口径。没有向量时 `model_version` 是 `None`
+    // ——那是「库里的真值」，不是「这一片还没接模型」这种会被时间打脸的话。
+    let (active_generation, _building_generation) = crate::chunks::generations(core)?;
+    let chunk_counts = crate::chunks::counts(core, source_scope)?;
+    // 生效代次那一批向量的口径。**不能只看任意一行**：整代一致才报一个版本；混了不止
+    // 一种就是历史遗留的混合代次（`Mixed`）——既不给单一 `model_version`，也不说「就绪」。
+    // 搜索这时候正在把不同模型空间的向量放在一起打分，说就绪等于骗人（详见
+    // `semantic::ActiveModelVersion` 的说明）。
+    let (model_version, mixed_versions) = match crate::semantic::active_model_version(core)? {
+        crate::semantic::ActiveModelVersion::Absent => (None, None),
+        crate::semantic::ActiveModelVersion::Single(version) => (Some(version), None),
+        crate::semantic::ActiveModelVersion::Mixed(versions) => (None, Some(versions)),
+    };
+    // 「就绪」要求有一代向量在服务、这一代把范围内的块都覆盖了，**并且**整代口径一致。
+    let semantic_index_ready = active_generation.is_some()
+        && chunk_counts.total > 0
+        && chunk_counts.embedded == chunk_counts.total
+        && mixed_versions.is_none();
 
     let mut reasons = Vec::new();
     if total_segments == 0 && total_captures == 0 {
@@ -611,6 +637,54 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
             "index_bytes 是整库索引占用：dbstat 只能按表统计，无法按来源拆分".to_owned(),
         );
     }
+    // 语义索引这一路：只有**真的没就绪**时才说一句原因，而且判断依据是库里的状态
+    // （生效代次 + 块的向量覆盖 + 整代口径是否一致）加上**模型的真实可用性**，
+    // 不是写死的常量文案。
+    //
+    // 「模型加载失败」与「还没有配置模型」是**两件事**，前者必须把失败原因原样说出来
+    // ——把错误盖成「未就绪」等于骗人（见 `embedding` 模块的说明）。
+    // 五段与上面 `semantic_index_ready` 的取值**严格互补**：就绪时没有原因，
+    // 有原因时一定不就绪。
+    let semantic_reason = if active_generation.is_none() {
+        match core.embedder_readiness() {
+            crate::semantic::EmbedderReadiness::NotConfigured => Some(
+                "语义索引未就绪：还没有配置本地模型（DIARY_MODEL_DIR / DIARY_ORT_DYLIB），\
+                 当前只有关键词索引"
+                    .to_owned(),
+            ),
+            crate::semantic::EmbedderReadiness::Failed(reason) => Some(format!(
+                "语义索引未就绪：本地模型不可用（{reason}）"
+            )),
+            crate::semantic::EmbedderReadiness::Configured
+            | crate::semantic::EmbedderReadiness::Ready => Some(
+                "语义索引未就绪：还没有生效的向量代次（模型已就绪，等一次 build_semantic_index）"
+                    .to_owned(),
+            ),
+        }
+    } else if chunk_counts.total == 0 {
+        // 有生效代次却没有任何块：要么还没重建过块，要么范围内的内容本来就没有正文。
+        Some("语义索引未就绪：范围内还没有文本块".to_owned())
+    } else if let Some(versions) = &mixed_versions {
+        // 混合代次：整代里不止一种模型口径。这是**如实报出来**而不是挑一行装作干净
+        // ——不同模型空间的向量放在一起打分，结果本身就不作数。
+        Some(format!(
+            "语义索引未就绪：生效代次里的向量有 {} 种模型口径（{}），已经不是同一个向量空间；\
+             重建语义索引会按当前模型整代重算",
+            versions.len(),
+            versions.join(" / ")
+        ))
+    } else if chunk_counts.embedded < chunk_counts.total {
+        // 换代中间态：新代次还没写满。这时候旧代次可能还在服务，但覆盖已经不完整。
+        Some(format!(
+            "语义索引未就绪：生效代次只覆盖了 {} 块里的 {} 块",
+            chunk_counts.total, chunk_counts.embedded
+        ))
+    } else {
+        None
+    };
+    if let Some(reason) = semantic_reason {
+        reasons.push(reason);
+    }
     // 旧修订的行不计入上面的数字，也不参与默认检索。这一句必须说，否则
     // 「索引表里还留着词项、状态数字里却没有」看起来就像漏统计。
     if retired_segments > 0 {
@@ -619,16 +693,19 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
              （重建会把这些行清掉）"
         ));
     }
-    // 语义索引还没接：如实写清楚，而不是让前端以为「索引已就绪」包含它。
-    reasons.push("语义索引尚未接入（见 issue #32）：当前只有关键词索引".to_owned());
 
     Ok(IndexStatus {
         coverage,
         keyword_index_ready,
-        semantic_index_ready: false,
+        semantic_index_ready,
         tokenizer_version: TOKENIZER_VERSION.to_owned(),
-        model_version: None,
-        chunker_version: None,
+        // 生效代次那一批 `chunk_vectors.model_version`（算出来的真值）。
+        model_version,
+        // 块真的进库了（B3c-1 的文档承诺过「接进索引之后才该有值」），所以从这一片起
+        // 它有值：库里块的 `chunker_version` 与它不一致，就说明块要按新规则重算。
+        chunker_version: Some(crate::chunker::CHUNKER_VERSION.to_owned()),
+        total_chunks: chunk_counts.total,
+        embedded_chunks: chunk_counts.embedded,
         indexed_segments,
         total_segments,
         pending_segments,
@@ -762,7 +839,8 @@ fn candidate_filter(query: &str) -> Option<(String, String)> {
     Some((filter, needle))
 }
 
-fn placeholders(count: usize) -> String {
+/// SQL 里的 `?` 占位符串。文本块那一路也要按同一套规则拼范围过滤，所以对 crate 可见。
+pub(crate) fn placeholders(count: usize) -> String {
     std::iter::repeat_n("?", count).collect::<Vec<_>>().join(", ")
 }
 

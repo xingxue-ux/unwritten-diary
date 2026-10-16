@@ -32,43 +32,44 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 /// 取这么多条结果来算召回。
-const TOP_K: usize = 10;
+pub(crate) const TOP_K: usize = 10;
 
+/// 质量集。`pub(crate)`：语义量测（`semantic_quality`）用同一份数据与同一套口径。
 #[derive(Deserialize)]
-struct QualitySet {
-    version: i64,
+pub(crate) struct QualitySet {
+    pub(crate) version: i64,
     #[allow(dead_code)]
     note: String,
-    cases: Vec<Case>,
+    pub(crate) cases: Vec<Case>,
 }
 
 #[derive(Deserialize)]
-struct Case {
-    id: String,
-    category: String,
-    query: String,
+pub(crate) struct Case {
+    pub(crate) id: String,
+    pub(crate) category: String,
+    pub(crate) query: String,
     #[serde(rename = "expectedSourceIndex")]
-    expected_source_index: i64,
+    pub(crate) expected_source_index: i64,
     #[serde(rename = "expectedContains")]
     expected_contains: String,
-    sources: Vec<Source>,
-    filters: Filters,
+    pub(crate) sources: Vec<Source>,
+    pub(crate) filters: Filters,
 }
 
 #[derive(Deserialize)]
-struct Source {
-    name: String,
+pub(crate) struct Source {
+    pub(crate) name: String,
     #[serde(rename = "dayKey")]
-    day_key: String,
-    text: String,
+    pub(crate) day_key: String,
+    pub(crate) text: String,
 }
 
 #[derive(Deserialize)]
-struct Filters {
+pub(crate) struct Filters {
     #[serde(rename = "fromDayKey")]
-    from_day_key: Option<String>,
+    pub(crate) from_day_key: Option<String>,
     #[serde(rename = "toDayKey")]
-    to_day_key: Option<String>,
+    pub(crate) to_day_key: Option<String>,
 }
 
 /// 分块统计：字符数分布 + 块正文（`DIARY_DUMP_CHUNKS` 设了就写文件，
@@ -81,19 +82,20 @@ struct ChunkStats {
     pieces_per_chunk: Vec<usize>,
 }
 
-struct CaseOutcome {
-    category: String,
+pub(crate) struct CaseOutcome {
+    pub(crate) category: String,
     /// 期望来源第一次出现的位置（1 起）；没命中是 None。
-    hit_rank: Option<usize>,
+    pub(crate) hit_rank: Option<usize>,
     /// 这次查询一共命中了几个不同来源——用来看「一份长材料是不是占满了结果」。
-    matched_sources: usize,
+    pub(crate) matched_sources: usize,
     /// 返回的命中总数（含同一来源的多个块）。
-    hits: usize,
-    elapsed_ms: f64,
-    warnings: Vec<String>,
+    pub(crate) hits: usize,
+    pub(crate) elapsed_ms: f64,
+    pub(crate) warnings: Vec<String>,
 }
 
-pub fn run() -> Result<()> {
+/// 读质量集并做结构性校验。关键词与语义两趟用同一份。
+pub(crate) fn load() -> Result<QualitySet> {
     let path = quality_set_path();
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("读不到质量集：{}", path.display()))?;
@@ -102,8 +104,13 @@ pub fn run() -> Result<()> {
     if set.version != 1 {
         bail!("质量集版本是 {}，这个探针只认 1", set.version);
     }
+    println!("检索质量集：{}", quality_set_path().display());
+    Ok(set)
+}
 
-    println!("检索质量集：{}", path.display());
+pub fn run() -> Result<()> {
+    let set = load()?;
+
     println!("===========================================");
     println!("共 {} 条 case（关键词模式，取前 {TOP_K} 条算召回）\n", set.cases.len());
 
@@ -113,39 +120,31 @@ pub fn run() -> Result<()> {
         outcomes.push(run_case(case, &mut chunk_stats)?);
     }
 
-    report(&set, &outcomes)?;
+    report(&set, &outcomes, "关键词")?;
     report_chunking(&chunk_stats);
     dump_chunks(&chunk_stats)?;
     Ok(())
 }
 
-fn run_case(case: &Case, chunk_stats: &mut ChunkStats) -> Result<CaseOutcome> {
-    let mut warnings = Vec::new();
-
-    // 结构性检查：标注本身必须自洽，否则数字没有意义。
-    let expected_index = case.expected_source_index;
-    if expected_index >= 0 {
-        let index = expected_index as usize;
-        if index >= case.sources.len() {
-            bail!("case {}：expectedSourceIndex 越界", case.id);
-        }
-        if !case.sources[index].text.contains(&case.expected_contains) {
-            bail!(
-                "case {}：expectedContains 不在期望来源的正文里（标注错了）",
-                case.id
-            );
-        }
-    }
-
-    // 每个 case 一个独立的内存库（本 case 的语料不与其他 case 混在一起）。
+/// 一条 case 的独立资料库：导入所有来源并提取。返回 `(core, source_ids, dir)`。
+///
+/// 调用方负责在结束时删掉 `dir`。`file_backed` 为 true 时落一个真库文件——
+/// 量测表占用（dbstat / `chunk_vectors` 的字节数）必须有一个能另外打开的库。
+pub(crate) fn seed_case(
+    case: &Case,
+    file_backed: bool,
+) -> Result<(Core, Vec<String>, std::path::PathBuf)> {
     let dir = std::env::temp_dir().join(format!("diary_quality_{}_{}", std::process::id(), case.id));
     if dir.exists() {
         std::fs::remove_dir_all(&dir).ok();
     }
     std::fs::create_dir_all(&dir)?;
-    let outcome = (|| -> Result<CaseOutcome> {
-        let mut core = Core::open_in_memory_at(&dir)?;
-        let build_start = Instant::now();
+    let seeded = (|| -> Result<(Core, Vec<String>)> {
+        let mut core = if file_backed {
+            Core::open(dir.join("library.sqlite"))?
+        } else {
+            Core::open_in_memory_at(&dir)?
+        };
         let mut source_ids = Vec::new();
         for (index, source) in case.sources.iter().enumerate() {
             let day = NaiveDate::parse_from_str(&source.day_key, "%Y-%m-%d")
@@ -190,6 +189,41 @@ fn run_case(case: &Case, chunk_stats: &mut ChunkStats) -> Result<CaseOutcome> {
             core.extract_source(&source_id)?;
             source_ids.push(source_id);
         }
+        Ok((core, source_ids))
+    })();
+    match seeded {
+        Ok((core, source_ids)) => Ok((core, source_ids, dir)),
+        Err(error) => {
+            std::fs::remove_dir_all(&dir).ok();
+            Err(error)
+        }
+    }
+}
+
+fn run_case(case: &Case, chunk_stats: &mut ChunkStats) -> Result<CaseOutcome> {
+    let warnings = Vec::new();
+
+    // 结构性检查：标注本身必须自洽，否则数字没有意义。
+    let expected_index = case.expected_source_index;
+    if expected_index >= 0 {
+        let index = expected_index as usize;
+        if index >= case.sources.len() {
+            bail!("case {}：expectedSourceIndex 越界", case.id);
+        }
+        if !case.sources[index].text.contains(&case.expected_contains) {
+            bail!(
+                "case {}：expectedContains 不在期望来源的正文里（标注错了）",
+                case.id
+            );
+        }
+    }
+
+    // 每个 case 一个独立资料库（本 case 的语料不与其他 case 混在一起）。
+    // 关键词这一趟用内存库：省掉文件写盘，量的是检索本身。
+    let (mut core, source_ids, dir) = seed_case(case, false)?;
+    let warnings_outer: Vec<String> = warnings;
+    let outcome = (|| -> Result<CaseOutcome> {
+        let mut warnings = warnings_outer;
 
         // 分块统计（B3c-1 冻结的规则）：**按打包路径**跑——同一 case 的短篇可能被
         // 合进同一块，所以统计要按整份 case 的篇来算，不能逐来源算。
@@ -208,7 +242,6 @@ fn run_case(case: &Case, chunk_stats: &mut ChunkStats) -> Result<CaseOutcome> {
             chunk_stats.pieces_per_chunk.push(chunk.spans.len());
             chunk_stats.texts.push(chunk.text);
         }
-        let _build_ms = build_start.elapsed().as_secs_f64() * 1000.0;
 
         let request = SearchRequest {
             query: case.query.clone(),
@@ -267,7 +300,9 @@ fn run_case(case: &Case, chunk_stats: &mut ChunkStats) -> Result<CaseOutcome> {
     outcome
 }
 
-fn report(set: &QualitySet, outcomes: &[CaseOutcome]) -> Result<()> {
+/// 按类别报召回 / MRR / 延迟。`label` 是「关键词」或「语义」，让两趟的输出不会
+/// 被看混。
+pub(crate) fn report(set: &QualitySet, outcomes: &[CaseOutcome], label: &str) -> Result<()> {
     // 按类别聚合：每类各报各的，避免「平均一下看不出问题」。
     let mut by_category: BTreeMap<&str, Vec<&CaseOutcome>> = BTreeMap::new();
     for outcome in outcomes {
@@ -350,7 +385,7 @@ fn report(set: &QualitySet, outcomes: &[CaseOutcome]) -> Result<()> {
             .sum::<f64>()
             / count;
         println!(
-            "\n关键词一路合计：R@1 {:.0}% · R@{TOP_K} {:.0}% · MRR {:.3}（{} 条可回答 case）",
+            "\n{label}一路合计：R@1 {:.0}% · R@{TOP_K} {:.0}% · MRR {:.3}（{} 条可回答 case）",
             r1 * 100.0,
             r10 * 100.0,
             mrr,
@@ -436,7 +471,7 @@ fn dump_chunks(stats: &ChunkStats) -> Result<()> {
     Ok(())
 }
 
-fn median_ms(mut values: Vec<f64>) -> f64 {
+pub(crate) fn median_ms(mut values: Vec<f64>) -> f64 {
     if values.is_empty() {
         return 0.0;
     }

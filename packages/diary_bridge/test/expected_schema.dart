@@ -1,10 +1,10 @@
 /// 核心的 schema 版本，**两个端到端测试共用这一处**。
 ///
 /// 为什么值得单独放一个文件：这两个测试原来各写各的字面量，一次 schema 升级
-/// （v5 → v6 索引代次 → v7 记录文字进索引）就漏改了一处——`main` 因此红了两天，
-/// 而且是在别人的 PR 上先暴露出来（CI 测的是 PR 与 main 的合并树）。
+/// （v5 → v6 索引代次 → v7 记录文字进索引 → v8 块与换代表）就漏改了一处——`main`
+/// 因此红了两天，而且是在别人的 PR 上先暴露出来（CI 测的是 PR 与 main 的合并树）。
 /// 以后 `crates/diary_core/src/schema.rs` 的 `SCHEMA_VERSION` 变了，只改这里。
 ///
 /// 为什么不干脆写成「大于等于某个数」：这条断言的意义是「桥接报出来的版本与核心
 /// 真的一致」，放松成范围就测不到「升级了但桥接没跟上」这类问题。
-const int expectedDataSchemaVersion = 7;
+const int expectedDataSchemaVersion = 8;
