@@ -14,20 +14,26 @@ class RevisionApi extends MockDiaryApi {
   int? receivedRevision;
   String? receivedOperationId;
   bool saveFails = false;
+  bool noCurrentExtraction = false;
+  Object? openFailure;
+  Object? saveFailure;
   Completer<SourceRevision>? delayedSave;
 
   @override
-  Future<ExtractedContent?> extractedContent(String sourceId) async =>
-      ExtractedContent(
-        id: 'extracted',
-        sourceId: sourceId,
-        sourceRevisionId: 'revision',
-        extractorId: 'text',
-        extractorVersion: '1',
-        status: ProcessingStatus.ready,
-        coverage: Coverage.complete,
-        text: current,
-      );
+  Future<ExtractedContent?> extractedContent(String sourceId) async {
+    if (openFailure != null) throw openFailure!;
+    if (noCurrentExtraction) return null;
+    return ExtractedContent(
+      id: 'extracted',
+      sourceId: sourceId,
+      sourceRevisionId: 'revision',
+      extractorId: 'text',
+      extractorVersion: '1',
+      status: ProcessingStatus.ready,
+      coverage: Coverage.complete,
+      text: current,
+    );
+  }
 
   @override
   Future<SourceRevision?> previousSourceRevision(String sourceId) async =>
@@ -67,6 +73,7 @@ class RevisionApi extends MockDiaryApi {
     receivedRevision = expectedRevision;
     receivedOperationId = operationId;
     if (saveFails) throw StateError('temporary failure');
+    if (saveFailure != null) throw saveFailure!;
     if (delayedSave != null) return delayedSave!.future;
     previous = current;
     current = text;
@@ -119,6 +126,80 @@ void main() {
     expect(await controller.save('新版'), RevisionSaveResult.saved);
     expect(api.receivedOperationId, operationId);
     expect(controller.currentText, '新版');
+    controller.dispose();
+  });
+
+  test(
+    'a failed save with changed text cannot mint a new operation ID',
+    () async {
+      final api = RevisionApi()..saveFails = true;
+      final controller = RevisionController(api);
+      await controller.open(
+        sourceId: 'source',
+        captureId: 'capture',
+        captureRevision: 4,
+      );
+      expect(await controller.save('新版'), RevisionSaveResult.failed);
+      final operationId = api.receivedOperationId;
+      api.saveFails = false;
+      expect(await controller.save('又改一版'), RevisionSaveResult.failed);
+      expect(api.receivedOperationId, operationId);
+      expect(controller.error, contains('重新打开'));
+      controller.dispose();
+    },
+  );
+
+  test(
+    'revision conflict blocks retries until the source is reopened',
+    () async {
+      final api = RevisionApi()
+        ..saveFailure = const DiaryException(
+          code: DiaryErrorCode.revisionConflict,
+          message: 'stale',
+        );
+      final controller = RevisionController(api);
+      await controller.open(
+        sourceId: 'source',
+        captureId: 'capture',
+        captureRevision: 4,
+      );
+      expect(await controller.save('新版'), RevisionSaveResult.failed);
+      final operationId = api.receivedOperationId;
+      api.saveFailure = null;
+      expect(await controller.save('新版'), RevisionSaveResult.failed);
+      expect(api.receivedOperationId, operationId);
+      expect(controller.error, contains('版本'));
+      controller.dispose();
+    },
+  );
+
+  test('an unextracted current revision never displays the old text', () async {
+    final api = RevisionApi()
+      ..previous = '旧正文'
+      ..noCurrentExtraction = true;
+    final controller = RevisionController(api);
+    await controller.open(
+      sourceId: 'source',
+      captureId: 'capture',
+      captureRevision: 4,
+      initialText: '旧正文',
+    );
+    expect(controller.currentText, isNull);
+    expect(controller.previousText, '旧正文');
+    expect(controller.canEdit, isFalse);
+    expect(controller.indexWarning, contains('未完成提取'));
+    controller.dispose();
+  });
+
+  test('open shows a safe error message without exception internals', () async {
+    final api = RevisionApi()
+      ..openFailure = const DiaryException(
+        code: DiaryErrorCode.invalidState,
+        message: '正文尚未就绪',
+      );
+    final controller = RevisionController(api);
+    await controller.open(sourceId: 'source');
+    expect(controller.error, '正文尚未就绪');
     controller.dispose();
   });
 

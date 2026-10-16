@@ -2213,6 +2213,14 @@ class _ExperienceShellState extends State<ExperienceShell>
                 ),
             ],
           ),
+          if (_revisionView != '正文' &&
+              revisions.previousOccurredAt != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              '上一版 · ${_dateLabel(revisions.previousOccurredAt!.toLocal())}',
+              style: const TextStyle(color: SketchColors.muted, fontSize: 13),
+            ),
+          ],
           const SizedBox(height: 18),
           if (_editingRevision) ...[
             SketchFrame(
@@ -2273,13 +2281,13 @@ class _ExperienceShellState extends State<ExperienceShell>
             ),
           ] else if (_revisionView == '看改了什么' && previous != null)
             _revisionDiffCard(previous, current)
-          else if (_revisionView == '看改了什么' && revisions.previousIsAsset)
+          else if (_revisionView == '看改了什么' && previous == null)
             _notice(
               revisions.previousLoading
                   ? '正在读取修改前的原件文字。'
                   : '原件文字暂时无法展示，点「看改了什么」重试。',
             )
-          else if (_revisionView == '看原正文' && revisions.previousIsAsset)
+          else if (_revisionView == '看原正文' && previous == null)
             _notice(
               revisions.previousLoading
                   ? '正在读取修改前的原件文字。'
@@ -2289,7 +2297,7 @@ class _ExperienceShellState extends State<ExperienceShell>
             SketchFrame(
               padding: const EdgeInsets.all(27),
               child: Text(
-                _revisionView == '看原正文' ? (previous ?? current) : current,
+                _revisionView == '看原正文' ? previous! : current,
                 style: const TextStyle(
                   color: SketchColors.text,
                   fontSize: 17,

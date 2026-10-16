@@ -26,6 +26,9 @@ class RevisionController extends ChangeNotifier {
   String? _pendingText;
   String? _pendingOperationId;
   SourceRevision? _previousRevision;
+  bool _requiresReopen = false;
+
+  DateTime? get previousOccurredAt => _previousRevision?.occurredAt;
 
   bool get canEdit =>
       captureId != null &&
@@ -39,10 +42,9 @@ class RevisionController extends ChangeNotifier {
     String? initialText,
   }) async {
     final request = ++_request;
-    if (this.sourceId != sourceId) {
-      _pendingText = null;
-      _pendingOperationId = null;
-    }
+    _pendingText = null;
+    _pendingOperationId = null;
+    _requiresReopen = false;
     this.sourceId = sourceId;
     this.captureId = captureId;
     this.captureRevision = captureRevision;
@@ -74,7 +76,7 @@ class RevisionController extends ChangeNotifier {
       }
     } catch (failure) {
       if (request != _request) return;
-      error = failure.toString();
+      error = failure is DiaryException ? failure.message : '暂时无法读取正文，请稍后重试。';
     } finally {
       if (request == _request) {
         loading = false;
@@ -104,9 +106,11 @@ class RevisionController extends ChangeNotifier {
       if (previousText == null) {
         previousError = '修改前的原件没有可读取的文字。';
       }
-    } catch (_) {
+    } catch (failure) {
       if (request == _request) {
-        previousError = '暂时无法读取修改前的原件，请稍后重试。';
+        previousError = failure is DiaryException
+            ? '暂时无法读取修改前的原件：${failure.message}'
+            : '暂时无法读取修改前的原件，请稍后重试。';
       }
     } finally {
       if (request == _request) {
@@ -129,6 +133,16 @@ class RevisionController extends ChangeNotifier {
       return RevisionSaveResult.failed;
     }
     if (text == oldText) return RevisionSaveResult.unchanged;
+    if (_requiresReopen) {
+      error = '记录版本已变化。文字仍在编辑框中，请先复制，再返回重新打开这条记录。';
+      notifyListeners();
+      return RevisionSaveResult.failed;
+    }
+    if (_pendingText != null && _pendingText != text) {
+      error = '上次保存结果尚未确认。文字仍在编辑框中；请先复制，再返回重新打开这条记录后修改。';
+      notifyListeners();
+      return RevisionSaveResult.failed;
+    }
     final request = _request;
     saving = true;
     error = null;
@@ -147,6 +161,12 @@ class RevisionController extends ChangeNotifier {
         expectedRevision: expectedRevision,
         operationId: operationId,
       );
+      SourceRevision? previousRevision;
+      try {
+        previousRevision = await api.previousSourceRevision(source);
+      } catch (_) {
+        // The durable edit has already succeeded; metadata can be refreshed later.
+      }
       if (request != _request) return RevisionSaveResult.saved;
       _pendingText = null;
       _pendingOperationId = null;
@@ -154,6 +174,7 @@ class RevisionController extends ChangeNotifier {
       previousText = oldText;
       hasPrevious = true;
       previousIsAsset = false;
+      _previousRevision = previousRevision;
       captureRevision = expectedRevision + 1;
       notifyListeners();
       // The core extracts the new revision during reviseText. A second extract
@@ -162,7 +183,14 @@ class RevisionController extends ChangeNotifier {
       return RevisionSaveResult.saved;
     } catch (failure) {
       if (request == _request) {
-        error = '保存尚未确认，请重试。若内容已写入，重试会沿用同一次操作。';
+        if (failure is DiaryException &&
+            (failure.code == DiaryErrorCode.revisionConflict ||
+                failure.code == DiaryErrorCode.idempotencyConflict)) {
+          _requiresReopen = true;
+          error = '记录版本发生冲突。文字仍在编辑框中，请先复制，再返回重新打开这条记录。';
+        } else {
+          error = '保存结果尚未确认。保持文字不变重试会沿用同一次操作；若要修改文字，请先复制，再返回重新打开这条记录。';
+        }
       }
       return RevisionSaveResult.failed;
     } finally {
