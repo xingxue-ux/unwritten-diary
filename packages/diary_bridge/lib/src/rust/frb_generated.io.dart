@@ -127,6 +127,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MatchedBy dco_decode_box_autoadd_matched_by(dynamic raw);
 
   @protected
+  OrganizeRunInfo dco_decode_box_autoadd_organize_run_info(dynamic raw);
+
+  @protected
+  OrganizeSettings dco_decode_box_autoadd_organize_settings(dynamic raw);
+
+  @protected
   ProcessingStatus dco_decode_box_autoadd_processing_status(dynamic raw);
 
   @protected
@@ -295,6 +301,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<MatchedBy> dco_decode_list_matched_by(dynamic raw);
 
   @protected
+  List<OrganizePendingDay> dco_decode_list_organize_pending_day(dynamic raw);
+
+  @protected
+  List<OrganizeSkippedDay> dco_decode_list_organize_skipped_day(dynamic raw);
+
+  @protected
+  List<OrganizeTemplate> dco_decode_list_organize_template(dynamic raw);
+
+  @protected
+  List<OrganizeTemplateParam> dco_decode_list_organize_template_param(
+    dynamic raw,
+  );
+
+  @protected
   Float64List dco_decode_list_prim_f_64_strict(dynamic raw);
 
   @protected
@@ -395,6 +415,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MatchedBy? dco_decode_opt_box_autoadd_matched_by(dynamic raw);
 
   @protected
+  OrganizeRunInfo? dco_decode_opt_box_autoadd_organize_run_info(dynamic raw);
+
+  @protected
   ProcessingStatus? dco_decode_opt_box_autoadd_processing_status(dynamic raw);
 
   @protected
@@ -433,6 +456,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<JobState>? dco_decode_opt_list_job_state(dynamic raw);
+
+  @protected
+  OrganizePendingDay dco_decode_organize_pending_day(dynamic raw);
+
+  @protected
+  OrganizeQuota dco_decode_organize_quota(dynamic raw);
+
+  @protected
+  OrganizeRunInfo dco_decode_organize_run_info(dynamic raw);
+
+  @protected
+  OrganizeSettings dco_decode_organize_settings(dynamic raw);
+
+  @protected
+  OrganizeSkippedDay dco_decode_organize_skipped_day(dynamic raw);
+
+  @protected
+  OrganizeStatus dco_decode_organize_status(dynamic raw);
+
+  @protected
+  OrganizeTemplate dco_decode_organize_template(dynamic raw);
+
+  @protected
+  OrganizeTemplateParam dco_decode_organize_template_param(dynamic raw);
 
   @protected
   ProcessingStatus dco_decode_processing_status(dynamic raw);
@@ -641,6 +688,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MatchedBy sse_decode_box_autoadd_matched_by(SseDeserializer deserializer);
 
   @protected
+  OrganizeRunInfo sse_decode_box_autoadd_organize_run_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  OrganizeSettings sse_decode_box_autoadd_organize_settings(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ProcessingStatus sse_decode_box_autoadd_processing_status(
     SseDeserializer deserializer,
   );
@@ -835,6 +892,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<MatchedBy> sse_decode_list_matched_by(SseDeserializer deserializer);
 
   @protected
+  List<OrganizePendingDay> sse_decode_list_organize_pending_day(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<OrganizeSkippedDay> sse_decode_list_organize_skipped_day(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<OrganizeTemplate> sse_decode_list_organize_template(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<OrganizeTemplateParam> sse_decode_list_organize_template_param(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Float64List sse_decode_list_prim_f_64_strict(SseDeserializer deserializer);
 
   @protected
@@ -963,6 +1040,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  OrganizeRunInfo? sse_decode_opt_box_autoadd_organize_run_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ProcessingStatus? sse_decode_opt_box_autoadd_processing_status(
     SseDeserializer deserializer,
   );
@@ -1015,6 +1097,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<JobState>? sse_decode_opt_list_job_state(SseDeserializer deserializer);
+
+  @protected
+  OrganizePendingDay sse_decode_organize_pending_day(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  OrganizeQuota sse_decode_organize_quota(SseDeserializer deserializer);
+
+  @protected
+  OrganizeRunInfo sse_decode_organize_run_info(SseDeserializer deserializer);
+
+  @protected
+  OrganizeSettings sse_decode_organize_settings(SseDeserializer deserializer);
+
+  @protected
+  OrganizeSkippedDay sse_decode_organize_skipped_day(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  OrganizeStatus sse_decode_organize_status(SseDeserializer deserializer);
+
+  @protected
+  OrganizeTemplate sse_decode_organize_template(SseDeserializer deserializer);
+
+  @protected
+  OrganizeTemplateParam sse_decode_organize_template_param(
+    SseDeserializer deserializer,
+  );
 
   @protected
   ProcessingStatus sse_decode_processing_status(SseDeserializer deserializer);
@@ -1274,6 +1386,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_organize_run_info(
+    OrganizeRunInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_organize_settings(
+    OrganizeSettings self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_processing_status(
     ProcessingStatus self,
     SseSerializer serializer,
@@ -1517,6 +1641,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_organize_pending_day(
+    List<OrganizePendingDay> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_organize_skipped_day(
+    List<OrganizeSkippedDay> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_organize_template(
+    List<OrganizeTemplate> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_organize_template_param(
+    List<OrganizeTemplateParam> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_prim_f_64_strict(
     Float64List self,
     SseSerializer serializer,
@@ -1691,6 +1839,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_organize_run_info(
+    OrganizeRunInfo? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_processing_status(
     ProcessingStatus? self,
     SseSerializer serializer,
@@ -1753,6 +1907,51 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_list_job_state(
     List<JobState>? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_organize_pending_day(
+    OrganizePendingDay self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_organize_quota(OrganizeQuota self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_organize_run_info(
+    OrganizeRunInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_organize_settings(
+    OrganizeSettings self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_organize_skipped_day(
+    OrganizeSkippedDay self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_organize_status(
+    OrganizeStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_organize_template(
+    OrganizeTemplate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_organize_template_param(
+    OrganizeTemplateParam self,
     SseSerializer serializer,
   );
 
