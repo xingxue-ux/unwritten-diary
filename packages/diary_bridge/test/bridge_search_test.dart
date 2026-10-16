@@ -191,6 +191,21 @@ void main() {
     );
   });
 
+  test('升级接口在桥上：非混合会话明确拒绝（#69）', () async {
+    final started = await session.startSearch(
+      request: buildRequest('妈妈', 2),
+      queryRevision: 12,
+    );
+    // 只有 hybrid 会话有「第二阶段」；keyword 会话要求升级是 invalid_state，
+    // 不许静默返回一份「融合结果」。
+    await expectLater(
+      session.upgradeSearch(sessionId: started.sessionId),
+      throwsA(
+        isA<BridgeError>().having((e) => e.code, 'code', 'invalid_state'),
+      ),
+    );
+  });
+
   test('用户自己写的文字也能被搜到（记录文字命中）', () async {
     // 这段文字只在这条记录里出现：M2 之前索引只有派生片段，它一条都搜不到。
     final draft = await session.createDraft(

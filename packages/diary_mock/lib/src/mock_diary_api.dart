@@ -201,6 +201,22 @@ class MockDiaryApi implements DiaryApi {
     );
   }
 
+  /// Mock **没有**检索会话，也**没有**任何语义/融合能力（本类只覆盖 F0 记录路径，
+  /// 连 `search.start` 都还没接）。所以这里明确拒绝，而不是照
+  /// [DiaryApi.upgradeSearch] 的默认实现去读会话快照——`searchSnapshot` 在 Mock
+  /// 里同样没有实现，没有会话可以交出来。
+  ///
+  /// 关键取舍：宁可报错，也**绝不**返回一份编造的 `hybrid_ready`，或者替一个不
+  /// 存在的会话编一份 `keyword_ready` 快照。能力清单（`capabilities`）同样不列
+  /// `search.upgrade`：没接的能力不声明。
+  @override
+  Future<SearchSnapshot> upgradeSearch({required String sessionId}) async {
+    throw UnsupportedError(
+      'MockDiaryApi 没有检索会话（search.start 尚未在 Mock 中实现），'
+      'upgradeSearch 交不出真实快照，也不会伪造 hybrid_ready。',
+    );
+  }
+
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
     '${invocation.memberName} 尚未在 F0 Mock 中实现，请按任务书扩展。',

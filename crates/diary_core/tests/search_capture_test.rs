@@ -607,7 +607,7 @@ fn v6_library_migrates_and_backfills_capture_text() {
 
     let capture_id = {
         let mut core = Core::open(&path).unwrap();
-        assert_eq!(core.schema_version().unwrap(), 7);
+        assert_eq!(core.schema_version().unwrap(), 8);
         let capture_id = write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "op1");
         // 派生内容那一路也要有一条，验证升级不碰 v5 的索引。
         import_and_extract(&mut core, &capture_id, "天气.txt", "今天天气不错。\n", "op-mat");
@@ -616,9 +616,16 @@ fn v6_library_migrates_and_backfills_capture_text() {
 
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
+        // 「退回 v6」要把它之后的版本建的东西都拿掉，否则迁移会重复建表
+        // （v7 的两张索引表、v8 的块与换代表）。v8 的表没有外键指向 v5–v7，
+        // 但先删子表更稳。
         conn.execute_batch(
             "DROP TABLE search_capture_grams;
              DROP TABLE search_capture_docs;
+             DROP TABLE chunk_vectors;
+             DROP TABLE chunk_spans;
+             DROP TABLE text_chunks;
+             DROP TABLE index_meta;
              UPDATE schema_migrations SET version = 6;
              PRAGMA user_version = 6;",
         )
@@ -630,7 +637,11 @@ fn v6_library_migrates_and_backfills_capture_text() {
     }
 
     let mut core = Core::open(&path).unwrap();
-    assert_eq!(core.schema_version().unwrap(), 7, "打开时要升到 v7");
+    assert_eq!(
+        core.schema_version().unwrap(),
+        8,
+        "打开时要升到最新（这里的重点是 v7 的回填；v8 只是建块表，不碰这些数据）"
+    );
 
     // 记录文字被回填，能直接搜到。
     let snapshot = search(&mut core, "妈妈");

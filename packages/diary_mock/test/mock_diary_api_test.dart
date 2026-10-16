@@ -76,6 +76,23 @@ void main() {
     expect((await save()).revision, 2); // 新建就是 1，保存后 +1
   });
 
+  test('升级检索不伪造 hybrid_ready（Mock 没有检索会话）', () async {
+    final api = MockDiaryApi(clock: () => now);
+
+    // Mock 只覆盖 F0 记录路径：它没有 `search.start` 建出来的会话，也没有任何
+    // 语义/融合能力。所以升级只能如实拒绝——绝不会返回一份编造的 hybrid_ready，
+    // 也不会替不存在的会话编一份 keyword_ready 快照。断言必须反映这个真实行为。
+    await expectLater(
+      api.upgradeSearch(sessionId: 'mock-session'),
+      throwsA(isA<UnsupportedError>()),
+    );
+
+    // 能力声明同样是诚实的：没接的检索能力不出现在 capabilities 里。
+    final capabilities = (await api.snapshot()).coreInfo.capabilities;
+    expect(capabilities, isNot(contains('search.upgrade')));
+    expect(capabilities, isNot(contains('search.start')));
+  });
+
   test('索引重建在 Mock 里明确拒绝，不伪造成功', () {
     // Mock 没有队列、没有索引，也不写盘。它做不到 `indexes.rebuild` 就如实报未实现，
     // 绝不返回一个假的 jobId 让界面以为排上了。`noSuchMethod` 是同步抛的，所以用

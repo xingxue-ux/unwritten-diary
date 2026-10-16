@@ -1,0 +1,2541 @@
+//! B3c-2（后半）：真实向量接入、换代、语义检索。
+//!
+//! 这一片的验收分两半：
+//!
+//! - **CI 里能跑的那一半**（这个文件里除 `#[ignore]` 之外的全部）：没有模型、没有
+//!   ORT 动态库。退化路径（关键词照旧、`Semantic` 空结果 + 警告、`build_semantic_index`
+//!   诚实报错且不改状态）走真环境；换代与检索逻辑用**注入的确定性 stub 嵌入器**
+//!   跑通——否则「开代次 → 写向量 → 原子切换 → 没变的块复用向量」这条路上没有一行
+//!   代码能在 CI 里被验到；
+//! - **需要真模型的那一半**：`#[ignore]` 标出，复现命令写在理由里。
+//!
+//! 风格照 `text_chunks_test.rs`：真库、真导入、断言带 reason。
+
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+use chrono::{DateTime, TimeZone, Utc};
+use diary_core::{
+    Core, CreateDraftInput, EmbedOptions, Embedder, ImportManifest, ImportOrigin, ImportRequest,
+    MatchedBy, SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
+    SourceKind,
+};
+use rusqlite::params;
+use sha2::{Digest, Sha256};
+
+// ------------------------------------------------------------ 测试用 stub 嵌入器
+
+/// 调用次数：用来钉住「没变的块不重复算」。
+#[derive(Default)]
+struct Counters {
+    documents: AtomicUsize,
+    queries: AtomicUsize,
+}
+
+/// 确定性 stub：命中了规则就用规则给的向量，否则把文本哈希成向量。
+///
+/// 用规则（而不是纯哈希）是为了让测试**能控制相似度**：把查询与某篇正文都映射到
+/// 同一个单位向量，它们的余弦就是 1。纯哈希没有语义，排序无从断言。
+struct StubEmbedder {
+    model_version: String,
+    dims: usize,
+    counters: Arc<Counters>,
+    rules: Vec<(&'static str, Vec<f32>)>,
+    /// 查询侧单独一组规则；为空表示与 `rules` 同一组（B3c-2 的用例都是这个口径）。
+    ///
+    /// 混合检索（#51）要能构造「关键词只中 A、语义只中 C」：两路边界的向量必须分开
+    /// 控制，否则查询里出现的关键词必然也出现在 A 的正文里（关键词那一路是整串子串
+    /// 匹配），一组规则会让 A 同时变成语义命中。
+    query_rules: Vec<(&'static str, Vec<f32>)>,
+}
+
+impl StubEmbedder {
+    fn new(model_version: &str, counters: &Arc<Counters>, rules: Vec<(&'static str, Vec<f32>)>) -> Self {
+        Self::with_dims(model_version, 512, counters, rules)
+    }
+
+    /// 指定维度的桩：用来构造「换个模型连维度都不同」的场景（回归 #58）。
+    fn with_dims(
+        model_version: &str,
+        dims: usize,
+        counters: &Arc<Counters>,
+        rules: Vec<(&'static str, Vec<f32>)>,
+    ) -> Self {
+        Self {
+            model_version: model_version.to_owned(),
+            dims,
+            counters: Arc::clone(counters),
+            rules,
+            query_rules: Vec::new(),
+        }
+    }
+
+    fn with_query_rules(
+        model_version: &str,
+        counters: &Arc<Counters>,
+        rules: Vec<(&'static str, Vec<f32>)>,
+        query_rules: Vec<(&'static str, Vec<f32>)>,
+    ) -> Self {
+        Self {
+            model_version: model_version.to_owned(),
+            dims: 512,
+            counters: Arc::clone(counters),
+            rules,
+            query_rules,
+        }
+    }
+
+    fn vector_for(&self, text: &str, rules: &[(&'static str, Vec<f32>)]) -> Vec<f32> {
+        for (needle, vector) in rules {
+            if text.contains(needle) {
+                return vector.clone();
+            }
+        }
+        diary_core::text_hash_vector(text, self.dims)
+    }
+}
+
+impl Embedder for StubEmbedder {
+    fn model_version(&self) -> &str {
+        &self.model_version
+    }
+
+    fn dims(&self) -> usize {
+        self.dims
+    }
+
+    fn options(&self) -> EmbedOptions {
+        EmbedOptions::default()
+    }
+
+    fn embed_document(&self, text: &str) -> diary_core::Result<Vec<f32>> {
+        self.counters.documents.fetch_add(1, Ordering::SeqCst);
+        Ok(self.vector_for(text, &self.rules))
+    }
+
+    fn embed_query(&self, text: &str) -> diary_core::Result<Vec<f32>> {
+        self.counters.queries.fetch_add(1, Ordering::SeqCst);
+        let rules = if self.query_rules.is_empty() {
+            &self.rules
+        } else {
+            &self.query_rules
+        };
+        Ok(self.vector_for(text, rules))
+    }
+}
+
+/// 512 维的单位向量：只有第 `index` 位是 1。
+fn unit(index: usize) -> Vec<f32> {
+    unit_in(512, index)
+}
+
+/// 任意维度的单位向量（`index` 必须小于 `dims`）。
+fn unit_in(dims: usize, index: usize) -> Vec<f32> {
+    let mut vector = vec![0_f32; dims];
+    vector[index] = 1.0;
+    vector
+}
+
+fn stub(counters: &Arc<Counters>, rules: Vec<(&'static str, Vec<f32>)>) -> Box<dyn Embedder> {
+    Box::new(StubEmbedder::new("stub-embedder@000000000000", counters, rules))
+}
+
+/// 查询侧单独一组规则的 stub：用来构造「关键词只中 A、语义只中 B」这类两路边界。
+fn stub_split(
+    counters: &Arc<Counters>,
+    rules: Vec<(&'static str, Vec<f32>)>,
+    query_rules: Vec<(&'static str, Vec<f32>)>,
+) -> Box<dyn Embedder> {
+    Box::new(StubEmbedder::with_query_rules(
+        "stub-embedder@000000000000",
+        counters,
+        rules,
+        query_rules,
+    ))
+}
+
+// ------------------------------------------------------------ 通用工具
+
+fn sha_of(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+fn new_core(dir: &Path) -> Core {
+    Core::open(dir.join("library.sqlite")).unwrap()
+}
+
+fn at(year: i32, month: u32, day: u32) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(year, month, day, 4, 0, 0).unwrap()
+}
+
+fn save(core: &mut Core, capture_id: &str, text: &str, operation: &str) {
+    let revision = core.get_capture(capture_id).unwrap().revision;
+    core.save_draft(capture_id, text, revision, operation).unwrap();
+}
+
+fn write_capture(core: &mut Core, day: DateTime<Utc>, text: &str, operation: &str) -> String {
+    let capture_id = core
+        .create_draft(CreateDraftInput {
+            occurred_at: Some(day),
+            time_zone: "Asia/Shanghai",
+            utc_offset_minutes: 480,
+            operation_id: &format!("{operation}-create"),
+        })
+        .unwrap()
+        .id;
+    if !text.is_empty() {
+        save(core, &capture_id, text, &format!("{operation}-save"));
+    }
+    capture_id
+}
+
+fn import_and_extract(
+    core: &mut Core,
+    capture_id: &str,
+    name: &str,
+    text: &str,
+    operation: &str,
+) -> String {
+    let bytes = text.as_bytes();
+    let ticket = core
+        .prepare_import(ImportRequest {
+            capture_id,
+            display_name: name,
+            mime_hint: Some("text/plain"),
+            size_hint: Some(bytes.len() as i64),
+            origin: ImportOrigin::Picker,
+            operation_id: &format!("{operation}-prepare"),
+        })
+        .unwrap();
+    std::fs::write(&ticket.staging_ticket, bytes).unwrap();
+    core.finish_import(
+        &ticket.import_id,
+        &ticket.staging_ticket,
+        ImportManifest {
+            copied_bytes: bytes.len() as i64,
+            sha256: sha_of(bytes),
+            detected_mime: "text/plain".to_owned(),
+            original_name: name.to_owned(),
+        },
+    )
+    .unwrap();
+    let source_id = core
+        .get_capture(capture_id)
+        .unwrap()
+        .ordered_source_ids
+        .last()
+        .cloned()
+        .expect("导入的材料应当挂到记录上");
+    core.extract_source(&source_id).unwrap();
+    source_id
+}
+
+fn search_mode(core: &mut Core, query: &str, mode: SearchMode, page_size: i64) -> SearchSnapshot {
+    core.start_search(
+        SearchRequest {
+            query: query.to_owned(),
+            mode,
+            filters: SearchFilters::default(),
+            page_size,
+        },
+        1,
+    )
+    .unwrap()
+}
+
+/// 混合那一路的完整两步（#69）：`start_search(mode = hybrid)` 先只算关键词
+/// （`keyword_ready`），`upgrade_search_to_hybrid` 再融合（`hybrid_ready`）。
+/// 「要融合后的结果」的用例都走这里，与产品路径一致。
+fn hybrid_mode(core: &mut Core, query: &str, page_size: i64) -> SearchSnapshot {
+    let started = search_mode(core, query, SearchMode::Hybrid, page_size);
+    core.upgrade_search_to_hybrid(&started.session_id).unwrap()
+}
+
+fn open(path: &Path) -> rusqlite::Connection {
+    rusqlite::Connection::open(path).unwrap()
+}
+
+fn count(conn: &rusqlite::Connection, sql: &str, table: &str) -> i64 {
+    conn.query_row(sql, [], |row| row.get(0))
+        .unwrap_or_else(|error| panic!("查 {table} 的计数失败：{error}"))
+}
+
+fn hit_of<'a>(snapshot: &'a SearchSnapshot, group_id: &str) -> &'a SearchHit {
+    snapshot
+        .results
+        .iter()
+        .find(|hit| hit.group_id == group_id)
+        .unwrap_or_else(|| {
+            panic!(
+                "结果里没有 {group_id}：{:?}",
+                snapshot
+                    .results
+                    .iter()
+                    .map(|hit| (&hit.group_id, &hit.snippet))
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// 这个进程配了本地模型吗？配了就跳过「没有模型」的用例——CI 上没配，它们会跑。
+fn model_configured() -> bool {
+    std::env::var_os("DIARY_MODEL_DIR").is_some()
+        || std::env::var_os("DIARY_ORT_DYLIB").is_some()
+        || std::env::var_os("ORT_DYLIB_PATH").is_some()
+}
+
+fn skip_without_a_model(test: &str) -> bool {
+    if model_configured() {
+        eprintln!("跳过 {test}：这个进程配了本地模型，跑不到「没有模型」那条路");
+        true
+    } else {
+        false
+    }
+}
+
+// ------------------------------------------------------------ 退化路径（CI 就跑这条）
+
+/// 没有模型：关键词照旧，语义未就绪且**说得出原因**，`Semantic` 模式空结果 + 警告。
+#[test]
+fn without_a_model_keywords_keep_working_and_semantics_says_why() {
+    if skip_without_a_model("without_a_model_keywords_keep_working_and_semantics_says_why") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let a = write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    import_and_extract(&mut core, &a, "信.txt", "妈妈后来又写了一封信。\n", "opA-mat");
+
+    // 关键词那一路不受影响。
+    let keyword = search_mode(&mut core, "妈妈", SearchMode::Keyword, 20);
+    assert_eq!(keyword.results.len(), 2, "记录文字与派生片段各命中一条");
+
+    let status = core.index_status(None).unwrap();
+    assert!(!status.semantic_index_ready, "没有模型就没有生效代次");
+    assert_eq!(status.model_version, None, "没有生效代次就没有模型版本可报");
+    assert!(
+        status
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("还没有配置本地模型")),
+        "要说清是「没配」而不是含糊的「未就绪」：{:?}",
+        status.reasons
+    );
+
+    // 语义模式：空结果 + 明确警告，**不退化成关键词**。
+    let semantic = search_mode(&mut core, "妈妈", SearchMode::Semantic, 20);
+    assert!(
+        semantic.results.is_empty(),
+        "没有生效代次时语义必须空结果，不能拿关键词结果冒充：{:?}",
+        semantic.results
+    );
+    assert!(
+        semantic
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("语义索引还没有生效的代次")),
+        "要明确说语义为什么没有结果：{:?}",
+        semantic.warnings
+    );
+
+    // hybrid（#51/#69）：语义未就绪 → 第一阶段就**退化为关键词**，并且把原因明说出来；
+    // 退化不等于没有结果，result 与关键词那一路是同一批。阶段如实停在 keyword_ready。
+    let hybrid = search_mode(&mut core, "妈妈", SearchMode::Hybrid, 20);
+    assert_eq!(hybrid.phase, SearchPhase::KeywordReady, "混合的首屏只有一个阶段：关键词就绪");
+    assert_eq!(hybrid.results.len(), 2, "混合退化为关键词之后与关键词同一批结果");
+    assert!(
+        hybrid
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("混合检索退化为关键词")),
+        "退化必须明说，不许静默：{:?}",
+        hybrid.warnings
+    );
+    assert!(
+        hybrid
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("语义索引还没有生效的代次")),
+        "还要说清为什么退化：{:?}",
+        hybrid.warnings
+    );
+    assert!(
+        hybrid
+            .results
+            .iter()
+            .all(|hit| hit.matched_by == vec![MatchedBy::Keyword]),
+        "退化时 matchedBy 只有关键词，不许标成混合：{:?}",
+        hybrid
+            .results
+            .iter()
+            .map(|hit| &hit.matched_by)
+            .collect::<Vec<_>>()
+    );
+
+    // 升级也**不许**假装融合过：仍然 keyword_ready、仍然是那批关键词结果，
+    // 只是多一句「没有可融合的语义证据」。
+    let upgraded = core.upgrade_search_to_hybrid(&hybrid.session_id).unwrap();
+    assert_eq!(
+        upgraded.phase,
+        SearchPhase::KeywordReady,
+        "语义拿不出证据时升级绝不能声称 hybrid_ready"
+    );
+    assert_eq!(upgraded.results, hybrid.results, "结果仍是关键词那一路，一条不多一条不少");
+    assert!(
+        upgraded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("没有可融合的语义证据")),
+        "升级这一步要如实说清为什么没融合：{:?}",
+        upgraded.warnings
+    );
+    // 幂等：再升级一次给同一份快照，不重复算。
+    let again = core.upgrade_search_to_hybrid(&hybrid.session_id).unwrap();
+    assert_eq!(again, upgraded, "重复升级返回同一份快照");
+}
+
+/// 模型缺失时建语义索引：**诚实的错误、什么都不改**（连块都不重建）。
+#[test]
+fn building_without_a_model_errors_honestly_and_changes_nothing() {
+    if skip_without_a_model("building_without_a_model_errors_honestly_and_changes_nothing") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+
+    let error = core.build_semantic_index(None).unwrap_err();
+    assert_eq!(
+        error.code(),
+        diary_core::ErrorCode::InvalidState,
+        "模型缺失不是数据坏了，是当前状态不允许"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("DIARY_MODEL_DIR"),
+        "错误里要说清缺什么：{message}"
+    );
+
+    // 状态没被改：没有块、没有代次、没有向量。
+    let status = core.index_status(None).unwrap();
+    assert_eq!(status.total_chunks, 0, "失败时连块都不该重建");
+    assert_eq!(status.embedded_chunks, 0);
+    assert!(!status.semantic_index_ready);
+    let conn = open(&path);
+    let (active, building): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT active_generation, building_generation FROM index_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((active, building), (None, None), "失败不该留下半个代次");
+
+    // 关键词索引照旧可用；块也能单独重建（两条路互不影响）。
+    assert_eq!(search_mode(&mut core, "妈妈", SearchMode::Keyword, 20).results.len(), 1);
+    assert!(core.rebuild_text_chunks(None).unwrap() > 0);
+    assert!(core.build_semantic_index(None).is_err(), "仍然没有模型");
+    let conn = open(&path);
+    let (active, building): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT active_generation, building_generation FROM index_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((active, building), (None, None), "块建好了也不该动代次");
+}
+
+// ------------------------------------------------------------ 换代（stub 嵌入器）
+
+/// 开代次 → 写向量 → 原子切换 → 状态/计数正确；重建后**没变的块不重复算**。
+#[test]
+fn building_opens_a_generation_and_reuses_unchanged_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+
+    let first = core.build_semantic_index(None).unwrap();
+    assert_eq!(first.generation, 1, "第一代从 1 开始");
+    assert_eq!(first.total_chunks, 2, "两天各一块");
+    assert_eq!(first.embedded_chunks, 2, "两块都算了向量");
+    assert_eq!(first.reused_chunks, 0, "没有上一代可复用");
+    assert_eq!(counters.documents.load(Ordering::SeqCst), 2);
+
+    let status = core.index_status(None).unwrap();
+    assert!(status.semantic_index_ready, "生效代次覆盖了全部块");
+    assert_eq!(status.embedded_chunks, 2);
+    assert_eq!(
+        status.model_version.as_deref(),
+        Some("stub-embedder@000000000000"),
+        "状态里报的是生效代次那一批向量的真值"
+    );
+
+    let conn = open(&path);
+    let (active, building): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT active_generation, building_generation FROM index_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((active, building), (Some(1), None), "切换之后 building 要置空");
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM chunk_vectors", "chunk_vectors"),
+        2
+    );
+
+    // 内容没变再建一次：新代次，但向量是**复制**来的，一次都没重算。
+    let calls_before = counters.documents.load(Ordering::SeqCst);
+    let second = core.build_semantic_index(None).unwrap();
+    assert_eq!(second.generation, 2);
+    assert_eq!(second.reused_chunks, 2, "内容没变的块从上一代整批复制");
+    assert_eq!(second.embedded_chunks, 0, "没有一块需要重算");
+    assert_eq!(
+        counters.documents.load(Ordering::SeqCst),
+        calls_before,
+        "重建同一个库不该再调模型"
+    );
+    let conn = open(&path);
+    let (active, building): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT active_generation, building_generation FROM index_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((active, building), (Some(2), None));
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM chunk_vectors", "chunk_vectors"),
+        2,
+        "切换时清掉旧代次：存储不会每建一次就翻倍"
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation <> 2",
+            "chunk_vectors"
+        ),
+        0,
+        "只留生效代次"
+    );
+
+    // 改掉一天的正文：那一块换 id，只有它需要重算。
+    let capture_id = core
+        .get_capture(
+            &open(&path)
+                .query_row("SELECT id FROM captures ORDER BY day_key", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+        )
+        .map(|capture| capture.id)
+        .unwrap();
+    let revision = core.get_capture(&capture_id).unwrap().revision;
+    core.save_draft(&capture_id, "第二版：同事约我周末去爬山。", revision, "opA-2")
+        .unwrap();
+    let calls_before = counters.documents.load(Ordering::SeqCst);
+    let third = core.build_semantic_index(None).unwrap();
+    assert_eq!(third.generation, 3);
+    assert_eq!(third.total_chunks, 2, "还是两块");
+    assert_eq!(third.reused_chunks, 1, "没变的那一天复用");
+    assert_eq!(third.embedded_chunks, 1, "变了的块才重算");
+    assert_eq!(counters.documents.load(Ordering::SeqCst), calls_before + 1);
+    assert!(core.index_status(None).unwrap().semantic_index_ready);
+}
+
+/// 换了模型（`model_version` 变）必须**整批重算**，不能把新旧向量混在一张表里。
+#[test]
+fn a_new_model_version_forces_a_full_recompute() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    // 换成「另一个模型」：口径不一致，复用必须为 0。
+    core.set_embedder(Box::new(StubEmbedder::new(
+        "stub-embedder@ffffffffffff",
+        &counters,
+        vec![],
+    )));
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.generation, 2);
+    assert_eq!(report.reused_chunks, 0, "模型换了就不能复用旧向量");
+    assert_eq!(report.embedded_chunks, 2);
+    let conn = open(&path);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM chunk_vectors WHERE model_version = 'stub-embedder@ffffffffffff'",
+            "chunk_vectors"
+        ),
+        2
+    );
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM chunk_vectors", "chunk_vectors"),
+        2,
+        "旧模型的向量随换代清掉"
+    );
+    assert_eq!(
+        core.index_status(None).unwrap().model_version.as_deref(),
+        Some("stub-embedder@ffffffffffff")
+    );
+}
+
+/// 中断的换代：`building_generation` 留着，下一轮从它续跑，**没有半成品被激活**。
+#[test]
+fn an_interrupted_generation_resumes_without_activating_half_a_build() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    // 模拟「上一轮开到第 2 代、只写了其中一块就中断了」。
+    {
+        let conn = open(&path);
+        let chunk_id: String = conn
+            .query_row("SELECT chunk_id FROM text_chunks ORDER BY day_key LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        conn.execute_batch(&format!(
+            "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, storage, \
+                 vector, created_at) VALUES ('{chunk_id}', 2, 'stub-embedder@000000000000', 512, \
+                 'f32', zeroblob(2048), '2026-10-10T00:00:00.000Z');\
+             UPDATE index_meta SET building_generation = 2;"
+        ))
+        .unwrap();
+    }
+    // 中断期间生效代次还是 1：语义检索继续用旧的那一代，不会突然空掉。
+    let status = core.index_status(None).unwrap();
+    assert_eq!(status.embedded_chunks, 2, "旧代次还在服务");
+    assert!(status.semantic_index_ready);
+
+    // 同口径续跑**不白重算**：用 embed 调用次数钉住（口径核对不能把续跑变成全量重算）。
+    let calls_before = counters.documents.load(Ordering::SeqCst);
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.generation, 2, "从留下的 building_generation 续跑");
+    assert_eq!(report.reused_chunks, 1, "另一块从上一代复制");
+    assert_eq!(report.resumed_chunks, 1, "中断前写好的那一块算「续上」");
+    assert_eq!(report.embedded_chunks, 0, "没有一块需要重算");
+    assert_eq!(
+        counters.documents.load(Ordering::SeqCst),
+        calls_before,
+        "同口径续跑一次模型都不该调：续上的块沿用、没变的块复用"
+    );
+    let conn = open(&path);
+    let (active, building): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT active_generation, building_generation FROM index_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((active, building), (Some(2), None));
+    assert!(core.index_status(None).unwrap().semantic_index_ready);
+}
+
+/// 回归（评审在 #58 上指出的）：**中断 → 换模型 → 续跑不能混用不同模型的向量**。
+///
+/// 场景：模型 A 只写了一部分 `building_generation` 向量就中断 → 换成模型 B
+/// （`model_version` 与 `dims` 都不同）再调 `build_semantic_index`。
+///
+/// 修复前：A 的半成品被 `missing_chunks` 当成「已完成」，只有剩下的块由 B 补算，
+/// 最后切出一个**混合代次**——搜索把两个模型空间的向量放在一起打分，
+/// `index_status.model_version` 也只挑其中一行报出去。
+///
+/// 修复后：续跑前核对口径，只要有一条与当前嵌入器不一致就整代清理、按 B 从零重算。
+#[test]
+fn switching_models_mid_build_discards_the_half_built_generation() {
+    const A_VERSION: &str = "stub-embedder@aaaaaaaaaaaa";
+    const B_VERSION: &str = "stub-embedder@bbbbbbbbbbbb";
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    // A：512 维，把两篇正文都映到 e0，先建出一代生效向量。
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        A_VERSION,
+        512,
+        &counters,
+        vec![("苹果", unit(0)), ("香蕉", unit(0))],
+    )));
+    let apple = write_capture(&mut core, at(2026, 9, 20), "苹果很甜。", "opA");
+    let banana = write_capture(&mut core, at(2026, 9, 21), "香蕉也甜。", "opB");
+    let first = core.build_semantic_index(None).unwrap();
+    assert_eq!(first.embedded_chunks, 2, "前提：A 先建好一代");
+
+    // 模拟「A 在第 2 代里只写了苹果那一块就中断了」。
+    {
+        let conn = open(&path);
+        let chunk_id: String = conn
+            .query_row(
+                "SELECT chunk_id FROM text_chunks WHERE text LIKE '%苹果%' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, storage, \
+                                        vector, created_at) \
+             VALUES (?1, 2, ?2, 512, 'f32', zeroblob(2048), '2026-10-10T00:00:00.000Z')",
+            params![chunk_id, A_VERSION],
+        )
+        .unwrap();
+        conn.execute("UPDATE index_meta SET building_generation = 2", [])
+            .unwrap();
+    }
+    // 中断期间生效代次还是 A 的第 1 代。
+    let interrupted = core.index_status(None).unwrap();
+    assert_eq!(interrupted.model_version.as_deref(), Some(A_VERSION));
+
+    // 换成 B：model_version 与 dims（384）都不同。
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        B_VERSION,
+        384,
+        &counters,
+        vec![("苹果", unit_in(384, 5)), ("香蕉", unit_in(384, 5))],
+    )));
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.generation, 2, "代次号继续用，但内容按 B 从头来");
+    assert_eq!(report.reused_chunks, 0, "A 的向量口径不一致，一条都不复用");
+    assert_eq!(report.embedded_chunks, 2, "两块都按 B 重算");
+    assert_eq!(report.resumed_chunks, 0, "A 的半成品被丢弃，一点都没「续上」");
+
+    let conn = open(&path);
+    let (active, building): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT active_generation, building_generation FROM index_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((active, building), (Some(2), None));
+    // 生效代次里没有任何 A 的向量。
+    assert_eq!(
+        count(
+            &conn,
+            &format!("SELECT COUNT(*) FROM chunk_vectors WHERE model_version = '{A_VERSION}'"),
+            "chunk_vectors",
+        ),
+        0,
+        "A 的半成品必须一行不剩（否则统计与搜索还会撞上旧模型空间）"
+    );
+    // 整代口径完全一致，且等于 B。
+    let (distinct_versions, distinct_dims, distinct_storages): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT model_version), COUNT(DISTINCT dims), COUNT(DISTINCT storage) \
+             FROM chunk_vectors WHERE generation = 2",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (distinct_versions, distinct_dims, distinct_storages),
+        (1, 1, 1),
+        "生效代次里 model_version / dims / storage 都必须只有一种口径"
+    );
+    let caliber: (String, i64, String) = conn
+        .query_row(
+            "SELECT model_version, dims, storage FROM chunk_vectors WHERE generation = 2 LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(caliber, (B_VERSION.to_owned(), 384, "f32".to_owned()));
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM chunk_vectors", "chunk_vectors"),
+        2,
+        "A 的旧代次与半成品都清掉了，只剩 B 这一代"
+    );
+    drop(conn);
+
+    // 状态报的是 B：不是 A，也不是「混合」这种含糊值。
+    let status = core.index_status(None).unwrap();
+    assert_eq!(
+        status.model_version.as_deref(),
+        Some(B_VERSION),
+        "index_status 要报整代一致的那个版本"
+    );
+    assert!(status.semantic_index_ready, "整代口径一致、覆盖全部块");
+
+    // 搜索只在 B 的空间里打分：两篇正文都被 B 映到 e5（384 维），查询也是 e5，
+    // 所以两条的相似度都必须是 1.0。修复前苹果那一块留着 A 的 512 维 zeroblob，
+    // 与 384 维查询余弦为 0（不同空间硬算），这里就会红。
+    let ranking = core
+        .semantic_ranking("苹果", &SearchFilters::default())
+        .unwrap();
+    let score_of = |group: &str| {
+        ranking
+            .iter()
+            .find(|(candidate, _)| candidate.as_str() == group)
+            .map(|(_, score)| *score)
+            .unwrap_or_else(|| panic!("{group} 不在结果里：{ranking:?}"))
+    };
+    assert!(
+        (score_of(&apple) - 1.0).abs() < 1e-6,
+        "苹果那一块必须是 B 空间里的向量（修复前是 A 的，得分 0）：{ranking:?}"
+    );
+    assert!(
+        (score_of(&banana) - 1.0).abs() < 1e-6,
+        "香蕉那一块也要落在 B 空间：{ranking:?}"
+    );
+}
+
+/// 回归（评审在 #58 上指出的）：**半个代次的存储格式与当前不一致时，同样整代废弃重算**。
+///
+/// `storage` 是「一套口径」的第三个字段。将来从 f32 换成 int8 时，中断留下的 f32 半成品
+/// 若被当成「已完成」，切出来的代次里就会混着两种编码——搜索读到不认识的 `storage`
+/// 会直接报 `CorruptedData`。这条钉住「换存储格式也当换口径」。
+#[test]
+fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    // 模拟「上一轮开到第 2 代、用另一种存储格式写了一块就中断」。
+    {
+        let conn = open(&path);
+        let chunk_id: String = conn
+            .query_row(
+                "SELECT chunk_id FROM text_chunks ORDER BY day_key LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, storage, \
+                                        vector, created_at) \
+             VALUES (?1, 2, 'stub-embedder@000000000000', 512, 'i8', zeroblob(2048), \
+                     '2026-10-10T00:00:00.000Z')",
+            params![chunk_id],
+        )
+        .unwrap();
+        conn.execute("UPDATE index_meta SET building_generation = 2", [])
+            .unwrap();
+    }
+
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.generation, 2);
+    assert_eq!(report.reused_chunks, 2, "废弃半成品后，两块都能从上一代 f32 复用");
+    assert_eq!(report.embedded_chunks, 0, "没有一块需要重算");
+    assert_eq!(report.resumed_chunks, 0, "store 格式不一致的那一块不算「续上」");
+
+    let conn = open(&path);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2 AND storage <> 'f32'",
+            "chunk_vectors"
+        ),
+        0,
+        "生效代次里不能留下别的存储格式"
+    );
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2", "chunk_vectors"),
+        2
+    );
+    drop(conn);
+    // 半成品若真被留下，语义检索会在读到 'i8' 那一行时报 `CorruptedData`——能正常
+    // 返回（纯语义是 kNN，会把两块都列出来）就说明整代都是认识的 f32。
+    assert_eq!(
+        search_mode(&mut core, "妈妈", SearchMode::Semantic, 10).results.len(),
+        2
+    );
+}
+
+/// 历史遗留的**混合生效代次**：状态不能挑一行装作干净。
+///
+/// 修复之后正常操作产不出混合代次了，但旧库里可能已经存在一个（本片修复前激活的）。
+/// 这时候 `model_version` 没有单一真值可报：如实给 `None` + `reasons` 里点名「口径不一致」，
+/// 并且不说「就绪」。随后一次重建会把它按当前模型整代重算、自愈。
+#[test]
+fn a_mixed_active_generation_is_reported_honestly() {
+    const A_VERSION: &str = "stub-embedder@aaaaaaaaaaaa";
+    const B_VERSION: &str = "stub-embedder@bbbbbbbbbbbb";
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        A_VERSION,
+        512,
+        &counters,
+        vec![],
+    )));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    // 直接改掉其中一行的 model_version，模拟「修复前切出来的混合代次」。
+    {
+        let conn = open(&path);
+        conn.execute(
+            "UPDATE chunk_vectors SET model_version = ?1 WHERE chunk_id = \
+             (SELECT chunk_id FROM chunk_vectors WHERE generation = 1 ORDER BY chunk_id LIMIT 1)",
+            params![B_VERSION],
+        )
+        .unwrap();
+    }
+
+    let status = core.index_status(None).unwrap();
+    assert_eq!(
+        status.model_version, None,
+        "混合代次没有单一版本可报：宁可说「没有」也不挑一行假装干净"
+    );
+    assert_eq!(status.embedded_chunks, 2, "两块的向量都在（覆盖是够的）");
+    assert!(!status.semantic_index_ready, "混合代次不能叫「就绪」");
+    assert!(
+        status.reasons.iter().any(|reason| reason.contains("口径")),
+        "要说清是「口径不一致」，而不是含糊的未就绪：{:?}",
+        status.reasons
+    );
+
+    // 重建按当前模型整代重算，混合代次自愈。
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.generation, 2);
+    assert_eq!(report.reused_chunks, 1, "口径一致的那一块复用，口径不一致的重算");
+    assert_eq!(report.embedded_chunks, 1);
+    let conn = open(&path);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation <> 2",
+            "chunk_vectors"
+        ),
+        0,
+        "重建清掉了混合的旧代次"
+    );
+    drop(conn);
+    let healed = core.index_status(None).unwrap();
+    assert_eq!(healed.model_version.as_deref(), Some(A_VERSION));
+    assert!(healed.semantic_index_ready);
+}
+
+// ------------------------------------------------------------ 消费契约
+
+/// 命中按**篇**上报：合块的多篇各自成条，`snippet`/`locator` 取该篇自己那一段。
+#[test]
+fn semantic_hits_are_per_piece_and_snippets_come_from_that_pieces_span() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![("失眠", unit(0)), ("睡不着", unit(0))]));
+
+    // 同一天两篇短来源：按 B3c-1 的打包规则会合进**一块**（两个 span）。
+    let a = write_capture(&mut core, at(2026, 9, 20), "", "opA");
+    let first = import_and_extract(
+        &mut core,
+        &a,
+        "睡眠.txt",
+        "连续几天失眠，凌晨两点还醒着。\n",
+        "opA-mat1",
+    );
+    let second = import_and_extract(&mut core, &a, "快递.txt", "快递放在门口。\n", "opA-mat2");
+    // 另一天：记录自己写的文字，语义这一路也必须搜得到。
+    let b = write_capture(&mut core, at(2026, 9, 21), "我最近总是睡不着。", "opB");
+
+    let built = core.build_semantic_index(None).unwrap();
+    assert_eq!(built.total_chunks, 2, "第一天合成一块、第二天一块");
+    let conn = open(&path);
+    let multi: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM (SELECT chunk_id FROM chunk_spans GROUP BY chunk_id \
+             HAVING COUNT(*) > 1)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(multi, 1, "前提：第一天的那一块真的含两篇");
+
+    let snapshot = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+    assert_eq!(snapshot.results.len(), 3, "两篇来源 + 一条记录文字，各成一条");
+    assert_eq!(snapshot.phase, diary_core::SearchPhase::Done);
+    assert_eq!(snapshot.index_coverage, diary_core::Coverage::Complete);
+
+    // 合块里的第一篇：摘录是它自己那一段，**不含**同块另一篇的正文。
+    let sleep = hit_of(&snapshot, &first);
+    assert_eq!(sleep.hit_id, first, "命中 id 按篇给，不按证据块");
+    assert_eq!(sleep.matched_by, vec![diary_core::MatchedBy::Semantic]);
+    assert_eq!(sleep.source_kind, SourceKind::File);
+    assert_eq!(sleep.source_id.as_deref(), Some(first.as_str()));
+    assert!(sleep.revision_id.is_some(), "来源篇要带上修订");
+    assert_eq!(
+        sleep.snippet.as_deref(),
+        Some("连续几天失眠，凌晨两点还醒着。"),
+        "摘录必须是这一篇自己的那一段"
+    );
+    assert!(
+        !sleep.snippet.as_deref().unwrap().contains("快递"),
+        "不能把整块拼接文本给用户看"
+    );
+    assert_eq!(sleep.title.as_deref(), Some("睡眠.txt"), "标题取来源修订的原件名");
+    let locator = sleep.locator.as_ref().expect("来源篇要有定位");
+    assert_eq!(locator.source_revision_id, sleep.revision_id.clone().unwrap());
+
+    // 同块的第二篇：它也拿到这一块的相似度（契约：合块的相似度对各篇共享），
+    // 但摘录是它自己那一段。
+    let express = hit_of(&snapshot, &second);
+    assert_eq!(express.source_kind, SourceKind::File);
+    assert_eq!(
+        express.snippet.as_deref(),
+        Some("快递放在门口。"),
+        "每一篇各拿自己那一段"
+    );
+    assert!(
+        !express.snippet.as_deref().unwrap().contains("失眠"),
+        "不能串到同块别的篇的正文"
+    );
+
+    // 记录自己写的文字：与关键词那一路同一个口径（groupId = capture_id）。
+    let capture_hit = hit_of(&snapshot, &b);
+    assert_eq!(capture_hit.hit_id, format!("cap_{b}"));
+    assert_eq!(capture_hit.source_id, None);
+    assert_eq!(capture_hit.revision_id, None);
+    assert_eq!(capture_hit.source_kind, SourceKind::Text);
+    assert_eq!(capture_hit.snippet.as_deref(), Some("我最近总是睡不着。"));
+    assert_eq!(capture_hit.locator, None, "记录文字没有原件可定位");
+}
+
+/// 那篇「被切成两块、两块都含失眠」的长文（issue #57 的同分场景）。
+///
+/// 块边界只由正文与冻结的切块规则决定：切出来两块，span 分别是 `[0, 390)` 与
+/// `[343, 731)`（48 字重叠），所以两块都含「失眠」→ 桩给两块同一个单位向量 →
+/// 两块得分**完全相同**。
+fn long_piece_with_insomnia() -> String {
+    let mut text = String::new();
+    for index in 0..24 {
+        if index == 12 {
+            text.push_str("第12段 ★：这一段说的是连续几天失眠，凌晨两点还醒着。\n");
+        } else {
+            text.push_str(&format!(
+                "第{index}段 ★：今天天气不错，路上人很多，顺便买了点水果回家。\n"
+            ));
+        }
+    }
+    text
+}
+
+/// 同一篇有多个块命中时**折叠成一条**，取得分最高的块当证据。
+#[test]
+fn multiple_chunks_of_one_piece_fold_into_a_single_hit() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    // 两条规则：全部段落都含「★」（用来验证折叠），只有中段含「失眠」
+    // （用来验证「取得分最高的块当证据」）。
+    core.set_embedder(stub(
+        &counters,
+        vec![("失眠", unit(0)), ("★", unit(3))],
+    ));
+
+    // 一篇超过上限的长来源：篇内按段尾切，切成多块。
+    let text = long_piece_with_insomnia();
+    let capture_id = write_capture(&mut core, at(2026, 9, 20), "", "op");
+    let source_id = import_and_extract(&mut core, &capture_id, "长文.txt", &text, "op-mat");
+    // 另一篇短正文，让结果里不止一篇。
+    let other = write_capture(&mut core, at(2026, 9, 21), "★ 快递放在门口。", "op2");
+
+    let built = core.build_semantic_index(None).unwrap();
+    assert!(
+        built.total_chunks >= 3,
+        "前提：长文被切成多块（实际 {} 块）",
+        built.total_chunks
+    );
+
+    // 所有块都命中（每段都含 ★），但长文只该出**一条**：折叠发生在分页之前。
+    let snapshot = search_mode(&mut core, "★", SearchMode::Semantic, 20);
+    assert_eq!(
+        snapshot.results.len(),
+        2,
+        "长文的多个块必须折叠成一条（块数 {}）",
+        built.total_chunks
+    );
+    assert!(snapshot.results.iter().any(|hit| hit.group_id == source_id));
+    assert!(snapshot.results.iter().any(|hit| hit.group_id == other));
+
+    // 「失眠」那一块（含重叠，可能两块都含）得分最高，被留下的证据块必须是**这一篇**的一段：
+    // 摘录按契约取「该 span 起点起的若干字」，所以**不能**要求摘录里一定出现查询词
+    // （语义检索没有词面匹配，摘要从段首截断时就看不到深处的词）。这里断言契约给的保证：
+    //   1. 仍然只有一条（折叠在分页之前）；
+    //   2. 摘录来自这一篇正文（原文里有它，且不是另一篇的文本）。
+    let insomnia = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+    assert_eq!(insomnia.results.len(), 2, "折叠后仍应是两篇各一条");
+    let hit = hit_of(&insomnia, &source_id);
+    let snippet = hit.snippet.as_deref().unwrap_or_default();
+    assert!(!snippet.is_empty(), "证据段必须给出摘录");
+    assert!(
+        text.contains(snippet.trim_matches('…')),
+        "摘录必须来自这一篇正文：{snippet:?}"
+    );
+    assert!(
+        !snippet.contains("快递"),
+        "不能把另一篇（短正文）的文本当这一篇的摘录：{snippet:?}"
+    );
+}
+
+/// **两块同分**时当证据的那一块必须固定：同一份内容、同一个查询，摘录不能变。
+///
+/// 回归 issue [#57](https://github.com/xingxue-ux/unwritten-diary/issues/57)。原来的
+/// 排序键在同分时先比 `chunk_id`，而 `chunk_id` 的哈希输入里有**篇标识**（`src_`/`cap_`
+/// 前缀的 v7 UUID）——每个库都不一样。于是两个同分块的相对大小跟着抛硬币：同一篇的
+/// A、B 两块得分一样时，跨进程/跨建库给出的摘录会变（测试红绿交替）。
+///
+/// 为什么必须建**多份库**：块 id 一旦写进某个库就不再变了，同一个库里反复建索引只会
+/// 得到同一个赢家。跨进程红绿交替的根是「同一份内容 + 不同的篇 id」，所以这里在同一个
+/// 进程里建多份独立的库（每轮 `import` 都生成新的篇 id）来复现它——12 轮里只要有一轮
+/// 的证据与别轮不同就说明排序还在抛硬币。
+#[test]
+fn equal_score_evidence_is_the_same_across_libraries() {
+    // 12 份库：旧逻辑下每份都是一次独立抛硬币，全对的概率是 2^-11。
+    const ROUNDS: usize = 12;
+    // 每轮留下的证据：摘录 + 定位里的文字区间。摘录取该 span 起点起的若干字，所以
+    // 它变了就是「当证据的块」变了。**不**比整个 `locator`：它还带 `source_revision_id`，
+    // 那本身就是每份库都不一样的 UUID，与这一次要钉的东西无关。
+    let mut evidence: Vec<(Option<String>, Option<i64>, Option<i64>)> = Vec::new();
+    let mut spans: Vec<(i64, i64)> = Vec::new();
+
+    for round in 0..ROUNDS {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+        let mut core = new_core(dir.path());
+        let counters = Arc::new(Counters::default());
+        core.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+
+        let text = long_piece_with_insomnia();
+        let capture_id = write_capture(&mut core, at(2026, 9, 20), "", "op");
+        let source_id =
+            import_and_extract(&mut core, &capture_id, "长文.txt", &text, &format!("mat{round}"));
+        let built = core.build_semantic_index(None).unwrap();
+        assert_eq!(
+            built.total_chunks, 2,
+            "前提（第 {round} 轮）：这篇长文在篇内被切成两块"
+        );
+
+        // 前提：两块都含查询词，桩才会给两块同一个单位向量 → 两块得分完全相同。
+        let conn = open(&path);
+        let with_word = count(
+            &conn,
+            "SELECT COUNT(*) FROM text_chunks WHERE text LIKE '%失眠%'",
+            "text_chunks",
+        );
+        assert_eq!(
+            with_word, 2,
+            "前提（第 {round} 轮）：两块都含「失眠」，得分才会完全相同"
+        );
+        let round_spans: Vec<(i64, i64)> = {
+            let mut statement = conn
+                .prepare("SELECT start_char, end_char FROM chunk_spans ORDER BY start_char")
+                .unwrap();
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(round_spans.len(), 2, "两块各一段");
+        assert_ne!(
+            round_spans[0], round_spans[1],
+            "前提（第 {round} 轮）：两块是不同的 span，才谈得上「谁当证据」"
+        );
+        if spans.is_empty() {
+            spans = round_spans.clone();
+        }
+        assert_eq!(
+            round_spans, spans,
+            "前提：块边界是内容的函数，每份库都该一样"
+        );
+        drop(conn);
+
+        // 同一个库里再建一代（内容没变）：证据也不该变。
+        let first = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+        let first_hit = hit_of(&first, &source_id);
+        core.build_semantic_index(None).unwrap();
+        let second = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+        let second_hit = hit_of(&second, &source_id);
+        assert_eq!(
+            first_hit.snippet, second_hit.snippet,
+            "第 {round} 轮：同一个库换一代，证据不该变"
+        );
+
+        evidence.push((
+            first_hit.snippet.clone(),
+            first_hit.locator.as_ref().and_then(|locator| locator.text_start),
+            first_hit.locator.as_ref().and_then(|locator| locator.text_end),
+        ));
+    }
+
+    // 决定性断言：所有库当证据的 span 必须完全一样。
+    for (round, entry) in evidence.iter().enumerate() {
+        assert_eq!(
+            entry, &evidence[0],
+            "第 {round} 份库给出的证据与第 0 份不同：{:?} vs {:?}（两块同分，兜底顺序必须由内容决定）",
+            entry, evidence[0]
+        );
+    }
+    // 兜底顺序的契约（见文档「消费契约」）：同分时取**篇内区间起点最靠前**的那一块。
+    // 两块里起点最小的是 0，它的摘录从篇首开始；另一块（起点 343）的摘录带前导省略号。
+    assert_eq!(spans[0].0, 0, "篇内起点最小的那一块从 0 开始");
+    assert!(
+        evidence[0]
+            .0
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("第0段 ★："),
+        "同分时要稳定地留下篇内起点最靠前的那一块，实际摘录：{:?}",
+        evidence[0].0
+    );
+}
+
+/// 会话机制（分页 / 游标归属 / 快照 / 取消 / 过期）在语义这一路同样成立。
+#[test]
+fn semantic_sessions_page_expire_and_cancel_like_keyword_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    // 所有正文都含「★」，查询也含「★」：每篇得分都是 1，排序只由日期决定（确定）。
+    core.set_embedder(stub(&counters, vec![("★", unit(3))]));
+    for day in 10..15 {
+        write_capture(
+            &mut core,
+            at(2026, 9, day),
+            &format!("九月{day}日 ★ 记一笔。"),
+            &format!("op{day}"),
+        );
+    }
+    core.build_semantic_index(None).unwrap();
+
+    let first = search_mode(&mut core, "★", SearchMode::Semantic, 2);
+    assert_eq!(first.results.len(), 2);
+    assert_eq!(first.phase, diary_core::SearchPhase::Done);
+    assert!(first.cursor.is_some(), "还有下一页");
+    let first_ids: Vec<String> = first.results.iter().map(|hit| hit.hit_id.clone()).collect();
+
+    // 快照能原样再给一次当前页。
+    let snapshot = core.search_snapshot(&first.session_id).unwrap();
+    assert_eq!(
+        snapshot.results.iter().map(|hit| hit.hit_id.clone()).collect::<Vec<_>>(),
+        first_ids
+    );
+
+    // 拿别的会话的游标来翻 → cursor_expired（用真游标，不是手拼的格式）。
+    let other = search_mode(&mut core, "★", SearchMode::Semantic, 2);
+    let foreign = other.cursor.clone().expect("别的会话也有下一页");
+    let error = core
+        .search_next_page(&first.session_id, Some(&foreign))
+        .unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::CursorExpired);
+
+    // 翻到底：不重不漏，末页之后再翻给空页。
+    let mut seen = first_ids.clone();
+    let mut current = first;
+    while let Some(cursor) = current.cursor.clone() {
+        current = core.search_next_page(&current.session_id, Some(&cursor)).unwrap();
+        seen.extend(current.results.iter().map(|hit| hit.hit_id.clone()));
+    }
+    assert_eq!(seen.len(), 5, "5 篇各一条，不重不漏");
+    let mut unique = seen.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), 5);
+    let last_session = current.session_id.clone();
+    let empty = core.search_next_page(&last_session, None).unwrap();
+    assert!(empty.results.is_empty(), "末页之后再翻给空页");
+    assert_eq!(empty.cursor, None);
+
+    // 换代会让语义会话过期（排序快照已经不作数了）。
+    let stale = search_mode(&mut core, "★", SearchMode::Semantic, 2);
+    core.build_semantic_index(None).unwrap();
+    let error = core.search_next_page(&stale.session_id, None).unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::SearchExpired);
+
+    // 取消：phase 变 cancelled，结果仍可读，再翻页报 invalid_state。
+    let session = search_mode(&mut core, "★", SearchMode::Semantic, 2);
+    let cancelled = core.cancel_search(&session.session_id).unwrap();
+    assert_eq!(cancelled.phase, diary_core::SearchPhase::Cancelled);
+    assert_eq!(cancelled.results.len(), 2, "已返回的结果仍可读");
+    let error = core.search_next_page(&session.session_id, None).unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::InvalidState);
+    let _ = path;
+}
+
+/// 过滤条件（日期 / 类型 / 来源范围 / 回收站）在语义这一路与关键词同一套语义。
+#[test]
+fn semantic_search_honours_the_same_filters() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![("★", unit(1))]));
+    let old = write_capture(&mut core, at(2026, 8, 10), "八月十日 ★。", "opOld");
+    let new = write_capture(&mut core, at(2026, 9, 20), "九月二十日 ★。", "opNew");
+    core.build_semantic_index(None).unwrap();
+
+    let filters = |from: Option<&str>, to: Option<&str>| SearchFilters {
+        from_day_key: from.map(str::to_owned),
+        to_day_key: to.map(str::to_owned),
+        ..Default::default()
+    };
+    let all = core
+        .start_search(
+            SearchRequest {
+                query: "★".to_owned(),
+                mode: SearchMode::Semantic,
+                filters: SearchFilters::default(),
+                page_size: 20,
+            },
+            1,
+        )
+        .unwrap();
+    assert_eq!(all.results.len(), 2);
+
+    let only_old = core
+        .start_search(
+            SearchRequest {
+                query: "★".to_owned(),
+                mode: SearchMode::Semantic,
+                filters: filters(None, Some("2026-08-31")),
+                page_size: 20,
+            },
+            2,
+        )
+        .unwrap();
+    assert_eq!(only_old.results.len(), 1);
+    assert_eq!(only_old.results[0].group_id, old);
+
+    let only_new = core
+        .start_search(
+            SearchRequest {
+                query: "★".to_owned(),
+                mode: SearchMode::Semantic,
+                filters: filters(Some("2026-09-01"), None),
+                page_size: 20,
+            },
+            3,
+        )
+        .unwrap();
+    assert_eq!(only_new.results.len(), 1);
+    assert_eq!(only_new.results[0].group_id, new);
+
+    // kinds 过滤：语义这一路也照同一条规则下到 SQL。
+    let no_images = core
+        .start_search(
+            SearchRequest {
+                query: "★".to_owned(),
+                mode: SearchMode::Semantic,
+                filters: SearchFilters {
+                    kinds: vec![SourceKind::Image],
+                    ..Default::default()
+                },
+                page_size: 20,
+            },
+            4,
+        )
+        .unwrap();
+    assert!(no_images.results.is_empty(), "今天只有 text 这一种篇");
+
+    // 来源范围：空范围是「什么都不看」，不是「看全部」。
+    let empty_scope = core
+        .start_search(
+            SearchRequest {
+                query: "★".to_owned(),
+                mode: SearchMode::Semantic,
+                filters: SearchFilters {
+                    source_scope: Some(Vec::new()),
+                    ..Default::default()
+                },
+                page_size: 20,
+            },
+            5,
+        )
+        .unwrap();
+    assert!(empty_scope.results.is_empty(), "空范围不能退化成看全部");
+
+    // 回收站：默认不看，开关打开才看。
+    let conn = open(&dir.path().join("library.sqlite"));
+    conn.execute("UPDATE captures SET state = 'trashed' WHERE id = ?1", params![old])
+        .unwrap();
+    let without_trashed = core
+        .start_search(
+            SearchRequest {
+                query: "★".to_owned(),
+                mode: SearchMode::Semantic,
+                filters: SearchFilters::default(),
+                page_size: 20,
+            },
+            6,
+        )
+        .unwrap();
+    assert_eq!(without_trashed.results.len(), 1, "回收站默认不参与");
+    let with_trashed = core
+        .start_search(
+            SearchRequest {
+                query: "★".to_owned(),
+                mode: SearchMode::Semantic,
+                filters: SearchFilters {
+                    include_trashed: true,
+                    ..Default::default()
+                },
+                page_size: 20,
+            },
+            7,
+        )
+        .unwrap();
+    assert_eq!(with_trashed.results.len(), 2);
+}
+
+/// 模型的 `dims` 与算出来的向量长度对不上时必须报错，不能把坏向量写进库。
+#[test]
+fn a_vector_of_the_wrong_length_is_rejected() {
+    struct WrongDims;
+    impl Embedder for WrongDims {
+        fn model_version(&self) -> &str {
+            "wrong-dims@000000000000"
+        }
+        fn dims(&self) -> usize {
+            512
+        }
+        fn options(&self) -> EmbedOptions {
+            EmbedOptions::default()
+        }
+        fn embed_document(&self, _text: &str) -> diary_core::Result<Vec<f32>> {
+            Ok(vec![0.0; 8])
+        }
+        fn embed_query(&self, _text: &str) -> diary_core::Result<Vec<f32>> {
+            Ok(vec![0.0; 8])
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    core.set_embedder(Box::new(WrongDims));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+
+    let error = core.build_semantic_index(None).unwrap_err();
+    assert!(
+        error.to_string().contains("512"),
+        "要说清维度不符：{error}"
+    );
+    let conn = open(&path);
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM chunk_vectors", "chunk_vectors"),
+        0,
+        "坏向量一行都不该进库"
+    );
+    let (active, building): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT active_generation, building_generation FROM index_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (active, building),
+        (None, Some(1)),
+        "算向量时出错不该激活半成品；building_generation 留着，下一轮从它续跑\
+         （与中断同一条规则）。注意：`active` 必须是 None。"
+    );
+}
+
+/// 关键词检索完全不受块与向量影响：换代期间它照旧可用（写测试钉住）。
+#[test]
+fn keyword_search_is_untouched_by_building_semantics() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    let a = write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    import_and_extract(&mut core, &a, "信.txt", "妈妈后来又写了一封信。\n", "opA-mat");
+
+    let before = search_mode(&mut core, "妈妈", SearchMode::Keyword, 20);
+    let before_ids: Vec<String> = before.results.iter().map(|hit| hit.hit_id.clone()).collect();
+    assert_eq!(before_ids.len(), 2);
+
+    core.build_semantic_index(None).unwrap();
+    let after = search_mode(&mut core, "妈妈", SearchMode::Keyword, 20);
+    assert_eq!(
+        after.results.iter().map(|hit| hit.hit_id.clone()).collect::<Vec<_>>(),
+        before_ids,
+        "关键词命中一行都不该因为建语义索引而变"
+    );
+    assert_eq!(after.index_coverage, before.index_coverage);
+    assert_eq!(after.results[0].snippet, before.results[0].snippet);
+
+    // 再建一代（换代中间走一遍），关键词照样不变。
+    core.build_semantic_index(None).unwrap();
+    let again = search_mode(&mut core, "妈妈", SearchMode::Keyword, 20);
+    assert_eq!(
+        again.results.iter().map(|hit| hit.hit_id.clone()).collect::<Vec<_>>(),
+        before_ids
+    );
+}
+
+// ------------------------------------------------------------ 真模型（不进 CI）
+
+/// 真模型端到端：加载 bge-small-zh-v1.5、建向量、语义检索、按篇折叠。
+///
+/// **不进 CI**（CI 上没有模型、没有 ORT 动态库），手动跑：
+///
+/// ```bash
+/// DIARY_MODEL_DIR="$PWD/models/bge-small-zh-v1.5-ours" \
+/// DIARY_ORT_DYLIB="$HOME/dev/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so" \
+/// cargo test --release -p diary_core --test semantic_index_test -- --ignored --nocapture \
+///     semantic_index_with_the_real_model
+/// ```
+///
+/// 注意 `--exact` 不是必须的，但**不要**写成别的东西（比如中文短语）：测试名过滤按
+/// 子串匹配，写错了会「跑 0 个测试、退出码 0」。同样的坑见
+/// `search_test.rs::hundred_thousand_segments_measurement`。
+#[test]
+#[ignore = "需要真模型与 ORT：手动跑，见测试文档里的复现命令（DIARY_MODEL_DIR / DIARY_ORT_DYLIB）"]
+fn semantic_index_with_the_real_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+
+    // 语料：查询「失眠」与第一篇语义相关但没有共同词。
+    let a = write_capture(&mut core, at(2026, 9, 20), "", "opA");
+    let source_a = import_and_extract(
+        &mut core,
+        &a,
+        "睡眠.txt",
+        "连续几天凌晨两点还醒着，白天一点精神都没有。\n",
+        "opA-mat",
+    );
+    let b = write_capture(&mut core, at(2026, 9, 21), "", "opB");
+    import_and_extract(&mut core, &b, "聚餐.txt", "晚上和同事去吃了火锅，聊得很开心。\n", "opB-mat");
+    let c = write_capture(&mut core, at(2026, 9, 22), "今天把合同签了。", "opC");
+
+    let report = core.build_semantic_index(None).unwrap();
+    assert!(report.total_chunks >= 3, "三篇各至少一块");
+    assert_eq!(report.embedded_chunks, report.total_chunks);
+    let status = core.index_status(None).unwrap();
+    assert!(status.semantic_index_ready);
+    let version = status.model_version.clone().expect("生效代次要有模型版本");
+    assert!(
+        version.starts_with("bge-small-zh-v1.5-ours@") && version.len() > 24,
+        "模型版本要带 sha256 前缀，不能是写死的字符串：{version}"
+    );
+
+    let snapshot = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+    assert_eq!(
+        snapshot.results[0].group_id, source_a,
+        "语义应当把「凌晨两点还醒着」排在最前：{:?}",
+        snapshot
+            .results
+            .iter()
+            .map(|hit| (&hit.group_id, &hit.snippet))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(snapshot.results[0].matched_by, vec![diary_core::MatchedBy::Semantic]);
+    assert!(
+        snapshot.results[0]
+            .snippet
+            .as_deref()
+            .unwrap()
+            .contains("凌晨两点"),
+        "摘录取该篇自己那一段"
+    );
+    // 记录自己的文字也能被语义搜到（它进块，也进向量）。
+    assert!(
+        snapshot.results.iter().any(|hit| hit.group_id == c),
+        "记录自己的文字也要在语义候选里"
+    );
+    assert_eq!(
+        snapshot.results.len(),
+        3,
+        "按篇折叠：三篇各一条，不该出现同一篇多条"
+    );
+
+    // 量测入口也走一遍（分数从高到低）。
+    let ranking = core
+        .semantic_ranking("失眠", &SearchFilters::default())
+        .unwrap();
+    assert_eq!(ranking.len(), 3);
+    assert!(
+        ranking[0].1 >= ranking[1].1 && ranking[1].1 >= ranking[2].1,
+        "分数要从高到低：{ranking:?}"
+    );
+
+    // 换一代（内容没变）：向量复用，不重算，也不影响语义排序。
+    let again = core.build_semantic_index(None).unwrap();
+    assert_eq!(again.embedded_chunks, 0, "没变的块不重复算");
+    assert_eq!(again.reused_chunks, again.total_chunks);
+    let after = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+    assert_eq!(after.results[0].group_id, source_a);
+}
+// ------------------------------------------------------------ 混合检索（#51，RRF）
+
+/// 一篇来源在库里的片段文字（混合的正文哈希就是按它算的）。
+fn segment_text_of(path: &Path, source_id: &str) -> String {
+    open(path)
+        .query_row(
+            "SELECT s.text FROM extracted_segments s \
+             JOIN extracted_contents ec ON ec.id = s.content_id \
+             WHERE ec.source_id = ?1 ORDER BY s.ordinal LIMIT 1",
+            params![source_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// 与 `support::content_hash` 同一个口径（测试侧独立算一遍，不调产品代码）。
+fn content_hash(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// 融合的单位是**篇**，分数是 RRF：关键词只中 A、语义只中 B、两者都中 C。
+///
+/// 构造（三天各一篇，各自成块）：
+/// - A：正文含查询词「开源节流」→ 关键词中；向量与查询正交 → 语义不中；
+/// - B：正文不含查询词 → 关键词不中；向量与查询同向 → 语义中；
+/// - C：两样都中。
+///
+/// 期望顺序（k = 60，名次从 1 起）：
+/// `C = 1/61 + 1/61 > B = 1/62 = A = 1/62`；B 与 A 同分，B 的日期更近 → 在前。
+#[test]
+fn hybrid_fuses_two_paths_with_rrf_and_reports_matched_by() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub_split(
+        &counters,
+        // 文档侧：「难以入睡」→ 与查询同向；「开源节流」→ 与查询正交。
+        vec![("难以入睡", unit(0)), ("开源节流", unit(1))],
+        // 查询侧：正文里那个关键词出现时，查询向量是 unit(0)。
+        vec![("开源节流", unit(0))],
+    ));
+
+    let a_capture = write_capture(&mut core, at(2026, 9, 1), "", "opA");
+    let a = import_and_extract(
+        &mut core,
+        &a_capture,
+        "A.txt",
+        "开源节流这件事说起来容易，做起来难。\n",
+        "matA",
+    );
+    let b_capture = write_capture(&mut core, at(2026, 9, 2), "", "opB");
+    let b = import_and_extract(
+        &mut core,
+        &b_capture,
+        "B.txt",
+        "一到夜里就难以入睡，翻来覆去。\n",
+        "matB",
+    );
+    let c_capture = write_capture(&mut core, at(2026, 9, 3), "", "opC");
+    let c = import_and_extract(
+        &mut core,
+        &c_capture,
+        "C.txt",
+        "开源节流加上难以入睡，两样一起压过来。\n",
+        "matC",
+    );
+    core.build_semantic_index(None).unwrap();
+
+    // —— 第一阶段（#69）：只有关键词那一路。B 只被语义召回，**不该**出现在这里 ——
+    let started = search_mode(&mut core, "开源节流", SearchMode::Hybrid, 20);
+    assert_eq!(
+        started.phase,
+        SearchPhase::KeywordReady,
+        "hybrid 首屏必须是 keyword_ready（融合还没算）"
+    );
+    let first_order: Vec<&str> = started
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert_eq!(
+        first_order,
+        vec![c.as_str(), a.as_str()],
+        "关键词那一路：C（9/3）比 A（9/1）近，B 一条都没有"
+    );
+    assert!(
+        !started.results.iter().any(|hit| hit.group_id == b),
+        "只被语义召回到的那篇在第一阶段不许出现：{:?}",
+        first_order
+    );
+    assert!(
+        started
+            .results
+            .iter()
+            .all(|hit| hit.matched_by == vec![MatchedBy::Keyword]),
+        "第一阶段 matchedBy 如实只反映关键词，不给语义填假值：{:?}",
+        started
+            .results
+            .iter()
+            .map(|hit| (&hit.group_id, &hit.matched_by))
+            .collect::<Vec<_>>()
+    );
+
+    // —— 第二阶段：显式升级才融合，B 被补进来并按 RRF 重新排序 ——
+    let snapshot = core.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(
+        snapshot.phase,
+        SearchPhase::HybridReady,
+        "升级之后才允许报 hybrid_ready"
+    );
+    let order: Vec<&str> = snapshot
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert_eq!(
+        order,
+        vec![c.as_str(), b.as_str(), a.as_str()],
+        "RRF 顺序（C 两路都中 > B 语义 > A 关键词；B/A 同分时日期近的在前）：{:?}",
+        snapshot
+            .results
+            .iter()
+            .map(|hit| (&hit.group_id, &hit.matched_by))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        hit_of(&snapshot, &b).matched_by == vec![MatchedBy::Semantic],
+        "B 是语义独有的那篇，位置在第 2（融合后的顺序）"
+    );
+
+    assert_eq!(
+        hit_of(&snapshot, &c).matched_by,
+        vec![MatchedBy::Keyword, MatchedBy::Semantic],
+        "两路都中要如实标成两者都有"
+    );
+    assert_eq!(hit_of(&snapshot, &b).matched_by, vec![MatchedBy::Semantic]);
+    assert_eq!(hit_of(&snapshot, &a).matched_by, vec![MatchedBy::Keyword]);
+    // 两路都有时用关键词那份正文：带高亮；语义独有那份没有假高亮。
+    assert!(
+        !hit_of(&snapshot, &c).highlights.is_empty(),
+        "两路都中时用关键词那份证据，应当带高亮"
+    );
+    assert!(
+        hit_of(&snapshot, &b).highlights.is_empty(),
+        "语义命中不给假高亮"
+    );
+}
+
+/// 语义证据门槛：低于门槛 → 这一路没有证据；关键词也空 → 返回空（不许放宽），
+/// 并且**不融合**——阶段如实停在 `keyword_ready`（#60 复审）。
+///
+/// 顺便钉住门槛确实是那条闸门：同一条查询、同一份数据，把门槛降下来就该命中。
+#[test]
+fn hybrid_treats_semantic_below_the_threshold_as_no_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    // 查询向量与这一篇的余弦正好 0.20：低于产品默认门槛 `HYBRID_SEMANTIC_MIN_SCORE`。
+    let mut weak = vec![0_f32; 512];
+    weak[0] = 0.2;
+    weak[1] = (1.0_f32 - 0.2 * 0.2).sqrt();
+    core.set_embedder(stub_split(
+        &counters,
+        vec![("难以入睡", unit(0))],
+        vec![("失眠", weak)],
+    ));
+    let capture = write_capture(&mut core, at(2026, 9, 20), "", "opA");
+    let source = import_and_extract(
+        &mut core,
+        &capture,
+        "睡眠.txt",
+        "夜里难以入睡，翻来覆去。\n",
+        "matA",
+    );
+    core.build_semantic_index(None).unwrap();
+
+    // 关键词那一路没对上（查询是「失眠」，正文里没有这两个字）+ 语义低于门槛 → 空。
+    let snapshot = hybrid_mode(&mut core, "失眠", 20);
+    assert_eq!(
+        snapshot.phase,
+        SearchPhase::KeywordReady,
+        "两路都空（关键词空 + 语义全被门槛滤掉）时不许假装 hybrid_ready：{:?}",
+        snapshot.warnings
+    );
+    assert!(
+        snapshot.results.is_empty(),
+        "关键词空 + 语义低于门槛 → 必须返回空：{:?}",
+        snapshot
+            .results
+            .iter()
+            .map(|hit| &hit.group_id)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        snapshot
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("低于证据门槛")),
+        "要说清语义为什么没有贡献：{:?}",
+        snapshot.warnings
+    );
+    assert!(
+        snapshot
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("两路都没有达到证据门槛")),
+        "空结果也要说清（不能假装「没有内容」）：{:?}",
+        snapshot.warnings
+    );
+
+    // 同一份数据、同一条查询，只把门槛降到 0.10：应当命中，并且如实标成语义。
+    core.set_hybrid_min_score_for_test(0.10);
+    let loosened = hybrid_mode(&mut core, "失眠", 20);
+    assert_eq!(loosened.results.len(), 1, "{:?}", loosened.warnings);
+    assert_eq!(loosened.results[0].group_id, source);
+    assert_eq!(loosened.results[0].matched_by, vec![MatchedBy::Semantic]);
+}
+
+/// **关键词有结果、语义全部低于门槛**（#60 复审）：语义这一路拿不出可融合的证据，
+/// 就不许融合——阶段停在 `keyword_ready`，结果保持**关键词那份快照**（不是空、也不是
+/// 被滤空的融合结果），警告照旧；重复升级幂等（不重复 embed、阶段不会莫名变成
+/// `hybrid_ready`）。
+#[test]
+fn hybrid_upgrade_keeps_the_keyword_snapshot_when_every_semantic_candidate_is_filtered() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    // 查询「开源节流」→ unit(0)；含查询词的正文 → unit(1)：两篇候选都存在、余弦为 0，
+    // 全部低于 `HYBRID_SEMANTIC_MIN_SCORE`（是「被门槛滤掉」，不是「没有候选」）。
+    core.set_embedder(stub_split(
+        &counters,
+        vec![("开源节流", unit(1))],
+        vec![("开源节流", unit(0))],
+    ));
+    let a_capture = write_capture(&mut core, at(2026, 9, 2), "", "opA");
+    let a = import_and_extract(
+        &mut core,
+        &a_capture,
+        "A.txt",
+        "开源节流，先把账记清。\n",
+        "matA",
+    );
+    let b_capture = write_capture(&mut core, at(2026, 9, 1), "", "opB");
+    let b = import_and_extract(&mut core, &b_capture, "B.txt", "开源节流以后再说。\n", "matB");
+    core.build_semantic_index(None).unwrap();
+
+    let started = search_mode(&mut core, "开源节流", SearchMode::Hybrid, 20);
+    assert_eq!(started.phase, SearchPhase::KeywordReady, "首屏只算关键词");
+    assert_eq!(
+        started
+            .results
+            .iter()
+            .map(|hit| hit.group_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![a.as_str(), b.as_str()],
+        "前提：关键词那一路有结果，按日期 A（9/2）在前"
+    );
+
+    let upgraded = core.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(
+        upgraded.phase,
+        SearchPhase::KeywordReady,
+        "语义全被门槛滤掉 ⇒ 不融合，阶段必须停在 keyword_ready：{:?}",
+        upgraded.warnings
+    );
+    assert_eq!(
+        upgraded.results, started.results,
+        "结果保持关键词那份快照，不是空、也不是被滤空的融合结果"
+    );
+    assert_eq!(
+        upgraded.cursor, started.cursor,
+        "结果集没有被替换，游标（与代次）不变，升级前的游标继续可用"
+    );
+    assert!(
+        upgraded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("低于证据门槛")
+                && warning.contains("这一路没有贡献结果")),
+        "现有的「语义这一路没有贡献证据」警告必须保留：{:?}",
+        upgraded.warnings
+    );
+
+    // 幂等：重复升级返回同一份快照，不重复 embed，阶段也不会莫名变成 hybrid_ready。
+    let queries = counters.queries.load(Ordering::SeqCst);
+    let again = core.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(again, upgraded, "重复升级返回同一份快照");
+    assert_eq!(again.phase, SearchPhase::KeywordReady);
+    assert_eq!(
+        counters.queries.load(Ordering::SeqCst),
+        queries,
+        "重复升级不重复算查询向量"
+    );
+}
+
+/// **同分**时谁排前面必须由内容决定，跨库一致（照 issue #57 的方法）。
+///
+/// 构造：同一天两篇，正文都以查询词开头（关键词的出现位置都是 1、家族都是片段）
+/// → 关键词名次**并列**，RRF 分完全相同；语义这一路对这两篇都拿不出证据（向量与查询
+/// 正交），但另一天另有**第三篇**只被语义命中、RRF 分同样是 `1/(k+1)` → 三篇总分仍
+/// 然并列，A/B 的分野只剩同分键：正文哈希（内容决定）。
+///
+/// 第三篇（不同天）是必须的：语义这一路**至少得有一条候选过门槛**，融合才会发生
+/// （#60 复审：全被门槛滤掉时不融合、阶段停在 `keyword_ready`）。它只给融合提供证据，
+/// 不动 A/B 的并列关系，所以同分键仍然是被测的那条闸门。
+///
+/// 旧写法（同分先比 `groupId` / `chunk_id` 这类 v7 UUID）下，12 份库就是 12 次抛硬币；
+/// 这条测试在临时退回旧键时**验证过会红**，见文档。
+#[test]
+fn hybrid_tie_break_is_the_same_across_libraries() {
+    const ROUNDS: usize = 12;
+    let mut seen: Vec<Vec<String>> = Vec::new();
+    for round in 0..ROUNDS {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+        let mut core = new_core(dir.path());
+        let counters = Arc::new(Counters::default());
+        core.set_embedder(stub_split(
+            &counters,
+            // 文档侧：含查询词 → unit(1)，与查询 unit(0) 正交（对 A/B 没有语义证据）；
+            // 含「睡意」→ unit(0)，与查询同向（C 是唯一的语义证据）。
+            vec![("开源节流", unit(1)), ("睡意", unit(0))],
+            // 查询侧：unit(0)。
+            vec![("开源节流", unit(0))],
+        ));
+
+        let a_capture = write_capture(&mut core, at(2026, 9, 20), "", &format!("opA{round}"));
+        let a = import_and_extract(
+            &mut core,
+            &a_capture,
+            "A.txt",
+            "开源节流，先把账记清。\n",
+            &format!("matA{round}"),
+        );
+        let b_capture = write_capture(&mut core, at(2026, 9, 20), "", &format!("opB{round}"));
+        let b = import_and_extract(
+            &mut core,
+            &b_capture,
+            "B.txt",
+            // 这篇的正文哈希比 A 小：正确的顺序（哈希升序）与「先建库的那一篇
+            // 在前」（旧键：groupId / doc_id 的顺序）**相反**，所以旧键必然报红。
+            "开源节流以后再说。\n",
+            &format!("matB{round}"),
+        );
+        // C 在**另一天**：块按天打包（`pack_pieces`），同一天会被并进同一个块，
+        // 那样它的向量就跟着 A/B 一起走了。不同天才能让它单独成为语义证据。
+        let c_capture = write_capture(&mut core, at(2026, 9, 19), "", &format!("opC{round}"));
+        let c = import_and_extract(
+            &mut core,
+            &c_capture,
+            "C.txt",
+            "睡意上来了，什么都想不起来。\n",
+            &format!("matC{round}"),
+        );
+        core.build_semantic_index(None).unwrap();
+
+        let snapshot = hybrid_mode(&mut core, "开源节流", 20);
+        assert_eq!(
+            snapshot.phase,
+            SearchPhase::HybridReady,
+            "第 {round} 轮：C 提供了语义证据，融合应当真的发生：{:?}",
+            snapshot.warnings
+        );
+        assert_eq!(snapshot.results.len(), 3, "三篇都要在结果里");
+        assert!(
+            !snapshot
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("低于证据门槛")),
+            "前提（第 {round} 轮）：语义这一路有证据（C），不该再说「没有贡献」：{:?}",
+            snapshot.warnings
+        );
+        // A/B 与 C 同分（都是 `1/(k+1)`），但 A/B 在更近的一天（9/20）→ 排在 C 前。
+        assert_eq!(snapshot.results[2].group_id, c, "C 在另一天，同分时排在后面");
+        // A/B 的顺序按**正文哈希**记下来（篇标识是每库不同的 UUID，跨库比它没有意义）。
+        let ab_order: Vec<String> = snapshot.results[..2]
+            .iter()
+            .map(|hit| content_hash(&segment_text_of(&path, &hit.group_id)))
+            .collect();
+        let mut sorted = ab_order.clone();
+        sorted.sort();
+        assert_eq!(
+            ab_order, sorted,
+            "第 {round} 轮：A/B 同分兜底不是由内容（正文哈希升序）决定的"
+        );
+        assert_ne!(
+            content_hash(&segment_text_of(&path, &a)),
+            content_hash(&segment_text_of(&path, &b)),
+            "前提：两篇正文不同，哈希才有区分度"
+        );
+        seen.push(ab_order);
+    }
+    for (round, order) in seen.iter().enumerate() {
+        assert_eq!(
+            order, &seen[0],
+            "第 {round} 份库的顺序与第 0 份不同：同分键跨库不稳定"
+        );
+    }
+}
+
+/// 混合的翻页 / 游标归属 / 快照与关键词那一路同一套语义。
+#[test]
+fn hybrid_sessions_page_and_snapshot_like_keyword_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub_split(
+        &counters,
+        vec![("睡前", unit(0))],
+        vec![("睡前", unit(0))],
+    ));
+    // 五篇不同天、篇篇都含查询词：两路都中。
+    let mut sources = Vec::new();
+    for day in 1..=5 {
+        let capture = write_capture(&mut core, at(2026, 9, 10 + day), "", &format!("op{day}"));
+        sources.push(import_and_extract(
+            &mut core,
+            &capture,
+            &format!("D{day}.txt"),
+            &format!("第{day}天睡前想了很多事情。\n"),
+            &format!("mat{day}"),
+        ));
+    }
+    core.build_semantic_index(None).unwrap();
+
+    let all = hybrid_mode(&mut core, "睡前", 20);
+    assert_eq!(all.results.len(), 5);
+    for source in &sources {
+        assert!(
+            all.results.iter().any(|hit| &hit.group_id == source),
+            "每篇都该在结果里：{source}"
+        );
+    }
+
+    let request = |page_size: i64| SearchRequest {
+        query: "睡前".to_owned(),
+        mode: SearchMode::Hybrid,
+        filters: SearchFilters::default(),
+        page_size,
+    };
+    // —— 升级之前：翻页只给关键词结果，阶段一直是 keyword_ready ——
+    const REVISION: i64 = 42;
+    let first = core.start_search(request(2), REVISION).unwrap();
+    assert_eq!(first.results.len(), 2);
+    assert_eq!(first.phase, SearchPhase::KeywordReady, "还没升级，阶段如实停在 keyword_ready");
+    assert_eq!(first.query_revision, REVISION);
+    let keyword_cursor = first.cursor.clone().expect("还有下一页");
+    let keyword_second = core
+        .search_next_page(&first.session_id, Some(&keyword_cursor))
+        .unwrap();
+    assert_eq!(keyword_second.results.len(), 2);
+    assert_eq!(
+        keyword_second.phase,
+        SearchPhase::KeywordReady,
+        "升级前的翻页也不许假装融合过"
+    );
+    // `search.snapshot` 给的是「当前这一页」，而且是幂等的。
+    let snapshot = core.search_snapshot(&first.session_id).unwrap();
+    assert_eq!(snapshot.results, keyword_second.results);
+    assert_eq!(snapshot.phase, SearchPhase::KeywordReady);
+    assert_eq!(core.search_snapshot(&first.session_id).unwrap(), snapshot);
+
+    // —— 升级：从头给融合结果，阶段变成 hybrid_ready，仍是同一个会话 ——
+    let upgraded = core.upgrade_search_to_hybrid(&first.session_id).unwrap();
+    assert_eq!(upgraded.phase, SearchPhase::HybridReady);
+    assert_eq!(upgraded.session_id, first.session_id, "升级是同一会话，不新造一个");
+    assert_eq!(upgraded.query_revision, REVISION, "升级沿用同一个查询修订");
+    assert_eq!(upgraded.results.len(), 2);
+    let upgrade_cursor = upgraded.cursor.clone().expect("还有下一页");
+    // 幂等：再升级给同一份快照。
+    assert_eq!(
+        core.upgrade_search_to_hybrid(&first.session_id).unwrap(),
+        upgraded
+    );
+
+    // 升级前的深页游标对不上融合后的进度 → 如实 cursor_expired，不悄悄错位返回。
+    let error = core
+        .search_next_page(&first.session_id, keyword_second.cursor.as_deref())
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        diary_core::ErrorCode::CursorExpired,
+        "升级前的深页游标不能接着翻融合结果"
+    );
+
+    // —— 升级之后：翻页给融合结果，阶段保持 hybrid_ready，翻完照旧 done ——
+    let second = core
+        .search_next_page(&first.session_id, Some(&upgrade_cursor))
+        .unwrap();
+    assert_eq!(second.results.len(), 2);
+    assert_eq!(second.phase, SearchPhase::HybridReady);
+    let third = core
+        .search_next_page(&first.session_id, second.cursor.as_deref())
+        .unwrap();
+    assert_eq!(third.results.len(), 1);
+    assert!(third.cursor.is_none(), "末页没有下一页游标");
+    assert_eq!(third.phase, SearchPhase::Done, "翻完照旧 done");
+
+    let mut paged: Vec<SearchHit> = Vec::new();
+    paged.extend(upgraded.results.clone());
+    paged.extend(second.results.clone());
+    paged.extend(third.results.clone());
+    assert_eq!(
+        paged, all.results,
+        "升级后的分页拼起来必须与「一次取全的融合结果」一致"
+    );
+
+    // 拿别的会话的游标翻页要被拒（游标绑定原会话）。
+    let other = core.start_search(request(2), 2).unwrap();
+    let error = core
+        .search_next_page(&other.session_id, Some(&upgrade_cursor))
+        .unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::CursorExpired);
+}
+
+/// 评审（#71）指出的分页正确性 bug：`pageSize = 2` 时，升级前**第一页**的游标与
+/// 升级后第一页的游标偏移相同（都是 2）。老格式只带 `<sessionId>:<offset>`，只看
+/// 偏移的校验会放它进来、返回**融合结果的第二页**——界面若留着关键词阶段的第一页，
+/// 就会把两个阶段的结果拼起来（乱序 / 重复 / 漏项）。
+///
+/// 修法：游标带上**结果代次**（`<sessionId>:<generation>:<offset>`，会话内从 0 起，
+/// 结果集被替换时递增）。代次不一致一律 `cursor_expired`，**不看偏移**；代次一致才
+/// 校验偏移边界。这里的断言在撤掉代次校验时必须变红。
+#[test]
+fn hybrid_upgrade_expires_every_pre_upgrade_cursor_even_at_the_same_offset() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub_split(
+        &counters,
+        vec![("睡前", unit(0))],
+        vec![("睡前", unit(0))],
+    ));
+    // 五篇不同天、篇篇都含查询词：两路都中，融合结果 5 篇，每页 2 条 → 3 页。
+    for day in 1..=5 {
+        let capture = write_capture(&mut core, at(2026, 9, 10 + day), "", &format!("op{day}"));
+        import_and_extract(
+            &mut core,
+            &capture,
+            &format!("D{day}.txt"),
+            &format!("第{day}天睡前想了很多事情。\n"),
+            &format!("mat{day}"),
+        );
+    }
+    core.build_semantic_index(None).unwrap();
+
+    let all = hybrid_mode(&mut core, "睡前", 20);
+    assert_eq!(all.results.len(), 5, "前提：融合结果有 5 篇，每页 2 条");
+
+    // —— 升级前：第一页 + 深页各拿一个游标 ——
+    let first = core
+        .start_search(
+            SearchRequest {
+                query: "睡前".to_owned(),
+                mode: SearchMode::Hybrid,
+                filters: SearchFilters::default(),
+                page_size: 2,
+            },
+            7,
+        )
+        .unwrap();
+    assert_eq!(first.results.len(), 2);
+    let stale_first = first.cursor.clone().expect("升级前还有下一页");
+    let keyword_second = core
+        .search_next_page(&first.session_id, Some(&stale_first))
+        .unwrap();
+    let stale_deep = keyword_second.cursor.clone().expect("升级前还有更深的页");
+
+    // —— 升级：融合重排、从头给结果，结果集被替换 ——
+    let upgraded = core.upgrade_search_to_hybrid(&first.session_id).unwrap();
+    assert_eq!(upgraded.phase, SearchPhase::HybridReady);
+    assert_eq!(upgraded.results.len(), 2);
+    let fresh_cursor = upgraded.cursor.clone().expect("融合结果还有下一页");
+
+    // 评审场景：升级前**第一页**游标的偏移与融合后第一页相同，也必须过期。
+    let error = core
+        .search_next_page(&first.session_id, Some(&stale_first))
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        diary_core::ErrorCode::CursorExpired,
+        "升级前第一页的游标不能接着翻融合结果（哪怕偏移与融合后第一页相同）"
+    );
+
+    // 升级前的深页游标照旧过期（代次校验先于偏移校验）。
+    let error = core
+        .search_next_page(&first.session_id, Some(&stale_deep))
+        .unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::CursorExpired);
+
+    // —— 幂等升级不递增代次：升级后发出的游标在再次升级之后仍然可用 ——
+    assert_eq!(
+        core.upgrade_search_to_hybrid(&first.session_id).unwrap(),
+        upgraded,
+        "幂等升级返回同一份快照（同一代次、同一个第一页游标）"
+    );
+    let second = core
+        .search_next_page(&first.session_id, Some(&fresh_cursor))
+        .unwrap();
+    assert_eq!(second.results.len(), 2);
+    assert_eq!(second.phase, SearchPhase::HybridReady);
+    let second_cursor = second.cursor.clone().expect("还有最后一页");
+    // 翻到中途再升级一次：代次不能变，已经发出的第二页游标必须还能用。
+    let _ = core.upgrade_search_to_hybrid(&first.session_id).unwrap();
+    let third = core
+        .search_next_page(&first.session_id, Some(second_cursor.as_str()))
+        .unwrap();
+    assert_eq!(third.results.len(), 1);
+    assert!(third.cursor.is_none(), "末页没有下一页游标");
+    assert_eq!(third.phase, SearchPhase::Done, "翻完照旧 done");
+
+    // 升级后的游标逐页推进：拼起来 = 一次取全的融合结果，不漏不重。
+    let mut paged: Vec<SearchHit> = upgraded.results.clone();
+    paged.extend(second.results.clone());
+    paged.extend(third.results.clone());
+    assert_eq!(
+        paged, all.results,
+        "升级后的分页拼起来必须与「一次取全的融合结果」一致"
+    );
+
+    // 幂等升级之后旧代次的游标仍然过期：代次不会退回 0。
+    let error = core
+        .search_next_page(&first.session_id, Some(&stale_first))
+        .unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::CursorExpired);
+}
+
+/// **真的会重排**（#69 验收）：关键词那一路先给出的顺序，融合后因为 B 又被语义命中
+/// （两路相加的 RRF 分更高）而翻到前面。也顺便钉住**升级只算一次**（幂等）。
+#[test]
+fn hybrid_upgrade_reorders_what_keyword_already_had() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub_split(
+        &counters,
+        // 文档侧：先匹配「难以入睡」（只 B 走这条）；A 只含关键词，向量与查询正交。
+        vec![("难以入睡", unit(0)), ("开源节流", unit(1))],
+        // 查询侧：正文里那个关键词出现时，查询向量是 unit(0)。
+        vec![("开源节流", unit(0))],
+    ));
+    // A 更近（9/2）→ 关键词名次 1；B 更早（9/1）→ 名次 2。
+    let a_capture = write_capture(&mut core, at(2026, 9, 2), "", "opA");
+    let a = import_and_extract(
+        &mut core,
+        &a_capture,
+        "A.txt",
+        "开源节流，先把账记清。\n",
+        "matA",
+    );
+    let b_capture = write_capture(&mut core, at(2026, 9, 1), "", "opB");
+    let b = import_and_extract(
+        &mut core,
+        &b_capture,
+        "B.txt",
+        "开源节流之外，一到夜里就难以入睡。\n",
+        "matB",
+    );
+    core.build_semantic_index(None).unwrap();
+
+    let started = search_mode(&mut core, "开源节流", SearchMode::Hybrid, 20);
+    assert_eq!(started.phase, SearchPhase::KeywordReady);
+    let first_order: Vec<&str> = started
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert_eq!(
+        first_order,
+        vec![a.as_str(), b.as_str()],
+        "关键词阶段按日期：A（9/2）在前"
+    );
+
+    let fused = core.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(fused.phase, SearchPhase::HybridReady);
+    let order: Vec<&str> = fused
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert_eq!(
+        order,
+        vec![b.as_str(), a.as_str()],
+        "B 两路都中（1/62 + 1/61 > A 的 1/61），融合后被排到 A 前面"
+    );
+    assert_eq!(
+        hit_of(&fused, &b).matched_by,
+        vec![MatchedBy::Keyword, MatchedBy::Semantic]
+    );
+    assert_eq!(hit_of(&fused, &a).matched_by, vec![MatchedBy::Keyword]);
+
+    // 幂等升级**不重复算**：查询向量只 embed 一次。
+    let queries = counters.queries.load(Ordering::SeqCst);
+    assert_eq!(
+        core.upgrade_search_to_hybrid(&started.session_id).unwrap(),
+        fused
+    );
+    assert_eq!(
+        counters.queries.load(Ordering::SeqCst),
+        queries,
+        "重复升级不重复算向量"
+    );
+}
+
+/// 空查询的边界：没有可匹配的内容，`start` 给空结果；升级也**没有任何可融合的证据**
+/// （关键词空 + 语义没有候选），阶段如实停在 `keyword_ready`、结果仍是空的——
+/// 「空就是最终答案」不等于「假装融合过」（#60 复审）。**语义不可用**时同样不许假装，
+/// 走的是 `Unavailable` 那条路径。
+#[test]
+fn hybrid_upgrade_on_an_empty_query_still_checks_semantic_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    let capture = write_capture(&mut core, at(2026, 9, 20), "", "op");
+    import_and_extract(&mut core, &capture, "D.txt", "睡前想了很多事情。\n", "mat");
+    core.build_semantic_index(None).unwrap();
+
+    let empty = |mode: SearchMode| SearchRequest {
+        query: "   ".to_owned(),
+        mode,
+        filters: SearchFilters::default(),
+        page_size: 10,
+    };
+
+    let started = core.start_search(empty(SearchMode::Hybrid), 1).unwrap();
+    assert_eq!(started.phase, SearchPhase::KeywordReady);
+    assert!(started.results.is_empty());
+    let upgraded = core.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(
+        upgraded.phase,
+        SearchPhase::KeywordReady,
+        "两路都空（空查询）时不许假装 hybrid_ready：{:?}",
+        upgraded.warnings
+    );
+    assert!(upgraded.results.is_empty());
+    assert!(
+        upgraded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("查询是空的")),
+        "要如实说清查不出东西的原因：{:?}",
+        upgraded.warnings
+    );
+    // 幂等：再升级一次给同一份快照，阶段不会莫名变成 hybrid_ready。
+    let again = core.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(again, upgraded, "重复升级返回同一份快照");
+    assert_eq!(again.phase, SearchPhase::KeywordReady);
+
+    // 语义不可用（另一个库，没建代次）：升级不许假装。
+    let other_dir = tempfile::tempdir().unwrap();
+    let mut other = new_core(other_dir.path());
+    let started = other.start_search(empty(SearchMode::Hybrid), 2).unwrap();
+    let upgraded = other.upgrade_search_to_hybrid(&started.session_id).unwrap();
+    assert_eq!(
+        upgraded.phase,
+        SearchPhase::KeywordReady,
+        "语义不可用时，空查询的升级也不许报 hybrid_ready：{:?}",
+        upgraded.warnings
+    );
+}
+
+/// 升级要**如实**对待会话状态（#69 第 6 条）：取消（升级前 / 后）、过期、非混合
+/// 会话都不许静默给一份融合结果。
+#[test]
+fn hybrid_upgrade_respects_cancel_expiry_and_non_hybrid_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub_split(
+        &counters,
+        vec![("睡前", unit(0))],
+        vec![("睡前", unit(0))],
+    ));
+    let capture = write_capture(&mut core, at(2026, 9, 20), "", "op");
+    import_and_extract(&mut core, &capture, "D.txt", "睡前想了很多事情。\n", "mat");
+    core.build_semantic_index(None).unwrap();
+
+    let request = |mode: SearchMode| SearchRequest {
+        query: "睡前".to_owned(),
+        mode,
+        filters: SearchFilters::default(),
+        page_size: 10,
+    };
+
+    // 升级前取消：升级不融合，返回 cancelled 快照。
+    let before = core.start_search(request(SearchMode::Hybrid), 1).unwrap();
+    core.cancel_search(&before.session_id).unwrap();
+    let upgraded = core.upgrade_search_to_hybrid(&before.session_id).unwrap();
+    assert_eq!(
+        upgraded.phase,
+        SearchPhase::Cancelled,
+        "取消就是取消，不静默给一份融合结果"
+    );
+    assert_eq!(upgraded.cursor, None);
+
+    // 升级后取消：再升级仍是 cancelled。
+    let after = core.start_search(request(SearchMode::Hybrid), 2).unwrap();
+    let fused = core.upgrade_search_to_hybrid(&after.session_id).unwrap();
+    assert_eq!(fused.phase, SearchPhase::HybridReady);
+    core.cancel_search(&after.session_id).unwrap();
+    let cancelled = core.upgrade_search_to_hybrid(&after.session_id).unwrap();
+    assert_eq!(cancelled.phase, SearchPhase::Cancelled);
+
+    // 过期：会话期间索引变了 → search_expired，让前端重新发起（与 snapshot/nextPage 同口径）。
+    let expiring = core.start_search(request(SearchMode::Hybrid), 3).unwrap();
+    let another = write_capture(&mut core, at(2026, 9, 21), "", "op2");
+    import_and_extract(&mut core, &another, "E.txt", "睡前又想到别的。\n", "mat2");
+    let error = core
+        .upgrade_search_to_hybrid(&expiring.session_id)
+        .unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::SearchExpired);
+
+    // 非混合会话：明确报 invalid_state，不说「升级成功了」。
+    let keyword = core.start_search(request(SearchMode::Keyword), 4).unwrap();
+    let error = core
+        .upgrade_search_to_hybrid(&keyword.session_id)
+        .unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::InvalidState);
+
+    // 会话不存在：search_expired。
+    let error = core.upgrade_search_to_hybrid("search-missing").unwrap_err();
+    assert_eq!(error.code(), diary_core::ErrorCode::SearchExpired);
+}
+
+/// 融合口径是可审计常量：版本号里带着 k / 深度 / 门槛。改了常量却不同步改版本号，
+/// 这条测试就红——照 `CHUNKER_VERSION` 的先例。
+#[test]
+fn hybrid_fusion_constants_are_frozen() {
+    let version = diary_core::HYBRID_FUSION_VERSION;
+    let min_score = format!("min{:.2}", diary_core::HYBRID_SEMANTIC_MIN_SCORE);
+    for needle in ["k60", "depth50", "over200", min_score.as_str()] {
+        assert!(
+            version.contains(needle),
+            "融合版本号 {version} 里没有 {needle}：改了常量要同步改版本号"
+        );
+    }
+    assert_eq!(version, "hybrid-rrf-k60-depth50-over200-min0.40");
+}
+
+/// 回归（评审在 #58 上指出的）：**旧修订的块不能被语义/混合检索当成当前内容召回**。
+///
+/// 场景：建好语义索引 → `revise_text` 改正文 → **不重建** → 搜索。
+/// 块与向量都按内容存，所以旧修订的块仍在生效代次里；候选查询若不按
+/// `source_items.current_revision_id` 过滤，就会命中旧正文。关键词那一路在 #54 已按同一
+/// 口径修过，这一条把语义那一路钉住。
+#[test]
+fn retired_revision_is_not_returned_by_semantic_search_before_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = Core::open(&path).unwrap();
+    let counters = Arc::new(Counters::default());
+    // 桩：旧正文含「旧说法」，新正文含「新说法」——两组正交单位向量，命中与否一目了然。
+    core.set_embedder(stub(
+        &counters,
+        vec![("旧说法", unit(0)), ("新说法", unit(1))],
+    ));
+
+    let capture_id = write_capture(&mut core, at(2026, 9, 20), "", "op");
+    let source_id = import_and_extract(
+        &mut core,
+        &capture_id,
+        "报告.txt",
+        "体检报告：这里写着旧说法，请以此为准。\n",
+        "op-mat",
+    );
+    // 提交后才能改正文（草稿态不允许 revise）。
+    let revision = core.get_capture(&capture_id).unwrap().revision;
+    core.commit(&capture_id, revision, "op-commit").unwrap();
+    core.build_semantic_index(None).unwrap();
+
+    // 前提：建索引之后，旧说法在语义与混合两路都能命中。
+    assert_eq!(
+        search_mode(&mut core, "旧说法", SearchMode::Semantic, 10)
+            .results
+            .len(),
+        1,
+        "前提：旧说法此刻应当能命中"
+    );
+    assert_eq!(
+        hybrid_mode(&mut core, "旧说法", 10).results.len(),
+        1,
+        "前提：混合那一路此刻也能命中"
+    );
+
+    // 改正文：新修订进库（#54 会顺手产出派生内容），但**没有重建语义索引**。
+    let revision = core.get_capture(&capture_id).unwrap().revision;
+    core.revise_text(
+        &source_id,
+        "体检报告：这里写的是新说法，请以此为准。\n",
+        revision,
+        "op-revise",
+    )
+    .unwrap();
+
+    // 这一段是**回归本体**：旧修订的块与向量还在库里，但不能再被召回。
+    assert_eq!(
+        search_mode(&mut core, "旧说法", SearchMode::Semantic, 10)
+            .results
+            .len(),
+        0,
+        "旧修订的块不能被语义检索召回（#32：旧版本不能当成当前内容）"
+    );
+    assert_eq!(
+        hybrid_mode(&mut core, "旧说法", 10).results.len(),
+        0,
+        "混合那一路同样不能召回旧修订"
+    );
+    // 诚实的一面：新正文此时**还没有**向量（没重建），所以语义搜不到它是如实结果。
+    assert_eq!(
+        search_mode(&mut core, "新说法", SearchMode::Semantic, 10)
+            .results
+            .len(),
+        0,
+        "没重建之前，新正文本来就没有向量——如实为空，而不是拿旧向量顶上"
+    );
+
+    // 状态也不能撒谎：旧块不算「可用的块」（它的每一段都不是当前修订）。
+    let status = core.index_status(None).unwrap();
+    assert_eq!(
+        status.total_chunks, 0,
+        "改正文后、重建前，可用的块是 0（旧块仍在库里，但不是当前内容）"
+    );
+    assert_eq!(status.embedded_chunks, 0, "同理，已嵌入的可用块也是 0");
+    assert!(!status.semantic_index_ready, "没有可用块时不该说就绪");
+
+    // 重建之后：新正文能被语义召回，旧正文仍然不能。
+    core.build_semantic_index(None).unwrap();
+    assert_eq!(
+        search_mode(&mut core, "新说法", SearchMode::Semantic, 10)
+            .results
+            .len(),
+        1,
+        "重建之后，新正文应当能被语义召回"
+    );
+    // 注意：**纯语义是 kNN**，它总会返回最近的几条（这里新块与查询正交、分数≈0），
+    // 所以不能断言「条数为 0」——要断言的是**没有任何一条命中是旧正文**。
+    let after = search_mode(&mut core, "旧说法", SearchMode::Semantic, 10);
+    assert!(
+        after.results.iter().all(|hit| !hit
+            .snippet
+            .as_deref()
+            .unwrap_or_default()
+            .contains("旧说法")),
+        "重建之后任何命中都不该是旧正文：{:?}",
+        after.results.iter().map(|h| h.snippet.clone()).collect::<Vec<_>>()
+    );
+}
