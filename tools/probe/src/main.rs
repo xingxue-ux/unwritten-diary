@@ -26,13 +26,20 @@ mod semantic_quality;
 // 混合检索（RRF）的量测与阈值扫描，同样需要真模型。
 #[cfg(feature = "search")]
 mod hybrid_quality;
+// AI 质量集的评测（issue #93 前半）：判定器 + CER + 回放/真模型两种模式。
+// 判定器本身在 diary_core 里，由 `ai-quality` feature 打开（这一片加进 search 的依赖）。
+#[cfg(feature = "search")]
+mod ai_quality;
 
 use anyhow::Result;
 
 fn usage() -> &'static str {
     "用法：\n  diary_probe short-word-search [片段数，默认 20000]\n  diary_probe quality-set（读 tests/quality/search_quality_set.json，可用 DIARY_QUALITY_SET 覆盖）
   diary_probe semantic-quality（真模型：语义召回 + pooling×前缀四组 + f32/int8，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）
-  diary_probe hybrid-quality（真模型：三类对照 + 阈值扫描 + matchedBy 分布，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）\n  diary_probe plugin-runtime\n  diary_probe vector-model（需要 --features model 与本地权重）\n  diary_probe all [片段数]"
+  diary_probe hybrid-quality（真模型：三类对照 + 阈值扫描 + matchedBy 分布，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）
+  diary_probe ai-quality [--replay|--live] [--generation-only] [--json 文件] [--quality-dir 目录]（AI 质量集：生成特征 + 防提示注入 + 转写 CER。默认 --replay，不联网；--live 要 DIARY_AI_ENDPOINT/DIARY_AI_MODEL）
+  diary_probe ai-quality-set（与 ai-quality 同义，风格对齐 quality-set / semantic-quality / hybrid-quality）
+  diary_probe plugin-runtime\n  diary_probe vector-model（需要 --features model 与本地权重）\n  diary_probe all [片段数]"
 }
 
 /// 只在需要检索的构建里解析片段数，否则 plugin-only 构建会报未使用变量。
@@ -77,6 +84,14 @@ fn main() -> Result<()> {
         "hybrid-quality" => {
             #[cfg(feature = "search")]
             hybrid_quality::run()?;
+            #[cfg(not(feature = "search"))]
+            anyhow::bail!("这个构建没有启用 search feature（尝试 cargo run -p diary_probe --features search）");
+        }
+        // `ai-quality-set` 与 `ai-quality` 同义：前者对齐 quality-set / semantic-quality /
+        // hybrid-quality 的取名风格，后者短一点。两个都留，免得记错名字以为没这条命令。
+        "ai-quality" | "ai-quality-set" => {
+            #[cfg(feature = "search")]
+            ai_quality::run(&args[1..])?;
             #[cfg(not(feature = "search"))]
             anyhow::bail!("这个构建没有启用 search feature（尝试 cargo run -p diary_probe --features search）");
         }

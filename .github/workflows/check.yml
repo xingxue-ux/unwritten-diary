@@ -136,6 +136,11 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: 单元测试
         run: cargo test --workspace
+      # AI 质量集的**回放**跑法：不联网（回放引擎不碰 Transport），秒级完成。
+      # 它守的是「判定器 + 质量集 + 报表」三者对得上——回放数字**不是质量基线**，
+      # 真模型基线要手动跑并如实记录（见 docs/architecture/m3-AI-质量集与评测.md）。
+      - name: AI 质量集（回放，不联网）
+        run: cargo run -p diary_probe -- ai-quality --json /tmp/ai-quality-replay-baseline.json
 
   bridge:
     name: bridge

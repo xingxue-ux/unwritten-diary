@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "note": "B4b（#93 前半）转写质量集：短音频 + 参考文本 + CER 上限。音频是**合成静音占位**（kind = synthetic_silence），不是真实语音语料——今天没有自造的真实音频，所以这一集能验的是「CER 算法与报表算得对」，不是「转写质量好」。CER 口径见 crates/diary_core/src/quality/cer.rs：**去掉空白与标点**，只算字与数字（转写模型吐不吐标点是随机的，把标点算进分母会让指标随运气抖动）。replayBaseline 是**回放基线**（与 replayHypothesis 绑定的计算结果），用来当计算回归的锚：CER 算错了这里就对不上。它不是质量数字。tr-04 与 tr-06 是**故意的失败负例**（证明判据不是永远绿）。",
+  "cases": [
+    {
+      "id": "tr-01-meeting",
+      "category": "daily_short",
+      "what": "短句：只有停顿，没有错字。转写应该几乎不丢字。",
+      "audio": {
+        "kind": "synthetic_silence",
+        "sampleRate": 16000,
+        "channels": 1,
+        "durationMs": 900,
+        "note": "合成静音占位，不是真实语音语料；时长与真实语料无关，只决定占位文件大小。"
+      },
+      "reference": "今天开会开了两个小时，最后也没定下来。",
+      "expect": {
+        "maxCer": 0.05,
+        "note": "完全一致，CER 应为 0。"
+      },
+      "replayHypothesis": "今天开会开了两个小时，最后也没定下来。",
+      "replayBaseline": {
+        "referenceChars": 17,
+        "hypothesisChars": 17,
+        "errors": 0,
+        "cer": 0.0
+      }
+    },
+    {
+      "id": "tr-02-hesitation",
+      "category": "hesitation_and_filler",
+      "what": "带口误残留（重复「就」、语气词「嗯」）：干净转写要由模型清掉，CER 量的是「清得干不干净」。",
+      "audio": {
+        "kind": "synthetic_silence",
+        "sampleRate": 16000,
+        "channels": 1,
+        "durationMs": 1100,
+        "note": "合成静音占位，不是真实语音语料。"
+      },
+      "reference": "我觉得这个事情还是得再想想，不能就这么定了。",
+      "expect": {
+        "maxCer": 0.18,
+        "note": "多出两个重复字（「这个」「就」），全是插入错误。"
+      },
+      "replayHypothesis": "我觉得这个这个事情还是得再想想，不能就就这么定了。",
+      "replayBaseline": {
+        "referenceChars": 20,
+        "hypothesisChars": 23,
+        "errors": 3,
+        "cer": 0.15
+      }
+    },
+    {
+      "id": "tr-03-term",
+      "category": "proper_noun",
+      "what": "含专有名词（岗位名「会计」与术语「复式记账」）：专有名词不该被改写成近音词。",
+      "audio": {
+        "kind": "synthetic_silence",
+        "sampleRate": 16000,
+        "channels": 1,
+        "durationMs": 1300,
+        "note": "合成静音占位，不是真实语音语料。"
+      },
+      "reference": "新来的会计说，复式记账就是把每一笔都记成两笔。",
+      "expect": {
+        "maxCer": 0.05,
+        "note": "术语一字不错，CER 应为 0。"
+      },
+      "replayHypothesis": "新来的会计说，复式记账就是把每一笔都记成两笔。",
+      "replayBaseline": {
+        "referenceChars": 21,
+        "hypothesisChars": 21,
+        "errors": 0,
+        "cer": 0.0
+      }
+    },
+    {
+      "id": "tr-04-repeat",
+      "category": "self_correction",
+      "what": "自我更正（「那个」出现多次）：参考文本取「更正之后」的口径，模型要跟着取后者。",
+      "audio": {
+        "kind": "synthetic_silence",
+        "sampleRate": 16000,
+        "channels": 1,
+        "durationMs": 1400,
+        "note": "合成静音占位，不是真实语音语料。"
+      },
+      "reference": "电视坏了，我打算这个周末回老家看看。",
+      "expect": {
+        "maxCer": 0.15,
+        "note": "多出「那个」与语气词「啊」，应有插入错误。"
+      },
+      "replayHypothesis": "电视坏了，我打算那个这个周末啊回老家看看。",
+      "replayBaseline": {
+        "referenceChars": 16,
+        "hypothesisChars": 19,
+        "errors": 3,
+        "cer": 0.1875
+      }
+    },
+    {
+      "id": "tr-05-homophone",
+      "category": "homophone_risk",
+      "what": "含同音词风险（「记账」不写成「记帐」、「折旧」不写成「折久」）：同音错字要算成替换错误。",
+      "audio": {
+        "kind": "synthetic_silence",
+        "sampleRate": 16000,
+        "channels": 1,
+        "durationMs": 1500,
+        "note": "合成静音占位，不是真实语音语料。"
+      },
+      "reference": "财务说这个月的折旧要重新算一遍。",
+      "expect": {
+        "maxCer": 0.1,
+        "note": "「旧」被写成同音的「久」，一个替换错误。"
+      },
+      "replayHypothesis": "财务说这个月的折久要重新算一遍。",
+      "replayBaseline": {
+        "referenceChars": 15,
+        "hypothesisChars": 15,
+        "errors": 1,
+        "cer": 0.066667
+      }
+    },
+    {
+      "id": "tr-06-missing",
+      "category": "dropped_words",
+      "what": "漏字：转写漏掉两个实词，应该被判失败（CER 超上限）。",
+      "audio": {
+        "kind": "synthetic_silence",
+        "sampleRate": 16000,
+        "channels": 1,
+        "durationMs": 1000,
+        "note": "合成静音占位，不是真实语音语料。"
+      },
+      "reference": "他说下周三之前把报告交到办公室。",
+      "expect": {
+        "maxCer": 0.1,
+        "note": "漏了「之前」与「办公室」，CER 会明显超上限——这条是**故意的负例**（回放基线里它就是不通过的）。"
+      },
+      "replayHypothesis": "他说下周三把报告交到。",
+      "replayBaseline": {
+        "referenceChars": 15,
+        "hypothesisChars": 10,
+        "errors": 5,
+        "cer": 0.333333
+      }
+    }
+  ]
+}

@@ -29,6 +29,14 @@ pub mod model;
 /// 公开是为了让测试与 `tools/probe` 能注入回放/记账传输层——这是给测试与量测的
 /// 入口，产品代码只用默认实现（见 `provider::transport`）。
 pub mod provider;
+/// AI 质量集的**判定器**（issue #93，B4b-ai-quality）：可判定的特征判定、CER 计算、
+/// 回放式引擎与「调用 B4b 核心方法」的薄适配层。
+///
+/// 它是**量测代码**（与 `tools/probe` 里的 `quality.rs` 同性质），不是产品路径：
+/// 默认不开，靠 `ai-quality` feature 打开（集成测试与探针会开）。放在核心而不是探针里，
+/// 是因为同一套判定器要同时给探针命令与集成测试（回归）用——复制两份必然各自漂移。
+#[cfg(any(test, feature = "ai-quality"))]
+pub mod quality;
 mod recordings;
 mod schema;
 mod search;
