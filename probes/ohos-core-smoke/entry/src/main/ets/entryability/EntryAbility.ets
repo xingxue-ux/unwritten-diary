@@ -79,7 +79,7 @@ export default class EntryAbility extends UIAbility {
           MARK, i + 1, n, j.substring(i * CHUNK, (i + 1) * CHUNK));
       }
       // ③d 同一个 .so，走产品真实路径（ort crate 的 load-dynamic）
-      const jc = diaryNapi.ortCrateProbe();
+      const jc = diaryNapi.ortCrateProbe(ctx.filesDir);
       hilog.info(DOMAIN, TAG, '%{public}s ORT_CRATE %{public}s', MARK, jc);
     } catch (e) {
       hilog.error(DOMAIN, TAG, '%{public}s ortProbe THREW %{public}s', MARK, this.errText(e));

@@ -36,4 +36,4 @@ export const ortProbe: (dir: string) => string;
  * 与 ortProbe 的区别：ortProbe 用 ORT 的 C API（回答「沙箱能不能 dlopen ORT」），
  * 这个用我们自己的 crate（回答「我们这版 crate 能不能用这个 ORT」）。
  */
-export const ortCrateProbe: () => string;
+export const ortCrateProbe: (modelDir: string) => string;

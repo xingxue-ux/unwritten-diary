@@ -158,22 +158,26 @@ hvigor 的 `ProcessLibs` 会自动收进 HAP 的 `libs/arm64-v8a/`（并顺手 s
 | 项 | 值 |
 |---|---|
 | 沙箱跑通 SQLite | ✅ `stage=ok`、`errors=[]`、SQLite **3.53.2**、`journal_mode=wal`、读回 sha256 与宿主一致 |
-| `Core::open` 冷（建库 + 迁移 schema v8） | **9.2–9.4 ms**；热启动 **0.79 ms** |
-| 单行写入 / 读回 | **0.16 ms / 0.06 ms** |
-| 事务插 1 万行 | **23.5 ms**（≈42 万行/秒） |
-| `save_draft` 第一次 / 第二次 | 131.3 ms / **0.48 ms**（首次数抖动的解释见文档 §21.1，标注为推断） |
-| `core.db`（运行中 db+wal+shm / 关闭后） | 4 KB + 406 KB + 32 KB / **272 KB** |
+| `Core::open` 冷（建库 + 迁移 schema v8） | **9.36–9.51 ms**；热启动 **0.71–0.77 ms** |
+| 单行写入 / 读回 | **0.15 ms / 0.06 ms** |
+| 事务插 1 万行 | **23.8 ms**（≈41 万行/秒） |
+| `save_draft` 第一次 / 第二次 | **121.8 ms / 0.485 ms**（一次性抖动，实测差 250 倍；机制推断见文档 §21.1） |
+| `core.db`（运行中 db+wal+shm / 关闭后） | 4 KB + 451 KB + 32 KB / **272 KB** |
 | `dlopen` 我们自己的 `.so` | ✅ 裸名与绝对路径都行，真实路径 `/data/storage/el1/bundle/libs/arm64/…` |
 | `dlopen` el2 里的 `.so` | ❌ `No such file or directory`（对照实验见坑 4） |
-| `dlopen` ONNX Runtime | ✅ `1.16.3`，建 session + 真实推理 `C=[1,2,3,4,5,6]` 与宿主逐项一致 |
-| `ort` crate（load-dynamic） | ❌ 干净报错：`expected version >= '1.17.x', but got '1.16.3'`（**版本问题，不是沙箱问题**） |
-| HAP 体积 | 不含 ORT **5.23 MB**（unsigned）/ 含 ORT **18.23 MB** |
+| `dlopen` + 推理（ORT C API） | ✅ 自编 **1.29.1**：`dlopen`/`GetApi(17)`/`CreateSession`/`Run` 全通，`C=[1,2,3,4,5,6]` 与宿主逐项一致 |
+| **`ort` crate（load-dynamic，产品真实路径）** | ✅ `init_from` → `commit` → `Session::builder().commit_from_file` → `ort::inputs!` → `run` → `try_extract_tensor` 全通，`crate_C_matches_expected: true` |
+| HAP 体积 | 不含 ORT **≈5.2 MB** / 含自编 ORT **unsigned 24.98 MB、signed 25.25 MB** |
 
-> ORT 从哪来：本次用的是 **sherpa-onnx 官方 OHOS 预编译包**里的 `libonnxruntime.so`
-> （Apache-2.0/MIT；`build-native.sh` 会自动下载），**它只有 1.16.3，比我们 `ort` crate 要求的
-> API 17 低一个 minor**，所以它只用来证明「沙箱能 dlopen ORT + 能推理」。
-> 正式选型应当用 `/tmp/requests-wt/archives/o/onnxruntime/1.29.1` 的配方自编 ORT ≥1.17
-> （进度与踩坑见文档 §24.5）。
+> ORT 从哪来（两条路，两条都走过了）：
+> 1. **快路**：sherpa-onnx 官方 OHOS 预编译包里的 `libonnxruntime.so`（`SKIP_ORT=0` 时 `build-native.sh` 会自动下载），
+>    **只有 1.16.3**，比我们 `ort` crate 要求的 API 17 低一个 minor —— 它证明了「沙箱能 dlopen ORT + 能推理」，
+>    但**吃不到产品的 `ort` crate**；
+> 2. **正路（本次最终采用）**：按 `/tmp/requests-wt/archives/o/onnxruntime/1.29.1` 的配方**自编 ORT 1.29.1**
+>    （19.62 MB / strip 后），放进 `entry/libs/arm64-v8a/` 即可 —— 产品路径全通。构建过程、耗时（~33 min/16 核）
+>    与 WSL/CI 环境差异清单见文档 §24.5。
+>
+> 用已有的 ORT 跳过下载：`ORT_SO_DIR=<含 libonnxruntime.so 的目录> ./scripts/build-native.sh`。
 
 ## 复现脚本
 

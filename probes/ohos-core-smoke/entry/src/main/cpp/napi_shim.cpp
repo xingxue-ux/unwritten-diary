@@ -340,6 +340,19 @@ napi_value OrtProbeJs(napi_env env, napi_callback_info info) {
 // JS: ortCrateProbe() -> string(JSON)
 // 走**产品真实调用路径**：Rust 侧 `ort` crate 的 load-dynamic。
 napi_value OrtCrateProbeJs(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string modelDir;
+    if (argc >= 1) {
+        size_t len = 0;
+        if (napi_get_value_string_utf8(env, argv[0], nullptr, 0, &len) == napi_ok && len > 0) {
+            modelDir.resize(len);
+            size_t copied = 0;
+            napi_get_value_string_utf8(env, argv[0], modelDir.data(), len + 1, &copied);
+            modelDir.resize(copied);
+        }
+    }
     const std::string ortPath = SelfDir() + "libonnxruntime.so";
     std::string json = "{\"error\":\"libdiary_core_smoke.so 未加载\"}";
     // 复用 runSmoke 那套 dlopen/dlsym：这里只需要 diary_ort_crate_probe 一个符号。
@@ -348,11 +361,11 @@ napi_value OrtCrateProbeJs(napi_env env, napi_callback_info info) {
         h = dlopen((SelfDir() + "libdiary_core_smoke.so").c_str(), RTLD_NOW | RTLD_LOCAL);
     }
     if (h != nullptr) {
-        using CrateProbeFn = char *(*)(const char *);
+        using CrateProbeFn = char *(*)(const char *, const char *);
         auto probe = reinterpret_cast<CrateProbeFn>(dlsym(h, "diary_ort_crate_probe"));
         auto freeFn = reinterpret_cast<SmokeFreeFn>(dlsym(h, "diary_smoke_free"));
         if (probe != nullptr) {
-            char *res = probe(ortPath.c_str());
+            char *res = probe(ortPath.c_str(), modelDir.c_str());
             if (res != nullptr) {
                 json = std::string(res);
                 if (freeFn != nullptr) {

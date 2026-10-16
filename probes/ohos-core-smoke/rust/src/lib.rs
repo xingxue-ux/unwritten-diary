@@ -10,7 +10,8 @@
 //! char *diary_smoke_run(const char *db_dir);  /* 返回 malloc 出来的 JSON（UTF-8），出错也是 JSON */
 //! void  diary_smoke_free(char *p);
 //! const char *diary_smoke_abi(void);          /* 版本戳，用来确认 dlsym 拿到的是哪一个库 */
-//! char *diary_ort_crate_probe(const char *ort_so);  /* 走产品真实路径：ort crate 的 load-dynamic */
+//! char *diary_ort_crate_probe(const char *ort_so, const char *model_dir);
+//!                                             /* 走产品真实路径：ort crate 的 load-dynamic */
 //! ```
 //!
 //! 结果 JSON 里的字段全部是**设备侧实测值**，没有估算。
@@ -89,13 +90,20 @@ pub extern "C" fn diary_smoke_abi() -> *const c_char {
 /// （`NonNull::new(api).expect("Failed to initialize ORT API")`），不是 `Err`，
 /// 所以必须 `catch_unwind` 才能把 panic 原文带出来给设备日志。
 #[no_mangle]
-pub extern "C" fn diary_ort_crate_probe(ort_so: *const c_char) -> *mut c_char {
-    let path = if ort_so.is_null() {
-        String::new()
-    } else {
-        // SAFETY: 调用方保证传进来的是 NUL 结尾的 UTF-8 C 字符串。
-        unsafe { CStr::from_ptr(ort_so) }.to_string_lossy().into_owned()
+pub extern "C" fn diary_ort_crate_probe(
+    ort_so: *const c_char,
+    model_dir: *const c_char,
+) -> *mut c_char {
+    // SAFETY: 调用方保证两个参数都是 NUL 结尾的 UTF-8 C 字符串（或空）。
+    let cstr = |p: *const c_char| -> String {
+        if p.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+        }
     };
+    let path = cstr(ort_so);
+    let dir = cstr(model_dir);
 
     let value = match catch_unwind(AssertUnwindSafe(|| {
         let mut r = Map::new();
@@ -110,6 +118,23 @@ pub extern "C" fn diary_ort_crate_probe(ort_so: *const c_char) -> *mut c_char {
                 let first = builder.commit();
                 r.insert("commit_ok".into(), json!(true));
                 r.insert("commit_first_in_process".into(), json!(first));
+
+                // ★ 用**与产品完全相同的用法**建 session 并跑一次推理：
+                //   Session::builder() → commit_from_file → ort::inputs![Tensor::from_array] → run → try_extract_tensor
+                match run_tiny_via_crate(&dir) {
+                    Ok(values) => {
+                        r.insert("crate_session_ok".into(), json!(true));
+                        r.insert("crate_C".into(), json!(values));
+                        r.insert(
+                            "crate_C_matches_expected".into(),
+                            json!(values == vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]),
+                        );
+                    }
+                    Err(e) => {
+                        r.insert("crate_session_ok".into(), json!(false));
+                        r.insert("crate_session_err".into(), json!(e));
+                    }
+                }
             }
             Err(e) => {
                 r.insert("init_from_ok".into(), json!(false));
@@ -141,6 +166,34 @@ pub extern "C" fn diary_ort_crate_probe(ort_so: *const c_char) -> *mut c_char {
 }
 
 // ─────────────────────────── 实现 ───────────────────────────
+
+/// 用 `ort` crate（**产品同款用法**）在 `<dir>/tiny_add.onnx` 上跑一次 `C = A + B`。
+///
+/// 这里刻意照抄 `crates/diary_core/src/embedding.rs` 的调用形状：
+/// `Session::builder()` → `commit_from_file` → `ort::inputs![Tensor::from_array]`
+/// → `session.run` → `try_extract_tensor::<f32>()`。
+fn run_tiny_via_crate(dir: &str) -> std::result::Result<Vec<f32>, String> {
+    use ort::value::Tensor;
+
+    let model = format!("{dir}/tiny_add.onnx");
+    let mut session = ort::session::Session::builder()
+        .map_err(|err| format!("创建会话失败：{err}"))?
+        .commit_from_file(&model)
+        .map_err(|err| format!("加载模型失败（{model}）：{err}"))?;
+
+    let a: Vec<f32> = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+    let b: Vec<f32> = vec![1.0; 6];
+    let inputs = ort::inputs![
+        "A" => Tensor::from_array(([2_i64, 3_i64], a)).map_err(|err| format!("构造 A 失败：{err}"))?,
+        "B" => Tensor::from_array(([2_i64, 3_i64], b)).map_err(|err| format!("构造 B 失败：{err}"))?,
+    ];
+    let outputs = session.run(inputs).map_err(|err| format!("前向失败：{err}"))?;
+    let (_shape, data) = outputs[0]
+        .try_extract_tensor::<f32>()
+        .map_err(|err| format!("读输出失败：{err}"))?;
+    Ok(data.to_vec())
+}
+
 
 fn ms(d: std::time::Duration) -> f64 {
     // 保留 3 位小数，单位毫秒。
