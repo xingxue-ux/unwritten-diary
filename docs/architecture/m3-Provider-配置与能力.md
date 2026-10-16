@@ -16,7 +16,8 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 | 配置表叫 `providers`，列名对齐契约 DTO | `adapter_id` ↔ `adapterId`、`endpoint` ↔ `endpoint`、`declared_capabilities` / `verified_capabilities` / `credential_ref` / `enabled` / `test_status` | 桥接层是字段级镜像，改名只会多一层翻译与一处不一致的机会（issue 正文里的 `kind` / `base_url` 是口语说法，落地以契约为准） |
 | schema **v8 → v9**，只加两张表 | `providers`、`ai_responses`；**不回填** | 升级前没有任何 Provider 配置，替用户猜一个服务填进去是错的（见下「迁移」） |
 | 能力集合是契约第 2.7 节的三项 | `generate_text` / `transcribe_audio` / `understand_image`；**内置适配器只实现前两项** | 契约要求「至少区分」这三项；没实现的不假装（`understand_image` 留给 M4 的插件模型能力） |
-| 只内置一种协议 | `openai_compatible`（Chat Completions + Audio Transcriptions 的兼容协议） | 任务书要求「先内置一种有公开文档的常用协议，供应商不硬编码进业务层」。很多本机/局域网服务也照这个协议做 |
+| 只内置一种 HTTP 协议 | `openai_compatible`（Chat Completions + Audio Transcriptions 的兼容协议） | 任务书要求「先内置一种有公开文档的常用协议，供应商不硬编码进业务层」。很多本机/局域网服务也照这个协议做 |
+| 适配器有**两种形态** | HTTP（`ProtocolAdapter`，经 `Transport` 出网）与**本地引擎**（`LocalEngine`，只读本机库与模型目录，**不可能出网**）；`Adapter` 枚举是统一入口 | 本地引擎没有 URL/密钥/出站调用，硬塞进 HTTP trait 会把「默认不联网」变成一句注释。#91 落地的 `sherpa_onnx` 是第一种本地引擎，口径见 [M3 · 转写链](m3-转写链.md) |
 | 传输层可注入 | `Transport` trait；产品默认 `UreqTransport`，测试注入回放/记账/panic 替身 | CI 不联网也要能跑，而且「有没有真的发生调用」要能被**数出来** |
 | **只有两处会出网** | 用户显式的 `providers.test`，与真的被领取执行的 Provider 作业（`respond`） | 「默认不联网」不是靠约定，是靠没有别的调用点 |
 | 没有配置/启用任何服务时**一个请求都不发** | 排任务入口先过能力闸门；队列在领取前再过一次 | 排一条注定失败的任务既费流量又骗用户 |
@@ -31,7 +32,7 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 | `label` | 显示名 |
 | `adapter_id` | 协议适配器（当前只有 `openai_compatible`） |
 | `endpoint` | 服务地址，含 API 版本前缀（例如 `http://127.0.0.1:11434/v1`）。只接受 `http` / `https` |
-| `model` | 模型名（生成/转写各自一个服务配置） |
+| `model` | 模型名（生成/转写各自一个服务配置）。**本地引擎这条路上它是「模型目录」**（见 [M3 · 转写链](m3-转写链.md)），留空表示用随包/环境变量解析出的默认目录 |
 | `declared_capabilities` | 配置里声明的能力（JSON 数组，wire 名） |
 | `verified_capabilities` | 连接测试**验过**的能力（JSON 数组；部分范围的测试按能力并集保留，被测失败的那一项会被摘掉） |
 | `credential_ref` | 密钥托管里的引用——**不是密钥** |
@@ -210,6 +211,25 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 multipart 是手写的（一个文件字段 + 两个文本字段，boundary 是常量）：形状固定，
 引一个 multipart crate 不划算。
 
+## 本地引擎：连接测试与降级
+
+本地引擎（#91 的 `sherpa_onnx`）走**同一套**能力协商与门控，只有两处不同：
+
+1. **配置要求不同**：没有 `endpoint`（给本地适配器配 `http(s)://` 会被 `providers.save`
+   拒绝，理由是「endpoint 是 HTTP 协议的事」）、没有密钥要求（`credential_ref` 存 NULL），
+   改为**本机资源就绪**：模型目录里有 `model.int8.onnx`/`model.onnx` 与 `tokens.txt`，
+   引擎动态库找得到。不就绪 → 与 HTTP 那条路同一个码 `provider_not_configured` →
+   作业停在 `waiting_configuration`（不消耗重试额度），理由里写清缺哪个路径、下一步做什么；
+2. **连接测试不发请求**：`providers.test` 对本地引擎会**真的加载模型并转写 0.05 秒静音**
+   （与 B4a 那份探针音频同一段），报告里写明「完成了 N 次本机推理，**没有发起任何网络
+   请求**」。`actual_call_made` 对本地引擎表示「真的跑了一次推理」——契约里这个字段的
+   含义是「本次测试发生了真实调用」，本机推理也算。
+
+核心**自带**的本机转写引擎（随包模型）不是 `providers` 表里的一行，但它能被
+`providers.test` 测：id 是 `builtin_local_asr`（常量 `BUILTIN_LOCAL_ASR_ID`）。
+为什么不自动插一行：用户删掉之后下次开库又会原样长回来，没有墓碑就无法区分「用户不要」
+与「还没配」。要改模型目录/停用它，就保存一条同 adapter 的覆盖配置（行优先于内建）。
+
 ## 验证到了什么
 
 `crates/diary_core/tests/provider_test.rs`（24 条）与 `provider/*.rs` 的单元测试覆盖：
@@ -254,8 +274,9 @@ python3 tools/check_docs.py
 - **没有跟随重定向、没有自定义 CA**：自签证书的局域网服务现在连不上（rustls 只认打包的根集合）；
 - **响应不可解析归到了 `model_unavailable`**：v1 没有更贴切的码。若要更精确，需要新增
   `provider_response_invalid` / `provider_server_error` 之类的码（契约 + Dart 枚举变更）；
-- **转写管线没接**（B4b）：能力可声明、可验证、可查询，但「读音频 → 调用 → 落库」没有实现，
-  `transcribe` 任务仍然终态 `no_handler`；
+- **转写管线已接**（#91，见 [M3 · 转写链](m3-转写链.md)）：`transcribe` 有了执行者
+  （本机 ONNX 引擎 + 分段/恢复/幂等 + 落派生内容），`job_capability` 也加上了映射。
+  这里保留这条是提醒读者：**远端转写**没有进产品链——录音的转写链只跑本机引擎；
 - **`understand_image` 只登记不实现**：内置适配器没有图像理解（M4 的插件模型能力）；
 - **界面拿不到「这条任务在等什么配置」的完整理由**：任务的 `error_code` 是合同内的码
   （`provider_not_configured` / `authentication_failed`），可执行的解释在

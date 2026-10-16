@@ -4,9 +4,15 @@
 //! 下次唤醒时刻与通知去重。
 //!
 //! 驱动（`run_due`）：把到期任务取出来，按 `kind` 找执行者跑掉，再把结果落回队列。
-//! 目前 `extract` 与 `index` 真有执行者；没有执行者的 `kind`（`transcribe` 等 B4a
-//! 的 Provider）**不会静默成功**，而是进「已放弃」+ `error_code = no_handler`
+//! 真有执行者的是 `extract` / `index` / `respond` / `transcribe`（[`HANDLED_KINDS`]）；
+//! 没有执行者的 `kind` **不会静默成功**，而是进「已放弃」+ `error_code = no_handler`
 //! 等人工处理（见 `execute`）。
+//!
+//! **历史包袱**：`transcribe` 在 #91 之前没有执行者，那些任务进了「已放弃」+
+//! `no_handler`。执行者接上之后，[`requeue_legacy_no_handler`] 在开库时把这类任务
+//! **一次性放回队列**（它们会走正常路径：能跑就跑，跑不了就停在 `waiting_configuration`
+//! 并写清缺什么）。判据自带幂等：放回队列后 `error_code` 就不是 `no_handler` 了，
+//! 下一次开库不会再命中。
 //!
 //! 优先级照任务书 7.1 节：保存与录音片段登记最高，整库重建最低。
 //! 决定与口径写在 `docs/architecture/m4-任务调度与补做.md`。
@@ -41,6 +47,15 @@ pub(crate) const ERROR_NO_TARGET: &str = "no_target";
 /// `index` 在等什么（写在 `jobs.error_code` 上，**不改 schema**）：
 /// 目标来源的当前修订还没提取完，而队列里还有一条活着的 `extract` 会写出来。
 pub(crate) const WAITING_EXTRACT: &str = "waiting_extract";
+
+/// `index` 在等的另一种活：**转写**（#91 之后 `transcribe` 也会给来源写派生内容）。
+///
+/// 与 `waiting_extract` 分开写，是因为「在等哪一环」是用户要看的答案：
+/// 一条音频的索引任务在等转写，和一份文档的索引任务在等解析，下一步不一样。
+///
+/// 判据不用 `target_ids` 直接比：转写任务瞄的是**资产 id**，得 join 回修订
+/// （见 `index_dependency` 的注释）。
+pub(crate) const WAITING_TRANSCRIBE: &str = "waiting_transcribe";
 
 /// `index` 的终态失败码：`extract` 这一环不会再有执行者来满足了（前置任务被取消、
 /// 已放弃，又没有派生内容）。码里点明是哪一环，挂死不如如实失败。
@@ -659,7 +674,7 @@ fn index_dependency(core: &Core, job: &Job) -> Result<Dependency> {
             Dependency::Ready
         });
     }
-    let mut waiting = false;
+    let mut pending_reason: Option<&'static str> = None;
     for source_id in &job.target_ids {
         let current: Option<Option<String>> = core
             .conn
@@ -707,16 +722,30 @@ fn index_dependency(core: &Core, job: &Job) -> Result<Dependency> {
             params![KIND_EXTRACT, revision_id],
             |row| row.get(0),
         )?;
+        // 转写链也会给这条来源写派生内容，但它的 `target_ids` 是**资产 id**
+        // （见 `recordings::finalize`），所以要 join 回修订再比。不认这一条的话，
+        // 「录音刚最终化、转写还没跑」时排的索引任务会被判成
+        // `dependency_extract_unmet` 终态失败——那是错的：内容马上就有了。
+        let live_transcribe: i64 = core.conn.query_row(
+            "SELECT COUNT(*) FROM jobs j WHERE j.kind = ?1 \
+             AND j.state NOT IN ('succeeded', 'failed', 'cancelled') \
+             AND EXISTS (SELECT 1 FROM json_each(j.target_ids) AS target \
+                         JOIN source_revisions sr2 ON sr2.asset_id = target.value \
+                         WHERE sr2.revision_id = ?2)",
+            params![crate::transcription::KIND_TRANSCRIBE, revision_id],
+            |row| row.get(0),
+        )?;
         if live_extract > 0 {
-            waiting = true;
+            pending_reason = Some(WAITING_EXTRACT);
+        } else if live_transcribe > 0 {
+            pending_reason = Some(WAITING_TRANSCRIBE);
         } else {
             return Ok(Dependency::Broken(ERROR_DEPENDENCY_UNMET));
         }
     }
-    Ok(if waiting {
-        Dependency::Pending(WAITING_EXTRACT)
-    } else {
-        Dependency::Ready
+    Ok(match pending_reason {
+        Some(reason) => Dependency::Pending(reason),
+        None => Dependency::Ready,
     })
 }
 
@@ -846,8 +875,9 @@ fn dependency_message(code: &str, job: &Job) -> String {
     let targets = job.target_ids.join("、");
     match code {
         ERROR_DEPENDENCY_UNMET => format!(
-            "等不到提取完成：{targets} 没有可索引的派生内容，队列里也没有活着的 extract 任务"
+            "等不到正文：{targets} 没有可索引的派生内容，队列里也没有活着的 extract / transcribe 任务"
         ),
+        WAITING_TRANSCRIBE => format!("等转写完成：{targets} 的当前修订还在转写队列里"),
         _ => format!("目标来源不可用：{targets}"),
     }
 }
@@ -1095,24 +1125,133 @@ pub(crate) fn run_due(
     Ok(summary)
 }
 
+/// 真有执行者的 kind。**这是唯一的事实来源**：`execute` 的分派与
+/// [`has_handler`]、[`requeue_legacy_no_handler`] 都看它，避免「接了执行者却忘了
+/// 把旧任务放回来」或者反过来。
+const HANDLED_KINDS: &[&str] = &[
+    KIND_EXTRACT,
+    KIND_INDEX,
+    provider::KIND_RESPOND,
+    crate::transcription::KIND_TRANSCRIBE,
+];
+
+/// 这个 kind 现在有执行者吗。
+pub(crate) fn has_handler(kind: &str) -> bool {
+    HANDLED_KINDS.contains(&kind)
+}
+
 /// 按 `kind` 找执行者。
 ///
-/// **只有真有实现的 kind 才被执行**。没有执行者的 kind（现在只有 `transcribe`：
-/// 它等 B4a 的 Provider）走诚实的「没有处理器」：进「已放弃」+ `no_handler` +
-/// `requires_user_action`，绝不静默成功。
+/// **只有真有实现的 kind 才被执行**。没有执行者的 kind 走诚实的「没有处理器」：
+/// 进「已放弃」+ `no_handler` + `requires_user_action`，绝不静默成功。
 fn execute(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailure> {
     match job.kind.as_str() {
         KIND_EXTRACT => run_extract(core, job),
         KIND_INDEX => run_index(core, job),
         kind if kind == provider::KIND_RESPOND => run_respond(core, job),
+        kind if kind == crate::transcription::KIND_TRANSCRIBE => run_transcribe(core, job),
         _ => Err(HandlerFailure::terminal(
             "no_handler",
-            format!(
-                "核心还没有「{}」任务的执行者（转写管线是 B4b 的事）",
-                job.kind
-            ),
+            format!("核心还没有「{}」任务的执行者", job.kind),
         )),
     }
+}
+
+/// `transcribe` 的执行者：读音频 → 分段转写 → 落派生内容（+ 关键词索引）。
+///
+/// 时间语义与 `respond` 同一套，差别只在**哪些算「换个时间可能就好」**：
+/// 转写是自己机器上的活，文件暂时不在/IO 忙值得退避重试；引擎没就绪要等用户补模型；
+/// 模型坏了、容器不支持这类确定性原因直接终态。判据写在
+/// `transcription::is_transient` 的表里（那里有逐条理由）。
+fn run_transcribe(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailure> {
+    if job.target_ids.is_empty() {
+        return Err(HandlerFailure::terminal(
+            ERROR_NO_TARGET,
+            "转写任务没有目标音频，重试也不会变好".to_owned(),
+        ));
+    }
+    crate::transcription::run(core, job).map_err(|error| {
+        if crate::transcription::is_transient(&error) {
+            HandlerFailure::retryable(error)
+        } else {
+            HandlerFailure::from_error(error)
+        }
+    })
+}
+
+/// 报告一条任务的真实进度（已完成/总数）。
+///
+/// 为什么现在才有：进度要有**可靠来源**才准写（契约：没有可靠进度时必须是 None）。
+/// 转写链按窗口推进，窗口总数与已完成数都是真的，所以这里如实写。
+///
+/// **不发 `job.changed` 事件**：一个长录音有一百多个窗口，每个窗口一条域事件会把
+/// 事件表撑大，而进度是「查询时读到的真值」——`jobs.get` / `jobs.list` 直接读它，
+/// 不需要靠事件推。这一条与别的状态变更不同，刻意记在这里。
+pub(crate) fn report_progress(
+    core: &mut Core,
+    job_id: &str,
+    completed: i64,
+    total: i64,
+) -> Result<()> {
+    if total <= 0 {
+        return Ok(());
+    }
+    core.conn.execute(
+        "UPDATE jobs SET progress_completed = ?1, progress_total = ?2, updated_at = ?3 \
+         WHERE id = ?4 AND state = 'running'",
+        params![
+            completed.clamp(0, total),
+            total,
+            support::to_iso(support::now()),
+            job_id
+        ],
+    )?;
+    Ok(())
+}
+
+/// 一次性清账：以前因为**没有执行者**而进「已放弃」的旧任务，现在有执行者了，
+/// 把它们放回队列重跑（`#91` 的验收要求之一：处理 `no_handler` 的历史包袱）。
+///
+/// 三条口径：
+///
+/// 1. **只放回现在真有执行者的 kind**（[`has_handler`]）。没有执行者的 kind 仍然
+///    留在「已放弃」+ `no_handler`——那个理由是**真的**，改掉它才是撒谎；
+/// 2. **自带幂等，不需要额外标记**：放回队列会把 `error_code` 清空，下一次开库
+///    就再也查不到它（`state='failed' AND error_code='no_handler'` 是判据）。
+///    所以不需要「迁移过没有」这种账面，也就不需要改 schema；
+/// 3. **如实记一次清零**：与人工重试同一个语义（`attempt_count` 清零、发
+///    `job.changed`），旧的那次尝试留在 `job_attempts` 里（编号跨人工重试累计），
+///    所以「为什么重试了五次」仍然答得出来。
+///
+/// 目标已经不在了的任务也照样放回：它会以 `not_found` 终态失败——那是**当下的
+/// 真相**（音频没了），比留着一句「核心还没有执行者」诚实。
+pub(crate) fn requeue_legacy_no_handler(
+    conn: &mut rusqlite::Connection,
+    at: DateTime<Utc>,
+) -> Result<i64> {
+    let ids: Vec<(String, String)> = {
+        let mut statement = conn.prepare(
+            "SELECT id, kind FROM jobs WHERE state = 'failed' AND error_code = 'no_handler' \
+             ORDER BY created_at, id",
+        )?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    let now_text = support::to_iso(at);
+    let mut requeued = 0;
+    for (job_id, kind) in ids {
+        if !has_handler(&kind) {
+            continue;
+        }
+        let tx = conn.transaction()?;
+        reset_for_retry(&tx, &job_id, &now_text)?;
+        tx.commit()?;
+        requeued += 1;
+    }
+    Ok(requeued)
 }
 
 /// `extract` 的执行者：对任务 `target_ids` 里的来源修订跑已有提取路径。

@@ -7,6 +7,16 @@
 //! 文档的文本服务协议：`openai_compatible`（OpenAI Chat Completions 与
 //! Audio Transcriptions 的兼容协议，很多本机/局域网服务也照着它做）。
 //!
+//! # 两种适配器形态：HTTP 与本地引擎
+//!
+//! [`Adapter`] 是统一入口：HTTP 协议（`openai_compatible` 这类，经 `Transport` 出网）
+//! 与**本地引擎**（`sherpa_onnx`，只读本机的库与模型目录，**不可能出网**）。
+//! 两者共享能力协商、能力闸门、连接测试与错误归一化的语义；差别只在「怎么调用」，
+//! 由 `provider/mod.rs` 里那两个分支负责（见 `provider::local_engine` 的模块文档）。
+//!
+//! `adapter_for` 返回的是枚举而不是 `&dyn ProtocolAdapter`：本地引擎没有
+//! `probe → HttpRequest` 这个形状，硬塞进 HTTP trait 只会把「不联网」变成一句注释。
+//!
 //! # 诚实的能力声明
 //!
 //! `capabilities()` 列出**这个适配器真的实现了**的能力。契约第 2.7 节的
@@ -91,17 +101,49 @@ pub trait ProtocolAdapter: Send + Sync {
     ) -> Result<GenerateOutcome>;
 }
 
+/// 一个适配器：要么是 HTTP 协议，要么是本地引擎。
+///
+/// 上层（能力闸门、连接测试、执行者）按形态分支，但**能力协商的判据是同一套**：
+/// 能力集合、配置声明、连接测试结论，三者缺一不可（见 `provider::evaluate`）。
+pub enum Adapter {
+    Http(&'static dyn ProtocolAdapter),
+    Local(&'static dyn super::local_engine::LocalEngine),
+}
+
+impl Adapter {
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::Http(adapter) => adapter.id(),
+            Self::Local(engine) => engine.id(),
+        }
+    }
+
+    /// 这个适配器真的实现了的能力。
+    pub fn capabilities(&self) -> &'static [ProviderCapability] {
+        match self {
+            Self::Http(adapter) => adapter.capabilities(),
+            Self::Local(engine) => engine.capabilities(),
+        }
+    }
+
+    /// 是不是本地引擎（不联网、没有 endpoint、没有密钥）。
+    pub fn is_local(&self) -> bool {
+        matches!(self, Self::Local(_))
+    }
+}
+
 /// 按标识取内置适配器。取不到就是「核心还没有这种协议」——不静默换一个。
-pub fn adapter_for(adapter_id: &str) -> Option<&'static dyn ProtocolAdapter> {
+pub fn adapter_for(adapter_id: &str) -> Option<Adapter> {
     match adapter_id {
-        OPENAI_COMPATIBLE => Some(&OpenAiCompatible {}),
-        _ => None,
+        OPENAI_COMPATIBLE => Some(Adapter::Http(&OpenAiCompatible {})),
+        other => super::local_engine::local_engine_for(other).map(Adapter::Local),
     }
 }
 
 /// 内置适配器清单（用于错误消息与文档，不含插件带来的）。
 pub fn builtin_adapter_ids() -> &'static [&'static str] {
-    &[OPENAI_COMPATIBLE]
+    // 两种形态各列自己的 id；`local_engine` 那张表与这里保持同一个来源。
+    &[OPENAI_COMPATIBLE, super::local_engine::SHERPA_ONNX]
 }
 
 // ------------------------------------------------------------ OpenAI 兼容
