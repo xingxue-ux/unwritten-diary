@@ -1,8 +1,8 @@
 # Android 系统唤醒接入（#19）
 
-应用启动时注册 WorkManager 的 15 分钟周期保底任务。核心打开后，前台还会读取 `jobs.nextWakeup`，登记一次性任务；文字提交等核心状态变化后重新登记。系统在应用不在前台时启动独立 Flutter isolate，该入口重新打开同一资料库并调用 `jobs.runDue(budgetMs: 20000, trigger: wake)`。成功或失败都写入应用私有目录 `unwritten_diary/wakeup-diagnostics.jsonl`；失败由 WorkManager 重试，下一次唤醒仍以核心返回的 `nextWakeup` 为准。
+应用启动时注册 WorkManager 的 15 分钟周期保底任务。核心打开后，前台还会读取 `jobs.nextWakeup`，登记一次性任务；文字提交等核心状态变化后重新登记。系统在应用不在前台时启动独立 Flutter isolate，该入口取得同一资料库的进程内共享 `BridgeSession` 并调用 `jobs.runDue(budgetMs: 20000, trigger: wake)`。共享锁阻止后台任务与前台导入并发使用两个 `Core`，也避免第二次 `Core::open` 把正在复制的导入误作中断恢复。只有最后一个会话释放后，下一次打开才重新执行恢复。运行与异常写入应用私有目录 `unwritten_diary/wakeup-diagnostics.jsonl`；临时失败由 WorkManager 重试，永久性契约错误不重试。
 
-两个交替的一次性任务名避免工作者在执行中重新登记自己时取消当前任务。周期任务用于拾起尚未来得及登记的导入或系统分享任务。`initialDelay` 只是最早执行时刻，不承诺准点：Doze、省电策略、系统负载都可能推迟。结果日志中的 `expectedAt`、`observedAt`、`completedAt` 用于量测实际偏差，`processed`、`succeeded`、`failed`、`retrying` 等数字直接来自核心返回，不是界面推断。
+一次性任务统一使用 `diary-core-wakeup` 唯一名，新任务追加到正在执行的工作后面，避免取消当前工作；升级时取消旧版两个交替任务。周期任务用于拾起尚未来得及登记的导入或系统分享任务。周期任务和一次性任务仍可能同时启动，但共享的 `Core` 锁会串行处理。该锁只覆盖同一个 Android 进程；应用不得另开进程直接访问同一资料库。`initialDelay` 只是最早执行时刻，不承诺准点：Doze、省电策略、系统负载都可能推迟。到期时间已经过去时，最少等待 15 秒以免立即循环。20 秒预算在两条核心任务之间判断，不会强行中断单条长任务。结果日志中的 `expectedAt`、`observedAt`、`completedAt` 用于量测实际偏差，`processed`、`succeeded`、`failed`、`retrying` 等数字直接来自核心返回，不是界面推断。
 
 ## 真机验收记录模板
 

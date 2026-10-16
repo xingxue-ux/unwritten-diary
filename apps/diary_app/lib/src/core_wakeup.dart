@@ -17,12 +17,16 @@ class CoreWakeupScheduler {
 
   static const _taskName = 'diary-core-run-due';
   static const _periodicName = 'diary-core-periodic';
-  static const _oneOffNames = ['diary-core-wakeup-a', 'diary-core-wakeup-b'];
+  static const _oneOffName = 'diary-core-wakeup';
   static const _budgetMs = 20000;
+  static const _minimumDelay = Duration(seconds: 15);
 
   static Future<void> initialize() async {
     if (!Platform.isAndroid) return;
     await Workmanager().initialize(coreWakeupDispatcher);
+    // Older builds used two alternating names, allowing concurrent workers.
+    await Workmanager().cancelByUniqueName('diary-core-wakeup-a');
+    await Workmanager().cancelByUniqueName('diary-core-wakeup-b');
     // A periodic safety net catches jobs created by system share/import entry
     // points before they have had a chance to schedule their exact next wake.
     await Workmanager().registerPeriodicTask(
@@ -30,7 +34,7 @@ class CoreWakeupScheduler {
       _taskName,
       frequency: const Duration(minutes: 15),
       existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
-      inputData: const {'slot': -1},
+      inputData: const {},
     );
   }
 
@@ -42,7 +46,7 @@ class CoreWakeupScheduler {
         budgetMs: _budgetMs,
         trigger: 'startup',
       );
-      await _scheduleNext(result.nextWakeup, fromSlot: 1);
+      await _scheduleNext(result.nextWakeup);
       await _logQuietly({
         'trigger': 'startup',
         'observedAt': DateTime.now().toUtc().toIso8601String(),
@@ -61,7 +65,7 @@ class CoreWakeupScheduler {
   static Future<void> afterCoreMutation(DiaryApi api) async {
     if (!Platform.isAndroid) return;
     try {
-      await _scheduleNext(await api.nextWakeup(), fromSlot: 1);
+      await _scheduleNext(await api.nextWakeup());
     } on Object catch (error) {
       await _logQuietly({
         'trigger': 'foreground-schedule',
@@ -75,21 +79,24 @@ class CoreWakeupScheduler {
       opened.coreInfo.capabilities.contains('jobs.runDue') &&
       opened.coreInfo.capabilities.contains('jobs.nextWakeup');
 
-  static Future<void> _scheduleNext(
-    DateTime? nextWakeup, {
-    required int fromSlot,
-  }) async {
+  @visibleForTesting
+  static Duration delayUntil(DateTime nextWakeup, DateTime now) {
+    final remaining = nextWakeup.toUtc().difference(now.toUtc());
+    return remaining < _minimumDelay ? _minimumDelay : remaining;
+  }
+
+  static Future<void> _scheduleNext(DateTime? nextWakeup) async {
     if (nextWakeup == null) return;
-    final slot = (fromSlot + 1) % _oneOffNames.length;
     final now = DateTime.now().toUtc();
     final expected = nextWakeup.toUtc();
-    final remaining = expected.difference(now);
     await Workmanager().registerOneOffTask(
-      _oneOffNames[slot],
+      _oneOffName,
       _taskName,
-      initialDelay: remaining.isNegative ? Duration.zero : remaining,
-      existingWorkPolicy: ExistingWorkPolicy.replace,
-      inputData: {'slot': slot, 'expectedAt': expected.toIso8601String()},
+      initialDelay: delayUntil(expected, now),
+      // The current worker may still be running while it schedules its next
+      // wake. Append behind it; replacing this unique work could cancel it.
+      existingWorkPolicy: ExistingWorkPolicy.append,
+      inputData: {'expectedAt': expected.toIso8601String()},
     );
   }
 
@@ -135,16 +142,20 @@ class CoreWakeupScheduler {
     WidgetsFlutterBinding.ensureInitialized();
     DartPluginRegistrant.ensureInitialized();
     final observedAt = DateTime.now().toUtc();
-    final fromSlot = inputData?['slot'] is int ? inputData!['slot'] as int : -1;
     DiaryApi? api;
     try {
       api = await createProductionDiaryApi();
       final opened = await api.open();
       if (!_hasJobs(opened)) {
-        throw StateError('The installed core does not expose job execution.');
+        await _logQuietly({
+          'trigger': 'wake',
+          'observedAt': observedAt.toIso8601String(),
+          'error': 'installed_core_missing_job_capabilities',
+        });
+        return true;
       }
       final result = await api.runDueJobs(budgetMs: _budgetMs, trigger: 'wake');
-      await _scheduleNext(result.nextWakeup, fromSlot: fromSlot);
+      await _scheduleNext(result.nextWakeup);
       await _logQuietly({
         'trigger': 'wake',
         'observedAt': observedAt.toIso8601String(),
@@ -160,8 +171,14 @@ class CoreWakeupScheduler {
         'expectedAt': inputData?['expectedAt'],
         'error': error.runtimeType.toString(),
       });
-      // WorkManager retries transient startup, storage, and core failures.
-      return false;
+      // Version/capability mismatches cannot heal through WorkManager retry.
+      return error is DiaryException &&
+          {
+            DiaryErrorCode.invalidArgument,
+            DiaryErrorCode.invalidState,
+            DiaryErrorCode.notFound,
+            DiaryErrorCode.unsupportedFormat,
+          }.contains(error.code);
     } finally {
       try {
         await api?.close();

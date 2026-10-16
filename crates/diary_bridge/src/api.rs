@@ -8,7 +8,9 @@
 //! 核心的公开模型（`diary_core::model`）已经写进 `flutter_rust_bridge.yaml` 的
 //! `rust_input`，所以这里返回的是真正的字段级镜像，而不是不透明句柄。
 
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use chrono::{DateTime, Utc};
 use diary_core::{
@@ -69,8 +71,36 @@ pub struct LibraryInfo {
 /// 一个打开的资料库会话。Dart 侧持有的就是这个句柄。
 #[frb(opaque)]
 pub struct BridgeSession {
-    inner: Mutex<Core>,
+    inner: Arc<Mutex<Core>>,
     library_id: String,
+}
+
+// WorkManager starts a second Dart isolate in this Android process. All bridge
+// handles for one library must share the same Core lock: opening a second Core
+// would run recover_on_open while a foreground import is still copying, and
+// two runDue calls could both claim the same job. Weak entries let the last
+// session really close the database. This is an in-process guarantee; a
+// separate Android process must not open the library concurrently.
+static OPEN_LIBRARIES: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<Core>>>>> = OnceLock::new();
+
+fn library_key(path: &Path) -> Result<PathBuf, BridgeError> {
+    let file_name = path.file_name().ok_or_else(|| BridgeError {
+        code: "invalid_argument".to_owned(),
+        message: "资料库路径必须指向一个文件".to_owned(),
+        retryable: false,
+    })?;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(CoreError::from)?
+            .join(path)
+    };
+    // The file may not exist on its first open; canonicalize its parent so
+    // relative and absolute callers still meet at the same registry entry.
+    let parent = absolute.parent().unwrap_or_else(|| Path::new("."));
+    let canonical_parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    Ok(canonical_parent.join(file_name))
 }
 
 /// 一轮驱动最多跑几条任务（防御性上限）。
@@ -84,13 +114,29 @@ impl BridgeSession {
     /// 打开（或创建）资料库。
     pub fn open(library_path: String) -> Result<BridgeSession, BridgeError> {
         let path = std::path::PathBuf::from(&library_path);
-        let core = Core::open(&path)?;
+        let key = library_key(&path)?;
+        let mut registry = OPEN_LIBRARIES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|_| BridgeError {
+                code: "invalid_state".to_owned(),
+                message: "资料库会话登记表已损坏".to_owned(),
+                retryable: false,
+            })?;
+        let inner = match registry.get(&key).and_then(Weak::upgrade) {
+            Some(existing) => existing,
+            None => {
+                let opened = Arc::new(Mutex::new(Core::open(&key)?));
+                registry.insert(key, Arc::downgrade(&opened));
+                opened
+            }
+        };
         let library_id = path
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_else(|| "library".to_owned());
         Ok(Self {
-            inner: Mutex::new(core),
+            inner,
             library_id,
         })
     }
@@ -477,4 +523,29 @@ fn wired_capabilities() -> Vec<String> {
     .iter()
     .map(|name| (*name).to_owned())
     .collect()
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn same_library_shares_one_core_until_last_session_closes() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("diary-bridge-shared-{unique}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("library.sqlite");
+        let foreground = BridgeSession::open(path.to_string_lossy().into_owned()).unwrap();
+        let worker = BridgeSession::open(path.to_string_lossy().into_owned()).unwrap();
+        assert!(Arc::ptr_eq(&foreground.inner, &worker.inner));
+        drop(foreground);
+        drop(worker);
+        let reopened = BridgeSession::open(path.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(reopened.info().unwrap().library_id, "library");
+        drop(reopened);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
