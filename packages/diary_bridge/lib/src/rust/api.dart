@@ -174,6 +174,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required SearchRequest request,
     required PlatformInt64 queryRevision,
   });
+
+  /// 把混合会话从关键词阶段升级到融合阶段（#69）；幂等，重复调用不重复算。
+  Future<SearchSnapshot> upgradeSearch({required String sessionId});
 }
 
 /// 桥接错误：`code` 是契约第 7 节的错误码，`message` 给用户看。

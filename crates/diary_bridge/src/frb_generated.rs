@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1085801190;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -220530233;
 
 // Section: executor
 
@@ -1545,6 +1545,59 @@ fn wire__crate__api__BridgeSession_start_search_impl(
         },
     )
 }
+fn wire__crate__api__BridgeSession_upgrade_search_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_upgrade_search",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_session_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::BridgeSession::upgrade_search(
+                        &*api_that_guard,
+                        api_session_id,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__diary_core__model__asset_storage_state_from_wire_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -2954,6 +3007,8 @@ const _: fn() = || {
         let _: String = IndexStatus.tokenizer_version;
         let _: Option<String> = IndexStatus.model_version;
         let _: Option<String> = IndexStatus.chunker_version;
+        let _: i64 = IndexStatus.total_chunks;
+        let _: i64 = IndexStatus.embedded_chunks;
         let _: i64 = IndexStatus.indexed_segments;
         let _: i64 = IndexStatus.total_segments;
         let _: i64 = IndexStatus.pending_segments;
@@ -3516,6 +3571,8 @@ impl SseDecode for diary_core::model::IndexStatus {
         let mut var_tokenizerVersion = <String>::sse_decode(deserializer);
         let mut var_modelVersion = <Option<String>>::sse_decode(deserializer);
         let mut var_chunkerVersion = <Option<String>>::sse_decode(deserializer);
+        let mut var_totalChunks = <i64>::sse_decode(deserializer);
+        let mut var_embeddedChunks = <i64>::sse_decode(deserializer);
         let mut var_indexedSegments = <i64>::sse_decode(deserializer);
         let mut var_totalSegments = <i64>::sse_decode(deserializer);
         let mut var_pendingSegments = <i64>::sse_decode(deserializer);
@@ -3535,6 +3592,8 @@ impl SseDecode for diary_core::model::IndexStatus {
             tokenizer_version: var_tokenizerVersion,
             model_version: var_modelVersion,
             chunker_version: var_chunkerVersion,
+            total_chunks: var_totalChunks,
+            embedded_chunks: var_embeddedChunks,
             indexed_segments: var_indexedSegments,
             total_segments: var_totalSegments,
             pending_segments: var_pendingSegments,
@@ -4569,100 +4628,103 @@ fn pde_ffi_dispatcher_primary_impl(
             wire__crate__api__BridgeSession_search_snapshot_impl(port, ptr, rust_vec_len, data_len)
         }
         28 => wire__crate__api__BridgeSession_start_search_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__diary_core__model__asset_storage_state_from_wire_impl(
+        29 => {
+            wire__crate__api__BridgeSession_upgrade_search_impl(port, ptr, rust_vec_len, data_len)
+        }
+        30 => wire__diary_core__model__asset_storage_state_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        30 => wire__diary_core__model__asset_storage_state_wire_impl(
+        31 => wire__diary_core__model__asset_storage_state_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        31 => {
+        32 => {
             wire__diary_core__model__author_type_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        32 => wire__diary_core__model__author_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        33 => {
+        33 => wire__diary_core__model__author_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        34 => {
             wire__diary_core__model__capture_state_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        34 => wire__diary_core__model__capture_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__diary_core__model__coverage_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__diary_core__model__coverage_wire_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__diary_core__model__event_type_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__diary_core__model__event_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        39 => {
+        35 => wire__diary_core__model__capture_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__diary_core__model__coverage_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__diary_core__model__coverage_wire_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__diary_core__model__event_type_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__diary_core__model__event_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        40 => {
             wire__diary_core__model__import_origin_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        40 => wire__diary_core__model__import_origin_wire_impl(port, ptr, rust_vec_len, data_len),
-        41 => {
+        41 => wire__diary_core__model__import_origin_wire_impl(port, ptr, rust_vec_len, data_len),
+        42 => {
             wire__diary_core__model__import_state_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        42 => wire__diary_core__model__import_state_is_in_flight_impl(
+        43 => wire__diary_core__model__import_state_is_in_flight_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        43 => wire__diary_core__model__import_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        44 => wire__diary_core__model__job_priority_value_impl(port, ptr, rust_vec_len, data_len),
-        45 => wire__diary_core__model__job_state_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        46 => {
+        44 => wire__diary_core__model__import_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        45 => wire__diary_core__model__job_priority_value_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__diary_core__model__job_state_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        47 => {
             wire__diary_core__model__job_state_is_terminal_impl(port, ptr, rust_vec_len, data_len)
         }
-        47 => wire__diary_core__model__job_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        48 => {
+        48 => wire__diary_core__model__job_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        49 => {
             wire__diary_core__model__locator_type_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        49 => wire__diary_core__model__locator_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        50 => wire__diary_core__model__matched_by_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        51 => wire__diary_core__model__matched_by_wire_impl(port, ptr, rust_vec_len, data_len),
-        52 => wire__diary_core__model__processing_status_from_wire_impl(
+        50 => wire__diary_core__model__locator_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__diary_core__model__matched_by_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        52 => wire__diary_core__model__matched_by_wire_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__diary_core__model__processing_status_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        53 => {
+        54 => {
             wire__diary_core__model__processing_status_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        54 => wire__diary_core__model__processing_summary_default_impl(
+        55 => wire__diary_core__model__processing_summary_default_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        55 => wire__diary_core__model__recording_state_from_wire_impl(
+        56 => wire__diary_core__model__recording_state_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        56 => {
+        57 => {
             wire__diary_core__model__recording_state_is_open_impl(port, ptr, rust_vec_len, data_len)
         }
-        57 => wire__diary_core__model__recording_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        58 => {
+        58 => wire__diary_core__model__recording_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        59 => {
             wire__diary_core__model__search_filters_default_impl(port, ptr, rust_vec_len, data_len)
         }
-        59 => {
+        60 => {
             wire__diary_core__model__search_mode_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        60 => wire__diary_core__model__search_mode_wire_impl(port, ptr, rust_vec_len, data_len),
-        61 => {
+        61 => wire__diary_core__model__search_mode_wire_impl(port, ptr, rust_vec_len, data_len),
+        62 => {
             wire__diary_core__model__search_phase_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        62 => wire__diary_core__model__search_phase_wire_impl(port, ptr, rust_vec_len, data_len),
-        63 => {
+        63 => wire__diary_core__model__search_phase_wire_impl(port, ptr, rust_vec_len, data_len),
+        64 => {
             wire__diary_core__model__source_kind_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        64 => wire__diary_core__model__source_kind_wire_impl(port, ptr, rust_vec_len, data_len),
-        65 => {
+        65 => wire__diary_core__model__source_kind_wire_impl(port, ptr, rust_vec_len, data_len),
+        66 => {
             wire__diary_core__model__source_locator_document_impl(port, ptr, rust_vec_len, data_len)
         }
-        66 => wire__diary_core__model__source_locator_text_range_impl(
+        67 => wire__diary_core__model__source_locator_text_range_impl(
             port,
             ptr,
             rust_vec_len,
@@ -5139,6 +5201,8 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::IndexStatus
             self.0.tokenizer_version.into_into_dart().into_dart(),
             self.0.model_version.into_into_dart().into_dart(),
             self.0.chunker_version.into_into_dart().into_dart(),
+            self.0.total_chunks.into_into_dart().into_dart(),
+            self.0.embedded_chunks.into_into_dart().into_dart(),
             self.0.indexed_segments.into_into_dart().into_dart(),
             self.0.total_segments.into_into_dart().into_dart(),
             self.0.pending_segments.into_into_dart().into_dart(),
@@ -6145,6 +6209,8 @@ impl SseEncode for diary_core::model::IndexStatus {
         <String>::sse_encode(self.tokenizer_version, serializer);
         <Option<String>>::sse_encode(self.model_version, serializer);
         <Option<String>>::sse_encode(self.chunker_version, serializer);
+        <i64>::sse_encode(self.total_chunks, serializer);
+        <i64>::sse_encode(self.embedded_chunks, serializer);
         <i64>::sse_encode(self.indexed_segments, serializer);
         <i64>::sse_encode(self.total_segments, serializer);
         <i64>::sse_encode(self.pending_segments, serializer);
