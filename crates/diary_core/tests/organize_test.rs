@@ -444,6 +444,71 @@ fn kill_and_resume_backfills_without_duplicating() {
     assert_eq!(versions_of(&core, &day_key).len(), 1);
 }
 
+/// 共用场景 `edited-diary-then-new-material`（验收 E26）：人工编辑过的当前版本，
+/// 之后又来了新材料，按当前整理设置再整理一次——**新版本只能是候选**，
+/// 用户那一版（以及它的编辑内容）一个字都不动。
+#[test]
+fn scenario_e26_new_material_after_user_edit_only_produces_a_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, transport) = core_with_transport(
+        dir.path(),
+        vec![
+            chat_ok("机器第一次生成的正文。"),
+            chat_ok("按整理设置再整出来的候选。"),
+        ],
+    );
+    save_provider(&mut core);
+    let (_, day_key) = capture_with_text(&mut core, days_ago(1), "上午去公园。", "op-a");
+
+    // 先生成一版并让它成为当前，然后用户自己改写一版（成为新的当前）。
+    core.generate_diary(&day_key, None, DiaryGenerationReason::Manual, "op-gen")
+        .unwrap();
+    drive(&mut core);
+    let generated = core.get_diary_day(&day_key).unwrap().current_version_id.unwrap();
+    let user_body = "人工改写后的那一版，一个字都不能被机器动。";
+    let user_version = core
+        .save_diary_edit(&generated, user_body, 1, "op-edit")
+        .unwrap();
+    assert_eq!(user_version.origin, DiaryVersionOrigin::UserEdit);
+
+    // 新材料到达（同一天）。
+    let (_, same_day) = capture_with_text(&mut core, days_ago(1), "晚上又想起一件小事。", "op-b");
+    assert_eq!(same_day, day_key);
+
+    // 按当前整理设置整理这一天（reason = automatic：用户/平台显式触发）。
+    core.generate_diary(&day_key, None, DiaryGenerationReason::Automatic, "op-auto")
+        .unwrap();
+    let summary = drive(&mut core);
+    assert_eq!(summary.succeeded, 1);
+    assert_eq!(transport.call_count(), 2);
+
+    let day = core.get_diary_day(&day_key).unwrap();
+    assert_eq!(
+        day.current_version_id.as_deref(),
+        Some(user_version.id.as_str()),
+        "人工编辑的那一版仍是当前"
+    );
+    assert_eq!(
+        core.get_diary_version(&user_version.id).unwrap().body,
+        user_body,
+        "用户正文一字未动"
+    );
+    // 候选 = 这一天的全部版本里除当前之外的那些：旧的生成版与这次的整理结果都在。
+    assert_eq!(day.candidate_version_ids.len(), 2);
+    assert!(day.candidate_version_ids.contains(&generated));
+    let candidate = core
+        .get_diary_version(&day.candidate_version_ids[0])
+        .unwrap();
+    assert_eq!(candidate.origin, DiaryVersionOrigin::Generated);
+    assert_eq!(candidate.body, "按整理设置再整出来的候选。");
+    assert_ne!(candidate.id, day.current_version_id.clone().unwrap());
+    // 旧版本都还在，随时取回。
+    assert_eq!(core.get_diary_version(&generated).unwrap().body, "机器第一次生成的正文。");
+    // 材料计数如实更新（新材料真的进了这一天的账）。
+    assert_eq!(day.material_counts.captures, 2);
+    assert_eq!(day.material_counts.processed, 2);
+}
+
 // ------------------------------------------------------------------ 配额上限：如实停下
 
 #[test]
