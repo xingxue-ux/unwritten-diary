@@ -487,8 +487,11 @@ pub(crate) fn freeze_for_settings(core: &Core) -> Result<OrganizeFreeze> {
 
 // ------------------------------------------------------------------ 设置
 
+/// `organize_settings` 那一行的原始形态（解析前先按位置取出来）。
+type SettingsRow = (i64, String, String, i64, i64, i64, i64, f64, String, i64, i64, String);
+
 fn read_settings(conn: &rusqlite::Connection) -> Result<Option<OrganizeSettings>> {
-    let row: Option<(i64, String, String, i64, i64, i64, i64, f64, String, i64, i64, String)> = conn
+    let row: Option<SettingsRow> = conn
         .query_row(
             "SELECT enabled, template_id, template_params, max_materials, max_chars, \
              max_calls_per_run, max_calls_per_day, max_failure_rate, auto_organize_time, \
@@ -761,10 +764,7 @@ pub(crate) fn record_call(
     run_id: &str,
     day_key: &str,
     reason: DiaryGenerationReason,
-    provider_id: Option<&str>,
-    model: Option<&str>,
-    succeeded: bool,
-    error_code: Option<&str>,
+    outcome: crate::diary::CallOutcome<'_>,
 ) -> Result<()> {
     core.conn.execute(
         "INSERT INTO diary_model_calls (id, run_id, day_key, reason, provider_id, model, \
@@ -774,10 +774,10 @@ pub(crate) fn record_call(
             run_id,
             day_key,
             reason.wire(),
-            provider_id,
-            model,
-            if succeeded { "ok" } else { "failed" },
-            error_code,
+            outcome.provider_id,
+            outcome.model,
+            if outcome.succeeded { "ok" } else { "failed" },
+            outcome.error_code,
             support::to_iso(support::now()),
         ],
     )?;
@@ -1338,9 +1338,12 @@ pub(crate) fn status(core: &Core) -> Result<OrganizeStatus> {
     })
 }
 
+/// `diary_generations` 里「最近一次自动整理」要用的那几列。
+type LastRunRow = (String, String, String, Option<String>, Option<String>, String, String);
+
 /// 最近一次**自动整理**的真实结果（含它真的发出去了几次调用）。
 fn last_run(core: &Core) -> Result<Option<OrganizeRunInfo>> {
-    let row: Option<(String, String, String, Option<String>, Option<String>, String, String)> = core
+    let row: Option<LastRunRow> = core
         .conn
         .query_row(
             "SELECT id, day_key, state, error_code, version_id, created_at, updated_at \

@@ -1592,8 +1592,11 @@ fn mark_generation_error(
     Ok(())
 }
 
+/// `diary_generations` 里执行者要用的那几列（避免一个裸元组散在代码里）。
+type GenerationRow = (String, String, Option<String>, Option<String>, String);
+
 fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<(), CoreError> {
-    let row: Option<(String, String, Option<String>, Option<String>, String)> = core
+    let row: Option<GenerationRow> = core
         .conn
         .query_row(
             "SELECT day_key, snapshot_id, provider_id, version_id, reason FROM diary_generations \
@@ -1912,6 +1915,35 @@ struct CallAccount<'a> {
     reason: DiaryGenerationReason,
 }
 
+/// 一次调用的结局（记进账本就这几件事）。
+pub(crate) struct CallOutcome<'a> {
+    pub provider_id: Option<&'a str>,
+    pub model: Option<&'a str>,
+    /// 失败时的契约错误码。
+    pub error_code: Option<&'a str>,
+    pub succeeded: bool,
+}
+
+impl<'a> CallOutcome<'a> {
+    pub(crate) fn ok(provider_id: &'a str, model: Option<&'a str>) -> Self {
+        Self {
+            provider_id: Some(provider_id),
+            model,
+            error_code: None,
+            succeeded: true,
+        }
+    }
+
+    pub(crate) fn failed(provider_id: &'a str, error_code: &'a str) -> Self {
+        Self {
+            provider_id: Some(provider_id),
+            model: None,
+            error_code: Some(error_code),
+            succeeded: false,
+        }
+    }
+}
+
 /// 一次真实的模型调用：配额闸门 → 拼请求 → 发送 → 状态码归一化 → 解析 → 记账。
 ///
 /// `mark_provider_verdict_failed` 与 #66 的 `respond` 路径一致：执行期撞上鉴权失败或
@@ -1943,10 +1975,7 @@ fn call_generate(
                 account.generation_id,
                 account.day_key,
                 account.reason,
-                Some(&provider.id),
-                None,
-                false,
-                Some(error.code().wire()),
+                CallOutcome::failed(&provider.id, error.code().wire()),
             )?;
             return Err(error);
         }
@@ -1958,10 +1987,7 @@ fn call_generate(
             account.generation_id,
             account.day_key,
             account.reason,
-            Some(&provider.id),
-            None,
-            false,
-            Some(error.code().wire()),
+            CallOutcome::failed(&provider.id, error.code().wire()),
         )?;
         provider::mark_provider_verdict_failed(core, &provider.id, error.code().wire())?;
         return Err(error);
@@ -1973,10 +1999,7 @@ fn call_generate(
                 account.generation_id,
                 account.day_key,
                 account.reason,
-                Some(&provider.id),
-                outcome.model.as_deref(),
-                true,
-                None,
+                CallOutcome::ok(&provider.id, outcome.model.as_deref()),
             )?;
             Ok(outcome)
         }
@@ -1986,10 +2009,7 @@ fn call_generate(
                 account.generation_id,
                 account.day_key,
                 account.reason,
-                Some(&provider.id),
-                None,
-                false,
-                Some(error.code().wire()),
+                CallOutcome::failed(&provider.id, error.code().wire()),
             )?;
             Err(error)
         }
