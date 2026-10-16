@@ -133,8 +133,13 @@ impl OpenAiCompatible {
             })
     }
 
+    /// 密钥为空就**不发**这个头：给本机服务发一个空的 `Bearer `（后面什么都没有）既没有意义，
+    /// 也会被一些严格实现的服务当成**非法凭据**直接拒掉——那样用户会看到「认证失败」，
+    /// 而真实原因只是「这个服务不需要密钥」。（#93 的评测在接真模型通路时发现的问题。）
     fn authorized(mut request: HttpRequest, secret: &str) -> HttpRequest {
-        request = request.header("Authorization", format!("Bearer {secret}"));
+        if !secret.trim().is_empty() {
+            request = request.header("Authorization", format!("Bearer {secret}"));
+        }
         request
     }
 
