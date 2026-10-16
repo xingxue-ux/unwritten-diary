@@ -42,13 +42,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DateTime dco_decode_Chrono_Utc(dynamic raw);
 
   @protected
+  Map<ProviderCapability, ProviderTestStatus>
+  dco_decode_Map_provider_capability_provider_test_status_None(dynamic raw);
+
+  @protected
   BridgeSession
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
     dynamic raw,
   );
 
   @protected
+  Set<ProviderCapability> dco_decode_Set_provider_capability_None(dynamic raw);
+
+  @protected
   String dco_decode_String(dynamic raw);
+
+  @protected
+  AiResponse dco_decode_ai_response(dynamic raw);
 
   @protected
   AssetStorageState dco_decode_asset_storage_state(dynamic raw);
@@ -106,6 +116,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ProcessingStatus dco_decode_box_autoadd_processing_status(dynamic raw);
+
+  @protected
+  Provider dco_decode_box_autoadd_provider(dynamic raw);
+
+  @protected
+  ProviderCapability dco_decode_box_autoadd_provider_capability(dynamic raw);
+
+  @protected
+  ProviderTestStatus dco_decode_box_autoadd_provider_test_status(dynamic raw);
 
   @protected
   RecordingState dco_decode_box_autoadd_recording_state(dynamic raw);
@@ -243,6 +262,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<Provider> dco_decode_list_provider(dynamic raw);
+
+  @protected
+  List<ProviderCapability> dco_decode_list_provider_capability(dynamic raw);
+
+  @protected
+  List<(ProviderCapability, ProviderTestStatus)>
+  dco_decode_list_record_provider_capability_provider_test_status(dynamic raw);
+
+  @protected
   List<SearchHit> dco_decode_list_search_hit(dynamic raw);
 
   @protected
@@ -308,6 +337,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProcessingStatus? dco_decode_opt_box_autoadd_processing_status(dynamic raw);
 
   @protected
+  ProviderCapability? dco_decode_opt_box_autoadd_provider_capability(
+    dynamic raw,
+  );
+
+  @protected
+  ProviderTestStatus? dco_decode_opt_box_autoadd_provider_test_status(
+    dynamic raw,
+  );
+
+  @protected
   RecordingState? dco_decode_opt_box_autoadd_recording_state(dynamic raw);
 
   @protected
@@ -338,10 +377,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProcessingSummary dco_decode_processing_summary(dynamic raw);
 
   @protected
+  Provider dco_decode_provider(dynamic raw);
+
+  @protected
+  ProviderCapability dco_decode_provider_capability(dynamic raw);
+
+  @protected
+  ProviderTestReport dco_decode_provider_test_report(dynamic raw);
+
+  @protected
+  ProviderTestStatus dco_decode_provider_test_status(dynamic raw);
+
+  @protected
+  (ProviderCapability, ProviderTestStatus)
+  dco_decode_record_provider_capability_provider_test_status(dynamic raw);
+
+  @protected
   RecordingState dco_decode_recording_state(dynamic raw);
 
   @protected
   RecoverySummary dco_decode_recovery_summary(dynamic raw);
+
+  @protected
+  ResponseTicket dco_decode_response_ticket(dynamic raw);
 
   @protected
   SearchFilters dco_decode_search_filters(dynamic raw);
@@ -404,13 +462,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DateTime sse_decode_Chrono_Utc(SseDeserializer deserializer);
 
   @protected
+  Map<ProviderCapability, ProviderTestStatus>
+  sse_decode_Map_provider_capability_provider_test_status_None(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeSession
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
     SseDeserializer deserializer,
   );
 
   @protected
+  Set<ProviderCapability> sse_decode_Set_provider_capability_None(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   String sse_decode_String(SseDeserializer deserializer);
+
+  @protected
+  AiResponse sse_decode_ai_response(SseDeserializer deserializer);
 
   @protected
   AssetStorageState sse_decode_asset_storage_state(
@@ -480,6 +552,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ProcessingStatus sse_decode_box_autoadd_processing_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Provider sse_decode_box_autoadd_provider(SseDeserializer deserializer);
+
+  @protected
+  ProviderCapability sse_decode_box_autoadd_provider_capability(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ProviderTestStatus sse_decode_box_autoadd_provider_test_status(
     SseDeserializer deserializer,
   );
 
@@ -631,6 +716,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<Provider> sse_decode_list_provider(SseDeserializer deserializer);
+
+  @protected
+  List<ProviderCapability> sse_decode_list_provider_capability(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<(ProviderCapability, ProviderTestStatus)>
+  sse_decode_list_record_provider_capability_provider_test_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<SearchHit> sse_decode_list_search_hit(SseDeserializer deserializer);
 
   @protected
@@ -716,6 +815,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ProviderCapability? sse_decode_opt_box_autoadd_provider_capability(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ProviderTestStatus? sse_decode_opt_box_autoadd_provider_test_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RecordingState? sse_decode_opt_box_autoadd_recording_state(
     SseDeserializer deserializer,
   );
@@ -756,10 +865,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProcessingSummary sse_decode_processing_summary(SseDeserializer deserializer);
 
   @protected
+  Provider sse_decode_provider(SseDeserializer deserializer);
+
+  @protected
+  ProviderCapability sse_decode_provider_capability(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ProviderTestReport sse_decode_provider_test_report(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ProviderTestStatus sse_decode_provider_test_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  (ProviderCapability, ProviderTestStatus)
+  sse_decode_record_provider_capability_provider_test_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RecordingState sse_decode_recording_state(SseDeserializer deserializer);
 
   @protected
   RecoverySummary sse_decode_recovery_summary(SseDeserializer deserializer);
+
+  @protected
+  ResponseTicket sse_decode_response_ticket(SseDeserializer deserializer);
 
   @protected
   SearchFilters sse_decode_search_filters(SseDeserializer deserializer);
@@ -824,6 +960,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_Chrono_Utc(DateTime self, SseSerializer serializer);
 
   @protected
+  void sse_encode_Map_provider_capability_provider_test_status_None(
+    Map<ProviderCapability, ProviderTestStatus> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
     BridgeSession self,
@@ -831,7 +973,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_Set_provider_capability_None(
+    Set<ProviderCapability> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_String(String self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_ai_response(AiResponse self, SseSerializer serializer);
 
   @protected
   void sse_encode_asset_storage_state(
@@ -935,6 +1086,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_processing_status(
     ProcessingStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_provider(Provider self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_provider_capability(
+    ProviderCapability self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_provider_test_status(
+    ProviderTestStatus self,
     SseSerializer serializer,
   );
 
@@ -1125,6 +1291,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_provider(List<Provider> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_provider_capability(
+    List<ProviderCapability> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_record_provider_capability_provider_test_status(
+    List<(ProviderCapability, ProviderTestStatus)> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_search_hit(
     List<SearchHit> self,
     SseSerializer serializer,
@@ -1242,6 +1423,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_provider_capability(
+    ProviderCapability? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_provider_test_status(
+    ProviderTestStatus? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_recording_state(
     RecordingState? self,
     SseSerializer serializer,
@@ -1296,6 +1489,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_provider(Provider self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_provider_capability(
+    ProviderCapability self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_provider_test_report(
+    ProviderTestReport self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_provider_test_status(
+    ProviderTestStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_record_provider_capability_provider_test_status(
+    (ProviderCapability, ProviderTestStatus) self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_recording_state(
     RecordingState self,
     SseSerializer serializer,
@@ -1304,6 +1524,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_recovery_summary(
     RecoverySummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_response_ticket(
+    ResponseTicket self,
     SseSerializer serializer,
   );
 

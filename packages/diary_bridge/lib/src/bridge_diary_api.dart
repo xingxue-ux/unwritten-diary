@@ -10,8 +10,10 @@ import '../diary_bridge.dart' as bridge;
 
 /// 把桥接的 `BridgeSession` 适配成契约的 [api.DiaryApi]。
 ///
-/// **覆盖记录与检索路径**：`open` / `snapshot` / `close` / 记录 CRUD /
-/// `startSearch` / `nextPage` / `searchSnapshot` / `cancelSearch`。其余契约方法一律抛
+/// **覆盖记录、检索与远端服务路径**：`open` / `snapshot` / `close` / 记录 CRUD /
+/// `startSearch` / `nextPage` / `searchSnapshot` / `cancelSearch` /
+/// `listProviders` / `saveProvider` / `removeProvider` / `testProvider` /
+/// `requestResponse` / `getResponse`。其余契约方法一律抛
 /// [UnsupportedError]（和 `diary_mock` 的做法一致），并且**不出现在
 /// [api.CoreInfo.capabilities] 里**——能力清单是窄化过的，界面据此决定显示哪些入口。
 ///
@@ -60,6 +62,12 @@ class BridgeDiaryApi implements api.DiaryApi {
     'search.snapshot',
     'search.cancel',
     'search.upgrade',
+    'providers.list',
+    'providers.save',
+    'providers.remove',
+    'providers.test',
+    'responses.request',
+    'responses.get',
   };
 
   /// 幂等地初始化 frb 运行时。
@@ -253,6 +261,124 @@ class BridgeDiaryApi implements api.DiaryApi {
     await _translate(() => _open.cancelSearch(sessionId: sessionId));
   }
 
+  // ------------------------------------------------------------ 服务配置与主动回应
+
+  @override
+  Future<List<api.Provider>> listProviders() async {
+    final session = _open;
+    final providers = await _translate(() => session.listProviders());
+    return providers.map(_provider).toList(growable: false);
+  }
+
+  /// 保存脱敏配置。契约的签名里没有密钥，所以这里只透传 `credentialRef`。
+  ///
+  /// 从设置页输入一个新密钥要走 [saveProviderCredential]（本片的过渡入口，
+  /// 见它的文档）。
+  @override
+  Future<api.Provider> saveProvider(api.Provider provider) async {
+    final session = _open;
+    final saved = await _translate(
+      () => session.saveProvider(config: _bridgeProvider(provider)),
+    );
+    return _provider(saved);
+  }
+
+  /// **过渡入口**：把明文密钥交给核心的密钥托管，并返回脱敏后的配置。
+  ///
+  /// 契约最终的口径是「平台层用系统凭据接口存好、核心只拿 `credentialRef`」
+  /// （`PlatformHost.storeCredential` / `readCredential`）。平台层的凭据桥接还没接上
+  /// （F1/F2），所以本片给设置页一条能用的路：明文只在这一次调用里经过桥，核心写进
+  /// 密钥托管后只留引用——配置表、返回值与错误消息里都不会有明文。
+  ///
+  /// 宿主凭据接上之后这个方法会被移除（或改成只传 `credentialRef`），调用方不该把它
+  /// 当成长期接口。
+  Future<api.Provider> saveProviderCredential({
+    required String providerId,
+    required String secret,
+  }) async {
+    final session = _open;
+    final current = await _translate(() => session.listProviders());
+    final target = current.firstWhere(
+      (item) => item.id == providerId,
+      orElse: () => throw api.DiaryException(
+        code: api.DiaryErrorCode.notFound,
+        message: '没有这个服务配置：$providerId',
+      ),
+    );
+    final saved = await _translate(
+      () => session.saveProvider(config: target, secret: secret),
+    );
+    return _provider(saved);
+  }
+
+  @override
+  Future<void> removeProvider(String providerId) async {
+    final session = _open;
+    await _translate(() => session.removeProvider(providerId: providerId));
+  }
+
+  @override
+  Future<api.ProviderTestReport> testProvider({
+    required String providerId,
+    required Set<api.ProviderCapability> scope,
+  }) async {
+    final session = _open;
+    final report = await _translate(
+      () => session.testProvider(
+        providerId: providerId,
+        scope: scope.map(_bridgeCapability).toList(growable: false),
+      ),
+    );
+    return api.ProviderTestReport(
+      providerId: report.providerId,
+      results: report.results.map(
+        (capability, status) => MapEntry(
+          api.ProviderCapability.values.byName(capability.name),
+          api.ProviderTestStatus.values.byName(status.name),
+        ),
+      ),
+      actualCallMade: report.actualCallMade,
+      message: report.message,
+    );
+  }
+
+  @override
+  Future<api.ResponseTicket> requestResponse({
+    required List<String> captureIds,
+    required String requestText,
+    String? providerId,
+  }) async {
+    final session = _open;
+    final ticket = await _translate(
+      () => session.requestResponse(
+        captureIds: captureIds,
+        requestText: requestText,
+        providerId: providerId,
+      ),
+    );
+    return api.ResponseTicket(
+      jobId: ticket.jobId,
+      responseId: ticket.responseId,
+    );
+  }
+
+  @override
+  Future<api.AiResponse> getResponse(String responseId) async {
+    final session = _open;
+    final response = await _translate(
+      () => session.getResponse(responseId: responseId),
+    );
+    return api.AiResponse(
+      id: response.id,
+      requestText: response.requestText,
+      body: response.body,
+      createdAt: response.createdAt,
+      captureIds: response.captureIds,
+      providerId: response.providerId,
+      model: response.model,
+    );
+  }
+
   /// 没接的方法一律明确报错——照 `diary_mock` 的做法，避免悄悄返回空数据。
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
@@ -314,6 +440,39 @@ class BridgeDiaryApi implements api.DiaryApi {
       captureCount: info.captureCount.toInt(),
     );
   }
+
+  api.Provider _provider(bridge.Provider value) => api.Provider(
+    id: value.id,
+    label: value.label,
+    adapterId: value.adapterId,
+    capabilities: value.capabilities
+        .map((capability) => api.ProviderCapability.values.byName(capability.name))
+        .toSet(),
+    enabled: value.enabled,
+    endpoint: value.endpoint,
+    model: value.model,
+    credentialRef: value.credentialRef,
+    testStatus: api.ProviderTestStatus.values.byName(value.testStatus.name),
+  );
+
+  /// 契约对象 → 桥接对象。密钥不在这里：它只经 `saveProvider` 的 `secret` 参数。
+  bridge.Provider _bridgeProvider(api.Provider value) => bridge.Provider(
+    id: value.id,
+    label: value.label,
+    adapterId: value.adapterId,
+    capabilities: value.capabilities
+        .map(_bridgeCapability)
+        .toSet(),
+    enabled: value.enabled,
+    endpoint: value.endpoint,
+    model: value.model,
+    credentialRef: value.credentialRef,
+    testStatus: bridge.ProviderTestStatus.values.byName(value.testStatus.name),
+  );
+
+  static bridge.ProviderCapability _bridgeCapability(
+    api.ProviderCapability capability,
+  ) => bridge.ProviderCapability.values.byName(capability.name);
 
   api.Capture _capture(bridge.Capture value) => api.Capture(
     id: value.id,

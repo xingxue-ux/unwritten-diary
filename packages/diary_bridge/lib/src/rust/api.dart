@@ -54,6 +54,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
 
   Future<Job> getJob({required String jobId});
 
+  /// 读取一条回应，契约 `responses.get`。还没生成时正文为空（如实，不编内容）。
+  Future<AiResponse> getResponse({required String responseId});
+
   Future<ImportStatus> importStatus({required String importId});
 
   /// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
@@ -78,6 +81,11 @@ abstract class BridgeSession implements RustOpaqueInterface {
 
   /// 按状态列出任务；不传状态就列全部。
   Future<List<Job>> listJobs({List<JobState>? states, required int limit});
+
+  /// 列出脱敏后的服务配置，契约 `providers.list`。
+  ///
+  /// **不含密钥**：`credentialRef` 是凭据存储里的引用，只有「配没配」这个信息。
+  Future<List<Provider>> listProviders();
 
   /// 把 sourceRef + locator 解析成可打开的原件与可用性。
   Future<SourceLocation> locateSource({
@@ -124,6 +132,19 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
+  /// 移除服务配置，契约 `providers.remove`。**不删除日记**，也不删除已经生成的回应。
+  Future<void> removeProvider({required String providerId});
+
+  /// 主动请求一次回应，契约 `responses.request`：**只有主动调用才运行**。
+  ///
+  /// 能力不满足时直接拒绝（`provider_not_configured`，消息里带可执行的下一步），
+  /// **不排一条注定失败的任务**；返回的 `jobId` 由驱动在 `run_due_jobs` 里执行。
+  Future<ResponseTicket> requestResponse({
+    required List<String> captureIds,
+    required String requestText,
+    String? providerId,
+  });
+
   /// 修改某一篇来源的原始文字：新建一个修订，旧修订保留。
   ///
   /// 契约第 4.1 节 `sources.reviseText`。**改完必须再跑一次 `extract_source`**，
@@ -160,6 +181,15 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
+  /// 保存服务配置，契约 `providers.save`。
+  ///
+  /// `secret` 是明文密钥，**只在这一次调用里经过桥**：核心把它写进密钥托管后只留
+  /// 引用（`credentialRef`），数据库、返回值与日志里都没有明文。传 `None` 表示不改
+  /// 密钥（沿用配置里的引用；引用留空就是清掉凭据）。
+  ///
+  /// 协议/端点/模型变了会让上一次的连接测试结论作废——那是对旧配置的验证。
+  Future<Provider> saveProvider({required Provider config, String? secret});
+
   /// 翻页；`cursor` 为空表示接着当前进度。游标不属于这个会话报 `cursor_expired`。
   Future<SearchSnapshot> searchNextPage({
     required String sessionId,
@@ -173,6 +203,17 @@ abstract class BridgeSession implements RustOpaqueInterface {
   Future<SearchSnapshot> startSearch({
     required SearchRequest request,
     required PlatformInt64 queryRevision,
+  });
+
+  /// 连接测试，契约 `providers.test`。
+  ///
+  /// **只有显式调用才发网络请求**；`scope` 是用户授权的测试范围，报告里逐项给结论，
+  /// 并如实说明「是否真的发生了模型调用」。失败以可区分的错误码抛出
+  /// （`provider_not_configured` / `authentication_failed` / `provider_timeout` …），
+  /// 消息里写明本次发起了几次真实请求。
+  Future<ProviderTestReport> testProvider({
+    required String providerId,
+    required List<ProviderCapability> scope,
   });
 
   /// 把混合会话从关键词阶段升级到融合阶段（#69）；幂等，重复调用不重复算。

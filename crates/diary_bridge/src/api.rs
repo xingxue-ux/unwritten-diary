@@ -12,11 +12,10 @@ use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use diary_core::{
-    Capture, CapturePage, CommitResult, Core, CoreError, DomainEvent, DraftSaveResult,
+    AiResponse, Capture, CapturePage, CommitResult, Core, CoreError, DomainEvent, DraftSaveResult,
     ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job,
-    JobRunSummary, JobState, JobStatus, SearchRequest, SearchSnapshot, SourceLocation,
-    SourceLocator,
-    SourceRevision,
+    JobRunSummary, JobState, JobStatus, Provider, ProviderCapability, ProviderTestReport,
+    ResponseTicket, SearchRequest, SearchSnapshot, SourceLocation, SourceLocator, SourceRevision,
 };
 use flutter_rust_bridge::frb;
 
@@ -402,6 +401,73 @@ impl BridgeSession {
         Ok(core.events_since(from_sequence)?)
     }
 
+    // ------------------------------------------------------------ 服务配置与主动回应（B4a）
+
+    /// 列出脱敏后的服务配置，契约 `providers.list`。
+    ///
+    /// **不含密钥**：`credentialRef` 是凭据存储里的引用，只有「配没配」这个信息。
+    pub fn list_providers(&self) -> Result<Vec<Provider>, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.list_providers()?)
+    }
+
+    /// 保存服务配置，契约 `providers.save`。
+    ///
+    /// `secret` 是明文密钥，**只在这一次调用里经过桥**：核心把它写进密钥托管后只留
+    /// 引用（`credentialRef`），数据库、返回值与日志里都没有明文。传 `None` 表示不改
+    /// 密钥（沿用配置里的引用；引用留空就是清掉凭据）。
+    ///
+    /// 协议/端点/模型变了会让上一次的连接测试结论作废——那是对旧配置的验证。
+    pub fn save_provider(
+        &self,
+        config: Provider,
+        secret: Option<String>,
+    ) -> Result<Provider, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.save_provider(&config, secret.as_deref())?)
+    }
+
+    /// 移除服务配置，契约 `providers.remove`。**不删除日记**，也不删除已经生成的回应。
+    pub fn remove_provider(&self, provider_id: String) -> Result<(), BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.remove_provider(&provider_id)?)
+    }
+
+    /// 连接测试，契约 `providers.test`。
+    ///
+    /// **只有显式调用才发网络请求**；`scope` 是用户授权的测试范围，报告里逐项给结论，
+    /// 并如实说明「是否真的发生了模型调用」。失败以可区分的错误码抛出
+    /// （`provider_not_configured` / `authentication_failed` / `provider_timeout` …），
+    /// 消息里写明本次发起了几次真实请求。
+    pub fn test_provider(
+        &self,
+        provider_id: String,
+        scope: Vec<ProviderCapability>,
+    ) -> Result<ProviderTestReport, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.test_provider(&provider_id, &scope)?)
+    }
+
+    /// 主动请求一次回应，契约 `responses.request`：**只有主动调用才运行**。
+    ///
+    /// 能力不满足时直接拒绝（`provider_not_configured`，消息里带可执行的下一步），
+    /// **不排一条注定失败的任务**；返回的 `jobId` 由驱动在 `run_due_jobs` 里执行。
+    pub fn request_response(
+        &self,
+        capture_ids: Vec<String>,
+        request_text: String,
+        provider_id: Option<String>,
+    ) -> Result<ResponseTicket, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.request_response(&capture_ids, &request_text, provider_id.as_deref())?)
+    }
+
+    /// 读取一条回应，契约 `responses.get`。还没生成时正文为空（如实，不编内容）。
+    pub fn get_response(&self, response_id: String) -> Result<AiResponse, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.get_response(&response_id)?)
+    }
+
     /// 已经接到桥上的契约方法名。
     pub fn capabilities(&self) -> Vec<String> {
         wired_capabilities()
@@ -472,6 +538,12 @@ fn wired_capabilities() -> Vec<String> {
         "jobs.status",
         "jobs.runDue",
         "jobs.nextWakeup",
+        "providers.list",
+        "providers.save",
+        "providers.remove",
+        "providers.test",
+        "responses.request",
+        "responses.get",
         "core.events",
     ]
     .iter()

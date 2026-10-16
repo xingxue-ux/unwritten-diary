@@ -7,7 +7,7 @@
 use rusqlite::{params, Connection};
 
 /// 本构建支持的 schema 版本。
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -55,6 +55,13 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 塞进开库路径，而这一片还没有任何消费者需要历史块；块由重建入口按需产出即可。
         // 关键词索引的 v7 回填不能照搬这个理由：那边不回填会让「以前搜得到的话现在
         // 搜不到」，是用户直接看得见的退化；块对用户不可见。
+    }
+    if current < 9 {
+        tx.execute_batch(V9)?;
+        // **不回填、不迁移任何旧数据**：v9 只加两张全新的表（远端服务配置与主动回应）。
+        // 老库升级前没有任何 Provider 配置，也就没有东西可搬：迁移后 `providers` 为空，
+        // 核心因此仍然「一个服务都没配」——默认不联网的口径在升级路径上同样成立。
+        // 更不能在这里替用户猜一个服务填进去。
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.execute(
@@ -493,4 +500,55 @@ CREATE TABLE index_meta (
     building_generation INTEGER
 );
 INSERT INTO index_meta (id, active_generation, building_generation) VALUES (1, NULL, NULL);
+"#;
+
+/// v9：远端服务（Provider）配置与主动回应。
+///
+/// 消费契约见 `docs/architecture/m3-Provider-配置与能力.md`，别处不要另立一套解释。
+///
+/// - `providers`：**脱敏配置**。列名与契约 2.7 的 Provider 字段一一对应
+///   （`adapter_id` ↔ `adapterId`、`endpoint` ↔ `endpoint`）。**密钥不在这张表里**：
+///   `credential_ref` 只是 `SecretStore` 的引用，明文由独立存储托管（见 m3 文档
+///   「密钥存放与它的妥协」）。`declared_capabilities` 是用户/配置声明的能力，
+///   `verified_capabilities` 是**连接测试真的验过**的能力，两个都存 wire 名的 JSON
+///   数组——存 JSON 而不是关联表，是因为它们永远整组读写、不需要按能力做 SQL 过滤，
+///   为它建第二张表只会多一条 join 与一处不一致的机会。
+/// - `ai_responses`：`responses.request` 的请求与结果。**一行两态**：`pending`
+///   是「用户请求了、还没生成」，`ready` 是正文已落库。不拆成「请求表 + 结果表」：
+///   契约的 `responses.get(responseId)` 只有一个 id，两态一行最省事，也不会出现
+///   「有结果没有请求」的悬空行。B4b 接手提示词与日记语义，这里只存原文与来源。
+///
+/// 两张表都**没有回填**：升级前不存在这些配置，替用户猜一个服务填进去是错的。
+const V9: &str = r#"
+CREATE TABLE providers (
+    id                    TEXT PRIMARY KEY,
+    label                 TEXT NOT NULL,
+    adapter_id            TEXT NOT NULL,
+    endpoint              TEXT,
+    model                 TEXT,
+    declared_capabilities TEXT NOT NULL DEFAULT '[]',
+    verified_capabilities TEXT NOT NULL DEFAULT '[]',
+    credential_ref        TEXT,
+    enabled               INTEGER NOT NULL DEFAULT 0,
+    test_status           TEXT NOT NULL DEFAULT 'untested',
+    last_tested_at        TEXT,
+    last_error_code       TEXT,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL
+);
+CREATE INDEX idx_providers_enabled ON providers(enabled, created_at, id);
+
+CREATE TABLE ai_responses (
+    id           TEXT PRIMARY KEY,
+    request_text TEXT NOT NULL,
+    capture_ids  TEXT NOT NULL DEFAULT '[]',
+    provider_id  TEXT,
+    model        TEXT,
+    body         TEXT NOT NULL DEFAULT '',
+    state        TEXT NOT NULL,
+    error_code   TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX idx_ai_responses_created ON ai_responses(created_at DESC, id DESC);
 "#;

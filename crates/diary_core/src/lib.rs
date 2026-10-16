@@ -24,6 +24,11 @@ mod index_rebuild;
 mod jobs;
 /// 数据对象。公开是为了让桥接层的 codegen 能扫描它们（见 flutter_rust_bridge.yaml）。
 pub mod model;
+/// Provider 适配与配置（B4a）：配置、密钥托管、能力协商、连接测试与可注入传输层。
+///
+/// 公开是为了让测试与 `tools/probe` 能注入回放/记账传输层——这是给测试与量测的
+/// 入口，产品代码只用默认实现（见 `provider::transport`）。
+pub mod provider;
 mod recordings;
 mod schema;
 mod search;
@@ -37,17 +42,28 @@ pub use extractors::{
     TEXT_DIRECT_EXTRACTOR_VERSION,
 };
 pub use error::{CoreError, ErrorCode, Result};
-pub use model::{
-    Asset, AssetLease, AssetStorageState, AuthorType, Capture, CapturePage, CaptureState,
-    CommitResult, DomainEvent, DraftSaveResult, EventType, ImportManifest, ImportOrigin,
-    Coverage, ExtractedContent, ExtractedSegment, ImportState, ImportStatus, ImportTicket,
-    IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress, JobRunSummary, JobState,
-    JobStatus, LocatorType, NativeRecordingStatus, NewJob,
-    MatchedBy, ProcessingStatus, ProcessingSummary, RecordingFinalizeResult, RecordingRecovery,
-    RecordingSession, RecordingState, RecordingTicket, SegmentManifest, SegmentReceipt,
-    SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
-    SourceItem, SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
+pub use provider::adapter::{
+    adapter_for, builtin_adapter_ids, GenerateOutcome, GenerateRequest, ProtocolAdapter,
+    CALL_TIMEOUT_MS, OPENAI_COMPATIBLE, PROBE_TIMEOUT_MS,
 };
+pub use provider::secret::{FileSecretStore, MemorySecretStore, SecretStore};
+pub use provider::transport::{
+    CountingTransport, HttpRequest, HttpResponse, PanicTransport, ScriptedTransport, Transport,
+    TransportError, UreqTransport,
+};
+pub use model::{
+    AiResponse, Asset, AssetLease, AssetStorageState, AuthorType, Capture, CapturePage,
+    CaptureState, CommitResult, Coverage, DomainEvent, DraftSaveResult, EventType,
+    ExtractedContent, ExtractedSegment, ImportManifest, ImportOrigin, ImportState, ImportStatus,
+    ImportTicket, IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress, JobRunSummary,
+    JobState, JobStatus, LocatorType, MatchedBy, NativeRecordingStatus, NewJob,
+    ProcessingStatus, ProcessingSummary, Provider, ProviderCapability, ProviderTestReport,
+    ProviderTestStatus, RecordingFinalizeResult, RecordingRecovery, RecordingSession,
+    RecordingState, RecordingTicket, ResponseTicket, SearchFilters, SearchHit, SearchMode,
+    SearchPhase, SearchRequest, SearchSnapshot, SegmentManifest, SegmentReceipt, SourceItem,
+    SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
+};
+pub use provider::CapabilityGate;
 pub use chunker::{
     chunks_for, pack_pieces, Chunk, ChunkSpan, Piece, CHUNKER_VERSION, CHUNK_OVERLAP_CHARS,
     MAX_CHUNK_CHARS,
@@ -96,6 +112,12 @@ pub struct Core {
     /// 混合检索的语义证据门槛。产品默认是 `HYBRID_SEMANTIC_MIN_SCORE`；量测与测试
     /// 可以临时改它来扫曲线（见 `set_hybrid_min_score_for_test`）。
     hybrid_min_score: f32,
+    /// 密钥托管。默认实现是资料库目录下权限受限的独立文件；测试与内存库用内存实现。
+    /// **明文只在这一层**，`providers` 表里只有引用（见 `provider::secret`）。
+    secrets: Box<dyn provider::secret::SecretStore>,
+    /// 出站请求的唯一出口。默认：文件库用真实 HTTP（ureq + rustls），
+    /// 内存库用「一旦被调用就 panic」的替身——内存库只用于测试，不该真的出网。
+    transport: std::sync::Arc<dyn provider::transport::Transport>,
 }
 
 /// 一行的原始形态：先取出来，再按业务语义解析，避免把解析错误塞进 SQL 层。
@@ -112,23 +134,42 @@ impl Core {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
-        Self::prepare(Connection::open(path)?, Some(root))
+        // 文件库是产品路径：默认装真实 HTTP 传输层。
+        Self::prepare(
+            Connection::open(path)?,
+            Some(root),
+            std::sync::Arc::new(provider::transport::UreqTransport::new()),
+        )
     }
 
     /// 内存库，只用于测试。没有文件系统根目录，导入相关方法会报 `invalid_state`。
+    ///
+    /// 传输层默认是「一旦被调用就 panic」的替身：内存库只用于测试，**不该真的出网**。
+    /// 要测 Provider 交互就显式 `set_transport_for_test` 注入回放替身。
     pub fn open_in_memory() -> Result<Self> {
-        Self::prepare(Connection::open_in_memory()?, None)
+        Self::prepare(
+            Connection::open_in_memory()?,
+            None,
+            std::sync::Arc::new(provider::transport::PanicTransport {}),
+        )
     }
 
     /// 内存库 + 一个文件系统根目录，用于测试导入而不必落一个真库文件。
+    ///
+    /// 传输层同 `open_in_memory`：测试默认不联网。
     pub fn open_in_memory_at(root: impl AsRef<std::path::Path>) -> Result<Self> {
         Self::prepare(
             Connection::open_in_memory()?,
             Some(root.as_ref().to_path_buf()),
+            std::sync::Arc::new(provider::transport::PanicTransport {}),
         )
     }
 
-    fn prepare(mut conn: Connection, root: Option<PathBuf>) -> Result<Self> {
+    fn prepare(
+        mut conn: Connection,
+        root: Option<PathBuf>,
+        transport: std::sync::Arc<dyn provider::transport::Transport>,
+    ) -> Result<Self> {
         // WAL 提高并发读写表现；synchronous=FULL 保证「提交了就是落盘了」，
         // 只用 NORMAL 会让进程崩溃时丢掉最后几个事务，与 durable 承诺不符。
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -142,6 +183,12 @@ impl Core {
         // 收拾上次没走完的导入与录音：都如实标成「没完成」，不假装成功。
         assets::recover_on_open(&conn)?;
         recordings::recover_on_open(&conn)?;
+        // 密钥托管：文件库落在资料库目录下的 `secrets/`（与库文件分开），
+        // 内存库（只用于测试）只在内存里。传输层由调用方给（见 `prepare` 的三个调用点）。
+        let secrets: Box<dyn provider::secret::SecretStore> = match &root {
+            Some(dir) => Box::new(provider::secret::FileSecretStore::beside_library(dir)),
+            None => Box::new(provider::secret::MemorySecretStore::new()),
+        };
         Ok(Self {
             conn,
             root,
@@ -149,6 +196,8 @@ impl Core {
             search_sessions: HashMap::new(),
             semantic: semantic::SemanticRuntime::from_env(),
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
+            secrets,
+            transport,
         })
     }
 
@@ -1129,6 +1178,97 @@ impl Core {
             });
         }
         Ok(events)
+    }
+
+    // ------------------------------------------------------------ 远端服务（B4a）
+
+    /// 密钥托管（只给测试与受控调用路径用，**不要**把它交给上层）。
+    pub fn secrets(&self) -> &dyn provider::secret::SecretStore {
+        self.secrets.as_ref()
+    }
+
+    /// 出站请求的唯一出口。
+    pub fn transport(&self) -> &dyn provider::transport::Transport {
+        self.transport.as_ref()
+    }
+
+    /// 仅供测试/量测：换一个传输层（回放、记账、panic 替身）。
+    ///
+    /// 产品代码不调它：文件库默认就是真实 HTTP，内存库默认是「一调用就 panic」。
+    #[doc(hidden)]
+    pub fn set_transport_for_test(&mut self, transport: std::sync::Arc<dyn provider::transport::Transport>) {
+        self.transport = transport;
+    }
+
+    /// 仅供测试：换一个密钥存储。
+    #[doc(hidden)]
+    pub fn set_secret_store_for_test(&mut self, secrets: Box<dyn provider::secret::SecretStore>) {
+        self.secrets = secrets;
+    }
+
+    /// 列出脱敏后的服务配置，契约第 4.4 节 `providers.list`。按创建顺序，稳定。
+    pub fn list_providers(&self) -> Result<Vec<Provider>> {
+        provider::list(self)
+    }
+
+    /// 保存服务配置，契约第 4.4 节 `providers.save`。
+    ///
+    /// `secret` 是**明文密钥**，只在这一刻经过内存：存进 `SecretStore` 后立刻换成
+    /// 引用，数据库与返回值里都只有引用。传 `None` 表示不改密钥（沿用配置里的引用，
+    /// 引用为空就是清掉凭据）。
+    ///
+    /// 协议/端点/模型变了会让上一次的验证结论作废（那是对旧配置的验证）。
+    ///
+    /// 传进来的 `test_status` **是只读结论，会被忽略**：它由连接测试写，
+    /// 不能让调用方「保存成一个已验证的服务」。
+    pub fn save_provider(&mut self, config: &Provider, secret: Option<&str>) -> Result<Provider> {
+        provider::save(self, config, secret)
+    }
+
+    /// 移除服务配置，契约第 4.4 节 `providers.remove`。**不删除任何日记**，
+    /// 也不删除已经生成的回应（它记着当时的来源，是历史事实）。
+    pub fn remove_provider(&mut self, provider_id: &str) -> Result<()> {
+        provider::remove(self, provider_id)
+    }
+
+    /// 连接测试，契约第 4.4 节 `providers.test`。
+    ///
+    /// **只有显式调用才发网络请求**；`scope` 是用户授权的测试范围，报告里逐项给
+    /// 结论并说明是否真的发生了模型调用。详见 `provider::test` 的文档。
+    pub fn test_provider(
+        &mut self,
+        provider_id: &str,
+        scope: &[ProviderCapability],
+    ) -> Result<ProviderTestReport> {
+        provider::test(self, provider_id, scope)
+    }
+
+    /// 能力闸门：现在能不能用某个能力、为什么、下一步做什么。
+    ///
+    /// 这是「不排注定失败的任务」的唯一判据，排任务的入口都应该先问它。
+    pub fn provider_capability_gate(
+        &self,
+        capability: ProviderCapability,
+    ) -> Result<CapabilityGate> {
+        provider::capability_gate_for(self, capability, None)
+    }
+
+    /// 主动请求一次回应，契约第 4.3 节 `responses.request`。
+    ///
+    /// **只有主动调用才排任务**：这个方法返回后，作业在队列里等驱动；没有调用就
+    /// 什么都没有。能力不满足时直接拒绝（不排一条注定失败的任务）。
+    pub fn request_response(
+        &mut self,
+        capture_ids: &[String],
+        request_text: &str,
+        provider_id: Option<&str>,
+    ) -> Result<ResponseTicket> {
+        provider::request_response(self, capture_ids, request_text, provider_id)
+    }
+
+    /// 读取一条回应，契约第 4.3 节 `responses.get`。
+    pub fn get_response(&self, response_id: &str) -> Result<AiResponse> {
+        provider::get_response(self, response_id)
     }
 
     // ------------------------------------------------------------ 幂等回执

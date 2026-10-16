@@ -20,6 +20,7 @@ zip.workspace = true
 quick-xml.workspace = true
 pdf-extract.workspace = true
 jieba-rs.workspace = true
+ureq.workspace = true
 # 本地向量模型（B3c-2）：bge-small-zh-v1.5 ONNX + 分词器。
 #
 # 与探针同一个版本、同一套特性：`load-dynamic` 让 ONNX Runtime 在**运行时**才加载，

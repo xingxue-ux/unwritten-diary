@@ -1210,3 +1210,133 @@ pub struct SearchSnapshot {
     pub index_coverage: Coverage,
     pub warnings: Vec<String>,
 }
+
+// ------------------------------------------------------------ 远端服务（Provider）
+
+/// 远端服务能力，契约第 2.7 节。
+///
+/// **诚实声明**：这里只是「这一类能力」的集合，不代表核心内置的适配器都实现了。
+/// 一个能力要真的能被排任务，还要适配器有实现、且（测过之后）被连接测试验过——
+/// 口径见 `docs/architecture/m3-Provider-配置与能力.md`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCapability {
+    /// 文本生成。
+    GenerateText,
+    /// 音频转写。
+    TranscribeAudio,
+    /// 图像理解。内置适配器**还没有**实现它（插件模型能力在 M4）。
+    UnderstandImage,
+}
+
+impl ProviderCapability {
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::GenerateText => "generate_text",
+            Self::TranscribeAudio => "transcribe_audio",
+            Self::UnderstandImage => "understand_image",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "generate_text" => Some(Self::GenerateText),
+            "transcribe_audio" => Some(Self::TranscribeAudio),
+            "understand_image" => Some(Self::UnderstandImage),
+            _ => None,
+        }
+    }
+
+    /// 全部能力（用于「列出这个适配器支持什么」的稳定顺序输出）。
+    pub const ALL: [Self; 3] = [Self::GenerateText, Self::TranscribeAudio, Self::UnderstandImage];
+}
+
+/// 连接测试状态，契约第 2.7 节。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderTestStatus {
+    /// 还没测过。
+    Untested,
+    /// 最近一次测试通过。
+    Ok,
+    /// 最近一次测试失败（具体错误码在 `providers.last_error_code`，不进这个对象：
+    /// 契约的 Provider 对象没有这个字段，编一个会变成没人认识的形状）。
+    Failed,
+}
+
+impl ProviderTestStatus {
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Untested => "untested",
+            Self::Ok => "ok",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "untested" => Some(Self::Untested),
+            "ok" => Some(Self::Ok),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+/// 脱敏后的远端服务配置，契约第 2.7 节。
+///
+/// **没有密钥字段**：`credential_ref` 是凭据存储里的引用，不是密钥本身。
+/// 这个对象会原样过桥到 Dart，所以任何密文都不该出现在这里。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Provider {
+    pub id: String,
+    pub label: String,
+    /// 协议适配器标识（例如 `openai_compatible`）。业务层不硬编码供应商。
+    pub adapter_id: String,
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+    /// 配置里声明的能力。空集合表示「什么都还没声明」，不是「什么都能做」。
+    pub capabilities: std::collections::HashSet<ProviderCapability>,
+    /// 凭据存储里的引用；为空表示还没配密钥。**永远不是密钥明文。**
+    pub credential_ref: Option<String>,
+    pub enabled: bool,
+    pub test_status: ProviderTestStatus,
+}
+
+/// 连接测试报告，契约第 4.4 节 `providers.test`。
+///
+/// `actual_call_made` 是**如实**的：只有真的发出了 HTTP 请求才是 true；能力在
+/// 适配器/配置层面就不成立、根本没发请求时是 false。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderTestReport {
+    pub provider_id: String,
+    /// 用户授权的测试范围里，每项能力的结论。
+    pub results: std::collections::HashMap<ProviderCapability, ProviderTestStatus>,
+    /// 这次测试是否真的发生了模型调用（发起了 HTTP 请求）。
+    pub actual_call_made: bool,
+    /// 用户可读的说明：可达性 / 认证 / 模型可用 / 实际能力集 / 下一步。
+    pub message: Option<String>,
+}
+
+/// 一次主动回应的请求回执，契约第 4.4 节 `responses.request`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResponseTicket {
+    pub job_id: String,
+    /// 回应对象 id。请求受理时就已经存在（`pending`），生成完成后正文才有内容。
+    pub response_id: Option<String>,
+}
+
+/// 独立保存的 AI 回应，契约第 4.3 节 `responses.get`。
+///
+/// AI 回应**不自动成为日记的原始事实**：它只带来源（`capture_ids`）与生成信息
+/// （`provider_id` / `model`），正文是模型给的东西。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiResponse {
+    pub id: String,
+    pub request_text: String,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    pub capture_ids: Vec<String>,
+    pub provider_id: Option<String>,
+    pub model: Option<String>,
+}

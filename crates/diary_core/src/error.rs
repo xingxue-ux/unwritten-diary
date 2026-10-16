@@ -32,6 +32,20 @@ pub enum ErrorCode {
     SearchExpired,
     /// 游标过期或不属于这个会话，前端应从头翻。
     CursorExpired,
+    /// 还没有可用（已配置且已启用、并且支持所需能力）的远端服务。
+    ProviderNotConfigured,
+    /// 鉴权失败：密钥不对、过期或没有权限。等用户改配置，不频繁重试。
+    AuthenticationFailed,
+    /// 网络不可用：断网、连不上、远端 5xx。
+    NetworkUnavailable,
+    /// 被限流：尊重 Retry-After，可退避重试。
+    RateLimited,
+    /// 额度用尽：暂停，等用户处理。
+    QuotaExceeded,
+    /// 远端超时：有限重试；**不承诺远端未计费**。
+    ProviderTimeout,
+    /// 端点/模型不可用或返回内容解析不了：检查配置，重试不会好。
+    ModelUnavailable,
 }
 
 impl ErrorCode {
@@ -49,6 +63,13 @@ impl ErrorCode {
             Self::UnsupportedFormat => "unsupported_format",
             Self::SearchExpired => "search_expired",
             Self::CursorExpired => "cursor_expired",
+            Self::ProviderNotConfigured => "provider_not_configured",
+            Self::AuthenticationFailed => "authentication_failed",
+            Self::NetworkUnavailable => "network_unavailable",
+            Self::RateLimited => "rate_limited",
+            Self::QuotaExceeded => "quota_exceeded",
+            Self::ProviderTimeout => "provider_timeout",
+            Self::ModelUnavailable => "model_unavailable",
         }
     }
 }
@@ -93,6 +114,39 @@ pub enum CoreError {
     #[error("检索游标已失效：{reason}")]
     CursorExpired { reason: String },
 
+    // ------------------------------------------------------------ 远端服务（B4a）
+    //
+    // 这几类错误的时间语义**不一样**，所以不能都塞进一个「网络错误」：
+    // 鉴权失败要等用户改配置（不频繁重试），超时/断网/限流才是有意义的退避重试。
+    // 队列侧的处置见 `provider::normalize` 与 `jobs::FailureDisposition`。
+    #[error("还没有可用的服务：{reason}")]
+    ProviderNotConfigured { reason: String },
+
+    #[error("认证失败：{reason}")]
+    AuthenticationFailed { reason: String },
+
+    #[error("网络不可用：{reason}")]
+    NetworkUnavailable { reason: String },
+
+    #[error("请求被限流：{reason}")]
+    RateLimited {
+        reason: String,
+        /// 远端 `Retry-After` 给的等待毫秒数（有就给，没有就按本地退避）。
+        retry_after_ms: Option<u64>,
+    },
+
+    #[error("额度已用尽：{reason}")]
+    QuotaExceeded { reason: String },
+
+    #[error("服务响应超时：{reason}")]
+    ProviderTimeout { reason: String },
+
+    #[error("模型或端点不可用：{reason}")]
+    ModelUnavailable { reason: String },
+
+    #[error("这个服务不支持所需能力：{reason}")]
+    CapabilityUnsupported { reason: String },
+
     #[error("文件操作失败：{0}")]
     Io(#[from] std::io::Error),
 
@@ -121,10 +175,37 @@ impl CoreError {
             Self::ExtractionFailed { .. } => ErrorCode::UnsupportedFormat,
             Self::SearchExpired { .. } => ErrorCode::SearchExpired,
             Self::CursorExpired { .. } => ErrorCode::CursorExpired,
+            Self::ProviderNotConfigured { .. } | Self::CapabilityUnsupported { .. } => {
+                ErrorCode::ProviderNotConfigured
+            }
+            Self::AuthenticationFailed { .. } => ErrorCode::AuthenticationFailed,
+            Self::NetworkUnavailable { .. } => ErrorCode::NetworkUnavailable,
+            Self::RateLimited { .. } => ErrorCode::RateLimited,
+            Self::QuotaExceeded { .. } => ErrorCode::QuotaExceeded,
+            Self::ProviderTimeout { .. } => ErrorCode::ProviderTimeout,
+            Self::ModelUnavailable { .. } => ErrorCode::ModelUnavailable,
             Self::Io(err) => io_code(err),
             Self::CorruptedData { .. } | Self::Serialization(_) => ErrorCode::InvalidState,
             Self::Database(err) => database_code(err),
         }
+    }
+
+    /// 给错误消息补一句说明（例如「本次测试已发起 1 次真实请求」）。
+    ///
+    /// 只对带 `reason` 的远端服务类错误有意义；别的错误原样不动——编不出话就不编。
+    pub fn append_reason(&mut self, note: &str) {
+        let reason = match self {
+            Self::ProviderNotConfigured { reason }
+            | Self::AuthenticationFailed { reason }
+            | Self::NetworkUnavailable { reason }
+            | Self::RateLimited { reason, .. }
+            | Self::QuotaExceeded { reason }
+            | Self::ProviderTimeout { reason }
+            | Self::ModelUnavailable { reason }
+            | Self::CapabilityUnsupported { reason } => reason,
+            _ => return,
+        };
+        reason.push_str(note);
     }
 
     /// 是否值得原样重试。磁盘满、版本冲突这些重试也不会好。
@@ -133,7 +214,30 @@ impl CoreError {
     /// 丢弃旧会话结果并重取」，也就是「重来一次」是正确动作，而
     /// `packages/diary_api` 里对应的异常也把 `retryable` 设成 true。
     pub fn retryable(&self) -> bool {
-        matches!(self, Self::SearchExpired { .. } | Self::CursorExpired { .. })
+        matches!(
+            self,
+            Self::SearchExpired { .. }
+                | Self::CursorExpired { .. }
+                | Self::NetworkUnavailable { .. }
+                | Self::ProviderTimeout { .. }
+                | Self::RateLimited { .. }
+        )
+    }
+
+    /// 这条错误是不是「等用户改配置」而不是「等一等再试」。
+    ///
+    /// 契约第 7 节把 `provider_not_configured` / `authentication_failed` 的自动行为
+    /// 定成「等待配置，不频繁重试」，`quota_exceeded` 定成「额度问题暂停」。这三类
+    /// 都不该消耗任务的退避额度——再试一百次也不会好，只会反复打扰远端。作业侧把
+    /// 它们落成 `waiting_configuration`（见 `jobs::run_due`）。
+    pub fn waits_for_configuration(&self) -> bool {
+        matches!(
+            self,
+            Self::ProviderNotConfigured { .. }
+                | Self::CapabilityUnsupported { .. }
+                | Self::AuthenticationFailed { .. }
+                | Self::QuotaExceeded { .. }
+        )
     }
 }
 

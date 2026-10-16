@@ -18,6 +18,7 @@ use crate::error::{CoreError, Result};
 use crate::model::{
     EventType, Job, JobErrorSummary, JobProgress, JobRunSummary, JobState, JobStatus, NewJob,
 };
+use crate::provider;
 use crate::support;
 use crate::Core;
 
@@ -318,15 +319,34 @@ pub(crate) fn fail(
     message: &str,
     now: DateTime<Utc>,
 ) -> Result<Job> {
+    fail_with_retry_after(core, job_id, error_code, message, None, now)
+}
+
+/// 与 `fail` 相同，但可以尊重远端的 `Retry-After`（限流时它比本地退避更准）。
+///
+/// 仍然受 `max_attempts` 约束：远端说等一小时也照样计入一次尝试，额度用完就进
+/// 「已放弃」等人工——「有限重试」不是「无限等下去」。
+pub(crate) fn fail_with_retry_after(
+    core: &mut Core,
+    job_id: &str,
+    error_code: &str,
+    message: &str,
+    retry_after_ms: Option<u64>,
+    now: DateTime<Utc>,
+) -> Result<Job> {
     let job = load_job(&core.conn, job_id)?;
     let exhausted = job.attempt_count >= job.max_attempts;
     let (state, next_attempt, requires_user_action) = if exhausted {
         // 自动重试到头了：这是需要用户看见的事，不是「安静地算了」。
         (JobState::Failed, None, 1_i64)
     } else {
+        let wait = match retry_after_ms {
+            Some(ms) => Duration::milliseconds(ms.min(60 * 60 * 1000) as i64),
+            None => backoff(job.attempt_count),
+        };
         (
             JobState::RetryWait,
-            Some(support::to_iso(now + backoff(job.attempt_count))),
+            Some(support::to_iso(now + wait)),
             0_i64,
         )
     };
@@ -555,6 +575,43 @@ pub(crate) fn is_attention_acknowledged(core: &Core, attention_key: &str) -> Res
         )
         .optional()?;
     Ok(found.is_some())
+}
+
+/// 等配置：进 `waiting_configuration`，**不排退避、不消耗重试额度**。
+///
+/// 用在哪：已经领取的任务在执行时发现「服务没配置 / 鉴权失败 / 额度用尽」。
+/// 契约第 7 节给这三类的自动行为是「等待配置，不频繁重试」，所以它们既不能算
+/// 失败（用户什么都没做错），也不能排退避（重试一百次也是同样的 401）。
+///
+/// 与依赖闸门（`resolve_dependencies`）的分工：闸门在**领取前**就把配置不满足的
+/// 任务挡在 `waiting_configuration`（连一次尝试都不消耗）；这里是执行期才发现
+/// 配置坏了的兜底（例如刚还在的服务这一秒返回了 401）。两条路都落成同一个状态，
+/// 用户看到的是同一件事：**这个任务在等你去改配置**。
+pub(crate) fn defer_for_configuration(
+    core: &mut Core,
+    job_id: &str,
+    error_code: &str,
+    message: &str,
+    attention_key: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<Job> {
+    let now_text = support::to_iso(now);
+    let tx = core.conn.transaction()?;
+    tx.execute(
+        "UPDATE jobs SET state = 'waiting_configuration', error_code = ?1, \
+         next_attempt_at = NULL, requires_user_action = 1, attention_key = ?2, updated_at = ?3 \
+         WHERE id = ?4",
+        params![error_code, attention_key, now_text, job_id],
+    )?;
+    // 这次尝试如实记下结局（它确实跑过、确实失败了），但不排下一次。
+    tx.execute(
+        "UPDATE job_attempts SET finished_at = ?1, outcome = 'waiting_configuration', \
+         error_code = ?2, message = ?3 WHERE job_id = ?4 AND finished_at IS NULL",
+        params![now_text, error_code, message, job_id],
+    )?;
+    crate::insert_event(&tx, EventType::JobChanged, job_id, 1)?;
+    tx.commit()?;
+    load_job(&core.conn, job_id)
 }
 
 // ------------------------------------------------------------------ 依赖闸门
@@ -797,11 +854,27 @@ fn dependency_message(code: &str, job: &Job) -> String {
 
 // ------------------------------------------------------------------ 驱动
 
-/// 处理器的失败。`terminal = true` 表示「重试也不会好」（例如没有处理器）。
+/// 处理器失败后的处置。**三种时间语义不能混**（契约第 7 节）：
+///
+/// - `Terminal`：重试也不会好（没有处理器、目标不存在）→ `failed` + 等人工；
+/// - `Retry`：换个时间可能就好（原件暂时不在、断网、超时、限流）→ 退避重试，
+///   消耗额度；
+/// - `WaitConfiguration`：等用户改配置（没配置服务、鉴权失败、额度用尽）→
+///   `waiting_configuration`，**不消耗重试额度、不频繁重试**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureDisposition {
+    Terminal,
+    Retry,
+    WaitConfiguration,
+}
+
+/// 处理器的失败。
 struct HandlerFailure {
     code: String,
     message: String,
-    terminal: bool,
+    disposition: FailureDisposition,
+    /// 远端 `Retry-After` 给的等待毫秒数（有就尊重它，没有就按本地退避）。
+    retry_after_ms: Option<u64>,
 }
 
 impl HandlerFailure {
@@ -809,16 +882,46 @@ impl HandlerFailure {
         Self {
             code: code.to_owned(),
             message,
-            terminal: true,
+            disposition: FailureDisposition::Terminal,
+            retry_after_ms: None,
         }
     }
 
-    /// 核心错误：还有机会换个时间重试（原件暂时不在、修订暂时读不到）。
+    /// 核心错误 → 处置。时间语义只由 `CoreError` 自己说了算（`retryable` /
+    /// `waits_for_configuration`，见 `error.rs` 与 `provider::normalize` 的映射表），
+    /// 执行者不用各自判断——否则同一类错误在不同 kind 下会有不同下场。
+    fn from_error(error: CoreError) -> Self {
+        let disposition = if error.waits_for_configuration() {
+            FailureDisposition::WaitConfiguration
+        } else if error.retryable() {
+            FailureDisposition::Retry
+        } else {
+            FailureDisposition::Terminal
+        };
+        let retry_after_ms = match &error {
+            CoreError::RateLimited { retry_after_ms, .. } => *retry_after_ms,
+            _ => None,
+        };
+        Self {
+            code: error.code().wire().to_owned(),
+            message: error.to_string(),
+            disposition,
+            retry_after_ms,
+        }
+    }
+
+    /// 旧调用点（`extract` / `index`）的口径：**换个时间可能就好**。
+    ///
+    /// 这里刻意不按 `CoreError` 的默认处置走：对提取来说「原件暂时不在、修订暂时
+    /// 读不到」是可以等一等的（导入与提取在两个事务里，先后顺序不保证），所以这一
+    /// 路一直是有界重试。Provider 那一路用 `from_error`，时间语义严格按契约第 7 节
+    /// 的码来（鉴权失败等配置、超时有限重试、模型不对就停）。
     fn retryable(error: CoreError) -> Self {
         Self {
             code: error.code().wire().to_owned(),
             message: error.to_string(),
-            terminal: false,
+            disposition: FailureDisposition::Retry,
+            retry_after_ms: None,
         }
     }
 }
@@ -899,6 +1002,9 @@ pub(crate) fn run_due(
         // 每次领取前重评估依赖：上一条前置任务刚跑完，它的后继在这一刻就被认账、
         // 被拉起，并在同一轮内被领取执行。闸门是纯查询，不消耗预算，也不动额度。
         summary.dependency_failed += resolve_dependencies(core, now)?;
+        // 配置闸门同样在领取前评估（B4a）：服务没配好、或测过但没验过的任务
+        // **不会被领取**，所以既不发请求、也不消耗尝试次数。
+        provider::promote_configuration_waits(core, now)?;
 
         let Some(claimed) = claim_next_due_record(core, now)? else {
             break;
@@ -915,8 +1021,8 @@ pub(crate) fn run_due(
                 complete(core, &job.id)?;
                 summary.succeeded += 1;
             }
-            Err(failure) => {
-                if failure.terminal {
+            Err(failure) => match failure.disposition {
+                FailureDisposition::Terminal => {
                     // 同类同码的问题只提示一次，不然每次重开都要再喊一遍。
                     let attention = format!("job-terminal:{}:{}", job.kind, failure.code);
                     fail_terminal(
@@ -928,15 +1034,38 @@ pub(crate) fn run_due(
                         now,
                     )?;
                     summary.failed += 1;
-                } else {
-                    let after = fail(core, &job.id, &failure.code, &failure.message, now)?;
+                }
+                FailureDisposition::Retry => {
+                    let after = fail_with_retry_after(
+                        core,
+                        &job.id,
+                        &failure.code,
+                        &failure.message,
+                        failure.retry_after_ms,
+                        now,
+                    )?;
                     if after.state == JobState::Failed {
                         summary.failed += 1;
                     } else {
                         summary.retrying += 1;
                     }
                 }
-            }
+                FailureDisposition::WaitConfiguration => {
+                    // 等配置：既没有放弃、也没有排退避（不消耗重试额度）。
+                    // `waiting_configuration` 的计数在 `job_status()` 里看得到，
+                    // `DueRunSummary` 没有这个字段（契约没给），所以它不计入
+                    // failed / retrying——不谎报「已经失败」，也不谎报「在重试」。
+                    let attention = format!("job-config:{}:{}", job.kind, failure.code);
+                    defer_for_configuration(
+                        core,
+                        &job.id,
+                        &failure.code,
+                        &failure.message,
+                        Some(&attention),
+                        now,
+                    )?;
+                }
+            },
         }
         processed += 1;
     }
@@ -946,6 +1075,7 @@ pub(crate) fn run_due(
     // 这条不变式的兜底：循环可能因为预算 / 条数上限在这一轮的最后一条任务之后
     // 直接退出，没来得及在「领取前」认账刚跑完的前置（见函数文档）。
     summary.dependency_failed += resolve_dependencies(core, now)?;
+    provider::promote_configuration_waits(core, now)?;
 
     summary.processed = processed as i64;
     summary.waiting_dependency = count(core, Some(&[JobState::WaitingDependency]))?;
@@ -974,10 +1104,11 @@ fn execute(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailure
     match job.kind.as_str() {
         KIND_EXTRACT => run_extract(core, job),
         KIND_INDEX => run_index(core, job),
+        kind if kind == provider::KIND_RESPOND => run_respond(core, job),
         _ => Err(HandlerFailure::terminal(
             "no_handler",
             format!(
-                "核心还没有「{}」任务的执行者（转写要等 B4a 的 Provider 接上）",
+                "核心还没有「{}」任务的执行者（转写管线是 B4b 的事）",
                 job.kind
             ),
         )),
@@ -1003,6 +1134,24 @@ fn run_extract(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFai
             .map_err(HandlerFailure::retryable)?;
     }
     Ok(())
+}
+
+/// `respond` 的执行者：真的调用一次已配置的服务，把正文落进 `ai_responses`。
+///
+/// 契约 `responses.request` 的「只有主动调用才运行」在这里收口：这条任务只可能由
+/// 用户的主动请求排出来，没有任何自动排期路径。空目标（缺 `target_ids`）是结构性
+/// 错误，重试不会变好——按 `no_target` 终态失败，不去调用任何服务。
+///
+/// 失败的处置由 `CoreError` 自己决定（见 `FailureDisposition`）：没配好/鉴权失败→
+/// 等配置；超时/断网/限流→退避重试；模型或端点不对→终态失败。
+fn run_respond(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailure> {
+    if job.target_ids.is_empty() {
+        return Err(HandlerFailure::terminal(
+            provider::ERROR_NO_TARGET,
+            "回应任务没有目标，重试也不会变好".to_owned(),
+        ));
+    }
+    provider::run_respond(core, job).map_err(HandlerFailure::from_error)
 }
 
 /// `index` 的执行者：对任务 `target_ids` 里的**来源**重跑关键词索引重建。
@@ -1199,7 +1348,7 @@ pub(crate) fn status(core: &Core) -> Result<JobStatus> {
 
 // ------------------------------------------------------------------ 内部
 
-fn load_job(conn: &rusqlite::Connection, job_id: &str) -> Result<Job> {
+pub(crate) fn load_job(conn: &rusqlite::Connection, job_id: &str) -> Result<Job> {
     let row = conn
         .query_row(
             "SELECT id, kind, state, priority, target_ids, input_snapshot_hash, \

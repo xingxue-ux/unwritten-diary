@@ -26,6 +26,15 @@ jieba-rs = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# Provider 的 HTTP 客户端（B4a）。选型理由与许可证见
+# docs/architecture/m3-Provider-配置与能力.md：
+# - **同步**：核心整体是同步的（没有 async runtime），ureq 2.x 就是同步阻塞的，
+#   与 `Core` 的调用形状一致，不引入 tokio；
+# - **默认 rustls + webpki-roots**：`tls` 特性用 rustls（不用 OpenSSL，交叉编译
+#   到 Android 不用额外系统库），根证书用打包进来的 Mozilla 根集合；
+# - **不默认开 gzip/json/cookies**：这一片只用得上 TLS。
+# 许可证：ureq 是 MIT/Apache-2.0 双许可。
+ureq = { version = "2.12.1", default-features = false, features = ["tls"] }
 
 [profile.release]
 # 移动端体积敏感：优先体积而不是极致的编译期优化。

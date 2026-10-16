@@ -8,8 +8,55 @@ import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NativeRecordingStatus`, `NewJob`, `RecordingFinalizeResult`, `RecordingRecovery`, `RecordingSession`, `RecordingTicket`, `SegmentManifest`, `SegmentReceipt`, `SourceItem`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`, `partial_cmp`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
+
+/// 独立保存的 AI 回应，契约第 4.3 节 `responses.get`。
+///
+/// AI 回应**不自动成为日记的原始事实**：它只带来源（`capture_ids`）与生成信息
+/// （`provider_id` / `model`），正文是模型给的东西。
+class AiResponse {
+  final String id;
+  final String requestText;
+  final String body;
+  final DateTime createdAt;
+  final List<String> captureIds;
+  final String? providerId;
+  final String? model;
+
+  const AiResponse({
+    required this.id,
+    required this.requestText,
+    required this.body,
+    required this.createdAt,
+    required this.captureIds,
+    this.providerId,
+    this.model,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      requestText.hashCode ^
+      body.hashCode ^
+      createdAt.hashCode ^
+      captureIds.hashCode ^
+      providerId.hashCode ^
+      model.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AiResponse &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          requestText == other.requestText &&
+          body == other.body &&
+          createdAt == other.createdAt &&
+          captureIds == other.captureIds &&
+          providerId == other.providerId &&
+          model == other.model;
+}
 
 /// 资产在文件库中的状态，契约第 2.3 节。
 enum AssetStorageState {
@@ -1103,6 +1150,153 @@ class ProcessingSummary {
           needsAttention == other.needsAttention;
 }
 
+/// 脱敏后的远端服务配置，契约第 2.7 节。
+///
+/// **没有密钥字段**：`credential_ref` 是凭据存储里的引用，不是密钥本身。
+/// 这个对象会原样过桥到 Dart，所以任何密文都不该出现在这里。
+class Provider {
+  final String id;
+  final String label;
+
+  /// 协议适配器标识（例如 `openai_compatible`）。业务层不硬编码供应商。
+  final String adapterId;
+  final String? endpoint;
+  final String? model;
+
+  /// 配置里声明的能力。空集合表示「什么都还没声明」，不是「什么都能做」。
+  final Set<ProviderCapability> capabilities;
+
+  /// 凭据存储里的引用；为空表示还没配密钥。**永远不是密钥明文。**
+  final String? credentialRef;
+  final bool enabled;
+  final ProviderTestStatus testStatus;
+
+  const Provider({
+    required this.id,
+    required this.label,
+    required this.adapterId,
+    this.endpoint,
+    this.model,
+    required this.capabilities,
+    this.credentialRef,
+    required this.enabled,
+    required this.testStatus,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      label.hashCode ^
+      adapterId.hashCode ^
+      endpoint.hashCode ^
+      model.hashCode ^
+      capabilities.hashCode ^
+      credentialRef.hashCode ^
+      enabled.hashCode ^
+      testStatus.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Provider &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          label == other.label &&
+          adapterId == other.adapterId &&
+          endpoint == other.endpoint &&
+          model == other.model &&
+          capabilities == other.capabilities &&
+          credentialRef == other.credentialRef &&
+          enabled == other.enabled &&
+          testStatus == other.testStatus;
+}
+
+/// 远端服务能力，契约第 2.7 节。
+///
+/// **诚实声明**：这里只是「这一类能力」的集合，不代表核心内置的适配器都实现了。
+/// 一个能力要真的能被排任务，还要适配器有实现、且（测过之后）被连接测试验过——
+/// 口径见 `docs/architecture/m3-Provider-配置与能力.md`。
+enum ProviderCapability {
+  /// 文本生成。
+  generateText,
+
+  /// 音频转写。
+  transcribeAudio,
+
+  /// 图像理解。内置适配器**还没有**实现它（插件模型能力在 M4）。
+  understandImage;
+
+  static Future<ProviderCapability?> fromWire({required String value}) =>
+      RustLib.instance.api.diaryCoreModelProviderCapabilityFromWire(
+        value: value,
+      );
+
+  Future<void> wire() =>
+      RustLib.instance.api.diaryCoreModelProviderCapabilityWire(that: this);
+}
+
+/// 连接测试报告，契约第 4.4 节 `providers.test`。
+///
+/// `actual_call_made` 是**如实**的：只有真的发出了 HTTP 请求才是 true；能力在
+/// 适配器/配置层面就不成立、根本没发请求时是 false。
+class ProviderTestReport {
+  final String providerId;
+
+  /// 用户授权的测试范围里，每项能力的结论。
+  final Map<ProviderCapability, ProviderTestStatus> results;
+
+  /// 这次测试是否真的发生了模型调用（发起了 HTTP 请求）。
+  final bool actualCallMade;
+
+  /// 用户可读的说明：可达性 / 认证 / 模型可用 / 实际能力集 / 下一步。
+  final String? message;
+
+  const ProviderTestReport({
+    required this.providerId,
+    required this.results,
+    required this.actualCallMade,
+    this.message,
+  });
+
+  @override
+  int get hashCode =>
+      providerId.hashCode ^
+      results.hashCode ^
+      actualCallMade.hashCode ^
+      message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ProviderTestReport &&
+          runtimeType == other.runtimeType &&
+          providerId == other.providerId &&
+          results == other.results &&
+          actualCallMade == other.actualCallMade &&
+          message == other.message;
+}
+
+/// 连接测试状态，契约第 2.7 节。
+enum ProviderTestStatus {
+  /// 还没测过。
+  untested,
+
+  /// 最近一次测试通过。
+  ok,
+
+  /// 最近一次测试失败（具体错误码在 `providers.last_error_code`，不进这个对象：
+  /// 契约的 Provider 对象没有这个字段，编一个会变成没人认识的形状）。
+  failed;
+
+  static Future<ProviderTestStatus?> fromWire({required String value}) =>
+      RustLib.instance.api.diaryCoreModelProviderTestStatusFromWire(
+        value: value,
+      );
+
+  Future<void> wire() =>
+      RustLib.instance.api.diaryCoreModelProviderTestStatusWire(that: this);
+}
+
 /// 录音状态，契约第 3 节「录音」行。
 enum RecordingState {
   idle,
@@ -1128,6 +1322,27 @@ enum RecordingState {
 
   Future<void> wire() =>
       RustLib.instance.api.diaryCoreModelRecordingStateWire(that: this);
+}
+
+/// 一次主动回应的请求回执，契约第 4.4 节 `responses.request`。
+class ResponseTicket {
+  final String jobId;
+
+  /// 回应对象 id。请求受理时就已经存在（`pending`），生成完成后正文才有内容。
+  final String? responseId;
+
+  const ResponseTicket({required this.jobId, this.responseId});
+
+  @override
+  int get hashCode => jobId.hashCode ^ responseId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ResponseTicket &&
+          runtimeType == other.runtimeType &&
+          jobId == other.jobId &&
+          responseId == other.responseId;
 }
 
 /// 检索过滤条件，契约第 2.6 节。
