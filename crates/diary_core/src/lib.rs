@@ -29,6 +29,7 @@ mod schema;
 mod search;
 mod search_session;
 mod semantic;
+mod semantic_index_job;
 mod support;
 
 pub use assets::ImportRequest;
@@ -880,6 +881,30 @@ impl Core {
         operation_id: &str,
     ) -> Result<Job> {
         index_rebuild::schedule(self, scope, reason, operation_id)
+    }
+
+    /// 排一条**语义索引**重建任务（`kind = "semantic_index"`）。
+    ///
+    /// **异步**：只排任务并返回它，真正的重建由 `semantic_index` 执行者在
+    /// `run_due_jobs` 里跑——它**可以分段让出**（预算到点就回到 `queued`、进度写在
+    /// `Job::progress` 上，下一轮接着算没算完的块），所以整库重建不会把一次唤醒拖死。
+    ///
+    /// 与 `schedule_index_rebuild` 的关系：那是关键词这一路（契约 4.4 的
+    /// `indexes.rebuild`，只排 `index` 任务），这是语义这一路。**两个 kind**：
+    /// 前置（等模型配置）、成败口径、能不能分段都不一样，混在一起会让既有入口的
+    /// 语义跟着变。理由与排队口径见 `semantic_index_job` 模块说明与
+    /// `docs/architecture/m4-任务调度与补做.md`。
+    ///
+    /// 任务**总是整库**（`target_ids` 为空）：代次与向量是全局的，范围只决定重算了
+    /// 哪些块。因此业务键 `(kind, 空目标, 空快照)` 让「队列里至多有一条活着的语义
+    /// 重建」——重复排队（连点、多处请求）不会产生重复工作。同一个 operationId +
+    /// 同一个 `reason` 重复调用返回同一条任务（按 id 读当前状态）；换了 `reason` 报
+    /// `idempotency_conflict`。
+    ///
+    /// **契约 4.4 还没有这个方法**，所以它只在核心上：桥接（`BridgeSession`）与能力
+    /// 白名单都没有加，Dart 现在调不到——要给应用入口得先改契约。
+    pub fn schedule_semantic_index(&mut self, reason: &str, operation_id: &str) -> Result<Job> {
+        semantic_index_job::schedule(self, reason, operation_id)
     }
 
     // ------------------------------------------------------------ 文本块

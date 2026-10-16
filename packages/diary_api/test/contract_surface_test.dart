@@ -59,6 +59,7 @@ const Map<String, String> kContractToDartMethod = {
   'search.cancel': 'cancelSearch',
   'indexes.status': 'indexesStatus',
   'indexes.rebuild': 'rebuildIndexes',
+  'indexes.rebuildSemantic': 'rebuildSemanticIndex',
   'jobs.list': 'listJobs',
   'jobs.get': 'getJob',
   'jobs.retry': 'retryJob',

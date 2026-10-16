@@ -14,22 +14,26 @@
 //!
 //! # 换代流程（照文档「building → active」）
 //!
-//! `Core::build_semantic_index` 一次跑完：
+//! `Core::build_semantic_index` 一次跑完；任务化的 `semantic_index` 作业走
+//! `build_with_deadline`（同一段实现，多一个预算截止点：到点就在块与块之间让出，
+//! 下一轮续跑）：
 //!
 //! 1. **重建块**（`chunks::rebuild`）：只删消失的块 + UPSERT，内容没变的块保住 id
 //!    与既有向量；
 //! 2. **开新代次**：`building_generation = COALESCE(building_generation, COALESCE(active_generation, 0) + 1)`。
 //!    正在服务的检索继续读旧那一代，界面不会突然空掉；
-//! 3. **续跑前核对口径**：`building_generation` 是上一次中断（或取消）留下的。若那一代
-//!    里已有的向量有任何一条与**当前嵌入器**的 `model_version` / `dims` / `storage` 不一致
-//!    （中途换过模型或换过存储格式），就整代清理、按当前模型从零重算。否则旧模型的
+//! 3. **续跑前核对口径**：`building_generation` 是上一次中断（或取消、或预算让出）留下的。
+//!    若那一代里已有的向量有任何一条与**当前嵌入器**的 `model_version` / `dims` / `storage`
+//!    不一致（中途换过模型或换过存储格式），就整代清理、按当前模型从零重算。否则旧模型的
 //!    半成品会被当成「已完成」，剩下的块由新模型补算，最后切出一个**混合代次**；
 //! 4. **复用 + 补算**：新代次里还没有向量的块，先尝试从旧代次**整批复制**口径一致
 //!    （`model_version` / `dims` / `storage` 都相同）的向量，剩下的才算。
-//!    这正是「没变的块不重复算」；
+//!    这正是「没变的块不重复算」。任务路径在这一步**逐块检查预算**：到点就让出
+//!    （至少算完一块，保证每次唤醒都前进；见 `build_with_deadline`）；
 //! 5. **原子切换**：一个事务里 `active_generation = building_generation;
 //!    building_generation = NULL`，并清掉 `generation < active` 的旧向量。
 //!    不存在「一半新一半旧」的服务状态，也不会每重建一次就把存储翻倍。
+//!    **让出的那一轮不走这一步**：半成品不激活，只有全部块算完才切换。
 //!
 //! 换代期间**关键词检索照旧**：块与向量都在自己的表里，不碰 `search_docs` /
 //! `search_grams`，也不推 `search_index_epoch`。
@@ -201,29 +205,98 @@ impl Core {
 
 }
 
-/// 建语义索引：重建块 → 开新代次 → 复用/补算向量 → 原子切换。
+/// 一次语义重建**能分段跑**的结果：跑完，还是到了截止点主动让出。
+///
+/// 为什么要有这个二分：整库重建会远超一次唤醒的预算，而同步入口
+/// （`Core::build_semantic_index`）必须照旧「跑完才返回」。作业路径
+/// （`jobs::run_semantic_index`）走的是带截止点的那条：到点就让出，
+/// `building_generation` 留着，下一轮**接着算没算完的块**（见 `build_generation`）。
+pub(crate) enum SemanticBuildOutcome {
+    /// 跑完了：新代次已经**原子切换**（`active_generation` 指向它）。
+    Done(SemanticBuildReport),
+    /// 到了截止点、主动让出：这一代还在建，**没有切换**、也没有丢弃。
+    Yielded(SemanticBuildCheckpoint),
+}
+
+/// 让出时的进度快照（都是库里算出来的真值，不是估算）。
+pub(crate) struct SemanticBuildCheckpoint {
+    /// 正在建的代次（= `index_meta.building_generation`）。
+    pub generation: i64,
+    /// 块表里的块数（全库）。
+    pub total_chunks: i64,
+    /// 这一代里**已经有口径一致向量**的块数。
+    pub completed_chunks: i64,
+}
+
+/// 进度回调：每写完一块向量就如实报一次 `(已完成, 总数)`。
+///
+/// 为什么做成回调而不是「跑完再报」：作业状态里的 `progress` 要在**跑的过程中**也是
+/// 真值（一整库重建可能跑好几分钟、跨好几轮唤醒）。语义模块自己不认识任务，
+/// 写进 `jobs.progress_*` 这件事由作业执行者传进来的闭包做；同步入口传一个空闭包。
+pub(crate) type ProgressSink<'a> = &'a mut dyn FnMut(&mut Core, i64, i64) -> Result<()>;
+
+/// 建语义索引（同步、跑完才返回）：重建块 → 开新代次 → 复用/补算向量 → 原子切换。
 ///
 /// 模型缺失或加载失败时**返回诚实的错误、不改任何状态**（连块都不重建）。
 /// `source_scope` 与 `rebuild_text_chunks` 同义：`Some([])` 是「什么都不看」，
 /// 什么都不做。公开入口是 `Core::build_semantic_index`（见 `lib.rs`）。
+///
+/// **没有截止点就不会让出**：这条路径与任务化之前的行为逐字一致（跑完才返回）。
+/// 可中断的分段路径是 `build_with_deadline`，由 `semantic_index` 作业执行者用。
 pub(crate) fn build(
     core: &mut Core,
     source_scope: Option<&[String]>,
 ) -> Result<SemanticBuildReport> {
+    match build_with_deadline(core, source_scope, None, &mut |_, _, _| Ok(()))? {
+        SemanticBuildOutcome::Done(report) => Ok(report),
+        // 没有截止点却让出了：这是实现错了，如实报出来，不假装跑完。
+        SemanticBuildOutcome::Yielded(checkpoint) => Err(CoreError::InvalidState {
+            entity: "语义索引",
+            id: "build".to_owned(),
+            state: format!(
+                "没有预算截止点却让出了（第 {} 代已完成 {} / {} 块）",
+                checkpoint.generation, checkpoint.completed_chunks, checkpoint.total_chunks
+            ),
+        }),
+    }
+}
+
+/// 建语义索引，**带一个截止点**：到点就在块与块之间让出，下次续跑。
+///
+/// 分段的粒度与保证：
+///
+/// - **至少算完一块再让出**（`missing` 非空时）。这是「每次唤醒都必须前进」的保证：
+///   否则一个极小预算的唤醒会算了 0 块就让出，下一轮还是 0 块，永远建不完；
+/// - 让出**不丢进度**：向量是一块一个事务写进去的（`write_vector`），
+///   `building_generation` 留着，下一轮 `missing_chunks` 只挑还没算的块；
+/// - 让出**不激活半成品**：原子切换（`active_generation = building`）只在全部块算完后
+///   发生，让出路径根本不走那一步；
+/// - **续跑前照旧核对口径**（`has_foreign_vectors` → 整代废弃）：让出不是绕过 #58 的理由，
+///   中途换过模型就整代按当前模型重算，绝不混两个向量空间。
+///
+/// 不可中断的部分（如实说明）：`chunks::rebuild` 的整日重打包与「从旧代次整批复用」的那条
+/// `INSERT ... SELECT` 各自是一段批量 SQL，没有中途取消点；分段只在**向量计算**这一环
+/// （真实代价的大头，也是唯一在模型上跑的环）。
+pub(crate) fn build_with_deadline(
+    core: &mut Core,
+    source_scope: Option<&[String]>,
+    deadline: Option<std::time::Instant>,
+    progress: ProgressSink<'_>,
+) -> Result<SemanticBuildOutcome> {
     if matches!(source_scope, Some([])) {
-        return Ok(SemanticBuildReport {
+        return Ok(SemanticBuildOutcome::Done(SemanticBuildReport {
             generation: 0,
             total_chunks: 0,
             reused_chunks: 0,
             embedded_chunks: 0,
             resumed_chunks: 0,
-        });
+        }));
     }
     // 先拿嵌入器：拿不到就在这里失败，**不改任何状态**（块也不重建）。
     let embedder = core.embedder()?;
     // 重建块（没变的块保住 id，因此保住旧代次的向量）。
     chunks::rebuild(core, source_scope)?;
-    build_generation(core, &*embedder)
+    build_generation(core, &*embedder, deadline, progress)
 }
 
 fn semantic_unavailable(reason: String) -> CoreError {
@@ -232,6 +305,19 @@ fn semantic_unavailable(reason: String) -> CoreError {
         id: "local-embedding".to_owned(),
         state: reason,
     }
+}
+
+/// 这个错误是不是「本地嵌入器拿不到」（没配 / 配了但加载失败）？
+///
+/// 作业执行者（`jobs::run_semantic_index`）据此把任务落回 `waiting_configuration`
+/// ——等配置，不是失败，不退避也不消耗重试额度。判据只有一处，避免调用方各自去
+/// 比对错误里的字符串。
+pub(crate) fn is_embedder_unavailable(error: &CoreError) -> bool {
+    matches!(
+        error,
+        CoreError::InvalidState { entity, id, .. }
+            if *entity == "语义索引" && id == "local-embedding"
+    )
 }
 
 /// 写进 `chunk_vectors` 的一套口径。三个字段与表里的列一一对应，**三者全同**才算
@@ -313,7 +399,16 @@ fn discard_generation(core: &Core, generation: i64) -> Result<()> {
 }
 
 /// 开代次 → 复用/补算 → 原子切换。嵌入器已经确认可用。
-fn build_generation(core: &mut Core, embedder: &dyn Embedder) -> Result<SemanticBuildReport> {
+///
+/// `deadline` 为 `Some` 时是**可中断的分段路径**：向量计算在块与块之间检查截止点，
+/// 到点就返回 `Yielded`（代次留着、进度留着、**不切换**），下一轮接着算没算完的块。
+/// `None` 表示跑完才返回（同步入口的行为）。
+fn build_generation(
+    core: &mut Core,
+    embedder: &dyn Embedder,
+    deadline: Option<std::time::Instant>,
+    progress: ProgressSink<'_>,
+) -> Result<SemanticBuildOutcome> {
     let caliber = Caliber::of(embedder);
     let (active, building) = chunks::generations(core)?;
     // 开新代次：中断过就从它续跑，否则在生效代次之后 +1。**不在原地更新 active**。
@@ -321,14 +416,18 @@ fn build_generation(core: &mut Core, embedder: &dyn Embedder) -> Result<Semantic
         Some(value) => value,
         None => active.map_or(1, |value| value + 1),
     };
-    // **续跑前核对口径**：`building_generation` 是上一次中断（或取消）留下的。若那一代
-    // 里已经有向量，但有任何一条的 `model_version` / `dims` / `storage` 与**当前嵌入器**
-    // 不一致，就说明中途换过模型或换过存储格式——整代废弃、清干净，按当前模型从零重算。
+    // **续跑前核对口径**：`building_generation` 是上一次中断（或取消、或让出）留下的。
+    // 若那一代里已经有向量，但有任何一条的 `model_version` / `dims` / `storage` 与
+    // **当前嵌入器**不一致，就说明中途换过模型或换过存储格式——整代废弃、清干净，
+    // 按当前模型从零重算。
     //
     // 不核对会怎样（评审在 #58 指出的）：旧模型的半成品被 `missing_chunks` 当成
     // 「已完成」，剩下的块由新模型补算，最后切出一个**混合代次**——一个不是同一个
     // 向量空间的代次（#80 之前搜索会跨空间打分；现在语义这一路整路不作数），
     // 而 `index_status.model_version` 也只能挑其中一行误报。
+    //
+    // **分段让出不能绕过这一步**：每一次续跑（含预算让出后的下一轮）都从这里开始，
+    // 核对永远是「接着算」的前提。
     if let Some(value) = building {
         if has_foreign_vectors(core, value, &caliber)? {
             discard_generation(core, value)?;
@@ -371,6 +470,8 @@ fn build_generation(core: &mut Core, embedder: &dyn Embedder) -> Result<Semantic
     // 续跑的块数 = 本代次里**已经存在的、口径一致的**向量数：总数减去这一轮复用的、
     // 再减去这一轮要补算的。换模型时上一轮那批被整代清掉，这里自然回到 0。
     let resumed_chunks = (total_chunks - reused_chunks - missing.len() as i64).max(0);
+    let started_with: i64 = reused_chunks + resumed_chunks;
+    let mut embedded_this_run: i64 = 0;
     for (chunk_id, text) in &missing {
         let vector = embedder.embed_document(text)?;
         if vector.len() as i64 != caliber.dims {
@@ -392,6 +493,24 @@ fn build_generation(core: &mut Core, embedder: &dyn Embedder) -> Result<Semantic
             caliber.storage,
             &vector,
         )?;
+        embedded_this_run += 1;
+        // 进度与向量在同一个提交之后报：库里的向量数就是进度数。
+        progress(core, started_with + embedded_this_run, total_chunks)?;
+
+        // **预算到点就让出**（每算一块看一次钟）：但**至少算完一块**才允许让出
+        // （`embedded_this_run >= 1` 永远为真，这里写出来是为了让「每次唤醒都前进」
+        // 这条保证在代码里看得见）。写向量是逐块的独立事务，让出不会丢进度、
+        // 也不会激活半成品。
+        if let Some(deadline) = deadline {
+            if std::time::Instant::now() >= deadline {
+                return Ok(SemanticBuildOutcome::Yielded(SemanticBuildCheckpoint {
+                    generation,
+                    total_chunks,
+                    // 让出这一刻「已完成」的真值：开跑时就有的 + 这一轮算完的。
+                    completed_chunks: started_with + embedded_this_run,
+                }));
+            }
+        }
     }
 
     // 原子切换 + 清理旧代次。一个事务：不存在「一半新一半旧」的服务状态。
@@ -406,13 +525,13 @@ fn build_generation(core: &mut Core, embedder: &dyn Embedder) -> Result<Semantic
     )?;
     tx.commit()?;
 
-    Ok(SemanticBuildReport {
+    Ok(SemanticBuildOutcome::Done(SemanticBuildReport {
         generation,
         total_chunks,
         reused_chunks,
         embedded_chunks: missing.len() as i64,
         resumed_chunks,
-    })
+    }))
 }
 
 /// 本代次里还没有**口径一致**向量的块（按日期与块内顺序，确定性）。
