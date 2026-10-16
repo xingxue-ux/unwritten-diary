@@ -9,6 +9,8 @@ class ImportApi implements DiaryApi {
   ImportState state = ImportState.prepared;
   ImportManifest? manifest;
   int finishes = 0;
+  int prepares = 0;
+  int? ticketMaxBytes = 4;
   @override
   Future<ImportTicket> prepareImport({
     required String captureId,
@@ -16,8 +18,15 @@ class ImportApi implements DiaryApi {
     String? mimeHint,
     int? sizeHint,
     required String operationId,
-  }) async =>
-      ImportTicket(importId: 'import-1', stagingTicket: path, maxBytes: 4);
+  }) async {
+    prepares++;
+    return ImportTicket(
+      importId: 'import-1',
+      stagingTicket: path,
+      maxBytes: ticketMaxBytes,
+    );
+  }
+
   @override
   Future<ImportStatus> importStatus(String importId) async => ImportStatus(
     importId: importId,
@@ -96,6 +105,28 @@ void main() {
       ),
     );
     expect(api.finishes, 0);
+  });
+  test(
+    'oversized picker hint is rejected before preparing an import',
+    () async {
+      await expectLater(
+        FileImportCoordinator(api).importFile(
+          captureId: 'capture',
+          displayName: 'large',
+          operationId: 'large-op',
+          sizeHint: maxImportBytes + 1,
+          openRead: () => Stream.value([1]),
+          cancellation: CopyCancellation(),
+        ),
+        throwsA(isA<CopyTooLarge>()),
+      );
+      expect(api.prepares, 0);
+    },
+  );
+  test('unknown picker size still accepts a small stream', () async {
+    api.ticketMaxBytes = null;
+    expect((await run()).state, ImportState.verifying);
+    expect(api.manifest!.copiedBytes, 3);
   });
   test(
     'cancellation at the copy-to-verification boundary never calls finish',

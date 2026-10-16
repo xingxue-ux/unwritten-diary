@@ -31,7 +31,6 @@ class FileImportEntry {
   bool _retryAllowed = true;
   bool _sourceAvailable = true;
   bool _terminal = false;
-  int? _commitRevision;
   FileImportPhase phase = FileImportPhase.queued;
   int copiedBytes = 0;
   String? importId;
@@ -58,8 +57,9 @@ class FileImportEntry {
 /// becomes a separate capture, so typing and auto-save never race import revisions.
 /// Disposing listeners does not cancel a running copy or its core handoff.
 class FileImportController extends ChangeNotifier {
-  FileImportController(this.api);
+  FileImportController(this.api) : _coordinator = FileImportCoordinator(api);
   final DiaryApi api;
+  final FileImportCoordinator _coordinator;
   final List<FileImportEntry> entries = [];
   bool _disposed = false;
   int _sequence = 0;
@@ -78,7 +78,6 @@ class FileImportController extends ChangeNotifier {
       'importId': entry.importId,
       'name': entry.file.name,
       'phase': entry.phase.name,
-      'commitRevision': entry._commitRevision,
       'terminal': entry._terminal,
     };
     final next = _journalTail
@@ -107,7 +106,6 @@ class FileImportController extends ChangeNotifier {
             )
             ..captureId = value['captureId'] as String?
             ..importId = value['importId'] as String?
-            .._commitRevision = value['commitRevision'] as int?
             .._sourceAvailable = false
             ..phase = FileImportPhase.failed
             ..message = '上次导入未完成，请重新选择同一文件。';
@@ -209,13 +207,16 @@ class FileImportController extends ChangeNotifier {
       entry.cancellation.check();
       entry.phase = FileImportPhase.copying;
       _notify();
+      if (entry.file.size != null && entry.file.size! > maxImportBytes) {
+        throw CopyTooLarge(maxImportBytes);
+      }
       entry.captureId ??= (await api.createDraft(
         operationId: '${entry.operationId}-draft',
       )).id;
       await _persist(entry);
       final progressClock = Stopwatch()..start();
       var lastNotificationMs = -100;
-      final result = await FileImportCoordinator(api).importFile(
+      final result = await _coordinator.importFile(
         captureId: entry.captureId!,
         displayName: entry.file.name,
         operationId: entry.operationId,
@@ -267,6 +268,7 @@ class FileImportController extends ChangeNotifier {
         DiaryException() => cause.message,
         _ => '导入未完成，原文件未改动，请稍后重试。',
       };
+      if (cause is CopyTooLarge) entry._retryAllowed = false;
       if (cause is CopyCancelled && entry.importId != null) {
         try {
           await api.cancelImport(entry.importId!);
@@ -291,11 +293,9 @@ class FileImportController extends ChangeNotifier {
   Future<void> _commit(FileImportEntry entry) async {
     final current = await api.getCapture(entry.captureId!);
     if (current.state != CaptureState.committed) {
-      entry._commitRevision ??= current.revision;
-      await _persist(entry);
       await api.commit(
         id: current.id,
-        expectedRevision: entry._commitRevision!,
+        expectedRevision: current.revision,
         operationId: '${entry.operationId}-commit',
       );
     }

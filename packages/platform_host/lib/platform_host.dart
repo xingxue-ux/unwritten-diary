@@ -12,6 +12,10 @@ class CopyTooLarge implements Exception {
   final int limit;
 }
 
+/// Independent platform safety limit. A picker size hint describes the source;
+/// it must never become the policy limit or leave an unknown-size stream open.
+const int maxImportBytes = 512 * 1024 * 1024;
+
 class CopyCancellation {
   bool _cancelled = false;
   final Completer<void> _whenCancelled = Completer<void>();
@@ -64,6 +68,9 @@ class FileImportCoordinator {
     ImportTicket? ticket;
     try {
       cancellation.check();
+      if (sizeHint != null && sizeHint > maxImportBytes) {
+        throw CopyTooLarge(maxImportBytes);
+      }
       ticket = await api.prepareImport(
         captureId: captureId,
         displayName: displayName,
@@ -86,7 +93,9 @@ class FileImportCoordinator {
         source: openRead(),
         destination: File(ticket.stagingTicket),
         cancellation: cancellation,
-        maxBytes: ticket.maxBytes,
+        maxBytes: ticket.maxBytes == null || ticket.maxBytes! > maxImportBytes
+            ? maxImportBytes
+            : ticket.maxBytes,
         onProgress: onProgress,
       );
       cancellation.check();

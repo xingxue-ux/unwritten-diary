@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:diary_api/diary_api.dart';
 import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:platform_host/platform_host.dart';
 import 'package:unwritten_diary/src/file_import_controller.dart';
 import 'package:unwritten_diary/src/file_import_journal.dart';
 
@@ -123,6 +124,20 @@ void main() {
     expect(controller.entries.single.phase, FileImportPhase.verifying);
     expect(api.commits, 0);
   });
+  test('oversized file cannot be retried or create an import', () async {
+    await controller.add([
+      SelectedImportFile(
+        name: 'huge',
+        size: maxImportBytes + 1,
+        openRead: () => Stream.value([1]),
+      ),
+    ]);
+    final entry = controller.entries.single;
+    expect(entry.phase, FileImportPhase.failed);
+    expect(entry.canRetry, isFalse);
+    expect(entry.captureId, isNull);
+    expect(api.prepared, 0);
+  });
   test('queued cancellation does not create a core import', () async {
     final done = controller.add([file('cancelled')]);
     controller.cancel(controller.entries.single);
@@ -238,24 +253,32 @@ void main() {
       expect(reopened.entries, isEmpty);
     },
   );
-  test('restart after a lost commit response does not duplicate the record', () async {
-    final journal = FileImportJournal(File('${directory.path}/lost-ack.jsonl'));
-    controller.attachJournal(journal);
-    api.loseFirstCommitAcknowledgement = true;
-    var sourceOpens = 0;
-    await controller.add([
-      SelectedImportFile(name: 'once', openRead: () {
-        sourceOpens++;
-        return Stream.value([1, 2, 3]);
-      }),
-    ]);
-    expect(controller.entries.single.phase, FileImportPhase.failed);
-    final resumed = FileImportController(api)..attachJournal(journal);
-    await resumed.restore();
-    expect(resumed.entries.single.phase, FileImportPhase.saved);
-    expect(sourceOpens, 1);
-    expect(api.commits, 1);
-  });
+  test(
+    'restart after a lost commit response does not duplicate the record',
+    () async {
+      final journal = FileImportJournal(
+        File('${directory.path}/lost-ack.jsonl'),
+      );
+      controller.attachJournal(journal);
+      api.loseFirstCommitAcknowledgement = true;
+      var sourceOpens = 0;
+      await controller.add([
+        SelectedImportFile(
+          name: 'once',
+          openRead: () {
+            sourceOpens++;
+            return Stream.value([1, 2, 3]);
+          },
+        ),
+      ]);
+      expect(controller.entries.single.phase, FileImportPhase.failed);
+      final resumed = FileImportController(api)..attachJournal(journal);
+      await resumed.restore();
+      expect(resumed.entries.single.phase, FileImportPhase.saved);
+      expect(sourceOpens, 1);
+      expect(api.commits, 1);
+    },
+  );
   test(
     'disposing the page listener does not stop the durable handoff',
     () async {

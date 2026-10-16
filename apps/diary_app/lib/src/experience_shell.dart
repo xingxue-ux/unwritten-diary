@@ -35,6 +35,7 @@ class _ExperienceShellState extends State<ExperienceShell>
   bool _importsAvailable = false;
   bool _pickingFiles = false;
   bool _importsRecoveryWarning = false;
+  String? _importsNotice;
   late final Listenable _contentChanges;
   final _editor = TextEditingController();
   final _search = TextEditingController();
@@ -100,7 +101,12 @@ class _ExperienceShellState extends State<ExperienceShell>
         'imports.finish',
         'imports.status',
       }.every(snapshot.coreInfo.capabilities.contains);
-      if (!available) return;
+      if (!available) {
+        if (mounted) {
+          setState(() => _importsNotice = '当前核心不支持文件导入，请更新应用后重试。');
+        }
+        return;
+      }
       try {
         final support = await getApplicationSupportDirectory();
         _fileImports.attachJournal(
@@ -115,7 +121,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       }
       if (mounted) setState(() => _importsAvailable = true);
     } catch (_) {
-      // The core remains unavailable; the existing text capture error is shown.
+      if (mounted) setState(() => _importsNotice = '暂时无法确认文件导入能力，请稍后重试。');
     }
   }
 
@@ -146,6 +152,15 @@ class _ExperienceShellState extends State<ExperienceShell>
 
   void _flushDraft() => unawaited(_capture.saveNow().then<void>((_) {}));
 
+  Future<int?> _pickedFileSize(XFile file) async {
+    try {
+      return await file.length();
+    } catch (_) {
+      // Some providers cannot report length. The streaming cap still applies.
+      return null;
+    }
+  }
+
   Future<void> _pickFiles() async {
     if (_pickingFiles) return;
     setState(() => _pickingFiles = true);
@@ -158,6 +173,7 @@ class _ExperienceShellState extends State<ExperienceShell>
           SelectedImportFile(
             name: file.name,
             mimeHint: file.mimeType,
+            size: await _pickedFileSize(file),
             openRead: () => file.openRead(),
           ),
         );
@@ -192,6 +208,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         SelectedImportFile(
           name: file.name,
           mimeHint: file.mimeType,
+          size: await _pickedFileSize(file),
           openRead: () => file.openRead(),
         ),
       );
@@ -908,6 +925,7 @@ class _ExperienceShellState extends State<ExperienceShell>
             const Divider(color: SketchColors.ink, thickness: .8),
             if (_importsRecoveryWarning)
               const Text('导入恢复记录暂时不可用；请检查应用存储空间后重试。'),
+            if (_importsNotice != null) Text(_importsNotice!),
             if (!widget.demoMode)
               for (final entry in _fileImports.entries) _importCard(entry),
             CallbackShortcuts(
