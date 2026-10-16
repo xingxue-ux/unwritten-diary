@@ -13,6 +13,7 @@
 //!    绝不静默覆盖用户内容。
 
 mod assets;
+mod backup;
 mod chunker;
 mod chunks;
 mod error;
@@ -32,19 +33,22 @@ mod semantic;
 mod support;
 
 pub use assets::ImportRequest;
+pub use backup::BackupFault;
 pub use extractors::{
     builtin_extractors, ExtractionInput, ExtractionOutcome, Extractor, TEXT_DIRECT_EXTRACTOR_ID,
     TEXT_DIRECT_EXTRACTOR_VERSION,
 };
 pub use error::{CoreError, ErrorCode, Result};
 pub use model::{
-    Asset, AssetLease, AssetStorageState, AuthorType, Capture, CapturePage, CaptureState,
+    Asset, AssetLease, AssetStorageState, AuthorType, BackupCounts, BackupInspection, BackupReport,
+    Capture, CapturePage, CaptureState,
     CommitResult, DomainEvent, DraftSaveResult, EventType, ImportManifest, ImportOrigin,
     Coverage, ExtractedContent, ExtractedSegment, ImportState, ImportStatus, ImportTicket,
     IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress, JobRunSummary, JobState,
     JobStatus, LocatorType, NativeRecordingStatus, NewJob,
     MatchedBy, ProcessingStatus, ProcessingSummary, RecordingFinalizeResult, RecordingRecovery,
     RecordingSession, RecordingState, RecordingTicket, SegmentManifest, SegmentReceipt,
+    RestoreReport,
     SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
     SourceItem, SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
 };
@@ -85,6 +89,8 @@ pub struct Core {
     conn: Connection,
     /// 文件库根目录：资料库文件所在目录。内存库没有根目录，导入相关方法会报错。
     root: Option<PathBuf>,
+    /// 资料库文件名（只用于备份清单里的展示字段，绝不参与路径拼接）。
+    library_file_name: Option<String>,
     /// 只读租约，内存态，不持久化。
     leases: HashMap<String, assets::LeaseRecord>,
     /// 检索会话，内存态：它记录的是「这一次查询的翻页与失效判断」，不是业务数据。
@@ -96,7 +102,17 @@ pub struct Core {
     /// 混合检索的语义证据门槛。产品默认是 `HYBRID_SEMANTIC_MIN_SCORE`；量测与测试
     /// 可以临时改它来扫曲线（见 `set_hybrid_min_score_for_test`）。
     hybrid_min_score: f32,
+    /// 仅供测试的备份故障注入点，默认不注入（见 `set_backup_fault_for_test`）。
+    backup_fault: backup::BackupFault,
 }
+
+/// 契约 1.2 节的 API 版本。
+///
+/// 桥接的 `CoreInfo.apiVersion` 与备份清单里的 `apiVersion` 都用这一个常量：
+/// 两处各写一份字面量的话，升版本时必然漏掉一处。口径是「主次版本」：
+/// 新增可选字段或加性方法不改它，删方法或改既有语义才升主版本（见契约第 1.2 节
+/// 与 `docs/architecture/m5-备份与恢复.md` 的兼容口径）。
+pub const API_VERSION: &str = "1.0";
 
 /// 一行的原始形态：先取出来，再按业务语义解析，避免把解析错误塞进 SQL 层。
 type RawCapture = (String, i64, String, String, String, String, String, i64, String, String);
@@ -112,12 +128,15 @@ impl Core {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
-        Self::prepare(Connection::open(path)?, Some(root))
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        Self::prepare(Connection::open(path)?, Some(root), file_name)
     }
 
     /// 内存库，只用于测试。没有文件系统根目录，导入相关方法会报 `invalid_state`。
     pub fn open_in_memory() -> Result<Self> {
-        Self::prepare(Connection::open_in_memory()?, None)
+        Self::prepare(Connection::open_in_memory()?, None, None)
     }
 
     /// 内存库 + 一个文件系统根目录，用于测试导入而不必落一个真库文件。
@@ -125,10 +144,15 @@ impl Core {
         Self::prepare(
             Connection::open_in_memory()?,
             Some(root.as_ref().to_path_buf()),
+            None,
         )
     }
 
-    fn prepare(mut conn: Connection, root: Option<PathBuf>) -> Result<Self> {
+    fn prepare(
+        mut conn: Connection,
+        root: Option<PathBuf>,
+        library_file_name: Option<String>,
+    ) -> Result<Self> {
         // WAL 提高并发读写表现；synchronous=FULL 保证「提交了就是落盘了」，
         // 只用 NORMAL 会让进程崩溃时丢掉最后几个事务，与 durable 承诺不符。
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -145,10 +169,12 @@ impl Core {
         Ok(Self {
             conn,
             root,
+            library_file_name,
             leases: HashMap::new(),
             search_sessions: HashMap::new(),
             semantic: semantic::SemanticRuntime::from_env(),
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
+            backup_fault: backup::BackupFault::None,
         })
     }
 
@@ -1129,6 +1155,79 @@ impl Core {
             });
         }
         Ok(events)
+    }
+
+    // ------------------------------------------------------------ 备份与恢复
+
+    /// 创建备份包（B7，验收 E34；契约 `backups.create` 的**同步**入口）。
+    ///
+    /// 顺序是硬要求，也是「快照边界」成立的依据：
+    /// 1. `VACUUM INTO` 取**一致性快照**（不拷 `.sqlite` 文件，见 `backup` 模块说明）；
+    /// 2. 读**快照**（不是源库）算出这一份备份的内容清单；
+    /// 3. 复制被快照引用的内容寻址原件（`blobs/<sha 前两位>/<sha>`），逐条重算 sha256；
+    /// 4. 写完**自校验**（重开包、逐条目重算哈希、比大小、比条目集合），过了才把包
+    ///    放到 `target_path` 上。
+    ///
+    /// 备份期间资料库可以继续写：全程**不加全局写锁**，`VACUUM INTO` 只读源库，
+    /// 快照之后的新写入不进这份备份、也不会让备份失败。
+    ///
+    /// `target_path` 是**包文件的完整路径**（父目录会被创建）；已经存在时报
+    /// `invalid_argument`，绝不覆盖旧备份。中途任何失败：目标路径上不会留下文件。
+    ///
+    /// 库里已经有原件不可用（文件被外部删掉）时**报错而不是产出一份缺原件的包**：
+    /// 「完整备份」是这一条的承诺；要不要允许「如实标记为不完整」的部分备份由产品定
+    /// （见架构文档「没有做到的」）。
+    pub fn create_backup(&self, target_path: &str) -> Result<BackupReport> {
+        backup::create(self, std::path::Path::new(target_path))
+    }
+
+    /// 检查备份包（契约 `backups.inspect` 的**同步**入口）。
+    ///
+    /// 逐条目重算哈希、比大小、比条目集合，并检查路径安全与版本兼容。坏在哪就
+    /// 如实列在哪（`issues` 的每条是 `种类: 细节`，种类只有 `corrupted` /
+    /// `unsafe_path` / `incompatible` 三种），**不抛错**——界面要能先展示
+    /// 「这个包有什么问题」再决定要不要恢复。
+    ///
+    /// 只有连清单都读不出来（不是 zip、没有清单、清单解析不了）才报
+    /// `corrupted_backup`；格式版本更高报 `incompatible_backup`。
+    pub fn inspect_backup(&self, package_path: &str) -> Result<BackupInspection> {
+        backup::inspect(std::path::Path::new(package_path))
+    }
+
+    /// 恢复到**新的空目录**（B7，验收 E34/E35；契约 `backups.restore` 的同步入口）。
+    ///
+    /// 三条保证：
+    /// - **绝不覆盖当前资料库**：目标必须是新的空目录（不存在，或存在且为空），
+    ///   且不能是当前资料库所在目录；恢复过程一个字都不写当前资料库；
+    /// - **逐条校验原件哈希**（顺带校验快照哈希与大小），再打开恢复出来的库做
+    ///   完整性、外键、关键行数与原件的交叉核对，全部通过才落地；
+    /// - **失败不留半成品**：所有解包先在目标同级的暂存目录里做，全部过了才**一次
+    ///   rename** 落地；中途失败只删自己的暂存目录，目标目录保持原样。
+    ///
+    /// 拒绝口径与错误码（E35）：
+    /// - 损坏（哈希/大小/结构/清单与内容不一致）⇒ `corrupted_backup`；
+    /// - 越界路径（绝对路径、`..`、反斜杠/盘符、清单外的条目）⇒ `corrupted_backup`
+    ///   （绝不按越界路径解包）；
+    /// - 不兼容（`schemaVersion` / `apiVersion` 高于本构建）⇒ `incompatible_backup`。
+    ///
+    /// 恢复出来的库与快照**逐字节相同**：不在这一步做迁移，也不做恢复态修正；
+    /// 那些留给第一次 `Core::open`（既有 `recover_on_open` 语义，本条不改）。
+    /// 未完成的导入/录音因此如实保持「未完成」。
+    pub fn restore_backup(&self, package_path: &str, target_dir: &str) -> Result<RestoreReport> {
+        backup::restore(
+            self,
+            std::path::Path::new(package_path),
+            std::path::Path::new(target_dir),
+        )
+    }
+
+    /// 仅供测试：注入备份环节的故障（默认不注入）。
+    ///
+    /// 自校验这条路径平时不会被触发，而验收计划明确要求对「备份创建」做故障注入；
+    /// 产品代码不调它。
+    #[doc(hidden)]
+    pub fn set_backup_fault_for_test(&mut self, fault: BackupFault) {
+        self.backup_fault = fault;
     }
 
     // ------------------------------------------------------------ 幂等回执

@@ -55,6 +55,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AuthorType dco_decode_author_type(dynamic raw);
 
   @protected
+  BackupCounts dco_decode_backup_counts(dynamic raw);
+
+  @protected
+  BackupInspection dco_decode_backup_inspection(dynamic raw);
+
+  @protected
+  BackupReport dco_decode_backup_report(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
 
   @protected
@@ -342,6 +351,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RecoverySummary dco_decode_recovery_summary(dynamic raw);
 
   @protected
+  RestoreReport dco_decode_restore_report(dynamic raw);
+
+  @protected
   SearchFilters dco_decode_search_filters(dynamic raw);
 
   @protected
@@ -417,6 +429,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AuthorType sse_decode_author_type(SseDeserializer deserializer);
+
+  @protected
+  BackupCounts sse_decode_backup_counts(SseDeserializer deserializer);
+
+  @protected
+  BackupInspection sse_decode_backup_inspection(SseDeserializer deserializer);
+
+  @protected
+  BackupReport sse_decode_backup_report(SseDeserializer deserializer);
 
   @protected
   bool sse_decode_bool(SseDeserializer deserializer);
@@ -760,6 +781,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RecoverySummary sse_decode_recovery_summary(SseDeserializer deserializer);
 
   @protected
+  RestoreReport sse_decode_restore_report(SseDeserializer deserializer);
+
+  @protected
   SearchFilters sse_decode_search_filters(SseDeserializer deserializer);
 
   @protected
@@ -839,6 +863,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_author_type(AuthorType self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_backup_counts(BackupCounts self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_backup_inspection(
+    BackupInspection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_backup_report(BackupReport self, SseSerializer serializer);
 
   @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
@@ -1304,6 +1340,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     RecoverySummary self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_restore_report(RestoreReport self, SseSerializer serializer);
 
   @protected
   void sse_encode_search_filters(SearchFilters self, SseSerializer serializer);

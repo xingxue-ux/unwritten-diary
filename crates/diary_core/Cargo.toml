@@ -36,3 +36,5 @@ rusqlite.workspace = true
 sha2.workspace = true
 zip.workspace = true
 encoding_rs.workspace = true
+# B7 的备份测试要**手工伪造**损坏 / 越界 / 不兼容的备份包：读清单、改字段、重写 zip。
+serde_json.workspace = true
