@@ -7,7 +7,17 @@
 use rusqlite::{params, Connection};
 
 /// 本构建支持的 schema 版本。
-pub const SCHEMA_VERSION: i64 = 11;
+///
+/// 13 是两个来源合并后的结果：**11** 是 B4e（整理与自动化，#92）的段号——
+/// `organize_settings` + `diary_model_calls`；**12** 是 B4c（#101）的段号——
+/// `diary_days.revision`。两条分支各自从 10 抬号，合并后的这个构建取 **13**，
+/// 迁移里 v11 与 v12 两段都在（先建表、再加列）。
+///
+/// 两段的守卫都**不只看版本号，还看东西在不在**（见 `migrate`）：只跑过 B4c 分支的库
+/// `user_version` 已经是 12、但没有 v11 的两张表；只跑过 B4e 分支的库是 11、没有
+/// `revision` 列。光靠 `current < 11` / `current < 12` 会漏掉前者，所以 v11 的守卫是
+/// 「版本号小于 11 **或**表不在」，v12 是「版本号小于 12 **或**列不在」。
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -70,7 +80,22 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 在迁移里替用户把旧记录「补生成」一版：那会凭空造出用户没有确认过的正文，
         // 与「AI 正文不冒充用户手写」直接冲突。
     }
-    if current < 11 {
+    // ---- 11 与 12：两条分支各自抬的号，合并后这个构建是 13 --------------------
+    //
+    // 顺序固定：先 v11（建「整理设置」与「调用账本」两张表），再 v12（给 `diary_days`
+    // 加 `revision` 列）。两段都**不只看版本号，还看东西在不在**，因为两条分支的库
+    // 可能处在四种状态：10（都没有）、11（有表、没列）、12（有列、没表）、12（都有）。
+    //
+    // - 10 → 两段都跑；
+    // - 11（只跑过 B4e）→ v11 跳过（表在），v12 跑；
+    // - **12 但没有 v11 的两张表**（只跑过 B4c）→ `current < 11` 是假，光靠版本号会把
+    //   v11 整段跳过，升级后一碰整理设置就报「no such table」。所以 v11 的守卫是
+    //   「版本号小于 11 **或** `organize_settings` 不在」。V11 的建表写成
+    //   `IF NOT EXISTS`、种默认值那一步本来就是 `INSERT OR IGNORE`，所以重复跑幂等：
+    //   已有设置一个字节都不会被改（**默认关**的口径对升级路径同样成立）；
+    // - v12 同理：列不在就补，列已经在就整段跳过——**不重复回填**，否则会把已经推进过的
+    //   `revision` 按版本数改小，反而弄丢冲突保护。
+    if current < 11 || !table_exists(&tx, "organize_settings")? {
         tx.execute_batch(V11)?;
         // v11 只加两张全新的表（整理设置、调用账本），并**种一行默认设置**。
         // 种下去的那一行是 `enabled = 0`：从 v10 升上来的库与刚建的新库一样，
@@ -79,12 +104,48 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         crate::organize::seed_default_settings(&tx, crate::support::now())
             .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
     }
+    if current < 12 || !column_exists(&tx, "diary_days", "revision")? {
+        tx.execute_batch(V12)?;
+        // **回填成「这一天的版本数」**：升级前调用方从 `diary.getDay` 能算出来的就是
+        // 这个数字（`candidateVersionIds.length + (currentVersionId == null ? 0 : 1)`），
+        // 所以老库升级不会让任何在飞的 `expectedRevision` 突然对不上。升级之后的每一次
+        // 状态推进（新增一版、`setCurrent` 换指针）再从这个数往上加。
+        // 这一天一条 `diary_days` 行都没有时不用管：`day_revision` 对没有行的天返回 0，
+        // 而没有行也就没有版本可切。
+        tx.execute_batch(V12_BACKFILL)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.execute(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
         params![SCHEMA_VERSION, crate::support::to_iso(crate::support::now())],
     )?;
     tx.commit()
+}
+
+/// `sqlite_master` 里有没有这张表（迁移的结构性守卫用；`name` 都是代码里的常量）。
+fn table_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        params![name],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// 表里有没有这一列（迁移的结构性守卫用）。
+///
+/// `PRAGMA table_info` 的表名不能参数化，所以用 `format!` 拼进来——**调用方只传代码里的
+/// 常量**（现在只有 `"diary_days"`），不接受外部输入，没有注入面。
+fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// 把已有记录的文字补进 v6 的两张索引表。只在迁移里用一次。
@@ -669,8 +730,13 @@ CREATE INDEX idx_diary_generations_day ON diary_generations(day_key, created_at 
 /// 两张表在迁移里都**不回填旧数据**：升级前没有这些配置与账本，替用户猜一个开关或
 /// 编几条用量记录都是错的。默认设置那一行由 `organize::seed_default_settings` 写入，
 /// 值只有一个来源（`organize.rs` 的常量），不在 SQL 里再抄一遍。
+///
+/// **建表写成 `IF NOT EXISTS`（#111 合并后改）**：合并 B4c（schema 12）之后，v11 的守卫
+/// 多了一条「表不在就补」的结构性兜底（见 `migrate`），那一条会对着「user_version 已经
+/// 是 12、但没跑过 v11」的库再执行一次这段 SQL。`IF NOT EXISTS` 保证它幂等——表已经
+/// 在的库（正常从 11 升上来的）不会被改坏，缺表的库能被补上。
 const V11: &str = r#"
-CREATE TABLE organize_settings (
+CREATE TABLE IF NOT EXISTS organize_settings (
     id                        INTEGER PRIMARY KEY CHECK (id = 1),
     enabled                   INTEGER NOT NULL DEFAULT 0,
     template_id               TEXT NOT NULL,
@@ -686,7 +752,7 @@ CREATE TABLE organize_settings (
     updated_at                TEXT NOT NULL
 );
 
-CREATE TABLE diary_model_calls (
+CREATE TABLE IF NOT EXISTS diary_model_calls (
     id          TEXT PRIMARY KEY,
     run_id      TEXT,
     day_key     TEXT,
@@ -697,7 +763,25 @@ CREATE TABLE diary_model_calls (
     error_code  TEXT,
     called_at   TEXT NOT NULL
 );
-CREATE INDEX idx_diary_model_calls_time ON diary_model_calls(called_at, id);
-CREATE INDEX idx_diary_model_calls_run ON diary_model_calls(run_id, called_at);
+CREATE INDEX IF NOT EXISTS idx_diary_model_calls_time ON diary_model_calls(called_at, id);
+CREATE INDEX IF NOT EXISTS idx_diary_model_calls_run ON diary_model_calls(run_id, called_at);
 "#;
 
+/// v12：`diary_days` 加一列**持久、单调递增**的 `revision`（#101）。
+///
+/// 为什么必须有这一列：`diary.setCurrent` 的契约承诺 `expectedRevision` 冲突保护，
+/// 但「这一天的 revision」以前是「版本数」——换当前版本不增加版本数，所以两个窗口
+/// 拿着同一个 `expectedRevision` 都能切成功，后一次会**静默覆盖**前一次的选择：
+/// 那是假的冲突保护。指针变更本身也是一次状态推进，必须有自己的持久计数。
+///
+/// `DEFAULT 0` 只服务于「这一天还没有任何推进」，实际取值由迁移回填与写路径维护。
+const V12: &str = r#"
+ALTER TABLE diary_days ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+"#;
+
+/// v12 的回填：把老库的 `revision` 从「这一天的版本数」起步（升级前调用方算的就是它）。
+const V12_BACKFILL: &str = r#"
+UPDATE diary_days SET revision = (
+    SELECT COUNT(*) FROM diary_versions WHERE diary_versions.day_key = diary_days.day_key
+);
+"#;

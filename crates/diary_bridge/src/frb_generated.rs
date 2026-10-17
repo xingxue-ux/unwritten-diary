@@ -4259,6 +4259,7 @@ const _: fn() = || {
         let _: String = DiaryDay.time_zone;
         let _: Option<String> = DiaryDay.current_version_id;
         let _: Vec<String> = DiaryDay.candidate_version_ids;
+        let _: i64 = DiaryDay.revision;
         let _: diary_core::model::MaterialCounts = DiaryDay.material_counts;
         let _: diary_core::model::Coverage = DiaryDay.coverage;
         let _: chrono::DateTime<chrono::Utc> = DiaryDay.updated_at;
@@ -4899,6 +4900,7 @@ impl SseDecode for diary_core::model::DiaryDay {
         let mut var_timeZone = <String>::sse_decode(deserializer);
         let mut var_currentVersionId = <Option<String>>::sse_decode(deserializer);
         let mut var_candidateVersionIds = <Vec<String>>::sse_decode(deserializer);
+        let mut var_revision = <i64>::sse_decode(deserializer);
         let mut var_materialCounts = <diary_core::model::MaterialCounts>::sse_decode(deserializer);
         let mut var_coverage = <diary_core::model::Coverage>::sse_decode(deserializer);
         let mut var_updatedAt = <chrono::DateTime<chrono::Utc>>::sse_decode(deserializer);
@@ -4907,6 +4909,7 @@ impl SseDecode for diary_core::model::DiaryDay {
             time_zone: var_timeZone,
             current_version_id: var_currentVersionId,
             candidate_version_ids: var_candidateVersionIds,
+            revision: var_revision,
             material_counts: var_materialCounts,
             coverage: var_coverage,
             updated_at: var_updatedAt,
@@ -7340,6 +7343,7 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::DiaryDay> {
             self.0.time_zone.into_into_dart().into_dart(),
             self.0.current_version_id.into_into_dart().into_dart(),
             self.0.candidate_version_ids.into_into_dart().into_dart(),
+            self.0.revision.into_into_dart().into_dart(),
             self.0.material_counts.into_into_dart().into_dart(),
             self.0.coverage.into_into_dart().into_dart(),
             self.0.updated_at.into_into_dart().into_dart(),
@@ -9015,6 +9019,7 @@ impl SseEncode for diary_core::model::DiaryDay {
         <String>::sse_encode(self.time_zone, serializer);
         <Option<String>>::sse_encode(self.current_version_id, serializer);
         <Vec<String>>::sse_encode(self.candidate_version_ids, serializer);
+        <i64>::sse_encode(self.revision, serializer);
         <diary_core::model::MaterialCounts>::sse_encode(self.material_counts, serializer);
         <diary_core::model::Coverage>::sse_encode(self.coverage, serializer);
         <chrono::DateTime<chrono::Utc>>::sse_encode(self.updated_at, serializer);

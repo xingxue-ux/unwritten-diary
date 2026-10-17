@@ -539,11 +539,17 @@ fn scenario_e26_new_material_after_user_edit_only_produces_a_candidate() {
     // 候选 = 这一天的全部版本里除当前之外的那些：旧的生成版与这次的整理结果都在。
     assert_eq!(day.candidate_version_ids.len(), 2);
     assert!(day.candidate_version_ids.contains(&generated));
-    let candidate = core
-        .get_diary_version(&day.candidate_version_ids[0])
-        .unwrap();
+    // 按正文找那一版，而不是假定它在 `candidate_version_ids[0]`：
+    // 候选顺序按 `created_at DESC` 排，而本机（WSL）墙钟每几秒会跳 ±21.7 秒，
+    // 同一秒内先后落库的两版可能因此换位。这条测试要钉的是「整理结果进候选、
+    // 用户那一版仍是当前」，不是次序。
+    let candidate = day
+        .candidate_version_ids
+        .iter()
+        .map(|id| core.get_diary_version(id).unwrap())
+        .find(|version| version.body == "按整理设置再整出来的候选。")
+        .expect("整理结果必须在候选里");
     assert_eq!(candidate.origin, DiaryVersionOrigin::Generated);
-    assert_eq!(candidate.body, "按整理设置再整出来的候选。");
     assert_ne!(candidate.id, day.current_version_id.clone().unwrap());
     // 旧版本都还在，随时取回。
     assert_eq!(core.get_diary_version(&generated).unwrap().body, "机器第一次生成的正文。");
@@ -1273,7 +1279,7 @@ fn empty_model_output_is_a_failure_not_a_diary() {
 // ------------------------------------------------------------------ 迁移
 
 #[test]
-fn v10_library_migrates_to_v11_and_the_switch_stays_off() {
+fn v10_library_migrates_to_latest_with_both_migrations() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("library.sqlite");
     let capture_id = {
@@ -1285,11 +1291,12 @@ fn v10_library_migrates_to_v11_and_the_switch_stays_off() {
     };
 
     {
-        // 退回 v10：拆掉 v11 的两张表。
+        // 退回**真正的 v10 样子**：v11 的两张表与 v12 的 `revision` 列都没有。
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "DROP TABLE diary_model_calls;
              DROP TABLE organize_settings;
+             ALTER TABLE diary_days DROP COLUMN revision;
              UPDATE schema_migrations SET version = 10;
              PRAGMA user_version = 10;",
         )
@@ -1298,18 +1305,49 @@ fn v10_library_migrates_to_v11_and_the_switch_stays_off() {
             .query_row("SELECT COUNT(*) FROM organize_settings", [], |row| row
                 .get::<_, i64>(0))
             .is_err());
+        assert!(conn
+            .query_row("SELECT revision FROM diary_days", [], |row| row
+                .get::<_, i64>(0))
+            .is_err());
     }
 
     let mut core = Core::open(&path).unwrap();
     assert_eq!(core.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
-    // 种下的设置是默认关，limit 是文档里的默认值。
+    assert_eq!(
+        diary_core::SCHEMA_VERSION,
+        13,
+        "两条分支的 11（整理表）与 12（revision 列）合并成 13"
+    );
+    // v11 的两张表都在（迁移真的跑了两段，而不是只跑一段）：
+    // `diary_model_calls` 能查、`organize_settings` 有一行默认值。
+    assert_eq!(call_rows(&core, None), 0);
     let settings = core.organize_settings().unwrap();
     assert!(!settings.enabled, "升级绝不替用户打开自动整理");
     assert_eq!(settings.template_id, "merge_by_theme");
     assert_eq!(settings.max_calls_per_day, 30);
     assert_eq!(settings.revision, 1);
-    assert_eq!(call_rows(&core, None), 0);
-    // 旧数据完好，且升级后照样能整理。
+    // v12 的列也在（结构上确认，而不是靠「表里没数据」蒙过去）。
+    {
+        let conn = Connection::open(&path).unwrap();
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
+                 AND name IN ('organize_settings', 'diary_model_calls')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2, "v11 的两张表都在");
+        let columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('diary_days') WHERE name = 'revision'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 1, "v12 的 revision 列也在");
+    }
+    // 旧数据完好，且升级后照样能整理——整理产出的那一版同时推进合并后的 revision。
     let capture = core.get_capture(&capture_id).unwrap();
     assert_eq!(capture.draft_text, "升级前的材料。");
     let day_key = capture.day_key.clone();
@@ -1319,6 +1357,75 @@ fn v10_library_migrates_to_v11_and_the_switch_stays_off() {
     enable_organize(&mut core, |_| {});
     drive(&mut core);
     assert_eq!(versions_of(&core, &day_key).len(), 1);
+    assert_eq!(
+        core.get_diary_day(&day_key).unwrap().revision,
+        1,
+        "整理产出一版 = 一次状态推进（v12 的列真的在用）"
+    );
+}
+
+/// **只跑过 B4c 分支的库（`user_version` 已经是 12、但没有 v11 的两张表）→ 最新**：
+/// 版本号比 11 大，光靠 `if current < 11` 会把 v11 整段跳过，升级后一碰整理设置就
+/// 「no such table」。结构性兜底必须把两张表补上；同时 **v12 不许重跑**——
+/// 重跑回填会把已经推进过的 `revision` 按「版本数」改小（这里 3 → 2）。
+#[test]
+fn a_b4c_only_library_gets_the_v11_tables_without_resetting_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let (day_key, revision_before) = {
+        let (mut core, _transport) =
+            core_with_transport(dir.path(), vec![chat_ok("第一版。")]);
+        save_provider(&mut core);
+        let (_, day_key) = capture_with_text(&mut core, days_ago(1), "今天的材料。", "op-a");
+        core.generate_diary(&day_key, None, DiaryGenerationReason::Manual, "op-gen")
+            .unwrap();
+        drive(&mut core);
+        let version = versions_of(&core, &day_key)[0].clone();
+        // 编辑一版（revision 2）再切回第一版（revision 3）：版本数只有 2，
+        // 这样「回填成版本数」会把 3 改小成 2，测试才抓得住。
+        core.save_diary_edit(&version.id, "改过的第一版。", 1, "op-edit")
+            .unwrap();
+        let first = versions_of(&core, &day_key)
+            .into_iter()
+            .find(|item| item.id == version.id)
+            .unwrap();
+        let day = core
+            .set_diary_current(&day_key, &first.id, 2)
+            .unwrap();
+        assert_eq!(day.revision, 3);
+        (day_key, day.revision)
+    };
+
+    {
+        // 模拟「只跑过 B4c 分支」：revision 列在（值也在），v11 的两张表没有。
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "DROP TABLE diary_model_calls;
+             DROP TABLE organize_settings;
+             UPDATE schema_migrations SET version = 12;
+             PRAGMA user_version = 12;",
+        )
+        .unwrap();
+    }
+
+    let mut core = Core::open(&path).unwrap();
+    assert_eq!(core.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
+    // v11 被补上：能读设置、默认关、账本 0 条。
+    let settings = core.organize_settings().unwrap();
+    assert!(!settings.enabled, "补跑 v11 也是默认关");
+    assert_eq!(call_rows(&core, None), 0);
+    // v12 **没有重跑**：revision 还是切换之后的 3，不是版本数 2。
+    assert_eq!(
+        core.get_diary_day(&day_key).unwrap().revision,
+        revision_before,
+        "列已经在就不许重复回填（否则冲突保护会被改小）"
+    );
+    // 补上之后整理照常可用。
+    let transport = Arc::new(ScriptedTransport::ok(vec![chat_ok("补跑之后的整理结果。")]));
+    core.set_transport_for_test(transport as Arc<dyn Transport>);
+    enable_organize(&mut core, |_| {});
+    drive(&mut core);
+    assert_eq!(versions_of(&core, &day_key).len(), 3, "整理产出新的一版");
 }
 
 /// 只读断言：整理路径上的错误都落在契约第 7 节的码里。

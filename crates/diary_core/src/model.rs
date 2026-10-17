@@ -1453,6 +1453,13 @@ pub struct DiaryDay {
     pub current_version_id: Option<String>,
     /// 候选版本（这一天的全部版本里除当前版本之外的那些），最新在前。
     pub candidate_version_ids: Vec<String>,
+    /// 这一天的 **revision**：持久、单调递增的状态推进计数（`diary_days.revision`）。
+    ///
+    /// 每次成功写入 +1：新增一版（生成 / 编辑 / 合并）算一次，`diary.setCurrent`
+    /// 真的换了当前版本也算一次；没有推进的调用（切到已经是当前的版本）不加。
+    /// 调用方把读到的这个值原样回传给 `saveEdit` / `setCurrent` / `merge` 的
+    /// `expectedRevision`（契约 2.5 / 4.3）；没有推进过的天是 0。
+    pub revision: i64,
     pub material_counts: MaterialCounts,
     pub coverage: Coverage,
     pub updated_at: DateTime<Utc>,

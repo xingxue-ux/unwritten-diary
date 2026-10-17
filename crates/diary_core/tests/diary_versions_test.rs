@@ -128,9 +128,27 @@ fn versions(core: &Core, day: &str) -> Vec<diary_core::DiaryVersion> {
     core.list_diary_versions(day, None, 50).unwrap().versions
 }
 
-/// 这一天的 `revision` 口径：**版本数**。调用方从 `getDay` 就能算出来。
+/// 这一天的 `revision`：**持久单调的状态推进计数**（`DiaryDay.revision`）。
+///
+/// 调用方从 `diary.getDay` 读它、原样回传给 `expectedRevision`（契约 2.5 / 4.3）。
+/// 这里不再从版本数推算：**换当前版本也推进它**，而 #101 之前那条「切换不改变
+/// revision」的口径正是假的冲突保护。
 fn revision_of(day: &diary_core::DiaryDay) -> i64 {
-    day.candidate_version_ids.len() as i64 + i64::from(day.current_version_id.is_some())
+    day.revision
+}
+
+/// 某个事件类型的 `revision` 序列（按 sequence 升序）：用来钉事件带的是哪一步的值。
+fn event_revisions(path: &Path, event_type: &str) -> Vec<i64> {
+    let conn = Connection::open(path).unwrap();
+    let mut statement = conn
+        .prepare("SELECT revision FROM domain_events WHERE type = ?1 ORDER BY sequence")
+        .unwrap();
+    let revisions = statement
+        .query_map(rusqlite::params![event_type], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    revisions
 }
 
 fn keyword_search(core: &mut Core, query: &str) -> diary_core::SearchSnapshot {
@@ -173,7 +191,7 @@ fn diary_fingerprint(path: &Path) -> String {
          COALESCE(source_snapshot_id, ''), COALESCE(style_snapshot_id, ''), \
          COALESCE(generation_info, ''), provenance_links, COALESCE(operation_id, ''), created_at \
          FROM diary_versions ORDER BY id",
-        "SELECT day_key, time_zone, COALESCE(current_version_id, ''), updated_at \
+        "SELECT day_key, time_zone, COALESCE(current_version_id, ''), updated_at, revision \
          FROM diary_days ORDER BY day_key",
         "SELECT operation_id, kind, request_fingerprint, result_json, created_at \
          FROM operation_receipts ORDER BY operation_id",
@@ -434,6 +452,7 @@ fn edit_chain_is_monotonic_and_can_start_from_an_older_version() {
         .set_diary_current("2026-10-16", &v1.id, 3)
         .unwrap();
     assert_eq!(day.current_version_id.as_deref(), Some(v1.id.as_str()));
+    assert_eq!(day.revision, 4, "换当前版本本身就是一次状态推进");
     let mut candidates = day.candidate_version_ids.clone();
     candidates.sort();
     let mut expected = vec![v2.id.clone(), v3.id.clone()];
@@ -442,12 +461,12 @@ fn edit_chain_is_monotonic_and_can_start_from_an_older_version() {
 
     // 从旧版（第一版）再改一次：链仍然指向它，revision 继续单调 +1。
     let v4 = core
-        .save_diary_edit(&v1.id, "从第一版改出来的第四版。", 3, "op-e4")
+        .save_diary_edit(&v1.id, "从第一版改出来的第四版。", 4, "op-e4")
         .unwrap();
     assert_eq!(v4.parent_version_id.as_deref(), Some(v1.id.as_str()));
     let day = day_of(&core, "2026-10-16");
     assert_eq!(day.current_version_id.as_deref(), Some(v4.id.as_str()));
-    assert_eq!(revision_of(&day), 4);
+    assert_eq!(revision_of(&day), 5);
     for version in versions(&core, "2026-10-16") {
         match version.id.as_str() {
             id if id == v1.id => assert_eq!(version.body, "第一版。"),
@@ -529,18 +548,20 @@ fn set_current_switches_back_and_forth_with_an_honest_day_view() {
         .unwrap();
     assert_eq!(day.current_version_id.as_deref(), Some(generated.id.as_str()));
     assert_eq!(day.candidate_version_ids, vec![mine.id.clone()]);
+    assert_eq!(day.revision, 3, "换当前版本推进 revision");
     assert_eq!(
         core.get_diary_version(&generated.id).unwrap().body,
         "AI 的那一版。"
     );
 
     // 切回用户版本。
-    let day = core.set_diary_current("2026-10-16", &mine.id, 2).unwrap();
+    let day = core.set_diary_current("2026-10-16", &mine.id, 3).unwrap();
     assert_eq!(day.current_version_id.as_deref(), Some(mine.id.as_str()));
     assert_eq!(day.candidate_version_ids, vec![generated.id.clone()]);
+    assert_eq!(day.revision, 4);
 
-    // 再切一次到已经是当前的版本：无操作（不发事件、不加版本）。
-    let again = core.set_diary_current("2026-10-16", &mine.id, 2).unwrap();
+    // 再切一次到已经是当前的版本：无操作（不发事件、不加版本、不推进 revision）。
+    let again = core.set_diary_current("2026-10-16", &mine.id, 4).unwrap();
     assert_eq!(again, day, "重复指定同一个当前版本收敛到同一个状态");
     assert_eq!(
         event_count(&path, "diary.currentChanged") - changed_before,
@@ -548,7 +569,80 @@ fn set_current_switches_back_and_forth_with_an_honest_day_view() {
         "只有两次真的换了当前版本"
     );
     assert_eq!(versions(&core, "2026-10-16").len(), 2, "切换不产生版本");
-    assert_eq!(revision_of(&again), 2, "切换不改变这一天的 revision");
+    assert_eq!(revision_of(&again), 4, "无操作的切换不推进 revision");
+    // 事件带的是**推进后**的 revision：生成 1、编辑 2、两次切换 3 / 4。
+    assert_eq!(
+        event_revisions(&path, "diary.currentChanged"),
+        vec![1, 2, 3, 4],
+        "diary.currentChanged 的 revision 必须是当天推进后的值"
+    );
+}
+
+// ------------------------------------------------------ 双窗口并发切换（#101 回归）
+
+/// **真的双窗口语义**：两个窗口（同一个库文件上的两个 `Core`）读到同一个
+/// `expectedRevision`，先切的那个成功，后切的那个必须报 `revision_conflict` ——
+/// 而不是「两个都成功、后一个静默覆盖前一个的选择」。
+///
+/// 这条测试在修复前是红的：`revision` 那时是「版本数」，`setCurrent` 不推进它，
+/// 于是第二个窗口拿着同一个 revision 照样能切成功，把第一个窗口的选择顶掉。
+#[test]
+fn two_windows_switching_with_the_same_revision_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let (mut core, _transport) = core_with_transport(dir.path(), vec![chat_ok("AI 的那一版。")]);
+    save_provider(&mut core);
+    capture_with_text(&mut core, "今天的记录。", "2026-10-16", "op-a");
+    let generated = generated_base(&mut core, "AI 的那一版。", "op-gen-1");
+    let mine = core
+        .save_diary_edit(&generated.id, "我自己的那一版。", 1, "op-edit-1")
+        .unwrap();
+    drop(core);
+
+    // 两个窗口：同一个库文件上的两个会话，各自读一次这一天，看到同一个 revision。
+    let mut window_a = Core::open(&path).unwrap();
+    window_a.set_transport_for_test(Arc::new(diary_core::PanicTransport::new()) as Arc<dyn Transport>);
+    let mut window_b = Core::open(&path).unwrap();
+    window_b.set_transport_for_test(Arc::new(diary_core::PanicTransport::new()) as Arc<dyn Transport>);
+    let seen_a = window_a.get_diary_day("2026-10-16").unwrap().revision;
+    let seen_b = window_b.get_diary_day("2026-10-16").unwrap().revision;
+    assert_eq!((seen_a, seen_b), (2, 2), "两个窗口看到同一个 revision");
+
+    // 窗口 A 先切到自己想要的那一版：成功，并且这一天的 revision 推进了。
+    let after_a = window_a
+        .set_diary_current("2026-10-16", &generated.id, seen_a)
+        .unwrap();
+    assert_eq!(
+        after_a.current_version_id.as_deref(),
+        Some(generated.id.as_str())
+    );
+    assert_eq!(after_a.revision, seen_a + 1, "指针变更推进 revision");
+
+    let before_b = diary_fingerprint(&path);
+    // 窗口 B 拿着**同一个** revision 来切自己想要的版本：必须冲突、零改动。
+    let error = window_b
+        .set_diary_current("2026-10-16", &mine.id, seen_b)
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        ErrorCode::RevisionConflict,
+        "第二个窗口不许静默覆盖第一个窗口的选择"
+    );
+    assert_eq!(diary_fingerprint(&path), before_b, "被拒绝的切换零改动");
+    assert_eq!(
+        window_a.get_diary_day("2026-10-16").unwrap().current_version_id.as_deref(),
+        Some(generated.id.as_str()),
+        "A 的选择还在"
+    );
+
+    // 窗口 B 重新读（拿到新 revision）再切：这一次成功。
+    let fresh = window_b.get_diary_day("2026-10-16").unwrap().revision;
+    assert_eq!(fresh, seen_a + 1);
+    let after_b = window_b
+        .set_diary_current("2026-10-16", &mine.id, fresh)
+        .unwrap();
+    assert_eq!(after_b.current_version_id.as_deref(), Some(mine.id.as_str()));
+    assert_eq!(after_b.revision, fresh + 1);
 }
 
 #[test]
@@ -964,4 +1058,84 @@ fn empty_bodies_are_refused_and_long_bodies_are_kept_verbatim() {
         .unwrap();
     assert_eq!(merged.body, long_merge);
     assert_eq!(versions(&core, "2026-10-16").len(), 4);
+}
+// ------------------------------------------------------ schema 迁移（#101；合并后是 v13）
+
+/// 老库（v10 的样子：`diary_days` 没有 `revision` 列、也没有 v11 的两张整理表）
+/// 升级到**合并后的最新版本（13）**：**回填的 revision 是「这一天的版本数」**——
+/// 正是升级前调用方从 `getDay` 算出来的那个数字（契约 2.5 的老口径），所以升级不会让
+/// 任何在飞的 `expectedRevision` 失效。这一次 `setCurrent` 的历史（老口径下不计数）
+/// 也确实无法还原，回填不假装它算过。
+#[test]
+fn v10_library_migrates_to_latest_with_revision_backfilled() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let (mut core, _transport) = core_with_transport(dir.path(), vec![chat_ok("第一版。")]);
+    save_provider(&mut core);
+    capture_with_text(&mut core, "今天的记录。", "2026-10-16", "op-a");
+    let v1 = generated_base(&mut core, "第一版。", "op-gen-1");
+    let v2 = core.save_diary_edit(&v1.id, "第二版。", 1, "op-e2").unwrap();
+    assert_eq!(day_of(&core, "2026-10-16").revision, 2);
+    // 新口径：换一次当前版本，revision 走到 3（老口径会停在 2）。
+    core.set_diary_current("2026-10-16", &v1.id, 2).unwrap();
+    assert_eq!(day_of(&core, "2026-10-16").revision, 3);
+    drop(core);
+
+    // 把库退回真正的 v10 样子：去掉 v12 加的列与 v11 的两张整理表，
+    // 版本与当前指针都留着。
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE diary_days DROP COLUMN revision;
+             DROP TABLE diary_model_calls;
+             DROP TABLE organize_settings;
+             UPDATE schema_migrations SET version = 10;
+             PRAGMA user_version = 10;",
+        )
+        .unwrap();
+        assert!(
+            conn.query_row("SELECT revision FROM diary_days", [], |row| row
+                .get::<_, i64>(0))
+                .is_err(),
+            "老表结构里确实没有 revision 列"
+        );
+    }
+
+    let mut core = Core::open(&path).unwrap();
+    assert_eq!(core.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
+    assert_eq!(
+        diary_core::SCHEMA_VERSION,
+        13,
+        "11（B4e 的整理表）与 12（这一片的 revision 列）合并成 13"
+    );
+    // 两段迁移都跑了：v11 的两张表在，v12 的列在（下面用行为断言 revision）。
+    {
+        let conn = Connection::open(&path).unwrap();
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
+                 AND name IN ('organize_settings', 'diary_model_calls')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2, "v11 的两张表都补上了");
+    }
+
+    let day = day_of(&core, "2026-10-16");
+    assert_eq!(day.revision, 2, "回填成版本数（不是老口径之外的任何东西）");
+    assert_eq!(
+        day.current_version_id.as_deref(),
+        Some(v1.id.as_str()),
+        "迁移不动当前版本"
+    );
+    assert_eq!(versions(&core, "2026-10-16").len(), 2, "版本一行不少");
+
+    // 迁移后的库接着用：从回填的 2 往上推进，冲突保护照旧。
+    let day = core.set_diary_current("2026-10-16", &v2.id, 2).unwrap();
+    assert_eq!(day.revision, 3);
+    let error = core
+        .set_diary_current("2026-10-16", &v1.id, 2)
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::RevisionConflict);
 }
