@@ -38,6 +38,11 @@ pub mod provider;
 #[cfg(any(test, feature = "ai-quality"))]
 pub mod quality;
 mod recordings;
+/// 转写链（#91）：本机引擎、分段转写、时间戳对齐与质量集接缝。
+///
+/// 公开是为了让测试与 `tools/probe` 能注入 stub 引擎、能直接跑一条转写
+/// （与 `provider::transport` 同一个理由：真引擎要模型，CI 里没有）。
+pub mod transcription;
 mod schema;
 mod search;
 mod search_session;
@@ -55,7 +60,14 @@ pub use provider::adapter::{
     adapter_for, builtin_adapter_ids, GenerateOutcome, GenerateRequest, ProtocolAdapter,
     CALL_TIMEOUT_MS, OPENAI_COMPATIBLE, PROBE_TIMEOUT_MS,
 };
+pub use provider::local_engine::{
+    EngineConfig as AsrEngineConfig, EngineReadiness, LocalEngine, ModelKind as AsrModelKind,
+    PcmOutcome, PcmRequest, BUILTIN_LOCAL_ASR_ID, SHERPA_ONNX,
+};
 pub use provider::secret::{FileSecretStore, MemorySecretStore, SecretStore};
+pub use transcription::seam::{
+    LocalTranscriptEngine, TranscriptEngine, TranscriptOutcome, TranscriptRequest,
+};
 pub use provider::transport::{
     CountingTransport, HttpRequest, HttpResponse, PanicTransport, ScriptedTransport, Transport,
     TransportError, UreqTransport,
@@ -127,6 +139,16 @@ pub struct Core {
     /// 出站请求的唯一出口。默认：文件库用真实 HTTP（ureq + rustls），
     /// 内存库用「一旦被调用就 panic」的替身——内存库只用于测试，不该真的出网。
     transport: std::sync::Arc<dyn provider::transport::Transport>,
+    /// 本机转写引擎。默认是真实现（运行时动态加载 sherpa-onnx 的 C API），
+    /// 测试注入 stub——**与传输层同一个形状、同一个理由**：CI 里没有引擎库、
+    /// 没有模型，而「转写链本身」（分段、恢复、幂等、降级）必须能在 CI 里跑完。
+    asr_engine: std::sync::Arc<dyn provider::local_engine::LocalEngine>,
+    /// 仅供测试/量测：钉死的引擎配置（模型目录、引擎库路径）。
+    ///
+    /// 为什么要有它：配置解析会读环境变量，而环境变量是**进程级**的——多个测试
+    /// 并行跑时会互相踩（一个测试设的目录被另一个删掉）。钉死的配置只影响这个
+    /// `Core`，测试因此可以各自用自己的「模型目录」，不需要抢环境变量。
+    asr_config_for_test: Option<provider::local_engine::EngineConfig>,
 }
 
 /// 一行的原始形态：先取出来，再按业务语义解析，避免把解析错误塞进 SQL 层。
@@ -198,6 +220,9 @@ impl Core {
             Some(dir) => Box::new(provider::secret::FileSecretStore::beside_library(dir)),
             None => Box::new(provider::secret::MemorySecretStore::new()),
         };
+        // 历史包袱一次性清账：以前因为没有执行者而进「已放弃 + no_handler」的旧任务，
+        // 现在有执行者的放回队列（判据自带幂等，见 `jobs::requeue_legacy_no_handler`）。
+        jobs::requeue_legacy_no_handler(&mut conn, support::now())?;
         Ok(Self {
             conn,
             root,
@@ -207,6 +232,8 @@ impl Core {
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
             secrets,
             transport,
+            asr_engine: std::sync::Arc::new(transcription::sherpa::SherpaOnnxEngine),
+            asr_config_for_test: None,
         })
     }
 
@@ -1223,6 +1250,49 @@ impl Core {
     /// 出站请求的唯一出口。
     pub fn transport(&self) -> &dyn provider::transport::Transport {
         self.transport.as_ref()
+    }
+
+    /// 本机转写引擎。默认实现按配置动态加载 sherpa-onnx 的 C API；
+    /// 引擎库/模型不在时它如实报「不可用」，闸门据此把任务停在等配置。
+    pub fn asr_engine(&self) -> &dyn provider::local_engine::LocalEngine {
+        self.asr_engine.as_ref()
+    }
+
+    /// 本机转写引擎的**所有权句柄**（`Arc`）。
+    ///
+    /// 给转写执行者用：它在一次任务里要一边调用引擎、一边写库（需要 `&mut Core`），
+    /// 拿一个借用会与写库的借用打架；`Arc` 让「引擎是谁」与「库怎么改」互不牵制。
+    pub(crate) fn asr_engine_handle(&self) -> std::sync::Arc<dyn provider::local_engine::LocalEngine> {
+        self.asr_engine.clone()
+    }
+
+    /// 仅供测试/量测：钉死本机引擎的配置（模型目录、引擎库路径）。
+    ///
+    /// 产品代码不调它：产品路径按「配置行 → 环境变量 → 随包默认」解析
+    /// （见 `provider::local_engine::EngineConfig::resolve`）。
+    #[doc(hidden)]
+    pub fn set_asr_engine_config_for_test(
+        &mut self,
+        config: provider::local_engine::EngineConfig,
+    ) {
+        self.asr_config_for_test = Some(config);
+    }
+
+    /// 钉死的引擎配置（没有就是 None）。给 `provider::local_engine::config_for` 用。
+    pub(crate) fn asr_engine_config_for_test(&self) -> Option<&provider::local_engine::EngineConfig> {
+        self.asr_config_for_test.as_ref()
+    }
+
+    /// 仅供测试/量测：换一个本机转写引擎（stub、记账替身）。
+    ///
+    /// 产品代码不调它：真实现就是默认值。测试注入 stub 之后，**转写链的每一段**
+    /// （分段、恢复、幂等、降级、时间戳）都能在没有任何模型与原生库的 CI 里跑。
+    #[doc(hidden)]
+    pub fn set_asr_engine_for_test(
+        &mut self,
+        engine: std::sync::Arc<dyn provider::local_engine::LocalEngine>,
+    ) {
+        self.asr_engine = engine;
     }
 
     /// 仅供测试/量测：换一个传输层（回放、记账、panic 替身）。

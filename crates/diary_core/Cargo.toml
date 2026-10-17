@@ -29,6 +29,12 @@ ureq.workspace = true
 # 「CI 里能编过」就成了空话（CI 不跑它，只跑注入 stub 的换代逻辑）。
 ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "std"] }
 tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
+# 本地转写引擎（#91）：**运行时**加载 sherpa-onnx 的 C API 动态库。
+#
+# 与 `ort` 的 `load-dynamic` 同一个理由：构建期不链接、不下载任何原生二进制，
+# 所以没有引擎库、没有模型的 CI 机器照样编得过、测得过（真引擎那一条是
+# `#[ignore]` 的手动量测）。许可证：libloading 是 ISC（宽松，随包无附加义务）。
+libloading = "0.9"
 
 [features]
 # AI 质量集的**判定器**（issue #93，B4b-ai-quality）。默认不开：判定器不是产品代码，
