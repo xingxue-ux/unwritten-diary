@@ -18,6 +18,8 @@ import 'search_controller.dart';
 import 'revision_controller.dart';
 import 'revision_diff.dart';
 import 'sketch_ui.dart';
+import 'style_settings_controller.dart';
+import 'style_settings_panel.dart';
 
 /// The text, search, and source revision paths use DiaryApi. Remaining preview
 /// screens identify their local, disposable simulation state in the UI.
@@ -50,6 +52,7 @@ class _ExperienceShellState extends State<ExperienceShell>
   String? _importsNotice;
   late final RevisionController _revisions;
   late final LibraryCareController _libraryCare;
+  late final StyleSettingsController _styleSettings;
   late final Listenable _contentChanges;
   final _editor = TextEditingController();
   final _search = TextEditingController();
@@ -66,9 +69,6 @@ class _ExperienceShellState extends State<ExperienceShell>
   bool _adopted = false;
   bool _showOldVersions = false;
   String? _reply;
-  String _tone = '温暖克制';
-  String _length = '适中';
-  String _voice = '第一人称';
   String _searchKind = '全部';
   String _activeQuery = '';
   SearchHit? _selectedSearchHit;
@@ -104,12 +104,17 @@ class _ExperienceShellState extends State<ExperienceShell>
       capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
       captureCount: widget.snapshot?.captureCount ?? 0,
     );
+    _styleSettings = StyleSettingsController(
+      widget.api,
+      capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
+    );
     _contentChanges = Listenable.merge([
       _capture,
       _coreSearch,
       _fileImports,
       _revisions,
       _libraryCare,
+      _styleSettings,
     ]);
     if (!widget.demoMode) {
       unawaited(_initializeImports());
@@ -165,6 +170,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     _fileImports.dispose();
     _revisions.dispose();
     _libraryCare.dispose();
+    _styleSettings.dispose();
     _editor.dispose();
     _search.removeListener(_onSearchValueChanged);
     _search.dispose();
@@ -317,6 +323,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       _detail = null;
     });
     if (panel == 'storage') unawaited(_libraryCare.loadTrash());
+    if (panel == 'style') unawaited(_styleSettings.load());
   }
 
   Future<String?> _pickBackupTarget() async {
@@ -1698,7 +1705,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       'edit' => _editPanel(),
       'response' => _responsePanel(),
       'tasks' => _tasksPanel(),
-      'style' => _stylePanel(),
+      'style' => StyleSettingsPanel(controller: _styleSettings),
       'model' => _modelPanel(),
       'schedule' => _schedulePanel(),
       'plugins' => _pluginsPanel(),
@@ -1928,71 +1935,6 @@ class _ExperienceShellState extends State<ExperienceShell>
         () => _openPanel('versions'),
       ),
     ],
-  );
-
-  Widget _stylePanel() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _title('风格偏好', '让文字更像你，又不替你编造。'),
-      const SizedBox(height: 20),
-      _notice('偏好设置仅供预览，暂不保存到核心，也不会影响整理结果；整理功能尚未接入。'),
-      const SizedBox(height: 18),
-      _choiceGroup(
-        '篇幅',
-        ['简短', '适中', '舒展'],
-        _length,
-        (value) => setState(() => _length = value),
-      ),
-      const SizedBox(height: 17),
-      _choiceGroup(
-        '语气',
-        ['更克制', '温暖克制', '更亲近'],
-        _tone,
-        (value) => setState(() => _tone = value),
-      ),
-      const SizedBox(height: 17),
-      _choiceGroup(
-        '叙述',
-        ['第一人称', '旁观叙述'],
-        _voice,
-        (value) => setState(() => _voice = value),
-      ),
-      const SizedBox(height: 19),
-      _notice('示例：普通的一天，也有值得留下的光。', icon: Icons.format_quote),
-    ],
-  );
-
-  Widget _choiceGroup(
-    String title,
-    List<String> choices,
-    String current,
-    ValueChanged<String> onChange,
-  ) => SketchFrame(
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: const TextStyle(
-            color: SketchColors.ink,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final choice in choices)
-              ChoiceChip(
-                label: Text(choice),
-                selected: current == choice,
-                onSelected: (_) => onChange(choice),
-              ),
-          ],
-        ),
-      ],
-    ),
   );
 
   Widget _modelPanel() => Column(
