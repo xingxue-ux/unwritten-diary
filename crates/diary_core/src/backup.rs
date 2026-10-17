@@ -24,10 +24,14 @@
 //!   `finalize_recording` 成功后整个暂存目录还会被删掉——所以它们是「随行片段」，
 //!   备份时能拿到就按记录里的 sha256 校验后随包（`transientClips`），拿不到就跳过
 //!   并如实记进报告的 `warnings`，绝不因为一场并发的最终化让整份备份失败。
+//!   清单里的 `transientClips` **只列真的装进包里的那几条**：清单不是「打算装什么」
+//!   的声明，而是「包里真的有什么」的记录，否则自校验会反过来把这份备份判成无效
+//!   （issue #95）。
 
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OpenFlags};
@@ -73,6 +77,77 @@ pub enum BackupFault {
     None,
     /// 写完包之后、自校验之前，把包里中间的一个字节改掉，模拟写入损坏。
     CorruptWrittenPackage,
+}
+
+/// 仅供测试的**会合点**：让备份在打包随行片段之前停一下，等测试放行。
+///
+/// 存在的理由：文件在扫描之后、复制之前被并发最终化删掉，这个窗口靠 sleep 去碰是
+/// **不可靠**的（机器快慢一变，测试就从「测到了」变成「什么都没测」）。有了会合点，
+/// 测试可以确定地做到「备份正停在窗口里 → 另一条线程删掉暂存目录 → 再放行备份」。
+/// 产品代码从不设置它（见 `Core::set_backup_gate_for_test`）。
+#[derive(Debug, Default)]
+pub struct BackupGate {
+    /// 备份已经停在会合点上、还没被放行。
+    waiting: Mutex<bool>,
+    signal: Condvar,
+}
+
+impl BackupGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 备份线程：报到，然后等测试放行。只有设了会合点的测试会走到这里。
+    fn arrive_and_wait(&self) {
+        let mut waiting = self.lock();
+        *waiting = true;
+        self.signal.notify_all();
+        while *waiting {
+            waiting = self
+                .signal
+                .wait(waiting)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// 测试线程：等备份**真的**停在会合点上（不是「大概快了」）。
+    ///
+    /// 等到返回 `true`；超过 `timeout` 返回 `false`——测试据此失败，而不是把
+    /// `cargo test` 挂死在一个永远不来的会合点上。
+    pub fn wait_until_arrived(&self, timeout: std::time::Duration) -> bool {
+        let mut waiting = self.lock();
+        let deadline = std::time::Instant::now() + timeout;
+        while !*waiting {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (guard, result) = self
+                .signal
+                .wait_timeout(waiting, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            waiting = guard;
+            if result.timed_out() && !*waiting {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// 测试线程：放行备份。
+    pub fn resume(&self) {
+        let mut waiting = self.lock();
+        *waiting = false;
+        self.signal.notify_all();
+    }
+
+    /// 这里的状态只有一个 `bool`，没有「改到一半」的中间态，所以锁中毒也照常用：
+    /// 一条测试失败不该把后面的测试卡死在会合点上。
+    fn lock(&self) -> std::sync::MutexGuard<'_, bool> {
+        self.waiting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 // ------------------------------------------------------------------ 清单
@@ -208,7 +283,7 @@ pub(crate) fn create(core: &Core, target: &Path) -> Result<BackupReport> {
                 segment_index: clip.segment_index,
             });
         }
-        let manifest = Manifest {
+        let mut manifest = Manifest {
             format: BACKUP_FORMAT.to_owned(),
             format_version: BACKUP_FORMAT_VERSION,
             schema_version: scan.schema_version,
@@ -231,14 +306,15 @@ pub(crate) fn create(core: &Core, target: &Path) -> Result<BackupReport> {
             ],
         };
 
-        // 4. 写包：清单在前（先看到边界声明），再快照，再原件，最后随行片段。
+        // 4. 写包：快照、原件、随行片段，最后按**实际装进包里的条目**写清单
+        //    （并发最终化可能让某个片段在扫描之后消失，见 `write_package`）。
         let mut warnings = scan.warnings.clone();
         write_package(
             &partial_path,
             &snapshot_path,
             &root,
-            &manifest,
-            &scan,
+            &mut manifest,
+            core.backup_gate.as_deref(),
             &mut warnings,
         )?;
 
@@ -468,8 +544,8 @@ fn write_package(
     partial: &Path,
     snapshot: &Path,
     root: &Path,
-    manifest: &Manifest,
-    scan: &SnapshotScan,
+    manifest: &mut Manifest,
+    gate: Option<&BackupGate>,
     warnings: &mut Vec<String>,
 ) -> Result<()> {
     let file = fs::File::create(partial)?;
@@ -479,11 +555,11 @@ fn write_package(
     let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
 
-    let manifest_json = serde_json::to_vec_pretty(manifest)?;
-    zip.start_file(MANIFEST_ENTRY, deflated)
-        .map_err(zip_error("写清单"))?;
-    zip.write_all(&manifest_json)?;
-
+    // 条目顺序：快照 → 原件 → 随行片段 → **清单最后**。
+    //
+    // 清单不是「打算装什么」的声明，而是「包里真的有什么」的记录：并发最终化会让某个
+    // 片段在扫描之后、复制之前消失（见下面的循环），清单必须只列真的复制成功的那些，
+    // 否则自校验会把整份备份判死（issue #95）。所以它按事实生成、写在最后。
     zip.start_file(SNAPSHOT_ENTRY, deflated)
         .map_err(zip_error("写数据库快照"))?;
     copy_into_zip(
@@ -523,32 +599,81 @@ fn write_package(
 
     // 随行片段：拿不到就跳过（并发最终化会把暂存目录删掉），拿到就必须对得上
     // 登记时的 sha256——对不上说明这个录音工作区自己坏了，宁可整份备份失败。
-    let mut skipped = 0_i64;
+    //
+    // 复制与清单是同一份事实：只有**字节真的写进包里**的片段才进 `packaged`，
+    // 然后 `packaged` 就是清单里的 `transientClips`（不多列、不少列）。
+    if let Some(gate) = gate {
+        // 只有测试会设它：把「并发的录音最终化」精确地安排进这个窗口。
+        gate.arrive_and_wait();
+    }
+    let mut packaged: Vec<ManifestClip> = Vec::with_capacity(manifest.transient_clips.len());
+    let mut skipped: Vec<&str> = Vec::new();
     for clip in &manifest.transient_clips {
         let source = root.join(&clip.path);
-        if !source.is_file() {
-            skipped += 1;
-            continue;
+        // 先打开、打开成功才 `start_file`：文件一旦打开，并发的最终化就算把暂存目录
+        // 删掉，也删不掉这份已经打开的字节（unlink 不影响已打开的 fd），不会出现
+        // 「条目开了头、字节却没了」的半截条目。
+        match fs::File::open(&source) {
+            Ok(mut opened) => {
+                if !opened.metadata()?.is_file() {
+                    // 目录之类的东西：不是片段（扫描时怎么进来的，这里就怎么跳过）。
+                    skipped.push(clip.path.as_str());
+                    continue;
+                }
+                zip.start_file(clip.path.clone(), stored)
+                    .map_err(zip_error("写随行片段"))?;
+                copy_reader_into_zip(&mut opened, &mut zip, Some(&clip.sha256), &clip.path)?;
+                packaged.push(clip.clone());
+            }
+            // 已经不在暂存目录里了：多半是并发的最终化/取消。跳过并记一条警告，
+            // 不把「一场并发」升级成「整份备份失败」。
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                skipped.push(clip.path.as_str());
+            }
+            // 别的错误（权限、I/O 故障）**不装作「它不在」**：原实现是 `is_file()`
+            // 过了之后在复制里 open 失败就整份失败，这里保持同一口径——读不到就
+            // 如实报错，不悄悄降级成「跳过」。
+            Err(err) => return Err(err.into()),
         }
-        zip.start_file(clip.path.clone(), stored)
-            .map_err(zip_error("写随行片段"))?;
-        copy_into_zip(&source, &mut zip, Some(&clip.sha256), &clip.path)?;
     }
-    if skipped > 0 {
+
+    if !skipped.is_empty() {
         warnings.push(format!(
-            "有 {skipped} 个未收尾录音的片段在备份时已经不在暂存目录里（多半是那段录音刚好被最终化或取消），没有随包；\
-             恢复出来的库里那几段录音仍然如实显示为「没收尾」，不会假装成完整录音"
+            "有 {} 个未收尾录音的片段在备份时已经不在暂存目录里（多半是那段录音刚好被最终化或取消），没有随包：{}；\
+             恢复出来的库里那几段录音仍然如实显示为「没收尾」，不会假装成完整录音",
+            skipped.len(),
+            summarize_skipped(&skipped),
         ));
-    }
-    if !scan.clips.is_empty() && skipped == 0 {
+    } else if !packaged.is_empty() {
         warnings.push(format!(
             "备份里有 {} 个未收尾录音的片段随包（它们不是内容寻址的原件，见架构文档）",
-            manifest.transient_clips.len()
+            packaged.len()
         ));
     }
 
+    manifest.transient_clips = packaged;
+    let manifest_json = serde_json::to_vec_pretty(manifest)?;
+    zip.start_file(MANIFEST_ENTRY, deflated)
+        .map_err(zip_error("写清单"))?;
+    zip.write_all(&manifest_json)?;
+
     zip.finish().map_err(zip_error("收尾归档"))?;
     Ok(())
+}
+
+/// 警告里怎么列「没随包的片段」：路径要说得清，但不能无限长。
+fn summarize_skipped(paths: &[&str]) -> String {
+    const LISTED: usize = 5;
+    let mut text = paths
+        .iter()
+        .take(LISTED)
+        .copied()
+        .collect::<Vec<_>>()
+        .join("、");
+    if paths.len() > LISTED {
+        text.push_str(&format!(" 等 {} 个", paths.len()));
+    }
+    text
 }
 
 fn zip_error(what: &'static str) -> impl Fn(zip::result::ZipError) -> CoreError {
@@ -565,6 +690,19 @@ fn copy_into_zip<W: Write + std::io::Seek>(
     label: &str,
 ) -> Result<()> {
     let mut input = fs::File::open(source)?;
+    copy_reader_into_zip(&mut input, zip, expected_sha, label)
+}
+
+/// 同上，但从**已经打开的**读端复制。
+///
+/// 随行片段走这一条：先把文件打开、确认它是个普通文件，再决定要不要写它——
+/// 于是「决定随包的片段」与「真的写进包的字节」是同一份事实。
+fn copy_reader_into_zip<R: Read, W: Write + std::io::Seek>(
+    input: &mut R,
+    zip: &mut ZipWriter<W>,
+    expected_sha: Option<&str>,
+    label: &str,
+) -> Result<()> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; BUFFER_BYTES];
     loop {

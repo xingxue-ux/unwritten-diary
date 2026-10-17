@@ -33,7 +33,7 @@ mod semantic;
 mod support;
 
 pub use assets::ImportRequest;
-pub use backup::BackupFault;
+pub use backup::{BackupFault, BackupGate};
 pub use extractors::{
     builtin_extractors, ExtractionInput, ExtractionOutcome, Extractor, TEXT_DIRECT_EXTRACTOR_ID,
     TEXT_DIRECT_EXTRACTOR_VERSION,
@@ -68,6 +68,7 @@ pub use search_session::{HYBRID_FUSION_VERSION, HYBRID_SEMANTIC_MIN_SCORE};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -104,6 +105,8 @@ pub struct Core {
     hybrid_min_score: f32,
     /// 仅供测试的备份故障注入点，默认不注入（见 `set_backup_fault_for_test`）。
     backup_fault: backup::BackupFault,
+    /// 仅供测试的备份会合点，默认不设（见 `set_backup_gate_for_test`）。
+    backup_gate: Option<Arc<backup::BackupGate>>,
 }
 
 /// 契约 1.2 节的 API 版本。
@@ -175,6 +178,7 @@ impl Core {
             semantic: semantic::SemanticRuntime::from_env(),
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
             backup_fault: backup::BackupFault::None,
+            backup_gate: None,
         })
     }
 
@@ -1228,6 +1232,15 @@ impl Core {
     #[doc(hidden)]
     pub fn set_backup_fault_for_test(&mut self, fault: BackupFault) {
         self.backup_fault = fault;
+    }
+
+    /// 仅供测试：让备份在打包随行片段之前停在会合点上，等测试放行（默认不设）。
+    ///
+    /// 用来把「并发的录音最终化」**确定地**安排进备份窗口，而不是靠 sleep 去碰运气
+    /// （见 `BackupGate`）。产品代码不调它。
+    #[doc(hidden)]
+    pub fn set_backup_gate_for_test(&mut self, gate: Arc<BackupGate>) {
+        self.backup_gate = Some(gate);
     }
 
     // ------------------------------------------------------------ 幂等回执

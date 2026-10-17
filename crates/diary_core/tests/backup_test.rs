@@ -19,10 +19,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use diary_core::{
-    BackupFault, Core, CoreError, CreateDraftInput, ErrorCode, ImportManifest, ImportOrigin,
-    ImportRequest, SCHEMA_VERSION,
+    BackupFault, BackupGate, Core, CoreError, CreateDraftInput, ErrorCode, ImportManifest,
+    ImportOrigin, ImportRequest, SCHEMA_VERSION,
 };
 use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
@@ -1010,6 +1011,212 @@ fn unfinished_recording_clips_travel_with_the_backup() {
         .expect("恢复出来的片段要能最终化");
     assert_eq!(finalized.state, diary_core::RecordingState::Saved);
     assert_eq!(finalized.segment_count, 2);
+}
+
+/// #95 的回归：**备份窗口内**那段未收尾录音被并发最终化（暂存目录整个被删掉）。
+///
+/// 「窗口内」是确定的，不靠 sleep 碰运气：备份在打包随行片段之前会停在 `BackupGate`
+/// 上（只有测试会打开这个会合点），这时另一条线程最终化录音 A、删掉它的暂存目录，
+/// 然后才放行备份。要求：
+///
+/// - 备份**成功**：一场并发的最终化不该把整份备份判死（更不该删掉它）；
+/// - 清单只列真的装进包里的片段：录音 B 的片段随包、录音 A 的没有——
+///   `manifest.transientClips` 与实际条目逐一对照；
+/// - `warnings` 如实写下没随包的**条目**（路径 + 数量），不是含糊的一句「有东西跳过」；
+/// - 自校验（`verify_package`）与 `inspect_backup` 都通过，恢复到新目录也能用。
+///
+/// 这条测试在「清单按**预期**条目生成」的实现下必红：那时清单会声明 A 的两段，
+/// 包里却没有它们，自校验直接把整份备份判成 corrupted（备份失败、包被删掉）。
+#[test]
+fn concurrent_finalize_keeps_the_manifest_equal_to_the_package() {
+    let root = tempfile::tempdir().expect("临时目录");
+    let root_path = root.path();
+    let library = root_path.join("library.sqlite");
+    let mut core = new_core(root_path);
+
+    // 录音 A：快照里登记了两段，备份窗口内被最终化带走。
+    let capture_a = draft(&mut core, "race-a-create");
+    let ticket_a = core
+        .prepare_recording(&capture_a, "race-a-prepare")
+        .expect("录音票据 A");
+    let segments_a: Vec<(&str, Vec<u8>)> = vec![
+        ("a-seg-0.bin", b"segment the finalize takes away".to_vec()),
+        ("a-seg-1.bin", b"another segment taken away".to_vec()),
+    ];
+    for (index, (name, bytes)) in segments_a.iter().enumerate() {
+        fs::write(Path::new(&ticket_a.staging_ticket).join(name), bytes).expect("写片段");
+        core.register_segment(
+            &ticket_a.recording_id,
+            index as i64,
+            diary_core::SegmentManifest {
+                segment_id: format!("a-seg{index}"),
+                relative_file_name: (*name).to_owned(),
+                duration_ms: 1000,
+                sha256: sha_of(bytes),
+                byte_size: bytes.len() as i64,
+                closed_at: None,
+            },
+        )
+        .expect("登记片段");
+    }
+
+    // 录音 B：留着不动，证明「拿得到就随包」这条没被改坏。
+    let capture_b = draft(&mut core, "race-b-create");
+    let ticket_b = core
+        .prepare_recording(&capture_b, "race-b-prepare")
+        .expect("录音票据 B");
+    let bytes_b = b"segment that stays in staging".to_vec();
+    fs::write(
+        Path::new(&ticket_b.staging_ticket).join("b-seg-0.bin"),
+        &bytes_b,
+    )
+    .expect("写片段");
+    core.register_segment(
+        &ticket_b.recording_id,
+        0,
+        diary_core::SegmentManifest {
+            segment_id: "b-seg0".to_owned(),
+            relative_file_name: "b-seg-0.bin".to_owned(),
+            duration_ms: 1000,
+            sha256: sha_of(&bytes_b),
+            byte_size: bytes_b.len() as i64,
+            closed_at: None,
+        },
+    )
+    .expect("登记片段 B");
+
+    // 备份跑在另一条线程上（另一个驱动、同一个库文件），并停在会合点等放行。
+    let gate = Arc::new(BackupGate::new());
+    let package = root_path.join("race.diarybak");
+    let backup = {
+        let library = library.clone();
+        let gate = Arc::clone(&gate);
+        let package = package.clone();
+        thread::spawn(move || {
+            let mut driver = Core::open(&library).expect("第二个驱动能开同一个库");
+            driver.set_backup_gate_for_test(gate);
+            driver.create_backup(package.to_str().expect("UTF-8 路径"))
+        })
+    };
+
+    // 一直等到备份**真的**停在会合点上。余量给得很大（这台机器上 fsync 偶发要十几秒），
+    // 所以「慢」不会变成假失败；备份线程提前结束则立刻失败，不干等。
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let arrived = loop {
+        if gate.wait_until_arrived(Duration::from_millis(200)) {
+            break true;
+        }
+        if backup.is_finished() || Instant::now() >= deadline {
+            break false;
+        }
+    };
+    assert!(arrived, "备份没有停在会合点上（是不是提前失败了？）");
+    // 备份窗口内：录音 A 被最终化 —— 它的暂存目录整个被删掉。
+    let finalized = core
+        .finalize_recording(&ticket_a.recording_id, 1, "race")
+        .expect("并发最终化");
+    assert_eq!(finalized.state, diary_core::RecordingState::Saved);
+    assert!(
+        !Path::new(&ticket_a.staging_ticket).exists(),
+        "最终化会删掉暂存目录，这时备份还没开始复制随行片段"
+    );
+    gate.resume();
+
+    let report = backup
+        .join()
+        .expect("备份线程正常结束")
+        .expect("并发的最终化不该让整份备份失败");
+
+    // 快照那一刻两段录音都还没收尾（快照边界在最终化之前）。
+    assert_eq!(report.counts.open_recordings, Some(2));
+    // 清单只列真的装进包里的片段：录音 B 的 1 条。
+    assert_eq!(
+        report.transient_clip_count, 1,
+        "只有录音 B 的片段真的随包；A 的两段在复制前已被并发最终化带走"
+    );
+
+    // warnings 要如实说清「哪些条目没随包」。
+    let skipped_a0 = format!("staging/{}/a-seg-0.bin", ticket_a.recording_id);
+    let skipped_a1 = format!("staging/{}/a-seg-1.bin", ticket_a.recording_id);
+    let kept_b = format!("staging/{}/b-seg-0.bin", ticket_b.recording_id);
+    let warning = report
+        .warnings
+        .iter()
+        .find(|warning| warning.contains("没有随包"))
+        .unwrap_or_else(|| panic!("要如实记下没随包的片段：{:?}", report.warnings));
+    assert!(warning.contains("有 2 个未收尾录音的片段"), "{warning}");
+    assert!(warning.contains(&skipped_a0), "{warning}");
+    assert!(warning.contains(&skipped_a1), "{warning}");
+    assert!(!warning.contains(&kept_b), "随包的片段不该出现在「没随包」里：{warning}");
+
+    // 清单与内容逐一对照：声明的随行片段集合 == 包里真的有的那些。
+    let parts = read_package(&package);
+    let declared: Vec<String> = parts.manifest["transientClips"]
+        .as_array()
+        .expect("清单必须有 transientClips")
+        .iter()
+        .map(|clip| {
+            clip["path"]
+                .as_str()
+                .expect("片段条目要有 path")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        declared,
+        vec![kept_b.clone()],
+        "清单里的随行片段必须等于真的装进包里的那些"
+    );
+    let names: Vec<String> = parts
+        .entries
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    assert!(
+        !names.iter().any(|name| name.contains("a-seg-")),
+        "被并发最终化带走的片段不该在包里：{names:?}"
+    );
+    assert!(names.contains(&kept_b), "录音 B 的片段要随包：{names:?}");
+    let archived = parts
+        .entries
+        .iter()
+        .find(|(name, _)| name == &kept_b)
+        .map(|(_, bytes)| bytes.clone())
+        .expect("包里有录音 B 的片段");
+    assert_eq!(sha_of(&archived), sha_of(&bytes_b), "片段字节要原样随包");
+
+    // 自校验（写包时的 verify_package）与 inspect_backup 都要通过。
+    let inspection = core
+        .inspect_backup(package.to_str().expect("UTF-8 路径"))
+        .expect("检查备份包");
+    assert!(
+        inspection.issues.is_empty(),
+        "清单与包内容必须一致：{:?}",
+        inspection.issues
+    );
+    assert!(inspection.hashes_verified);
+    assert_eq!(inspection.transient_clip_count, 1);
+
+    // 落到新目录也能用：随包的片段真的可用（A 的两段如实缺着，不假装）。
+    let restored_dir = root_path.join("restored-race");
+    let restore = core
+        .restore_backup(
+            package.to_str().expect("UTF-8 路径"),
+            restored_dir.to_str().expect("UTF-8 路径"),
+        )
+        .expect("恢复");
+    assert_eq!(restore.transient_clip_count, 1);
+    let restored_b = restored_dir
+        .join("staging")
+        .join(&ticket_b.recording_id)
+        .join("b-seg-0.bin");
+    assert_eq!(
+        sha_of(&fs::read(&restored_b).unwrap_or_else(|err| panic!(
+            "录音 B 的片段没随包：{err}（{}）",
+            restored_b.display()
+        ))),
+        sha_of(&bytes_b)
+    );
 }
 
 /// 内存库没有文件系统根目录：导不出「完整」备份，如实报错而不是产出一份缺原件的包。
