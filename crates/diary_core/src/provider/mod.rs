@@ -16,6 +16,7 @@
 //!    都不含明文。
 
 pub mod adapter;
+pub mod local_engine;
 pub mod normalize;
 pub mod secret;
 pub mod transport;
@@ -50,15 +51,22 @@ const RESPOND_PRIORITY: JobPriority = JobPriority::UserOrganize;
 const PROVIDER_COLUMNS: &str = "id, label, adapter_id, endpoint, model, declared_capabilities, \
                                 verified_capabilities, credential_ref, enabled, test_status";
 
-/// 更新配置时先读出来的旧行：协议、端点、模型、凭据引用、创建时间、已验能力。
-type ExistingProvider = (
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    String,
-    String,
-);
+/// 更新配置时先读出来的旧行：功能参数（协议、端点、模型、凭据引用）、创建时间，
+/// 以及**验证结论**（已验能力、测试状态、失败码与测试时间）。
+///
+/// 验证结论要一起读出来是有原因的（#96）：只有功能参数真的变了，这一组才作废；
+/// 只改显示名或 `enabled` 开关时得把旧结论原样写回去。
+struct ExistingProvider {
+    adapter_id: String,
+    endpoint: Option<String>,
+    model: Option<String>,
+    credential_ref: Option<String>,
+    created_at: String,
+    verified_capabilities: String,
+    test_status: String,
+    last_error_code: Option<String>,
+    last_tested_at: Option<String>,
+}
 
 type RawProvider = (
     String,
@@ -178,13 +186,22 @@ pub(crate) fn provider_secret(core: &Core, provider: &Provider) -> Result<Option
 
 // ------------------------------------------------------------------ 列表 / 保存 / 移除
 
-pub(crate) fn list(core: &Core) -> Result<Vec<Provider>> {
+/// 表里**存下来的**服务配置。`providers.list` 返回的就是它。
+///
+/// 核心自带的本机转写引擎**不是**这里的一行（见 `local_engine` 的模块文档：
+/// 内建行不进库，否则用户删掉之后下次开库又会原样长回来）。它只出现在
+/// 「转写这一路能不能用」的判据里（`transcription_choice`）。
+pub(crate) fn stored_providers(core: &Core) -> Result<Vec<Provider>> {
     let sql = format!("SELECT {PROVIDER_COLUMNS} FROM providers ORDER BY created_at, id");
     let mut statement = core.conn.prepare(&sql)?;
     let rows = statement
         .query_map([], raw_provider_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter().map(provider_from_raw).collect()
+}
+
+pub(crate) fn list(core: &Core) -> Result<Vec<Provider>> {
+    stored_providers(core)
 }
 
 /// 校验并规范化 endpoint：只接受 `http(s)://host[:port][/path]`。
@@ -288,6 +305,38 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
             ),
         }
     })?;
+    // 本地引擎没有 endpoint 也没有密钥：给它配一个 http:// 地址是配置错误，
+    // 如实拒绝（而不是存下来一个永远不会被用的字段，让用户以为配上了什么）。
+    if adapter.is_local() {
+        if config
+            .endpoint
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Err(CoreError::InvalidArgument {
+                reason: format!(
+                    "适配器「{}」是本机引擎，不使用 endpoint（endpoint 是 HTTP 协议的事）；                     要换模型目录请填 model=<目录>，删掉 endpoint 再保存",
+                    config.adapter_id
+                ),
+            });
+        }
+        // `model` 留空是**合法**的：表示「用随包/环境变量解析出来的模型目录」。
+        // 本地引擎的 model 是一份**目录**（不是远端那种模型名），这一点写在
+        // `docs/architecture/m3-转写链.md` 的「模型目录」一节。
+        let model = config
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        let provider_id = if config.id.trim().is_empty() {
+            support::new_id("prv")
+        } else {
+            config.id.trim().to_owned()
+        };
+        return save_local(core, config, &adapter, provider_id, label, model);
+    }
     // 适配器在下面只用来校验存在性；这里显式消费掉，避免「绑了不用」。
     let _adapter_id = adapter.id();
 
@@ -308,39 +357,36 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
         config.id.trim().to_owned()
     };
 
-    // 更新时先看旧行：`created_at` 要保留，而且**协议/端点/模型变了，旧的验证结论
-    // 就作废**（那是对旧配置的验证）。只改显示名或开关不动验证结论。
+    // 更新时先看旧行：`created_at` 要保留，而且**功能参数（适配器/端点/模型/密钥）
+    // 变了，旧的验证结论就作废**（那是对旧配置的验证）。只改显示名或开关不动结论。
     let existing: Option<ExistingProvider> = core
         .conn
             .query_row(
                 "SELECT adapter_id, endpoint, model, credential_ref, created_at, \
-                 verified_capabilities FROM providers WHERE id = ?1",
+                 verified_capabilities, test_status, last_error_code, last_tested_at \
+                 FROM providers WHERE id = ?1",
                 params![provider_id],
                 |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
+                    Ok(ExistingProvider {
+                        adapter_id: row.get(0)?,
+                        endpoint: row.get(1)?,
+                        model: row.get(2)?,
+                        credential_ref: row.get(3)?,
+                        created_at: row.get(4)?,
+                        verified_capabilities: row.get(5)?,
+                        test_status: row.get(6)?,
+                        last_error_code: row.get(7)?,
+                        last_tested_at: row.get(8)?,
+                    })
                 },
             )
             .optional()?;
 
-    let config_changed = match &existing {
-        None => true,
-        Some((adapter_id, old_endpoint, old_model, _, _, _)) => {
-            adapter_id != &config.adapter_id
-                || old_endpoint.as_deref() != endpoint.as_deref()
-                || old_model.as_deref() != model.as_deref()
-        }
-    };
-
     // 密钥：给了新明文就存新的（旧引用没人再用就删掉）；没给就沿用配置里的引用；
     // 引用为空表示「清掉凭据」。
-    let old_ref = existing.as_ref().and_then(|row| row.3.clone());
+    let old_ref = existing
+        .as_ref()
+        .and_then(|row| row.credential_ref.clone());
     let new_ref = match secret.map(str::trim) {
         Some(value) if !value.is_empty() => Some(core.secrets().put(&provider_id, value)?),
         Some(_) => {
@@ -354,13 +400,46 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
     // `forget_secret` 会以为「还有人用」而不删。
     let stale_ref = old_ref.filter(|old| Some(old) != new_ref.as_ref());
 
-    let declared = capabilities_json(&config.capabilities)?;
-    let verified = match &existing {
-        Some((_, _, _, _, _, verified)) if !config_changed => verified.clone(),
-        _ => "[]".to_owned(),
+    // 「功能参数变化」= 适配器 / 端点 / 模型 / 密钥。**显示名与 `enabled` 开关不算**：
+    // 它们不改变远端收到的请求，凭什么作废一次真实的验证结论——作废的后果很具体，
+    // 失败结论被洗成 `untested` 后，能力闸门会跳过「验过没有」这一条，把服务重新放行
+    // （#96；评审给的两个触发点：改标签、切开关）。
+    let functional_change = match &existing {
+        None => true,
+        Some(old) => {
+            old.adapter_id != config.adapter_id
+                || old.endpoint.as_deref() != endpoint.as_deref()
+                || old.model.as_deref() != model.as_deref()
+                || secret_changed(
+                    core,
+                    old.credential_ref.as_deref(),
+                    new_ref.as_deref(),
+                    secret,
+                )?
+        }
     };
+
+    let declared = capabilities_json(&config.capabilities)?;
+    // 验证结论三件套（`test_status` / `verified_capabilities` / `last_error_code`）：
+    // 功能参数没变就**原样保留**，变了才一起清回「没测过」（`last_tested_at` 同理——
+    // 留着上一次的时间会让人以为新配置测过）。
+    let (verified, test_status, last_error_code, last_tested_at) =
+        match (&existing, functional_change) {
+            (Some(old), false) => (
+                old.verified_capabilities.clone(),
+                old.test_status.clone(),
+                old.last_error_code.clone(),
+                old.last_tested_at.clone(),
+            ),
+            _ => (
+                "[]".to_owned(),
+                ProviderTestStatus::Untested.wire().to_owned(),
+                None,
+                None,
+            ),
+        };
     let created_at = match &existing {
-        Some((_, _, _, _, created_at, _)) => created_at.clone(),
+        Some(old) => old.created_at.clone(),
         None => support::to_iso(now()),
     };
     let now_text = support::to_iso(now());
@@ -369,13 +448,14 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
         "INSERT INTO providers (id, label, adapter_id, endpoint, model, declared_capabilities, \
          verified_capabilities, credential_ref, enabled, test_status, last_tested_at, \
          last_error_code, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, ?11, ?12) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
          ON CONFLICT(id) DO UPDATE SET label = excluded.label, adapter_id = excluded.adapter_id, \
          endpoint = excluded.endpoint, model = excluded.model, \
          declared_capabilities = excluded.declared_capabilities, \
          verified_capabilities = excluded.verified_capabilities, \
          credential_ref = excluded.credential_ref, enabled = excluded.enabled, \
-         test_status = excluded.test_status, updated_at = excluded.updated_at",
+         test_status = excluded.test_status, last_tested_at = excluded.last_tested_at, \
+         last_error_code = excluded.last_error_code, updated_at = excluded.updated_at",
         params![
             provider_id,
             label,
@@ -386,7 +466,9 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
             verified,
             new_ref,
             i64::from(config.enabled),
-            ProviderTestStatus::Untested.wire(),
+            test_status,
+            last_tested_at,
+            last_error_code,
             created_at,
             now_text,
         ],
@@ -401,9 +483,122 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
     load_provider(&core.conn, &provider_id)
 }
 
+/// 保存一条**本机引擎**的服务配置。
+///
+/// 与 HTTP 那条路的差别就三处，其余（幂等、验证结论作废、等配置重评）完全一致：
+///
+/// 1. **没有 endpoint、没有密钥**：本地引擎不出网，也就没有凭据可托管。
+///    `credential_ref` 一律存 NULL（给它配密钥没有意义，收下来只会让人以为
+///    「这个服务是会出网的」）；
+/// 2. **`model` 是一份目录**，留空表示「用随包/环境变量解析出来的默认目录」。
+///    这里**不校验目录存在**：目录可能还没随包放进来，那属于「等配置」，
+///    由能力闸门如实报出来（保存配置本身不该失败）；
+/// 3. **`verified_capabilities` 的作废判据里包含 `model`**：换了模型目录，
+///    上一次的连接测试结论就不再成立（那是对旧目录的验证）。
+fn save_local(
+    core: &mut Core,
+    config: &Provider,
+    adapter: &adapter::Adapter,
+    provider_id: String,
+    label: &str,
+    model: Option<String>,
+) -> Result<Provider> {
+    let existing: Option<(String, Option<String>, String, String)> = core
+        .conn
+        .query_row(
+            "SELECT adapter_id, model, created_at, verified_capabilities FROM providers \
+             WHERE id = ?1",
+            params![provider_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let config_changed = match &existing {
+        None => true,
+        Some((adapter_id, old_model, _, _)) => {
+            adapter_id != &config.adapter_id || old_model.as_deref() != model.as_deref()
+        }
+    };
+    let verified = match &existing {
+        Some((_, _, _, verified)) if !config_changed => verified.clone(),
+        _ => "[]".to_owned(),
+    };
+    let created_at = match &existing {
+        Some((_, _, created_at, _)) => created_at.clone(),
+        None => support::to_iso(now()),
+    };
+    let declared = capabilities_json(&config.capabilities)?;
+    let now_text = support::to_iso(now());
+
+    core.conn.execute(
+        "INSERT INTO providers (id, label, adapter_id, endpoint, model, declared_capabilities, \
+         verified_capabilities, credential_ref, enabled, test_status, last_tested_at, \
+         last_error_code, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, NULL, ?7, ?8, NULL, NULL, ?9, ?10) \
+         ON CONFLICT(id) DO UPDATE SET label = excluded.label, adapter_id = excluded.adapter_id, \
+         endpoint = NULL, model = excluded.model, \
+         declared_capabilities = excluded.declared_capabilities, \
+         verified_capabilities = excluded.verified_capabilities, credential_ref = NULL, \
+         enabled = excluded.enabled, test_status = excluded.test_status, \
+         updated_at = excluded.updated_at",
+        params![
+            provider_id,
+            label,
+            config.adapter_id,
+            model,
+            declared,
+            verified,
+            i64::from(config.enabled),
+            ProviderTestStatus::Untested.wire(),
+            created_at,
+            now_text,
+        ],
+    )?;
+    // 适配器在这里只用来校验过存在性与形态；显式消费掉，避免「绑了不用」。
+    let _adapter_id = adapter.id();
+
+    // 配置一变，等在「配置」上的任务可能就能跑了。
+    promote_configuration_waits(core, now())?;
+    load_provider(&core.conn, &provider_id)
+}
+
+/// 密钥算不算「功能参数变化」。**按明文比，不按引用比**：`SecretStore::put` 每次
+/// 都发一个新引用，拿引用比会把「原样重填同一把钥匙」也当成变化——而设置页每次保存
+/// 都会把当前密钥一起提交，那等于每次保存都作废验证结论，正是 #96 要修掉的那类误判。
+///
+/// 给不出旧明文（以前没凭据、或凭据已经不在托管里）就算变化：那确实可能换了一把钥匙。
+/// 没给新明文时只看引用变没变（换引用、或清空凭据）。
+fn secret_changed(
+    core: &Core,
+    old_ref: Option<&str>,
+    new_ref: Option<&str>,
+    secret: Option<&str>,
+) -> Result<bool> {
+    match secret.map(str::trim) {
+        Some(value) if !value.is_empty() => match old_ref {
+            Some(old_ref) => Ok(core.secrets().get(old_ref)?.as_deref() != Some(value)),
+            None => Ok(true),
+        },
+        _ => Ok(old_ref != new_ref),
+    }
+}
+
 /// 移除配置。**不删除任何日记、也不删除已经生成的回应**：回应只是历史事实，
 /// 它记着当时的 provider/model，配置没了不代表那段历史不存在。
 pub(crate) fn remove(core: &mut Core, provider_id: &str) -> Result<()> {
+    if provider_id == local_engine::BUILTIN_LOCAL_ASR_ID {
+        // 内建引擎不是一条配置行：它随包提供。删「不存在的东西」不能装作成功，
+        // 也不能报一个让人以为「已经被删掉了、转写没了」的错——如实说清两条路。
+        if load_provider(&core.conn, provider_id).is_err() {
+            return Err(CoreError::InvalidState {
+                entity: "服务配置",
+                id: provider_id.to_owned(),
+                state: format!(
+                    "{}是核心自带的本机引擎，没有可移除的配置行；                     要停用就保存一条同 id、enabled=false 的配置，要换模型目录就保存 model=<目录>",
+                    local_engine::BUILTIN_LOCAL_ASR_LABEL
+                ),
+            });
+        }
+    }
     let provider = load_provider(&core.conn, provider_id)?;
     core.conn
         .execute("DELETE FROM providers WHERE id = ?1", params![provider_id])?;
@@ -532,6 +727,17 @@ fn evaluate(
             )));
         }
     }
+
+    // 本地引擎：没有 endpoint、没有密钥，改为**本机资源就绪**这一条。
+    // 「缺什么、怎么办」由引擎的就绪结论直接给出（带路径的那种）。
+    if adapter.is_local() {
+        return match local_engine::readiness_for(core, provider.model.as_deref()) {
+            Ok(readiness) if readiness.ready => Ok(Ok(())),
+            Ok(readiness) => Ok(Err(local_engine::blocked_message(&readiness))),
+            Err(error) => Ok(Err(error.to_string())),
+        };
+    }
+
     if provider
         .endpoint
         .as_deref()
@@ -562,12 +768,42 @@ fn evaluate(
     }
 }
 
+/// 本机引擎这条路的「下一步」：与 HTTP 那条路的措辞不同，因为要做的事不同
+/// （补模型目录/引擎库，而不是配 endpoint 与密钥）。
+fn local_next_step(capability: ProviderCapability) -> String {
+    format!(
+        "本机引擎不需要 endpoint 与密钥：把模型目录（model.int8.onnx 与 tokens.txt）放到随包位置 \
+         {}，或用 {} 指定目录、{} 指定引擎库；也可以在设置里保存一条 adapter={} 的服务配置，\
+         把 model 填成你自己的模型目录。配好后对这条服务跑一次连接测试（对 {} 而言，\
+         「连接测试」= 本机加载模型并转写 0.05 秒静音，不联网）。",
+        local_engine::BUNDLED_MODEL_REL,
+        local_engine::ENV_MODEL_DIR,
+        local_engine::ENV_ENGINE_LIB,
+        local_engine::SHERPA_ONNX,
+        capability.wire()
+    )
+}
+
 /// 按能力挑服务。`only` 指定时只考虑这一个（`responses.request(providerId)` 与
 /// 作业里钉死的服务走这条路），不指定时按「测试通过优先，其次没测过」挑一个。
 pub(crate) fn capability_gate_for(
     core: &Core,
     capability: ProviderCapability,
     only: Option<&str>,
+) -> Result<CapabilityGate> {
+    capability_gate_for_with(core, capability, only, false)
+}
+
+/// 与 [`capability_gate_for`] 相同，但可以要求**只考虑本机引擎**。
+///
+/// `local_only` 用在录音的转写链上：那条链跑的是本机引擎（`transcription` 模块），
+/// 远端转写不在它的执行范围里。让闸门把远端服务也算成「可用」会让用户看到
+/// 「转写可用」，然后任务跑起来用的是另一个东西——闸门必须只说执行者做得到的事。
+pub(crate) fn capability_gate_for_with(
+    core: &Core,
+    capability: ProviderCapability,
+    only: Option<&str>,
+    local_only: bool,
 ) -> Result<CapabilityGate> {
     let next_step = |what: &str| {
         format!(
@@ -592,9 +828,19 @@ pub(crate) fn capability_gate_for(
             Err(other) => return Err(other),
         };
         let last_error = provider_last_error(&core.conn, provider_id)?;
-        return Ok(match evaluate(core, &provider, capability)? {
-            Ok(()) => CapabilityGate::ready(
-                &provider.id,
+        let is_local = adapter::adapter_for(&provider.adapter_id)
+            .map(|adapter| adapter.is_local())
+            .unwrap_or(false);
+        let describe = |provider: &Provider| {
+            if is_local {
+                format!(
+                    "服务「{}」（本机引擎 {}，模型目录 {}）可承担 {}",
+                    provider.label,
+                    provider.adapter_id,
+                    provider.model.as_deref().unwrap_or("<随包/环境变量解析>"),
+                    capability.wire()
+                )
+            } else {
                 format!(
                     "服务「{}」（{}，{}）可承担 {}",
                     provider.label,
@@ -605,34 +851,88 @@ pub(crate) fn capability_gate_for(
                         .map(endpoint_scope)
                         .unwrap_or("未配 endpoint"),
                     capability.wire()
-                ),
-            ),
+                )
+            }
+        };
+        return Ok(match evaluate(core, &provider, capability)? {
+            Ok(()) => CapabilityGate::ready(&provider.id, describe(&provider)),
             Err(reason) => CapabilityGate::blocked(
                 reason.clone(),
-                next_step(&format!("修好「{}」：{reason}", provider.label)),
+                if is_local {
+                    local_next_step(capability)
+                } else {
+                    next_step(&format!("修好「{}」：{reason}", provider.label))
+                },
                 blocked_code(last_error.as_deref()),
             ),
         });
     }
 
-    let providers = list(core)?;
-    let enabled: Vec<&Provider> = providers.iter().filter(|item| item.enabled).collect();
-    if enabled.is_empty() {
-        let reason = if providers.is_empty() {
-            format!("还没有配置任何远端服务，不能用 {}", capability.wire())
+    // 候选 = 表里存下来的服务配置（启用中）。
+    let stored = stored_providers(core)?;
+    let mut providers: Vec<Provider> = stored
+        .iter()
+        .filter(|item| item.enabled)
+        .cloned()
+        .collect();
+    if local_only {
+        providers.retain(|provider| {
+            adapter::adapter_for(&provider.adapter_id)
+                .map(|adapter| adapter.is_local())
+                .unwrap_or(false)
+        });
+    }
+    // 转写这一路还有**核心自带的本机引擎**（随包模型）。它不是配置行，只在
+    // 「本机引擎能不能用」这个判据里出现（见 `local_engine::transcription_choice`）。
+    //
+    // **只有在一条本机引擎配置行都没有时**才把它加进来：有配置行时由那一行说了算
+    // ——哪怕它配错了。理由是闸门与执行者必须说同一件事：`transcription_choice`
+    // 取的就是「第一条启用中的本机引擎配置行」，如果在闸门这边落到内建引擎、
+    // 执行者却去读那行的目录，就会出现「闸门说可用、执行者说缺模型」的抖动。
+    // 坏掉的显式配置也不会静默退回默认：用户明确指了一个目录，就该按那个目录报错。
+    let consider_builtin = capability == ProviderCapability::TranscribeAudio
+        && !providers.iter().any(|provider| {
+            adapter::adapter_for(&provider.adapter_id)
+                .map(|adapter| adapter.is_local())
+                .unwrap_or(false)
+        });
+    if consider_builtin {
+        providers.push(local_engine::builtin_provider());
+    }
+
+    if providers.is_empty() {
+        let reason = if stored.is_empty() {
+            if local_only {
+                format!("还没有可用的本机引擎配置，不能用 {}", capability.wire())
+            } else {
+                format!("还没有配置任何远端服务，不能用 {}", capability.wire())
+            }
+        } else if local_only {
+            format!(
+                "有 {} 个服务配置，但没有一个能承担 {}（都没启用，或不是本机引擎）",
+                stored.len(),
+                capability.wire()
+            )
         } else {
+            // 与 B4a 的措辞保持一致：这条路（远端能力）下「没有候选」只可能是
+            // 「一个都没启用」。
             format!(
                 "有 {} 个服务配置，但一个都没有启用，不能用 {}",
-                providers.len(),
+                stored.len(),
                 capability.wire()
             )
         };
         return Ok(CapabilityGate::blocked(
             reason,
-            next_step("添加并启用一个服务"),
+            if local_only {
+                local_next_step(capability)
+            } else {
+                next_step("添加并启用一个服务")
+            },
             "provider_not_configured",
         ));
     }
+    let enabled: Vec<&Provider> = providers.iter().collect();
 
     // 挑选顺序：测试通过的优先，其次没测过，最后是最近测过但没验过的。同一档里
     // 按创建顺序（`list` 已排序），结果确定。
@@ -641,6 +941,8 @@ pub(crate) fn capability_gate_for(
     // （「最近一次连接测试没验过」），不能笼统说成「没有声明这个能力」。
     let mut hints: Vec<String> = Vec::new();
     let mut codes: Vec<&'static str> = Vec::new();
+    let mut saw_local = false;
+    let mut only_builtin = true;
     for pass in [
         ProviderTestStatus::Ok,
         ProviderTestStatus::Untested,
@@ -650,24 +952,41 @@ pub(crate) fn capability_gate_for(
             if provider.test_status != pass {
                 continue;
             }
+            let is_local = adapter::adapter_for(&provider.adapter_id)
+                .map(|adapter| adapter.is_local())
+                .unwrap_or(false);
+            if provider.id != local_engine::BUILTIN_LOCAL_ASR_ID {
+                only_builtin = false;
+            }
             match evaluate(core, provider, capability)? {
                 Ok(()) => {
                     return Ok(CapabilityGate::ready(
                         &provider.id,
-                        format!(
-                            "服务「{}」（{}，{}）可承担 {}",
-                            provider.label,
-                            provider.adapter_id,
-                            provider
-                                .endpoint
-                                .as_deref()
-                                .map(endpoint_scope)
-                                .unwrap_or("未配 endpoint"),
-                            capability.wire()
-                        ),
+                        if is_local {
+                            format!(
+                                "{}（本机引擎 {}，模型目录 {}）可承担 {}",
+                                provider.label,
+                                provider.adapter_id,
+                                provider.model.as_deref().unwrap_or("<随包/环境变量解析>"),
+                                capability.wire()
+                            )
+                        } else {
+                            format!(
+                                "服务「{}」（{}，{}）可承担 {}",
+                                provider.label,
+                                provider.adapter_id,
+                                provider
+                                    .endpoint
+                                    .as_deref()
+                                    .map(endpoint_scope)
+                                    .unwrap_or("未配 endpoint"),
+                                capability.wire()
+                            )
+                        },
                     ));
                 }
                 Err(reason) => {
+                    saw_local |= is_local;
                     hints.push(reason);
                     codes.push(blocked_code(
                         provider_last_error(&core.conn, &provider.id)?.as_deref(),
@@ -677,19 +996,38 @@ pub(crate) fn capability_gate_for(
         }
     }
 
-    let reason = format!(
-        "已启用的 {} 个服务都不能承担 {}：{}",
-        enabled.len(),
-        capability.wire(),
-        hints.join("；")
-    );
+    // 一个配置行都没有、只有内建引擎时，别写成「已启用的 1 个服务」——那不是
+    // 用户配的服务，名字也别绕。
+    let reason = if only_builtin {
+        format!(
+            "{}不可用，因此现在不能用 {}：{}",
+            local_engine::BUILTIN_LOCAL_ASR_LABEL,
+            capability.wire(),
+            hints.join("；")
+        )
+    } else {
+        format!(
+            "已启用的 {} 个服务都不能承担 {}：{}",
+            enabled.len(),
+            capability.wire(),
+            hints.join("；")
+        )
+    };
     // 有一个是鉴权失败就报鉴权失败：那是最具体的、用户能直接动手的原因。
     let code = if codes.contains(&"authentication_failed") {
         "authentication_failed"
     } else {
         "provider_not_configured"
     };
-    Ok(CapabilityGate::blocked(reason, next_step("补上这个能力"), code))
+    Ok(CapabilityGate::blocked(
+        reason,
+        if saw_local {
+            local_next_step(capability)
+        } else {
+            next_step("补上这个能力")
+        },
+        code,
+    ))
 }
 
 /// 服务最近一次失败的错误码；没失败过就是 None。
@@ -726,6 +1064,8 @@ fn blocked_code(last_error: Option<&str>) -> &'static str {
 /// - `results`：逐能力的结论（ok / failed）；
 /// - `actual_call_made`：**数出来的**真实调用次数是否大于 0；
 /// - `message`：可达性 / 认证 / 模型 / 实际能力集 / 端点是本机还是远端 / 下一步。
+///   **一次调用都没发时不说「可达 / 认证通过 / 模型可用」**——那三项没人验过，报告
+///   如实写「未发起调用、都未验证」（#96）。
 ///
 /// 认证失败、超时这类**拿到了明确失败原因**的情况按契约走错误码（可区分的
 /// `authentication_failed` / `provider_timeout` …），错误消息里同样写明「本次
@@ -741,7 +1081,16 @@ pub(crate) fn test(
             reason: "连接测试要明确用户授权的测试范围（至少一项能力）".to_owned(),
         });
     }
-    let provider = load_provider(&core.conn, provider_id)?;
+    // 内建的本机引擎也能测：它才是「转写到底能不能用」的真相来源，
+    // 却不在 `providers` 表里（见 `local_engine` 的模块文档）。这一条特例是
+    // 刻意的：测试路径**不影响**「默认不联网」，因为它一个字节都不出网。
+    let provider = if provider_id == local_engine::BUILTIN_LOCAL_ASR_ID
+        && load_provider(&core.conn, provider_id).is_err()
+    {
+        local_engine::builtin_provider()
+    } else {
+        load_provider(&core.conn, provider_id)?
+    };
     let adapter = adapter::adapter_for(&provider.adapter_id).ok_or_else(|| {
         CoreError::ProviderNotConfigured {
             reason: format!(
@@ -750,6 +1099,20 @@ pub(crate) fn test(
             ),
         }
     })?;
+    if adapter.is_local() {
+        return test_local(core, &provider, &adapter, scope);
+    }
+    // 走到这里的只可能是 HTTP 适配器（本机引擎在上面就返回了）。
+    let adapter = match adapter {
+        adapter::Adapter::Http(adapter) => adapter,
+        adapter::Adapter::Local(_) => {
+            return Err(CoreError::InvalidState {
+                entity: "服务配置",
+                id: provider_id.to_owned(),
+                state: "本机引擎的连接测试应当走 test_local 分支".to_owned(),
+            })
+        }
+    };
     let endpoint = provider
         .endpoint
         .as_deref()
@@ -835,21 +1198,32 @@ pub(crate) fn test(
     };
     record_test_outcome(core, provider_id, &probed_ok, &verified, all_ok, error_code)?;
 
-    let mut message = format!(
-        "端点 {endpoint}（{}）可达；认证通过；模型 {} 可用；实际能力集：{}；\
-         本次测试发起了 {calls} 次真实请求（可能计费）",
-        endpoint_scope(endpoint),
-        provider.model.as_deref().unwrap_or("<未配置>"),
-        if verified.is_empty() {
-            "（本次范围内没有验证通过的能力）".to_owned()
-        } else {
-            verified
-                .iter()
-                .map(|item| item.wire())
-                .collect::<Vec<_>>()
-                .join("、")
-        },
-    );
+    // 报告口径：**只有真的发过调用**，才谈得上「端点可达 / 认证通过 / 模型可用」。
+    // 一次都没发（范围里全是适配器没实现、或配置没声明的能力）时如实说这三项都没验过——
+    // 否则报告会写出一句谁都没验过的「端点/认证/模型均已验证」（#96 评审的第三条）。
+    let verified_text = if verified.is_empty() {
+        "（本次范围内没有验证通过的能力）".to_owned()
+    } else {
+        verified
+            .iter()
+            .map(|item| item.wire())
+            .collect::<Vec<_>>()
+            .join("、")
+    };
+    let mut message = if calls == 0 {
+        format!(
+            "本次测试**没有发起任何真实调用**（范围里没有「适配器实现了且配置声明了」的\
+             能力），所以端点连通性、认证、模型可用性**都没验过**；\
+             实际验证通过的能力集：{verified_text}"
+        )
+    } else {
+        format!(
+            "端点 {endpoint}（{}）可达；认证通过；模型 {} 可用；实际能力集：{verified_text}；\
+             本次测试发起了 {calls} 次真实请求（可能计费）",
+            endpoint_scope(endpoint),
+            provider.model.as_deref().unwrap_or("<未配置>"),
+        )
+    };
     if !notes.is_empty() {
         message.push('；');
         message.push_str(&notes.join("；"));
@@ -862,6 +1236,127 @@ pub(crate) fn test(
 
     Ok(ProviderTestReport {
         provider_id: provider_id.to_owned(),
+        results,
+        actual_call_made: calls > 0,
+        message: Some(message),
+    })
+}
+
+/// 本机引擎的连接测试：**真的加载模型并转写一小段静音**，但不联网。
+///
+/// 与 HTTP 那条路的语义对齐：
+/// - 配置/适配器层面就不成立的能力**不做任何调用**，直接报 failed 并写明原因；
+/// - 范围内的能力会跑一次真实的本地探针（加载模型 + 0.05 秒静音推理）；
+/// - `actual_call_made` 如实表示「真的跑了一次推理」——它不是「发了请求」，
+///   契约里这个字段的含义是「本次测试发生了真实调用」，本地推理也算；
+/// - 结论按能力落库（`verified_capabilities`），失败时把这次探过的能力摘掉。
+///
+/// 报告里必须写清**没有联网**：用户看到「连接测试通过」时的第一反应是
+/// 「我的资料被发出去了吗」，这句话就是回答。
+fn test_local(
+    core: &mut Core,
+    provider: &Provider,
+    adapter: &adapter::Adapter,
+    scope: &[ProviderCapability],
+) -> Result<ProviderTestReport> {
+    let mut wanted: Vec<ProviderCapability> = Vec::new();
+    for capability in ProviderCapability::ALL {
+        if scope.contains(&capability) {
+            wanted.push(capability);
+        }
+    }
+
+    let mut results = std::collections::HashMap::new();
+    let mut notes: Vec<String> = Vec::new();
+    let mut probed: Vec<ProviderCapability> = Vec::new();
+    for capability in &wanted {
+        if !adapter.capabilities().contains(capability) {
+            results.insert(*capability, ProviderTestStatus::Failed);
+            notes.push(format!(
+                "{}：本机引擎「{}」没有实现，未做任何调用",
+                capability.wire(),
+                provider.adapter_id
+            ));
+            continue;
+        }
+        if !provider.capabilities.contains(capability) {
+            results.insert(*capability, ProviderTestStatus::Failed);
+            notes.push(format!("{}：配置里没有声明这个能力，未做任何调用", capability.wire()));
+            continue;
+        }
+        probed.push(*capability);
+    }
+
+    let mut calls = 0_usize;
+    let mut probe_note = None;
+    let mut failure: Option<CoreError> = None;
+    if !probed.is_empty() {
+        match local_engine::config_for(core, provider.model.as_deref()) {
+            Ok(config) => {
+                // 一次探针覆盖范围内所有本机能力：它验的是「同一个引擎能不能跑」。
+                match core.asr_engine().probe(&config) {
+                    Ok(message) => {
+                        calls = 1;
+                        probe_note = Some(message);
+                    }
+                    Err(error) => failure = Some(error),
+                }
+            }
+            Err(error) => failure = Some(error),
+        }
+    }
+
+    if let Some(error) = failure {
+        let code = error.code().wire();
+        // 这次要探的第一个能力从「验过」里摘掉：探针失败（含配置解析不出来）说明
+        // 这个引擎现在不可信，不能继续拿着上一次的结论排任务。
+        let failing = probed.first().copied();
+        record_test_failure(core, &provider.id, code, &[], failing.unwrap_or(ProviderCapability::TranscribeAudio))?;
+        let mut error = error;
+        error.append_reason("；本次测试**没有联网**（本机引擎）");
+        return Err(error);
+    }
+
+    for capability in &probed {
+        results.insert(*capability, ProviderTestStatus::Ok);
+        notes.push(format!("{}：本机推理验证通过（未联网）", capability.wire()));
+    }
+    let all_ok = results.values().all(|status| *status == ProviderTestStatus::Ok);
+    // 逐能力结论已经落在 `results` 里，`verified` 就是「这次真的探过、而且过了」的那些。
+    let verified = probed.clone();
+    record_test_outcome(
+        core,
+        &provider.id,
+        &probed,
+        &verified,
+        all_ok,
+        if all_ok {
+            None
+        } else {
+            Some("provider_not_configured")
+        },
+    )?;
+
+    let mut message = probe_note.unwrap_or_else(|| {
+        format!(
+            "本机引擎「{}」：本次范围内没有可验证的能力，未做任何调用",
+            provider.adapter_id
+        )
+    });
+    message.push_str(&format!(
+        "；模型目录 {}；本次测试完成了 {calls} 次本机推理，**没有发起任何网络请求**",
+        provider.model.as_deref().unwrap_or("<随包/环境变量解析>")
+    ));
+    if !notes.is_empty() {
+        message.push('；');
+        message.push_str(&notes.join("；"));
+    }
+    if !all_ok {
+        message.push_str("。下一步：按上面的原因修配置（模型目录 / 声明能力）再测一次");
+    }
+
+    Ok(ProviderTestReport {
+        provider_id: provider.id.clone(),
         results,
         actual_call_made: calls > 0,
         message: Some(message),
@@ -1185,6 +1680,22 @@ fn respond_once(core: &mut Core, response_id: &str) -> std::result::Result<(), C
             reason: format!("服务「{}」的适配器不在本构建里", provider.label),
         }
     })?;
+    // 本地引擎没有「生成文本」这个能力（`capabilities()` 里就没有它），所以闸门
+    // 不可能把 `respond` 指到本机引擎上。这里再挡一次是防御：绕过闸门也不能走进
+    // 一个不存在的 HTTP 调用。
+    let adapter = match adapter {
+        adapter::Adapter::Http(adapter) => adapter,
+        adapter::Adapter::Local(engine) => {
+            return Err(CoreError::ProviderNotConfigured {
+                reason: format!(
+                    "服务「{}」是本机引擎「{}」，它不实现 generate_text；\
+                     主动回应要配一个支持 generate_text 的服务",
+                    provider.label,
+                    engine.id()
+                ),
+            })
+        }
+    };
     let secret = provider_secret(core, &provider)?.ok_or_else(|| {
         CoreError::ProviderNotConfigured {
             reason: format!("服务「{}」还没有可用的密钥", provider.label),
@@ -1233,17 +1744,23 @@ fn mark_response_error(core: &mut Core, response_id: &str, error_code: &str) -> 
 
 /// 作业 kind → 需要的能力。
 ///
-/// **只列真有执行者、而且执行者真的会调 Provider 的 kind**。`transcribe` 的
-/// 转写管线（读音频 → 调用 → 落库）还没实现，所以这里不列它：队列对没有
-/// 执行者的 kind 走诚实的 `no_handler`，而不是假装在等配置。
-///
+/// **只列真有执行者、而且执行者真的会调 Provider 的 kind**。B4a 留这个映射点时
+/// `transcribe` 还没有执行者，所以没有列它（队列对没有执行者的 kind 走诚实的
+/// `no_handler`）；#91 把执行者接上了，`transcribe` 于是也能在这里被闸门挡住——
+/// 引擎/模型没就绪时任务停在 `waiting_configuration`，不会先跑一次再失败。
 /// `diary_generate`（B4b 的日记生成）与 `respond` 一样需要 `generate_text`，
-/// 所以它在**领取前**就会被这条闸门挡住（`waiting_configuration`），
-/// 配置好了再跑——这正是「没配服务也不算调用失败」的落地。
+/// 也在**领取前**就被这条闸门挡住（`waiting_configuration`），配置好了再跑——
+/// 这正是「没配服务也不算调用失败」的落地。
+///
+/// 几条**能力需求**不同：
+/// - `respond` / `diary_generate` 需要 `generate_text`（HTTP 服务）；
+/// - `transcribe` 需要 `transcribe_audio`，而且录音这条链**只跑本机引擎**
+///   （见 `job_gate` 的 `local_only`）。
 pub(crate) fn job_capability(kind: &str) -> Option<ProviderCapability> {
     match kind {
         KIND_RESPOND => Some(ProviderCapability::GenerateText),
         kind if kind == crate::diary::KIND_DIARY_GENERATE => Some(ProviderCapability::GenerateText),
+        crate::transcription::KIND_TRANSCRIBE => Some(ProviderCapability::TranscribeAudio),
         _ => None,
     }
 }
@@ -1271,7 +1788,16 @@ pub(crate) fn job_gate(core: &Core, job: &Job) -> Result<Option<CapabilityGate>>
             .flatten(),
         _ => None,
     };
-    Ok(Some(capability_gate_for(core, capability, pinned.as_deref())?))
+    // 转写这一路**只认本机引擎**：录音的转写链跑的是本机 ONNX 引擎
+    // （`transcription` 模块），远端服务不在它的执行范围里——闸门不能说
+    // 「可用」然后执行者用另一个东西跑。
+    let local_only = job.kind == crate::transcription::KIND_TRANSCRIBE;
+    Ok(Some(capability_gate_for_with(
+        core,
+        capability,
+        pinned.as_deref(),
+        local_only,
+    )?))
 }
 
 fn pinned_provider(core: &Core, response_id: &str) -> Result<Option<String>> {
@@ -1290,7 +1816,13 @@ fn pinned_provider(core: &Core, response_id: &str) -> Result<Option<String>> {
 /// `waiting_configuration` 并写清「在等什么」。
 ///
 /// 与依赖闸门同一形状（`jobs::resolve_dependencies`）：**领取前**评估，所以
-/// 等配置的任务**不会**消耗尝试次数，也不会把「没有服务」说成「失败」。
+/// 等配置的任务**不会**消耗尝试次数（没跑过就不计尝试），也不会把「没有服务」
+/// 说成「失败」。但它**要置 `requires_user_action = 1` 并写
+/// `attention_key = job-config:<kind>:<code>`**：等配置不是失败，但**不是一个用户
+/// 无需理会的状态**——用户得去把服务配上。这一句跨 kind 一把尺（语义索引等模型的
+/// 闸门 `jobs::defer_for_configuration` 与执行期那条
+/// `jobs::defer_for_configuration_after_attempt` 给同一个答案），key 的形状也只有
+/// 一处（`jobs::configuration_attention_key`）。
 /// 每一次 Provider 配置变更（保存 / 移除 / 连接测试）都会调用它一次。
 pub(crate) fn promote_configuration_waits(core: &mut Core, at: DateTime<Utc>) -> Result<i64> {
     let jobs: Vec<Job> = {
@@ -1331,17 +1863,14 @@ pub(crate) fn promote_configuration_waits(core: &mut Core, at: DateTime<Utc>) ->
         }
 
         let code = gate.code.as_str();
+        // `attention_key` 的形状只有一处（三条写入者共用），界面靠它深链到「配哪个服务」。
+        let attention = crate::jobs::configuration_attention_key(&job.kind, code);
         if !waiting || job.error_code.as_deref() != Some(code) {
             core.conn.execute(
                 "UPDATE jobs SET state = 'waiting_configuration', error_code = ?1, \
                  next_attempt_at = NULL, requires_user_action = 1, attention_key = ?2, \
                  updated_at = ?3 WHERE id = ?4",
-                params![
-                    code,
-                    format!("job-config:{}:{code}", job.kind),
-                    now_text,
-                    job.id
-                ],
+                params![code, attention, now_text, job.id],
             )?;
             let tx = core.conn.transaction()?;
             crate::insert_event(&tx, crate::model::EventType::JobChanged, &job.id, 1)?;

@@ -9,7 +9,9 @@ publish.workspace = true
 [features]
 default = ["search", "plugin"]
 # 检索实验需要 bundled SQLite（C 代码）与 jieba 词典。
-search = ["dep:diary_core", "dep:chrono", "dep:rusqlite", "dep:jieba-rs", "dep:serde", "dep:serde_json", "dep:sha2"]
+# AI 质量集的判定器也在这个 feature 里（`diary_core/ai-quality`）：它只在量测/测试用，
+# 不给产品构建加东西，所以放在探针的 search feature 里而不是核心的默认 feature 里。
+search = ["dep:diary_core", "diary_core/ai-quality", "dep:chrono", "dep:rusqlite", "dep:jieba-rs", "dep:serde", "dep:serde_json", "dep:sha2"]
 # 插件实验是纯 Rust，可以只用它做 Android 交叉编译检查，不必拉进 C 工具链。
 plugin = ["dep:wasmi", "dep:wat"]
 # 向量模型验证要下载 ONNX Runtime 与权重，不进 CI。

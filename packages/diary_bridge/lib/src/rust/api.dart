@@ -8,11 +8,13 @@ import 'lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'third_party/diary_core/model.dart';
 
-// These functions are ignored because they are not marked as `pub`: `lock`, `recovery_summary`, `wired_capabilities`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
+// These functions are ignored because they are not marked as `pub`: `library_key`, `lock`, `recovery_summary`, `wired_capabilities`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`, `from`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>>
 abstract class BridgeSession implements RustOpaqueInterface {
+  Future<void> cancelImport({required String importId});
+
   /// 取消后续处理；不删除任何原件。
   Future<SearchSnapshot> cancelSearch({required String sessionId});
 
@@ -25,6 +27,20 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required PlatformInt64 expectedRevision,
     required String operationId,
   });
+
+  /// 创建备份包（B7 / 验收 E34；契约 `backups.create` 的同步入口）。
+  ///
+  /// 核心先取 SQLite 的一致性快照（`VACUUM INTO`，**不拷 .sqlite 文件**），再复制被
+  /// 快照引用的内容寻址原件，写完之后**自校验**一遍（重开包逐条目重算哈希）——过了才
+  /// 把包放到 `target_path` 上。备份期间资料库可以继续写，不加全局写锁。
+  ///
+  /// `target_path` 是**包文件的完整路径**，父目录会被创建；已存在时报
+  /// `invalid_argument`（绝不覆盖旧备份）。任何一步失败：目标路径上不留东西。
+  ///
+  /// 与契约的差异：契约 `backups.create` 返回 `jobId`（任务化，#70）。这一片先给
+  /// **同步**入口并把返回换成真实报告——任务化不属于 #86；Dart 适配层因此**不**把
+  /// `backups.create` 列进能力清单（能力是窄化过的，见 `wired_capabilities`）。
+  Future<BackupReport> createBackup({required String targetPath});
 
   /// 创建草稿，契约第 4.1 节 `captures.createDraft`。
   Future<Capture> createDraft({
@@ -42,6 +58,12 @@ abstract class BridgeSession implements RustOpaqueInterface {
 
   /// 读取某个来源当前版本的派生内容；没提取过时返回空。
   Future<ExtractedContent?> extractedContent({required String sourceId});
+
+  Future<RecordingFinalizeResult> finalizeRecording({
+    required String recordingId,
+    required PlatformInt64 lastSegmentIndex,
+    required String endReason,
+  });
 
   /// 声明复制完成。核心会自己重算哈希并比对。
   Future<ImportStatus> finishImport({
@@ -90,6 +112,13 @@ abstract class BridgeSession implements RustOpaqueInterface {
 
   /// 核心信息与恢复摘要。
   Future<LibraryInfo> info();
+
+  /// 检查备份包（契约 `backups.inspect` 的同步入口）：结构、版本、路径与逐条目哈希。
+  ///
+  /// 坏在哪就列在哪（`issues` 每条的格式是 `种类: 细节`，种类只有 `corrupted` /
+  /// `unsafe_path` / `incompatible`），**不抛错**；只有连清单都读不出来才报
+  /// `corrupted_backup`。界面据此先展示问题，再决定要不要恢复。
+  Future<BackupInspection> inspectBackup({required String packagePath});
 
   /// 任务面板状态：各状态计数、到期积压、下次唤醒与最近错误。
   ///
@@ -176,6 +205,11 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
+  Future<RecordingTicket> prepareRecording({
+    required String captureId,
+    required String operationId,
+  });
+
   /// 取某个来源**当前修订的父修订**（上一版正文），供界面「看原正文」用。
   ///
   /// 没有上一版时返回空。返回的是修订，不是 diff：差在哪由前端算。
@@ -198,6 +232,34 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
+  /// 排一条**语义索引**重建任务，契约第 4.4 节 `indexes.rebuildSemantic`。
+  ///
+  /// **异步**：只排任务并返回它，不做同步重建。与 `rebuildIndexes` 的区别（三条）：
+  ///
+  /// - **整库**：没有 `scope`。任务业务键是 `(semantic_index, 空目标, 空快照)`，所以
+  ///   「队列里至多一条活着的语义重建」，重复排队不产生第二份工作；
+  /// - **等模型配置**：本地模型没配好时任务落 `waiting_configuration` +
+  ///   `errorCode = waiting_model`（不是失败、不退避），并且不进 `nextWakeup`——配置
+  ///   变化不是时间问题，下一次 `runDueJobs` 的前置评估会把它拉起；
+  /// - **可分段让出**：整库重建会远超一次唤醒的预算，预算到点时它在块与块之间回到
+  ///   `queued`（进度在 `Job.progress` 上、`attemptCount` 不增加），下一轮续跑；
+  ///   代次切换仍是原子的，让出不算「已完成」。
+  ///
+  /// 幂等：同一个 `(reason, operationId)` 重复调用返回同一条任务；同一个 operationId
+  /// 换了原因报 `idempotency_conflict`；任务跑完后再请求会建新的一条（按现状增量重算）。
+  Future<Job> rebuildSemanticIndex({
+    required String reason,
+    required String operationId,
+  });
+
+  Future<RecordingRecovery> recoverRecording({String? recordingId});
+
+  Future<SegmentReceipt> registerSegment({
+    required String recordingId,
+    required PlatformInt64 segmentIndex,
+    required SegmentManifest segment,
+  });
+
   /// 移除服务配置，契约 `providers.remove`。**不删除日记**，也不删除已经生成的回应。
   Future<void> removeProvider({required String providerId});
 
@@ -209,6 +271,18 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required List<String> captureIds,
     required String requestText,
     String? providerId,
+  });
+
+  /// 恢复到**新的空目录**（E34/E35；契约 `backups.restore` 的同步入口）。
+  ///
+  /// **绝不覆盖当前资料库**：目标必须是新的空目录；解包先落在目标同级的暂存目录，
+  /// 全部校验通过才一次 rename 落地，中途失败只删暂存目录。拒绝口径：
+  /// 损坏 ⇒ `corrupted_backup`；越界路径 ⇒ `corrupted_backup`（绝不按它解包）；
+  /// 版本高于本核心 ⇒ `incompatible_backup`。返回的 `library_path` 直接交给
+  /// `BridgeSession.open` 就能打开恢复出来的库。
+  Future<RestoreReport> restoreBackup({
+    required String packagePath,
+    required String targetDir,
   });
 
   /// 修改某一篇来源的原始文字：新建一个修订，旧修订保留。
@@ -314,6 +388,10 @@ abstract class BridgeSession implements RustOpaqueInterface {
   Future<OrganizeSettings> updateOrganizeSettings({
     required OrganizeSettings settings,
     required PlatformInt64 expectedRevision,
+  });
+
+  Future<RecordingSession> updateRecordingState({
+    required NativeRecordingStatus status,
   });
 
   /// 把混合会话从关键词阶段升级到融合阶段（#69）；幂等，重复调用不重复算。

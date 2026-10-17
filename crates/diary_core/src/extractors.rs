@@ -542,12 +542,19 @@ impl Extractor for ImageMetadataOnlyExtractor {
     }
 }
 
-/// 音视频：转写要接 provider，现在还没有。
+/// 音视频「只有文件信息」这条路的提取器 id。转写链要按它判断「这次提取是不是
+/// 什么都没产出」（见 `extract_source_revision` 里那段注释）。
+pub const MEDIA_METADATA_ONLY_EXTRACTOR_ID: &str = "media_metadata_only";
+
+/// 音视频：**没有可用的转写引擎时**只保留文件信息。
+///
+/// 有引擎时正文由转写链给出（`transcription` 模块，`extractor_id =
+/// local_transcription`）：那条路能分段、能恢复、带时间戳，是这个提取器给不了的。
 pub struct MediaMetadataOnlyExtractor;
 
 impl Extractor for MediaMetadataOnlyExtractor {
     fn id(&self) -> &'static str {
-        "media_metadata_only"
+        MEDIA_METADATA_ONLY_EXTRACTOR_ID
     }
 
     fn version(&self) -> &'static str {
@@ -698,6 +705,19 @@ pub(crate) fn extract_source_revision(
         .find(|candidate| candidate.supports(&mime, &name))
         .expect("最后一个提取器支持所有类型");
 
+    // 音频这条来源的正文可能已经由**转写链**给出（转写任务先跑完了）。
+    // 这时候再落一条「没有转写能力，只能按文件名找」的空标记行，会让消费者同时
+    // 看到两条互相矛盾的派生内容（一条说搜不到正文，一条就是正文），也会把
+    // 语义分块的 coverage 拖成 metadata_only。所以：已经有正文 → 原样返回它，
+    // 不做这次「什么都没有」的提取。
+    if extractor.id() == MEDIA_METADATA_ONLY_EXTRACTOR_ID {
+        if let Some(existing) = extracted_content(core, &source_id)? {
+            if !existing.text.trim().is_empty() {
+                return Ok(existing);
+            }
+        }
+    }
+
     // 提取失败不是「没有内容」：失败也要落一条记录，让界面看到真实原因。
     let outcome = match extractor.extract(&input) {
         Ok(outcome) => outcome,
@@ -748,10 +768,15 @@ fn persist(
     };
 
     let tx = core.conn.transaction()?;
-    // 重建语义：同一个修订的旧派生内容整体替换。
+    // 重建语义：**同一个提取器**在这个修订上的旧派生内容整体替换。
+    //
+    // 为什么不是「这个修订的所有派生内容一起删」：`extracted_contents` 的唯一键
+    // 本来就是 `(source_revision_id, extractor_id)`——一个修订**可以**有多条不同
+    // 提取器产出的派生内容。按修订整删会让「转写链产出的正文」被一次重新提取
+    // 顺手抹掉（音频这条来源正好两条路都可能走到），那是静默的数据损失。
     tx.execute(
-        "DELETE FROM extracted_contents WHERE source_revision_id = ?1",
-        params![content.source_revision_id],
+        "DELETE FROM extracted_contents WHERE source_revision_id = ?1 AND extractor_id = ?2",
+        params![content.source_revision_id, content.extractor_id],
     )?;
     tx.execute(
         "INSERT INTO extracted_contents (id, source_id, source_revision_id, extractor_id, \

@@ -112,4 +112,21 @@ void main() {
       throwsA(isA<UnsupportedError>()),
     );
   });
+
+  test('语义索引重建在 Mock 里同样明确拒绝，不伪造成功', () {
+    // 同一个口径：Mock 没有队列、没有模型、没有向量表，做不到
+    // `indexes.rebuildSemantic` 就如实报未实现，**绝不**返回一个假的 jobId（那会让
+    // 设置页以为「换模型后重建」已经排上了）。它与 `indexes.rebuild` 走同一条
+    // `noSuchMethod` 路径，能力清单里也不列这一项。
+    final api = MockDiaryApi(clock: () => now);
+    expect(
+      () => api.rebuildSemanticIndex(reason: 'manual', operationId: 'op-semantic-1'),
+      throwsA(isA<UnsupportedError>()),
+    );
+    // 同一个 operationId 重放也一样：拒绝是稳定的，不是「第一次拒绝、第二次伪造」。
+    expect(
+      () => api.rebuildSemanticIndex(reason: 'manual', operationId: 'op-semantic-1'),
+      throwsA(isA<UnsupportedError>()),
+    );
+  });
 }

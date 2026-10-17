@@ -543,6 +543,7 @@ dependencies = [
  "chrono",
  "encoding_rs",
  "jieba-rs",
+ "libloading",
  "ort",
  "pdf-extract",
  "quick-xml",

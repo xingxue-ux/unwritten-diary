@@ -1758,6 +1758,23 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
             reason: format!("服务「{}」的适配器不在本构建里", provider.label),
         }
     })?;
+    // `adapter_for` 自 #103 起返回 `Adapter`（HTTP 协议或本机引擎）这一层枚举。
+    // 本地引擎没有「生成文本」这个能力（`capabilities()` 里就没有它），所以闸门不可能
+    // 把日记生成指到本机引擎上。这里与 `provider::test` / `respond` 同一个口径再挡一次：
+    // 绕过闸门也不能走进一个不存在的 HTTP 调用。
+    let protocol = match protocol {
+        adapter::Adapter::Http(protocol) => protocol,
+        adapter::Adapter::Local(engine) => {
+            return Err(CoreError::ProviderNotConfigured {
+                reason: format!(
+                    "服务「{}」是本机引擎「{}」，它不实现 generate_text；\
+                     日记生成要配一个支持 generate_text 的服务",
+                    provider.label,
+                    engine.id()
+                ),
+            })
+        }
+    };
     let secret = provider::provider_secret(core, &provider)?.ok_or_else(|| {
         CoreError::ProviderNotConfigured {
             reason: format!("服务「{}」还没有可用的密钥", provider.label),
@@ -2860,7 +2877,8 @@ mod tests {
         assert_eq!(joined, format!("{short}{long_text}"));
 
         // 生成输入（中间提炼请求）也要按这个顺序：第一份请求里是 A，不是 B 的切片。
-        let plan = plan_generation("2026-10-16", &materials).unwrap();
+        // （这一条测的是分批顺序，不涉及整理冻结；`None` 与相邻用例同一口径。）
+        let plan = plan_generation("2026-10-16", &materials, None).unwrap();
         assert_eq!(plan.intermediate_calls, 3);
         assert!(plan.calls[0].prompt.contains(short), "第一次提炼必须先见到 A");
         assert!(

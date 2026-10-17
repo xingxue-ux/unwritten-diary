@@ -1,0 +1,7 @@
+# 构建产物 / 本地配置（不进仓库）
+build/
+.hvigor/
+oh_modules/
+oh-package-lock.json5
+local.properties
+*.hap

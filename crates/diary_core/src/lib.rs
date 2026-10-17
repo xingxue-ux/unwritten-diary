@@ -13,6 +13,7 @@
 //!    绝不静默覆盖用户内容。
 
 mod assets;
+mod backup;
 mod chunker;
 mod chunks;
 /// 日记生成与版本（B4b）：冻结输入快照、候选/当前语义、防注入、两步走、去重。
@@ -39,14 +40,29 @@ pub mod organize;
 /// 公开是为了让测试与 `tools/probe` 能注入回放/记账传输层——这是给测试与量测的
 /// 入口，产品代码只用默认实现（见 `provider::transport`）。
 pub mod provider;
+/// AI 质量集的**判定器**（issue #93，B4b-ai-quality）：可判定的特征判定、CER 计算、
+/// 回放式引擎与「调用 B4b 核心方法」的薄适配层。
+///
+/// 它是**量测代码**（与 `tools/probe` 里的 `quality.rs` 同性质），不是产品路径：
+/// 默认不开，靠 `ai-quality` feature 打开（集成测试与探针会开）。放在核心而不是探针里，
+/// 是因为同一套判定器要同时给探针命令与集成测试（回归）用——复制两份必然各自漂移。
+#[cfg(any(test, feature = "ai-quality"))]
+pub mod quality;
 mod recordings;
+/// 转写链（#91）：本机引擎、分段转写、时间戳对齐与质量集接缝。
+///
+/// 公开是为了让测试与 `tools/probe` 能注入 stub 引擎、能直接跑一条转写
+/// （与 `provider::transport` 同一个理由：真引擎要模型，CI 里没有）。
+pub mod transcription;
 mod schema;
 mod search;
 mod search_session;
 mod semantic;
+mod semantic_index_job;
 mod support;
 
 pub use assets::ImportRequest;
+pub use backup::{BackupFault, BackupGate};
 pub use extractors::{
     builtin_extractors, ExtractionInput, ExtractionOutcome, Extractor, TEXT_DIRECT_EXTRACTOR_ID,
     TEXT_DIRECT_EXTRACTOR_VERSION,
@@ -56,26 +72,33 @@ pub use provider::adapter::{
     adapter_for, builtin_adapter_ids, GenerateOutcome, GenerateRequest, ProtocolAdapter,
     CALL_TIMEOUT_MS, OPENAI_COMPATIBLE, PROBE_TIMEOUT_MS,
 };
+pub use provider::local_engine::{
+    EngineConfig as AsrEngineConfig, EngineReadiness, LocalEngine, ModelKind as AsrModelKind,
+    PcmOutcome, PcmRequest, BUILTIN_LOCAL_ASR_ID, SHERPA_ONNX,
+};
 pub use provider::secret::{FileSecretStore, MemorySecretStore, SecretStore};
+pub use transcription::seam::{
+    LocalTranscriptEngine, TranscriptEngine, TranscriptOutcome, TranscriptRequest,
+};
 pub use provider::transport::{
     CountingTransport, HttpRequest, HttpResponse, PanicTransport, ScriptedTransport, Transport,
     TransportError, UreqTransport,
 };
 pub use model::{
-    AiResponse, Asset, AssetLease, AssetStorageState, AuthorType, Capture, CapturePage,
-    CaptureState, CommitResult, Coverage, DiaryDay, DiaryGenerationReason, DiaryGenerationTicket,
-    DiaryVersion, DiaryVersionOrigin, DiaryVersionPage, DomainEvent, DraftSaveResult, EventType,
-    ExtractedContent, ExtractedSegment, GenerationInfo, ImportManifest, ImportOrigin, ImportState,
-    ImportStatus, ImportTicket, IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress,
-    JobRunSummary, JobState, JobStatus, LocatorType, MatchedBy, MaterialCounts,
-    NativeRecordingStatus, NewJob, OrganizePendingDay, OrganizePlanSummary, OrganizeQuota,
-    OrganizeRunInfo, OrganizeSettings, OrganizeSkippedDay, OrganizeStatus, OrganizeTemplate,
-    OrganizeTemplateParam, ProcessingStatus, ProcessingSummary, Provider, ProviderCapability,
-    ProviderTestReport, ProviderTestStatus, ProvenanceLink, RecordingFinalizeResult,
-    RecordingRecovery, RecordingSession, RecordingState, RecordingTicket, ResponseTicket,
-    SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
-    SegmentManifest, SegmentReceipt, SourceItem, SourceKind, SourceLocation, SourceLocator,
-    SourceRevision, TextRange,
+    AiResponse, Asset, AssetLease, AssetStorageState, AuthorType, BackupCounts, BackupInspection,
+    BackupReport, Capture, CapturePage, CaptureState, CommitResult, Coverage, DiaryDay,
+    DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion, DiaryVersionOrigin,
+    DiaryVersionPage, DomainEvent, DraftSaveResult, EventType, ExtractedContent, ExtractedSegment,
+    GenerationInfo, ImportManifest, ImportOrigin, ImportState, ImportStatus, ImportTicket,
+    IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress, JobRunSummary, JobState,
+    JobStatus, LocatorType, MatchedBy, MaterialCounts, NativeRecordingStatus, NewJob,
+    OrganizePendingDay, OrganizePlanSummary, OrganizeQuota, OrganizeRunInfo, OrganizeSettings,
+    OrganizeSkippedDay, OrganizeStatus, OrganizeTemplate, OrganizeTemplateParam, ProcessingStatus,
+    ProcessingSummary, ProvenanceLink, Provider, ProviderCapability, ProviderTestReport,
+    ProviderTestStatus, RecordingFinalizeResult, RecordingRecovery, RecordingSession,
+    RecordingState, RecordingTicket, ResponseTicket, RestoreReport, SearchFilters, SearchHit,
+    SearchMode, SearchPhase, SearchRequest, SearchSnapshot, SegmentManifest, SegmentReceipt,
+    SourceItem, SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
 };
 pub use provider::CapabilityGate;
 pub use diary::{
@@ -112,6 +135,7 @@ pub use search_session::{HYBRID_FUSION_VERSION, HYBRID_SEMANTIC_MIN_SCORE};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -133,6 +157,8 @@ pub struct Core {
     conn: Connection,
     /// 文件库根目录：资料库文件所在目录。内存库没有根目录，导入相关方法会报错。
     root: Option<PathBuf>,
+    /// 资料库文件名（只用于备份清单里的展示字段，绝不参与路径拼接）。
+    library_file_name: Option<String>,
     /// 只读租约，内存态，不持久化。
     leases: HashMap<String, assets::LeaseRecord>,
     /// 检索会话，内存态：它记录的是「这一次查询的翻页与失效判断」，不是业务数据。
@@ -144,13 +170,35 @@ pub struct Core {
     /// 混合检索的语义证据门槛。产品默认是 `HYBRID_SEMANTIC_MIN_SCORE`；量测与测试
     /// 可以临时改它来扫曲线（见 `set_hybrid_min_score_for_test`）。
     hybrid_min_score: f32,
-    /// 密钥托管。默认实现是资料库目录下权限受限的独立文件；测试与内存库用内存实现。
+/// 密钥托管。默认实现是资料库目录下权限受限的独立文件；测试与内存库用内存实现。
     /// **明文只在这一层**，`providers` 表里只有引用（见 `provider::secret`）。
     secrets: Box<dyn provider::secret::SecretStore>,
     /// 出站请求的唯一出口。默认：文件库用真实 HTTP（ureq + rustls），
     /// 内存库用「一旦被调用就 panic」的替身——内存库只用于测试，不该真的出网。
     transport: std::sync::Arc<dyn provider::transport::Transport>,
+    /// 本机转写引擎。默认是真实现（运行时动态加载 sherpa-onnx 的 C API），
+    /// 测试注入 stub——**与传输层同一个形状、同一个理由**：CI 里没有引擎库、
+    /// 没有模型，而「转写链本身」（分段、恢复、幂等、降级）必须能在 CI 里跑完。
+    asr_engine: std::sync::Arc<dyn provider::local_engine::LocalEngine>,
+    /// 仅供测试/量测：钉死的引擎配置（模型目录、引擎库路径）。
+    ///
+    /// 为什么要有它：配置解析会读环境变量，而环境变量是**进程级**的——多个测试
+    /// 并行跑时会互相踩（一个测试设的目录被另一个删掉）。钉死的配置只影响这个
+    /// `Core`，测试因此可以各自用自己的「模型目录」，不需要抢环境变量。
+    asr_config_for_test: Option<provider::local_engine::EngineConfig>,
+    /// 仅供测试的备份故障注入点，默认不注入（见 `set_backup_fault_for_test`）。
+    backup_fault: backup::BackupFault,
+    /// 仅供测试的备份会合点，默认不设（见 `set_backup_gate_for_test`）。
+    backup_gate: Option<Arc<backup::BackupGate>>,
 }
+
+/// 契约 1.2 节的 API 版本。
+///
+/// 桥接的 `CoreInfo.apiVersion` 与备份清单里的 `apiVersion` 都用这一个常量：
+/// 两处各写一份字面量的话，升版本时必然漏掉一处。口径是「主次版本」：
+/// 新增可选字段或加性方法不改它，删方法或改既有语义才升主版本（见契约第 1.2 节
+/// 与 `docs/architecture/m5-备份与恢复.md` 的兼容口径）。
+pub const API_VERSION: &str = "1.0";
 
 /// 一行的原始形态：先取出来，再按业务语义解析，避免把解析错误塞进 SQL 层。
 type RawCapture = (String, i64, String, String, String, String, String, i64, String, String);
@@ -166,10 +214,14 @@ impl Core {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
         // 文件库是产品路径：默认装真实 HTTP 传输层。
         Self::prepare(
             Connection::open(path)?,
             Some(root),
+            file_name,
             std::sync::Arc::new(provider::transport::UreqTransport::new()),
         )
     }
@@ -182,6 +234,7 @@ impl Core {
         Self::prepare(
             Connection::open_in_memory()?,
             None,
+            None,
             std::sync::Arc::new(provider::transport::PanicTransport {}),
         )
     }
@@ -193,6 +246,7 @@ impl Core {
         Self::prepare(
             Connection::open_in_memory()?,
             Some(root.as_ref().to_path_buf()),
+            None,
             std::sync::Arc::new(provider::transport::PanicTransport {}),
         )
     }
@@ -200,6 +254,7 @@ impl Core {
     fn prepare(
         mut conn: Connection,
         root: Option<PathBuf>,
+        library_file_name: Option<String>,
         transport: std::sync::Arc<dyn provider::transport::Transport>,
     ) -> Result<Self> {
         // WAL 提高并发读写表现；synchronous=FULL 保证「提交了就是落盘了」，
@@ -221,15 +276,23 @@ impl Core {
             Some(dir) => Box::new(provider::secret::FileSecretStore::beside_library(dir)),
             None => Box::new(provider::secret::MemorySecretStore::new()),
         };
+        // 历史包袱一次性清账：以前因为没有执行者而进「已放弃 + no_handler」的旧任务，
+        // 现在有执行者的放回队列（判据自带幂等，见 `jobs::requeue_legacy_no_handler`）。
+        jobs::requeue_legacy_no_handler(&mut conn, support::now())?;
         Ok(Self {
             conn,
             root,
+            library_file_name,
             leases: HashMap::new(),
             search_sessions: HashMap::new(),
             semantic: semantic::SemanticRuntime::from_env(),
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
             secrets,
             transport,
+            asr_engine: std::sync::Arc::new(transcription::sherpa::SherpaOnnxEngine),
+            asr_config_for_test: None,
+            backup_fault: backup::BackupFault::None,
+            backup_gate: None,
         })
     }
 
@@ -963,6 +1026,30 @@ impl Core {
         index_rebuild::schedule(self, scope, reason, operation_id)
     }
 
+    /// 排一条**语义索引**重建任务（`kind = "semantic_index"`）。
+    ///
+    /// **异步**：只排任务并返回它，真正的重建由 `semantic_index` 执行者在
+    /// `run_due_jobs` 里跑——它**可以分段让出**（预算到点就回到 `queued`、进度写在
+    /// `Job::progress` 上，下一轮接着算没算完的块），所以整库重建不会把一次唤醒拖死。
+    ///
+    /// 与 `schedule_index_rebuild` 的关系：那是关键词这一路（契约 4.4 的
+    /// `indexes.rebuild`，只排 `index` 任务），这是语义这一路。**两个 kind**：
+    /// 前置（等模型配置）、成败口径、能不能分段都不一样，混在一起会让既有入口的
+    /// 语义跟着变。理由与排队口径见 `semantic_index_job` 模块说明与
+    /// `docs/architecture/m4-任务调度与补做.md`。
+    ///
+    /// 任务**总是整库**（`target_ids` 为空）：代次与向量是全局的，范围只决定重算了
+    /// 哪些块。因此业务键 `(kind, 空目标, 空快照)` 让「队列里至多有一条活着的语义
+    /// 重建」——重复排队（连点、多处请求）不会产生重复工作。同一个 operationId +
+    /// 同一个 `reason` 重复调用返回同一条任务（按 id 读当前状态）；换了 `reason` 报
+    /// `idempotency_conflict`。
+    ///
+    /// **契约 4.4 还没有这个方法**，所以它只在核心上：桥接（`BridgeSession`）与能力
+    /// 白名单都没有加，Dart 现在调不到——要给应用入口得先改契约。
+    pub fn schedule_semantic_index(&mut self, reason: &str, operation_id: &str) -> Result<Job> {
+        semantic_index_job::schedule(self, reason, operation_id)
+    }
+
     // ------------------------------------------------------------ 文本块
 
     /// 重建文本块；`source_scope` 为空表示整个资料库。
@@ -1222,6 +1309,49 @@ impl Core {
     /// 出站请求的唯一出口。
     pub fn transport(&self) -> &dyn provider::transport::Transport {
         self.transport.as_ref()
+    }
+
+    /// 本机转写引擎。默认实现按配置动态加载 sherpa-onnx 的 C API；
+    /// 引擎库/模型不在时它如实报「不可用」，闸门据此把任务停在等配置。
+    pub fn asr_engine(&self) -> &dyn provider::local_engine::LocalEngine {
+        self.asr_engine.as_ref()
+    }
+
+    /// 本机转写引擎的**所有权句柄**（`Arc`）。
+    ///
+    /// 给转写执行者用：它在一次任务里要一边调用引擎、一边写库（需要 `&mut Core`），
+    /// 拿一个借用会与写库的借用打架；`Arc` 让「引擎是谁」与「库怎么改」互不牵制。
+    pub(crate) fn asr_engine_handle(&self) -> std::sync::Arc<dyn provider::local_engine::LocalEngine> {
+        self.asr_engine.clone()
+    }
+
+    /// 仅供测试/量测：钉死本机引擎的配置（模型目录、引擎库路径）。
+    ///
+    /// 产品代码不调它：产品路径按「配置行 → 环境变量 → 随包默认」解析
+    /// （见 `provider::local_engine::EngineConfig::resolve`）。
+    #[doc(hidden)]
+    pub fn set_asr_engine_config_for_test(
+        &mut self,
+        config: provider::local_engine::EngineConfig,
+    ) {
+        self.asr_config_for_test = Some(config);
+    }
+
+    /// 钉死的引擎配置（没有就是 None）。给 `provider::local_engine::config_for` 用。
+    pub(crate) fn asr_engine_config_for_test(&self) -> Option<&provider::local_engine::EngineConfig> {
+        self.asr_config_for_test.as_ref()
+    }
+
+    /// 仅供测试/量测：换一个本机转写引擎（stub、记账替身）。
+    ///
+    /// 产品代码不调它：真实现就是默认值。测试注入 stub 之后，**转写链的每一段**
+    /// （分段、恢复、幂等、降级、时间戳）都能在没有任何模型与原生库的 CI 里跑。
+    #[doc(hidden)]
+    pub fn set_asr_engine_for_test(
+        &mut self,
+        engine: std::sync::Arc<dyn provider::local_engine::LocalEngine>,
+    ) {
+        self.asr_engine = engine;
     }
 
     /// 仅供测试/量测：换一个传输层（回放、记账、panic 替身）。
@@ -1488,6 +1618,88 @@ impl Core {
             None => statement.query_row([], |row| row.get::<_, i64>(0))?,
         };
         Ok(value)
+    }
+
+    // ------------------------------------------------------------ 备份与恢复
+
+    /// 创建备份包（B7，验收 E34；契约 `backups.create` 的**同步**入口）。
+    ///
+    /// 顺序是硬要求，也是「快照边界」成立的依据：
+    /// 1. `VACUUM INTO` 取**一致性快照**（不拷 `.sqlite` 文件，见 `backup` 模块说明）；
+    /// 2. 读**快照**（不是源库）算出这一份备份的内容清单；
+    /// 3. 复制被快照引用的内容寻址原件（`blobs/<sha 前两位>/<sha>`），逐条重算 sha256；
+    /// 4. 写完**自校验**（重开包、逐条目重算哈希、比大小、比条目集合），过了才把包
+    ///    放到 `target_path` 上。
+    ///
+    /// 备份期间资料库可以继续写：全程**不加全局写锁**，`VACUUM INTO` 只读源库，
+    /// 快照之后的新写入不进这份备份、也不会让备份失败。
+    ///
+    /// `target_path` 是**包文件的完整路径**（父目录会被创建）；已经存在时报
+    /// `invalid_argument`，绝不覆盖旧备份。中途任何失败：目标路径上不会留下文件。
+    ///
+    /// 库里已经有原件不可用（文件被外部删掉）时**报错而不是产出一份缺原件的包**：
+    /// 「完整备份」是这一条的承诺；要不要允许「如实标记为不完整」的部分备份由产品定
+    /// （见架构文档「没有做到的」）。
+    pub fn create_backup(&self, target_path: &str) -> Result<BackupReport> {
+        backup::create(self, std::path::Path::new(target_path))
+    }
+
+    /// 检查备份包（契约 `backups.inspect` 的**同步**入口）。
+    ///
+    /// 逐条目重算哈希、比大小、比条目集合，并检查路径安全与版本兼容。坏在哪就
+    /// 如实列在哪（`issues` 的每条是 `种类: 细节`，种类只有 `corrupted` /
+    /// `unsafe_path` / `incompatible` 三种），**不抛错**——界面要能先展示
+    /// 「这个包有什么问题」再决定要不要恢复。
+    ///
+    /// 只有连清单都读不出来（不是 zip、没有清单、清单解析不了）才报
+    /// `corrupted_backup`；格式版本更高报 `incompatible_backup`。
+    pub fn inspect_backup(&self, package_path: &str) -> Result<BackupInspection> {
+        backup::inspect(std::path::Path::new(package_path))
+    }
+
+    /// 恢复到**新的空目录**（B7，验收 E34/E35；契约 `backups.restore` 的同步入口）。
+    ///
+    /// 三条保证：
+    /// - **绝不覆盖当前资料库**：目标必须是新的空目录（不存在，或存在且为空），
+    ///   且不能是当前资料库所在目录；恢复过程一个字都不写当前资料库；
+    /// - **逐条校验原件哈希**（顺带校验快照哈希与大小），再打开恢复出来的库做
+    ///   完整性、外键、关键行数与原件的交叉核对，全部通过才落地；
+    /// - **失败不留半成品**：所有解包先在目标同级的暂存目录里做，全部过了才**一次
+    ///   rename** 落地；中途失败只删自己的暂存目录，目标目录保持原样。
+    ///
+    /// 拒绝口径与错误码（E35）：
+    /// - 损坏（哈希/大小/结构/清单与内容不一致）⇒ `corrupted_backup`；
+    /// - 越界路径（绝对路径、`..`、反斜杠/盘符、清单外的条目）⇒ `corrupted_backup`
+    ///   （绝不按越界路径解包）；
+    /// - 不兼容（`schemaVersion` / `apiVersion` 高于本构建）⇒ `incompatible_backup`。
+    ///
+    /// 恢复出来的库与快照**逐字节相同**：不在这一步做迁移，也不做恢复态修正；
+    /// 那些留给第一次 `Core::open`（既有 `recover_on_open` 语义，本条不改）。
+    /// 未完成的导入/录音因此如实保持「未完成」。
+    pub fn restore_backup(&self, package_path: &str, target_dir: &str) -> Result<RestoreReport> {
+        backup::restore(
+            self,
+            std::path::Path::new(package_path),
+            std::path::Path::new(target_dir),
+        )
+    }
+
+    /// 仅供测试：注入备份环节的故障（默认不注入）。
+    ///
+    /// 自校验这条路径平时不会被触发，而验收计划明确要求对「备份创建」做故障注入；
+    /// 产品代码不调它。
+    #[doc(hidden)]
+    pub fn set_backup_fault_for_test(&mut self, fault: BackupFault) {
+        self.backup_fault = fault;
+    }
+
+    /// 仅供测试：让备份在打包随行片段之前停在会合点上，等测试放行（默认不设）。
+    ///
+    /// 用来把「并发的录音最终化」**确定地**安排进备份窗口，而不是靠 sleep 去碰运气
+    /// （见 `BackupGate`）。产品代码不调它。
+    #[doc(hidden)]
+    pub fn set_backup_gate_for_test(&mut self, gate: Arc<BackupGate>) {
+        self.backup_gate = Some(gate);
     }
 
     // ------------------------------------------------------------ 幂等回执

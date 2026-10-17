@@ -1,0 +1,81 @@
+{
+  "modelId": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17-int8",
+  "status": "转写（ASR）链 #91 的默认模型：**官方转换产物**，我们不做二次转换（见 files 的 sha256 与体积，都是按上游文件核对过的）",
+  "note": "本文件记录：上游仓库、固定版本、每个文件的字节数与 sha256、许可证证据、以及引擎（sherpa-onnx）的版本与 C API ABI 口径。权重文件体积大，按 .gitignore 不入库；本清单与许可证全文随仓库走，随包分发时一并保留。",
+  "engine": {
+    "name": "sherpa-onnx",
+    "repository": "https://github.com/k2-fsa/sherpa-onnx",
+    "release": "v1.13.8",
+    "codeLicense": "Apache-2.0",
+    "codeLicenseEvidence": "仓库 API 元数据 license.spdx_id = \"Apache-2.0\"；LICENSE 为 Apache License 2.0 全文：https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/master/LICENSE",
+    "bundledOnnxRuntimeVersion": "1.28.2",
+    "bundledOnnxRuntimeEvidence": "预编译产物内 onnxruntime.dll / libonnxruntime.so 里的版本字符串；release 资产名里的 onnxruntime1.28.2（CUDA 变体）",
+    "cApiAbi": "钉死 v1.13.8 的 c-api.h：结构体偏移量与总大小在 crates/diary_core/src/transcription/sherpa.rs 的 abi_layout_matches_the_pinned_header 测试里逐项断言",
+    "platformsVerified": {
+      "linux-x64": "实测：下载产物 + 真语音转写通过（见 docs/architecture/m3-转写链.md）",
+      "windows-x64": "只核实了预编译产物（下载、解开、列内容、读版本字符串），未真机运行",
+      "android-arm64-v8a": "只核实了预编译产物（同上），未真机运行",
+      "ohos-arm64-v8a": "有预编译产物（5.4 MiB），本片未展开核对、未验证"
+    },
+    "prebuiltArtifacts": {
+      "windows-x64": {
+        "asset": "sherpa-onnx-v1.13.8-win-x64-shared-MT-Release.tar.bz2",
+        "bytes": 24805859,
+        "runtimeFiles": {
+          "lib/sherpa-onnx-c-api.dll": 4605952,
+          "lib/onnxruntime.dll": 17799168,
+          "lib/onnxruntime_providers_shared.dll": 104960
+        }
+      },
+      "android-arm64-v8a": {
+        "asset": "sherpa-onnx-v1.13.8-android.tar.bz2",
+        "bytes": 46093321,
+        "runtimeFiles": {
+          "jniLibs/arm64-v8a/libsherpa-onnx-c-api.so": 4465168,
+          "jniLibs/arm64-v8a/libonnxruntime.so": 22249560
+        }
+      }
+    }
+  },
+  "source": {
+    "repository": "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+    "convertedFrom": "https://github.com/FunAudioLLM/SenseVoice （SenseVoice-Small）",
+    "upstreamModelPage": "https://www.modelscope.cn/models/iic/SenseVoiceSmall",
+    "upstreamLicense": "MIT",
+    "licenseEvidence": [
+      "上游仓库 LICENSE 全文（MIT，Copyright (c) 2025 FunASR）：https://raw.githubusercontent.com/FunAudioLLM/SenseVoice/main/LICENSE",
+      "转换产物仓库里的 LICENSE 只有一句指向：\"Ref to https://github.com/modelscope/FunASR?tab=readme-ov-file#license\"（**没有单独的许可全文**）"
+    ],
+    "licenseCaveat": "转换产物仓库没有自己的许可全文，只有指向 FunASR 生态的一句话；结论「MIT 系」来自上游仓库的 LICENSE 全文。若产品要对外分发，建议同时保留上游 LICENSE 全文与本说明（见 m3-转写链.md 的「许可」一节）"
+  },
+  "files": [
+    {
+      "path": "model.int8.onnx",
+      "bytes": 239233841,
+      "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+      "format": "ONNX，INT8 量化（sherpa-onnx 离线识别器，SenseVoice-Small）"
+    },
+    {
+      "path": "tokens.txt",
+      "bytes": 315894,
+      "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
+      "format": "sherpa-onnx 词表（每行一个 token）"
+    }
+  ],
+  "modelDirectoryTotalBytes": 239549735,
+  "alternatives": [
+    {
+      "modelId": "sherpa-onnx-paraformer-zh-2024-03-09-int8",
+      "repository": "https://huggingface.co/csukuangfj/sherpa-onnx-paraformer-zh-2024-03-09",
+      "convertedFrom": "https://www.modelscope.cn/models/iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8358-tensorflow1/summary",
+      "files": {
+        "model.int8.onnx": 227330205,
+        "tokens.txt": 75354,
+        "am.mvn": 11203
+      },
+      "license": "HuggingFace 元数据 tags 含 license:apache-2.0（2023-09-14 那份）；2024-03-09 那份同源转换、没有单独许可文件。上游 ModelScope 模型页的许可**没有逐字核到原文** ⇒ 不确定",
+      "codePath": "已实现（provider/local_engine.rs 的 ModelKind::Paraformer，按目录里有没有 am.mvn 或目录名推断）；默认不用"
+    }
+  ],
+  "howToObtain": "按 m3-转写链.md 的「模型目录」一节：把 model.int8.onnx 与 tokens.txt 放进随包目录 models/asr/sense-voice-int8/，或用 DIARY_ASR_MODEL_DIR 指向自己的目录"
+}

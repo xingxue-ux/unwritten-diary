@@ -16,7 +16,8 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 | 配置表叫 `providers`，列名对齐契约 DTO | `adapter_id` ↔ `adapterId`、`endpoint` ↔ `endpoint`、`declared_capabilities` / `verified_capabilities` / `credential_ref` / `enabled` / `test_status` | 桥接层是字段级镜像，改名只会多一层翻译与一处不一致的机会（issue 正文里的 `kind` / `base_url` 是口语说法，落地以契约为准） |
 | schema **v8 → v9**，只加两张表 | `providers`、`ai_responses`；**不回填** | 升级前没有任何 Provider 配置，替用户猜一个服务填进去是错的（见下「迁移」） |
 | 能力集合是契约第 2.7 节的三项 | `generate_text` / `transcribe_audio` / `understand_image`；**内置适配器只实现前两项** | 契约要求「至少区分」这三项；没实现的不假装（`understand_image` 留给 M4 的插件模型能力） |
-| 只内置一种协议 | `openai_compatible`（Chat Completions + Audio Transcriptions 的兼容协议） | 任务书要求「先内置一种有公开文档的常用协议，供应商不硬编码进业务层」。很多本机/局域网服务也照这个协议做 |
+| 只内置一种 HTTP 协议 | `openai_compatible`（Chat Completions + Audio Transcriptions 的兼容协议） | 任务书要求「先内置一种有公开文档的常用协议，供应商不硬编码进业务层」。很多本机/局域网服务也照这个协议做 |
+| 适配器有**两种形态** | HTTP（`ProtocolAdapter`，经 `Transport` 出网）与**本地引擎**（`LocalEngine`，只读本机库与模型目录，**不可能出网**）；`Adapter` 枚举是统一入口 | 本地引擎没有 URL/密钥/出站调用，硬塞进 HTTP trait 会把「默认不联网」变成一句注释。#91 落地的 `sherpa_onnx` 是第一种本地引擎，口径见 [M3 · 转写链](m3-转写链.md) |
 | 传输层可注入 | `Transport` trait；产品默认 `UreqTransport`，测试注入回放/记账/panic 替身 | CI 不联网也要能跑，而且「有没有真的发生调用」要能被**数出来** |
 | **只有两处会出网** | 用户显式的 `providers.test`，与真的被领取执行的 Provider 作业（`respond`） | 「默认不联网」不是靠约定，是靠没有别的调用点 |
 | 没有配置/启用任何服务时**一个请求都不发** | 排任务入口先过能力闸门；队列在领取前再过一次 | 排一条注定失败的任务既费流量又骗用户 |
@@ -31,7 +32,7 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 | `label` | 显示名 |
 | `adapter_id` | 协议适配器（当前只有 `openai_compatible`） |
 | `endpoint` | 服务地址，含 API 版本前缀（例如 `http://127.0.0.1:11434/v1`）。只接受 `http` / `https` |
-| `model` | 模型名（生成/转写各自一个服务配置） |
+| `model` | 模型名（生成/转写各自一个服务配置）。**本地引擎这条路上它是「模型目录」**（见 [M3 · 转写链](m3-转写链.md)），留空表示用随包/环境变量解析出的默认目录 |
 | `declared_capabilities` | 配置里声明的能力（JSON 数组，wire 名） |
 | `verified_capabilities` | 连接测试**验过**的能力（JSON 数组；部分范围的测试按能力并集保留，被测失败的那一项会被摘掉） |
 | `credential_ref` | 密钥托管里的引用——**不是密钥** |
@@ -101,18 +102,27 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 连接测试的 `scope` 是**用户授权的测试范围**：一次只测 `generate_text` 不会抹掉上次验过的
 `transcribe_audio`（成功的结论按能力并集保留，失败的结论只摘掉这次真的探过的那些）。
 
+**保存配置时验证结论只在功能参数变化时作废**：适配器 / 端点 / 模型 / 密钥变了，
+`test_status`、`verified_capabilities`、`last_error_code`（以及 `last_tested_at`）一起清回
+`untested` / 空——旧结论是对旧配置的结论。只改显示名、`enabled` 开关这类非功能字段**原样保留**
+结论；密钥按**明文**比对（引用每次都新发，按引用比会把「原样重填同一把钥匙」也算成变化）。
+作废的后果很具体：失败结论被洗成 `untested` 后，第 4 条会被跳过，一个刚被证伪的服务又被放行
+（评审 #96）。
+
 门控有三个落点：
 
 | 落点 | 行为 |
 |---|---|
 | `Core::provider_capability_gate(capability)` | 给「能不能用 / 为什么 / 下一步做什么」。`reason` 与 `next_step` 都是给用户看的（去配置什么、去点哪一步） |
 | 排任务入口（`responses.request`） | 闸门不通过就**直接拒绝、不创建任务**，错误码 `provider_not_configured`，消息里带可执行的下一步 |
-| 队列驱动（`jobs::run_due`） | **领取前**评估（`provider::promote_configuration_waits`）：不满足的任务落在 `waiting_configuration`，**不发请求、不消耗尝试次数**；配置改好后同一轮驱动就能接着跑 |
+| 队列驱动（`jobs::run_due`） | **领取前**评估（`provider::promote_configuration_waits`）：不满足的任务落在 `waiting_configuration` + `requires_user_action = 1` + `attention_key = job-config:<kind>:<code>`，**不发请求、不消耗尝试次数**（没跑过就不计尝试）；配置改好后同一轮驱动就能接着跑 |
 
 排队中的任务被钉在某个服务上（`ai_responses.provider_id`），判定用的是**同一个服务**——
 不然会出现「闸门说可以 → 执行者说不行 → 每次唤醒都撞一次」的抖动。执行期才发现配置坏了
 （例如刚还在的服务返回 401）也会把服务的结论如实改成失败（`verified` 清空），
-任务停在 `waiting_configuration` 等用户，而不是反复去撞。
+任务停在 `waiting_configuration` 等用户（同样的 `requires_user_action` / `attention_key`，
+`attempt_count` 如实记账——那一次确实跑过），而不是反复去撞。`waiting_configuration`
+的完整语义（跨 kind 一把尺）见 `docs/architecture/m4-任务调度与补做.md` 的「等配置的语义」。
 
 `transcribe` 的边界要说清：**转写能力可以声明、可以验证、可以查询**（连接测试会真的上传
 一小段静音 WAV），但「读音频 → 调用 → 落库」的转写管线是 B4b，队列对**没有执行者**的 kind
@@ -137,7 +147,7 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 | `providerId` | 被测服务 |
 | `results` | 范围内逐能力的 `ok` / `failed` |
 | `actualCallMade` | 本次是否真的发出了 HTTP 请求（**数出来的**，不是猜的） |
-| `message` | 「端点（本机/局域网 还是 远端）可达；认证通过；模型 X 可用；实际能力集：…；本次测试发起了 N 次真实请求（可能计费）」+ 每项失败原因 + 下一步 |
+| `message` | 「端点（本机/局域网 还是 远端）可达；认证通过；模型 X 可用；实际能力集：…；本次测试发起了 N 次真实请求（可能计费）」+ 每项失败原因 + 下一步。**N = 0 时换成如实的一版**：「没有发起任何真实调用……端点可达性、认证、模型可用性**都未验证**」——一次都没探过就不许报告「均已验证」（评审 #96 第三条） |
 
 失败分两种形态，各司其职：
 
@@ -159,9 +169,9 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 
 | 情况 | 契约错误码 | 可重试 | 作业侧 |
 |---|---|---|---|
-| 没配置 / 没启用 / 适配器没实现 / 未通过验证 | `provider_not_configured` | 否（等配置） | `waiting_configuration`，不消耗尝试次数 |
-| 401、403（不带额度字样） | `authentication_failed` | 否（等配置） | `waiting_configuration`；并把服务结论改成失败，避免反复撞 |
-| 402、403 + 额度字样、`insufficient_quota` | `quota_exceeded` | 否（暂停） | `waiting_configuration` |
+| 没配置 / 没启用 / 适配器没实现 / 未通过验证 | `provider_not_configured` | 否（等配置） | `waiting_configuration` + `requires_user_action` + `job-config:<kind>:<code>`，不消耗尝试次数（闸门在领取前挡下） |
+| 401、403（不带额度字样） | `authentication_failed` | 否（等配置） | `waiting_configuration` + 同样的 `requires_user_action` / `attention_key`（执行期才发现，`attempt_count` 如实记账）；并把服务结论改成失败，避免反复撞 |
+| 402、403 + 额度字样、`insufficient_quota` | `quota_exceeded` | 否（暂停） | `waiting_configuration`（同上，执行期记账） |
 | 429 | `rate_limited` | 是（**尊重 `Retry-After`**，上限 1 小时） | `retry_wait` |
 | 408、连接/读写超时 | `provider_timeout` | 是（有限重试） | `retry_wait`；**不承诺远端未计费** |
 | 断网、连不上、TLS 失败、5xx | `network_unavailable` | 是（退避重试） | `retry_wait` |
@@ -210,16 +220,40 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 multipart 是手写的（一个文件字段 + 两个文本字段，boundary 是常量）：形状固定，
 引一个 multipart crate 不划算。
 
+## 本地引擎：连接测试与降级
+
+本地引擎（#91 的 `sherpa_onnx`）走**同一套**能力协商与门控，只有两处不同：
+
+1. **配置要求不同**：没有 `endpoint`（给本地适配器配 `http(s)://` 会被 `providers.save`
+   拒绝，理由是「endpoint 是 HTTP 协议的事」）、没有密钥要求（`credential_ref` 存 NULL），
+   改为**本机资源就绪**：模型目录里有 `model.int8.onnx`/`model.onnx` 与 `tokens.txt`，
+   引擎动态库找得到。不就绪 → 与 HTTP 那条路同一个码 `provider_not_configured` →
+   作业停在 `waiting_configuration`（不消耗重试额度），理由里写清缺哪个路径、下一步做什么；
+2. **连接测试不发请求**：`providers.test` 对本地引擎会**真的加载模型并转写 0.05 秒静音**
+   （与 B4a 那份探针音频同一段），报告里写明「完成了 N 次本机推理，**没有发起任何网络
+   请求**」。`actual_call_made` 对本地引擎表示「真的跑了一次推理」——契约里这个字段的
+   含义是「本次测试发生了真实调用」，本机推理也算。
+
+核心**自带**的本机转写引擎（随包模型）不是 `providers` 表里的一行，但它能被
+`providers.test` 测：id 是 `builtin_local_asr`（常量 `BUILTIN_LOCAL_ASR_ID`）。
+为什么不自动插一行：用户删掉之后下次开库又会原样长回来，没有墓碑就无法区分「用户不要」
+与「还没配」。要改模型目录/停用它，就保存一条同 adapter 的覆盖配置（行优先于内建）。
+
 ## 验证到了什么
 
-`crates/diary_core/tests/provider_test.rs`（24 条）与 `provider/*.rs` 的单元测试覆盖：
+`crates/diary_core/tests/provider_test.rs`（30 条）与 `provider/*.rs` 的单元测试覆盖：
 
 - 配置往返、**脱敏**（逐列扫 `providers` 表、扫资料库目录所有文件都找不到密钥明文、
   Unix 上文件 `0600`）、移除配置**不删日记**且清掉没人引用的凭据；
 - 默认不联网的证明（panic 替身 + 记账替身两条）；
 - 能力门控：只声明生成的服务承担不了转写（闸门 + 排任务入口都拒绝、一条任务都不排）；
   测过没验过的能力不再排任务；适配器没实现的能力声明了也不算；
-  队列侧门控让任务停在 `waiting_configuration`（状态可见、尝试次数为 0），配置回来后一轮跑完；
+  队列侧门控让任务停在 `waiting_configuration`（状态可见、尝试次数为 0、`requires_user_action`
+  + `attention_key = job-config:respond:<code>`），配置回来后一轮跑完；
+- **跨 kind 一致性**（`waiting_configuration_means_the_same_thing_across_job_kinds`）：
+  同一个状态在 `respond`（等服务）与 `semantic_index`（等模型）两个 kind 上给出**相同**的
+  `requiresUserAction`（都为真），`attentionKey` 各指各的「配哪一个」；把任一侧改回旧口径
+  这条就红——它钉的是 #96 合 main 时暴露的那处语义冲突；
 - 连接测试四种结果：可达（含「2 次真实请求」与两个端点 URL）、认证失败（码 + 擦除 + 调用次数）、
   超时、能力不支持（不发请求、`actualCallMade = false`）；
 - 错误归一化映射表（每条码 → 可重试 / 等配置 / 永久），并走真实作业路径验证
@@ -254,8 +288,9 @@ python3 tools/check_docs.py
 - **没有跟随重定向、没有自定义 CA**：自签证书的局域网服务现在连不上（rustls 只认打包的根集合）；
 - **响应不可解析归到了 `model_unavailable`**：v1 没有更贴切的码。若要更精确，需要新增
   `provider_response_invalid` / `provider_server_error` 之类的码（契约 + Dart 枚举变更）；
-- **转写管线没接**（B4b）：能力可声明、可验证、可查询，但「读音频 → 调用 → 落库」没有实现，
-  `transcribe` 任务仍然终态 `no_handler`；
+- **转写管线已接**（#91，见 [M3 · 转写链](m3-转写链.md)）：`transcribe` 有了执行者
+  （本机 ONNX 引擎 + 分段/恢复/幂等 + 落派生内容），`job_capability` 也加上了映射。
+  这里保留这条是提醒读者：**远端转写**没有进产品链——录音的转写链只跑本机引擎；
 - **`understand_image` 只登记不实现**：内置适配器没有图像理解（M4 的插件模型能力）；
 - **界面拿不到「这条任务在等什么配置」的完整理由**：任务的 `error_code` 是合同内的码
   （`provider_not_configured` / `authentication_failed`），可执行的解释在

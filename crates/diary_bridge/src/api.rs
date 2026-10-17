@@ -8,16 +8,20 @@
 //! 核心的公开模型（`diary_core::model`）已经写进 `flutter_rust_bridge.yaml` 的
 //! `rust_input`，所以这里返回的是真正的字段级镜像，而不是不透明句柄。
 
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use chrono::{DateTime, Utc};
 use diary_core::{
-    AiResponse, Capture, CapturePage, CommitResult, Core, CoreError, DiaryDay,
-    DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion, DiaryVersionPage, DomainEvent,
-    DraftSaveResult, ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket,
-    IndexStatus, Job, JobRunSummary, JobState, JobStatus, OrganizeSettings, OrganizeStatus,
-    OrganizeTemplate, Provider, ProviderCapability, ProviderTestReport, ResponseTicket,
-    SearchRequest, SearchSnapshot, SourceLocation, SourceLocator, SourceRevision,
+    AiResponse, BackupInspection, BackupReport, Capture, CapturePage, CommitResult, Core,
+    CoreError, DiaryDay, DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion,
+    DiaryVersionPage, DomainEvent, DraftSaveResult, ExtractedContent, ImportManifest, ImportOrigin,
+    ImportStatus, ImportTicket, IndexStatus, Job, JobRunSummary, JobState, JobStatus,
+    NativeRecordingStatus, OrganizeSettings, OrganizeStatus, OrganizeTemplate, Provider,
+    ProviderCapability, ProviderTestReport, RecordingFinalizeResult, RecordingRecovery,
+    RecordingSession, RecordingTicket, ResponseTicket, RestoreReport, SearchRequest,
+    SearchSnapshot, SegmentManifest, SegmentReceipt, SourceLocation, SourceLocator, SourceRevision,
 };
 use flutter_rust_bridge::frb;
 
@@ -25,6 +29,7 @@ use flutter_rust_bridge::frb;
 ///
 /// frb 会把它变成 Dart 侧的异常类型，所以前端可以用 `on BridgeError catch (e)`
 /// 直接读 `e.code`。
+#[derive(Debug)]
 pub struct BridgeError {
     pub code: String,
     pub message: String,
@@ -70,8 +75,36 @@ pub struct LibraryInfo {
 /// 一个打开的资料库会话。Dart 侧持有的就是这个句柄。
 #[frb(opaque)]
 pub struct BridgeSession {
-    inner: Mutex<Core>,
+    inner: Arc<Mutex<Core>>,
     library_id: String,
+}
+
+// WorkManager starts a second Dart isolate in this Android process. All bridge
+// handles for one library must share the same Core lock: opening a second Core
+// would run recover_on_open while a foreground import is still copying, and
+// two runDue calls could both claim the same job. Weak entries let the last
+// session really close the database. This is an in-process guarantee; a
+// separate Android process must not open the library concurrently.
+static OPEN_LIBRARIES: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<Core>>>>> = OnceLock::new();
+
+fn library_key(path: &Path) -> Result<PathBuf, BridgeError> {
+    let file_name = path.file_name().ok_or_else(|| BridgeError {
+        code: "invalid_argument".to_owned(),
+        message: "资料库路径必须指向一个文件".to_owned(),
+        retryable: false,
+    })?;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(CoreError::from)?
+            .join(path)
+    };
+    // The file may not exist on its first open; canonicalize its parent so
+    // relative and absolute callers still meet at the same registry entry.
+    let parent = absolute.parent().unwrap_or_else(|| Path::new("."));
+    let canonical_parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    Ok(canonical_parent.join(file_name))
 }
 
 /// 一轮驱动最多跑几条任务（防御性上限）。
@@ -85,13 +118,29 @@ impl BridgeSession {
     /// 打开（或创建）资料库。
     pub fn open(library_path: String) -> Result<BridgeSession, BridgeError> {
         let path = std::path::PathBuf::from(&library_path);
-        let core = Core::open(&path)?;
+        let key = library_key(&path)?;
+        let mut registry = OPEN_LIBRARIES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|_| BridgeError {
+                code: "invalid_state".to_owned(),
+                message: "资料库会话登记表已损坏".to_owned(),
+                retryable: false,
+            })?;
+        let inner = match registry.get(&key).and_then(Weak::upgrade) {
+            Some(existing) => existing,
+            None => {
+                let opened = Arc::new(Mutex::new(Core::open(&key)?));
+                registry.insert(key, Arc::downgrade(&opened));
+                opened
+            }
+        };
         let library_id = path
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_else(|| "library".to_owned());
         Ok(Self {
-            inner: Mutex::new(core),
+            inner,
             library_id,
         })
     }
@@ -105,7 +154,7 @@ impl BridgeSession {
         let capture_count = core.count_captures()?;
         let last_event_sequence = core.last_event_sequence()?;
         Ok(LibraryInfo {
-            api_version: "1.0".to_owned(),
+            api_version: diary_core::API_VERSION.to_owned(),
             data_schema_version: core.schema_version()?,
             build_version: env!("CARGO_PKG_VERSION").to_owned(),
             library_id: self.library_id.clone(),
@@ -213,6 +262,103 @@ impl BridgeSession {
         Ok(core.import_status(&import_id)?)
     }
 
+    // ------------------------------------------------------------ 备份与恢复
+
+    /// 创建备份包（B7 / 验收 E34；契约 `backups.create` 的同步入口）。
+    ///
+    /// 核心先取 SQLite 的一致性快照（`VACUUM INTO`，**不拷 .sqlite 文件**），再复制被
+    /// 快照引用的内容寻址原件，写完之后**自校验**一遍（重开包逐条目重算哈希）——过了才
+    /// 把包放到 `target_path` 上。备份期间资料库可以继续写，不加全局写锁。
+    ///
+    /// `target_path` 是**包文件的完整路径**，父目录会被创建；已存在时报
+    /// `invalid_argument`（绝不覆盖旧备份）。任何一步失败：目标路径上不留东西。
+    ///
+    /// 与契约的差异：契约 `backups.create` 返回 `jobId`（任务化，#70）。这一片先给
+    /// **同步**入口并把返回换成真实报告——任务化不属于 #86；Dart 适配层因此**不**把
+    /// `backups.create` 列进能力清单（能力是窄化过的，见 `wired_capabilities`）。
+    pub fn create_backup(&self, target_path: String) -> Result<BackupReport, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.create_backup(&target_path)?)
+    }
+
+    /// 检查备份包（契约 `backups.inspect` 的同步入口）：结构、版本、路径与逐条目哈希。
+    ///
+    /// 坏在哪就列在哪（`issues` 每条的格式是 `种类: 细节`，种类只有 `corrupted` /
+    /// `unsafe_path` / `incompatible`），**不抛错**；只有连清单都读不出来才报
+    /// `corrupted_backup`。界面据此先展示问题，再决定要不要恢复。
+    pub fn inspect_backup(&self, package_path: String) -> Result<BackupInspection, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.inspect_backup(&package_path)?)
+    }
+
+    /// 恢复到**新的空目录**（E34/E35；契约 `backups.restore` 的同步入口）。
+    ///
+    /// **绝不覆盖当前资料库**：目标必须是新的空目录；解包先落在目标同级的暂存目录，
+    /// 全部校验通过才一次 rename 落地，中途失败只删暂存目录。拒绝口径：
+    /// 损坏 ⇒ `corrupted_backup`；越界路径 ⇒ `corrupted_backup`（绝不按它解包）；
+    /// 版本高于本核心 ⇒ `incompatible_backup`。返回的 `library_path` 直接交给
+    /// `BridgeSession.open` 就能打开恢复出来的库。
+    pub fn restore_backup(
+        &self,
+        package_path: String,
+        target_dir: String,
+    ) -> Result<RestoreReport, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.restore_backup(&package_path, &target_dir)?)
+    }
+
+    pub fn cancel_import(&self, import_id: String) -> Result<(), BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.cancel_import(&import_id)?)
+    }
+
+    // ------------------------------------------------------------ 录音交接
+
+    pub fn prepare_recording(
+        &self,
+        capture_id: String,
+        operation_id: String,
+    ) -> Result<RecordingTicket, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.prepare_recording(&capture_id, &operation_id)?)
+    }
+
+    pub fn register_segment(
+        &self,
+        recording_id: String,
+        segment_index: i64,
+        segment: SegmentManifest,
+    ) -> Result<SegmentReceipt, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.register_segment(&recording_id, segment_index, segment)?)
+    }
+
+    pub fn update_recording_state(
+        &self,
+        status: NativeRecordingStatus,
+    ) -> Result<RecordingSession, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.update_recording_state(status)?)
+    }
+
+    pub fn finalize_recording(
+        &self,
+        recording_id: String,
+        last_segment_index: i64,
+        end_reason: String,
+    ) -> Result<RecordingFinalizeResult, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.finalize_recording(&recording_id, last_segment_index, &end_reason)?)
+    }
+
+    pub fn recover_recording(
+        &self,
+        recording_id: Option<String>,
+    ) -> Result<RecordingRecovery, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.recover_recording(recording_id.as_deref())?)
+    }
+
     // ------------------------------------------------------------ 提取与定位
 
     /// 对某个来源（来源 id 或修订 id 都行）跑一次提取。
@@ -301,6 +447,30 @@ impl BridgeSession {
         Ok(core.schedule_index_rebuild(&scope, &reason, &operation_id)?)
     }
 
+    /// 排一条**语义索引**重建任务，契约第 4.4 节 `indexes.rebuildSemantic`。
+    ///
+    /// **异步**：只排任务并返回它，不做同步重建。与 `rebuildIndexes` 的区别（三条）：
+    ///
+    /// - **整库**：没有 `scope`。任务业务键是 `(semantic_index, 空目标, 空快照)`，所以
+    ///   「队列里至多一条活着的语义重建」，重复排队不产生第二份工作；
+    /// - **等模型配置**：本地模型没配好时任务落 `waiting_configuration` +
+    ///   `errorCode = waiting_model`（不是失败、不退避），并且不进 `nextWakeup`——配置
+    ///   变化不是时间问题，下一次 `runDueJobs` 的前置评估会把它拉起；
+    /// - **可分段让出**：整库重建会远超一次唤醒的预算，预算到点时它在块与块之间回到
+    ///   `queued`（进度在 `Job.progress` 上、`attemptCount` 不增加），下一轮续跑；
+    ///   代次切换仍是原子的，让出不算「已完成」。
+    ///
+    /// 幂等：同一个 `(reason, operationId)` 重复调用返回同一条任务；同一个 operationId
+    /// 换了原因报 `idempotency_conflict`；任务跑完后再请求会建新的一条（按现状增量重算）。
+    pub fn rebuild_semantic_index(
+        &self,
+        reason: String,
+        operation_id: String,
+    ) -> Result<Job, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.schedule_semantic_index(&reason, &operation_id)?)
+    }
+
     // ------------------------------------------------------------ 检索会话
 
     /// 发起一次检索，契约第 4.4 节 `search.start`。
@@ -383,12 +553,7 @@ impl BridgeSession {
         trigger: String,
     ) -> Result<JobRunSummary, BridgeError> {
         let mut core = self.lock()?;
-        Ok(core.run_due_jobs(
-            Utc::now(),
-            u64::from(budget_ms),
-            &trigger,
-            RUN_DUE_MAX_JOBS,
-        )?)
+        Ok(core.run_due_jobs(Utc::now(), u64::from(budget_ms), &trigger, RUN_DUE_MAX_JOBS)?)
     }
 
     /// 建议的下次唤醒时刻；没有待办时为空。
@@ -643,9 +808,7 @@ fn recovery_summary(core: &Core) -> Result<RecoverySummary, CoreError> {
     let recoverable_imports = core.count_imports_in_flight()? as u32;
     let open_recordings = core.count_open_recordings()? as u32;
     // 走精确计数：`list_jobs` 的 limit 会被夹到 200，拿它当计数会在任务多时少报。
-    let pending_jobs = core
-        .count_jobs(Some(&[JobState::Queued, JobState::RetryWait]))?
-        as u32;
+    let pending_jobs = core.count_jobs(Some(&[JobState::Queued, JobState::RetryWait]))? as u32;
 
     let mut notes = Vec::new();
     if recoverable_imports > 0 {
@@ -677,6 +840,12 @@ fn wired_capabilities() -> Vec<String> {
         "imports.prepare",
         "imports.finish",
         "imports.status",
+        "imports.cancel",
+        "recordings.prepare",
+        "recordings.registerSegment",
+        "recordings.updateState",
+        "recordings.finalize",
+        "recordings.recover",
         "sources.extract",
         "sources.extractedContent",
         "sources.reviseText",
@@ -684,6 +853,7 @@ fn wired_capabilities() -> Vec<String> {
         "sources.locate",
         "indexes.status",
         "indexes.rebuild",
+        "indexes.rebuildSemantic",
         "search.start",
         "search.nextPage",
         "search.snapshot",
@@ -708,8 +878,38 @@ fn wired_capabilities() -> Vec<String> {
         "diary.setCurrent",
         "diary.merge",
         "core.events",
+        // B7：备份与恢复这一轮是**同步**入口（契约那三行返回 jobId，任务化见 #70）。
+        // 名字照契约写，界面看到的仍是 Dart 适配层窄化过的清单。
+        "backups.create",
+        "backups.inspect",
+        "backups.restore",
     ]
     .iter()
     .map(|name| (*name).to_owned())
     .collect()
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn same_library_shares_one_core_until_last_session_closes() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("diary-bridge-shared-{unique}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("library.sqlite");
+        let foreground = BridgeSession::open(path.to_string_lossy().into_owned()).unwrap();
+        let worker = BridgeSession::open(path.to_string_lossy().into_owned()).unwrap();
+        assert!(Arc::ptr_eq(&foreground.inner, &worker.inner));
+        drop(foreground);
+        drop(worker);
+        let reopened = BridgeSession::open(path.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(reopened.info().unwrap().library_id, "library");
+        drop(reopened);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

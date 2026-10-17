@@ -648,6 +648,12 @@ impl NewJob {
 /// 到期任务在 `due_backlog` 里如实报出来，在等前置的任务在 `waiting_dependency`
 /// 里如实报出来。契约 `runDueJobs` 的返回值就是它（`packages/diary_api` 的
 /// `DueRunSummary` 字段与这里一一对应）。
+///
+/// **分段让出的长任务**（现在只有语义索引）算进 `processed`、但不算
+/// `succeeded`/`failed`/`retrying`——它还活着（回到 `queued`，进度在 `Job.progress`
+/// 上），下一轮接着跑。所以 `processed` 可以大于后三者之和，差额正是它；摘要**不为它
+/// 加字段**（契约的字段一个没多），「还没跑完」由 `due_backlog ≥ 1` 与
+/// `next_wakeup` 指向「现在」一起说清楚。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobRunSummary {
     /// 本次运行开始的时刻（调用方给的 `now`）。「补做」以它为界。
@@ -655,7 +661,8 @@ pub struct JobRunSummary {
     /// 唤醒来源，调用方给什么就如实记什么（例如 startup / foreground / wake / manual）。
     /// 核心只用它做观察与排查，不用它改变行为。
     pub trigger: String,
-    /// 本次领取并执行的任务数，不超过调用方给的条数上限。
+    /// 本次领取并执行的任务数，不超过调用方给的条数上限。**分段让出的长任务算在内**
+    /// （它确实被领取并执行了一段）；它不在下面三个计数里（见结构体说明）。
     pub processed: i64,
     /// 其中执行成功、进入 `succeeded` 的数量。
     pub succeeded: i64,
@@ -674,9 +681,12 @@ pub struct JobRunSummary {
     /// `due_backlog > 0` 就说明这一轮是**提前收手**的（不是没有活了）；预算耗尽
     /// 不是一个单独的字段，因为它和这个数字说的是一件事，留两个字段只会互相矛盾。
     pub due_backlog: i64,
-    /// 本次运行结束时还在等前置条件的任务数（现在只有 `index` 等 `extract`）。
+    /// 本次运行结束时还在等前置条件的任务数（`index` / `semantic_index` 等
+    /// `extract`）。
     ///
     /// 这些任务**没有**被领取、没有消耗重试额度，所以也不在 `processed` 里。
+    /// **等配置**（`waiting_configuration`，例如语义索引等本地模型）不算在这里：
+    /// 它等的是配置而不是前置任务，在 `job_status().waiting_configuration` 里计数。
     pub waiting_dependency: i64,
     /// 本次运行里被**闸门**判定「前置不可能再满足」而终态失败的任务数。
     ///
@@ -684,8 +694,9 @@ pub struct JobRunSummary {
     /// 事务里落成「已放弃」的，`job_status().failed` / `recent_errors` 里看得到。
     /// 单独报出来，是为了让摘要不必把「这一轮什么都没跑」说成「一切正常」。
     pub dependency_failed: i64,
-    /// 下一个到期时刻；没有待办时为 None。等前置到期的任务不算「待办」：
-    /// 它们要等的是别人跑完，不是时间到（见 `jobs::next_wakeup`）。
+    /// 下一个到期时刻；没有待办时为 None。等前置、等配置的任务都不算「待办」：
+    /// 前者要等的是别人跑完，后者要等的是配置变化，都不是「时间到」
+    /// （见 `jobs::next_wakeup`）。
     pub next_wakeup: Option<DateTime<Utc>>,
 }
 
@@ -714,7 +725,9 @@ pub struct JobStatus {
     pub queued: i64,
     pub running: i64,
     pub retry_wait: i64,
+    /// 等配置：现在只有「语义索引在等本地模型配好」（`error_code = waiting_model`）。
     pub waiting_configuration: i64,
+    /// 等前置：`index` / `semantic_index` 在等 `extract` 收尾。
     pub waiting_dependency: i64,
     pub waiting_network: i64,
     /// 「已放弃」：尝试用完或没有处理器，等用户决定要不要重试。
@@ -1711,3 +1724,114 @@ pub struct OrganizePlanSummary {
     pub notes: Vec<String>,
 }
 
+
+// ---------------------------------------------------------------- 备份与恢复（B7）
+
+/// 备份快照里的关键行数。
+///
+/// 这三件事都靠它，所以它既是**清单字段**、也是**报告字段**：
+/// - 创建备份时按快照现算，写进清单；
+/// - 恢复时拿恢复出来的库**逐项对**，对不上就是「清单与内容不一致」；
+/// - 报告里如实给用户/上层看「这一份备份里有多少条记录、多少个原件」。
+///
+/// `Option` 不是「可能读不到」，而是**老 schema 的包**：`blobs` / `assets` /
+/// `import_sessions` 从 v2 起、`recording_sessions` 从 v3 起才存在，拿一个 v1 时代的
+/// 备份来恢复时这些表本来就不该有。核心自己产出的清单永远是全的。
+///
+/// 清单里的字段名是 camelCase（与清单其它字段、与契约的口径一致）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupCounts {
+    /// 记录数（含草稿与回收站：备份是整库，不按界面口径过滤）。
+    pub captures: i64,
+    /// 原始文字/原件修订数。
+    pub source_revisions: i64,
+    /// 资产数（`assets` 行数，同一份内容被导入两次算两条）。
+    pub assets: Option<i64>,
+    /// 内容寻址的原件数（`blobs` 行数，同一份内容只算一条、只存一份）。
+    pub blobs: Option<i64>,
+    /// 快照里还没走完的导入数（`prepared` / `copying` / `verifying` / `recoverable`）。
+    pub imports_in_flight: Option<i64>,
+    /// 快照里还没收尾的录音数。
+    pub open_recordings: Option<i64>,
+}
+
+/// 创建备份的结果（`backups.create`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackupReport {
+    /// 备份包（归档文件）的最终路径。写完并**自校验通过**之后才有这个文件。
+    pub package_path: String,
+    /// 备份包的字节数。
+    pub byte_size: i64,
+    /// 快照的 schema 版本（`PRAGMA user_version`）。
+    pub schema_version: i64,
+    /// 产出这份备份的核心 API 版本，口径与 `CoreInfo.apiVersion` 一致。
+    pub api_version: String,
+    /// 产出这份备份的核心构建版本。
+    pub core_version: String,
+    /// 快照的导出时刻。
+    pub created_at: DateTime<Utc>,
+    /// 随包的内容寻址原件数（`blobs`）。
+    pub blob_count: i64,
+    /// 这些原件的原始字节数合计（压缩前的口径）。
+    pub blob_bytes: i64,
+    /// 随包的**未收尾录音片段**数（不是内容寻址的那一类，见架构文档）。
+    pub transient_clip_count: i64,
+    /// 快照里的关键行数。
+    pub counts: BackupCounts,
+    /// 需要调用方知道的事实（未完成的导入/录音、暂存片段没进包等）。
+    pub warnings: Vec<String>,
+}
+
+/// 备份包检查结果（`backups.inspect`）。
+///
+/// **不抛错**：包坏了、路径越界、版本不兼容都如实进 `issues`，让界面能先展示
+/// 「这个包有什么问题」再决定要不要恢复。只有连清单都读不出来（不是 zip、没有
+/// 清单）才报 `corrupted_backup`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackupInspection {
+    pub package_path: String,
+    /// 包格式版本（`formatVersion`）。
+    pub format_version: i64,
+    pub schema_version: i64,
+    pub api_version: String,
+    pub core_version: String,
+    pub created_at: DateTime<Utc>,
+    pub byte_size: i64,
+    pub blob_count: i64,
+    pub blob_bytes: i64,
+    pub asset_count: i64,
+    pub transient_clip_count: i64,
+    pub counts: BackupCounts,
+    /// 逐条目重算哈希、比大小、比清单之后**仍然为空**才算没有问题的包。
+    ///
+    /// 每条 `issues` 的格式是 `种类: 细节`，种类只有三种：
+    /// `corrupted`（哈希/结构/清单不一致）、`unsafe_path`（越界路径）、
+    /// `incompatible`（版本高于本核心）。机器可读的是种类，给人看的是细节。
+    pub issues: Vec<String>,
+    /// 本构建能不能恢复这个包（`schemaVersion` / `apiVersion` 都在可处理范围内）。
+    pub compatible: bool,
+    /// 是否逐条目校验过哈希。检查被中断时为 false，且 `issues` 非空。
+    pub hashes_verified: bool,
+}
+
+/// 恢复到新库的结果（`backups.restore`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RestoreReport {
+    /// 恢复出来的资料库文件路径：调用方拿它直接 `Core::open`。
+    pub library_path: String,
+    /// 恢复出来的资料库根目录（原件与资料库文件所在目录）。
+    pub root_dir: String,
+    pub schema_version: i64,
+    pub api_version: String,
+    pub core_version: String,
+    /// 备份包的导出时刻。
+    pub created_at: DateTime<Utc>,
+    pub byte_size: i64,
+    pub blob_count: i64,
+    pub blob_bytes: i64,
+    pub transient_clip_count: i64,
+    pub counts: BackupCounts,
+    /// 如实说明恢复出来的库里「还没做完」的东西（不假装完成）。
+    pub warnings: Vec<String>,
+}
