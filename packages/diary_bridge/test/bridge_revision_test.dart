@@ -17,6 +17,7 @@ void main() {
 
   /// 只存在于旧版的措辞。
   const oldOnly = '不太好';
+
   /// 只存在于新版的措辞。
   const newOnly = '血脂';
   const oldBody = '今天去医院拿报告，体检结果不太好，医生让我下个月复查。';
@@ -137,11 +138,7 @@ void main() {
       expectedRevision: current.revision,
       operationId: 'op-rev-commit',
     );
-    expect(
-      committed.originalTextRevision,
-      isNull,
-      reason: '草稿正文是空的，提交不建文字版本',
-    );
+    expect(committed.originalTextRevision, isNull, reason: '草稿正文是空的，提交不建文字版本');
 
     final revised = await revise(draft.id, sourceId, newBody, 'op-rev-revise');
     expect(revised.text, newBody, reason: '修订自己带着正文');
@@ -149,11 +146,7 @@ void main() {
     // 改完必须再提取一次，新正文才进索引。
     final content = await session.extractSource(sourceRef: sourceId);
     expect(content.coverage, Coverage.complete);
-    expect(
-      content.extractorId,
-      'text_direct',
-      reason: '纯文本修订走「正文就是内容」那条提取路径',
-    );
+    expect(content.extractorId, 'text_direct', reason: '纯文本修订走「正文就是内容」那条提取路径');
 
     // 1) 共享词仍命中，且摘录来自新正文。
     final shared = await mine('体检', sourceId);
@@ -174,6 +167,13 @@ void main() {
     expect(previous!.sourceId, sourceId);
     expect(previous.assetId, isNotNull, reason: '导入那一版有原件');
     expect(previous.text, isNull, reason: '原件型修订自己没有正文文字');
+    // 前端按需打开旧原件时会用修订 ID 提取文字。此操作不能让旧措辞
+    // 重新进入默认搜索结果。
+    final oldContent = await session.extractSource(
+      sourceRef: previous.revisionId,
+    );
+    expect(oldContent.text, oldBody);
+    expect(await mine(oldOnly, sourceId), isEmpty);
   });
 
   test('自己写的正文改过之后：上一版正文拿得到，派生正文那一路旧词退出', () async {

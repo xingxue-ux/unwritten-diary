@@ -120,6 +120,25 @@ jobs:
         working-directory: apps/diary_app
         run: flutter test
 
+  platform-host:
+    name: platform-host
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: packages/platform_host
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install Dart
+        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d
+        with:
+          sdk: 3.12.2
+      - run: dart pub get
+      - run: dart format --output=none --set-exit-if-changed lib test
+      - run: dart analyze --fatal-infos
+      - run: dart test
+
   rust:
     name: rust
     runs-on: ubuntu-latest

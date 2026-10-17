@@ -7,7 +7,7 @@ import '../../frb_generated.dart';
 import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NativeRecordingStatus`, `NewJob`, `RecordingFinalizeResult`, `RecordingRecovery`, `RecordingSession`, `RecordingTicket`, `SegmentManifest`, `SegmentReceipt`, `SourceItem`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NewJob`, `SourceItem`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`, `partial_cmp`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
 
@@ -869,6 +869,12 @@ class JobProgress {
 /// 到期任务在 `due_backlog` 里如实报出来，在等前置的任务在 `waiting_dependency`
 /// 里如实报出来。契约 `runDueJobs` 的返回值就是它（`packages/diary_api` 的
 /// `DueRunSummary` 字段与这里一一对应）。
+///
+/// **分段让出的长任务**（现在只有语义索引）算进 `processed`、但不算
+/// `succeeded`/`failed`/`retrying`——它还活着（回到 `queued`，进度在 `Job.progress`
+/// 上），下一轮接着跑。所以 `processed` 可以大于后三者之和，差额正是它；摘要**不为它
+/// 加字段**（契约的字段一个没多），「还没跑完」由 `due_backlog ≥ 1` 与
+/// `next_wakeup` 指向「现在」一起说清楚。
 class JobRunSummary {
   /// 本次运行开始的时刻（调用方给的 `now`）。「补做」以它为界。
   final DateTime startedAt;
@@ -877,7 +883,8 @@ class JobRunSummary {
   /// 核心只用它做观察与排查，不用它改变行为。
   final String trigger;
 
-  /// 本次领取并执行的任务数，不超过调用方给的条数上限。
+  /// 本次领取并执行的任务数，不超过调用方给的条数上限。**分段让出的长任务算在内**
+  /// （它确实被领取并执行了一段）；它不在下面三个计数里（见结构体说明）。
   final PlatformInt64 processed;
 
   /// 其中执行成功、进入 `succeeded` 的数量。
@@ -903,9 +910,12 @@ class JobRunSummary {
   /// 不是一个单独的字段，因为它和这个数字说的是一件事，留两个字段只会互相矛盾。
   final PlatformInt64 dueBacklog;
 
-  /// 本次运行结束时还在等前置条件的任务数（现在只有 `index` 等 `extract`）。
+  /// 本次运行结束时还在等前置条件的任务数（`index` / `semantic_index` 等
+  /// `extract`）。
   ///
   /// 这些任务**没有**被领取、没有消耗重试额度，所以也不在 `processed` 里。
+  /// **等配置**（`waiting_configuration`，例如语义索引等本地模型）不算在这里：
+  /// 它等的是配置而不是前置任务，在 `job_status().waiting_configuration` 里计数。
   final PlatformInt64 waitingDependency;
 
   /// 本次运行里被**闸门**判定「前置不可能再满足」而终态失败的任务数。
@@ -915,8 +925,9 @@ class JobRunSummary {
   /// 单独报出来，是为了让摘要不必把「这一轮什么都没跑」说成「一切正常」。
   final PlatformInt64 dependencyFailed;
 
-  /// 下一个到期时刻；没有待办时为 None。等前置到期的任务不算「待办」：
-  /// 它们要等的是别人跑完，不是时间到（见 `jobs::next_wakeup`）。
+  /// 下一个到期时刻；没有待办时为 None。等前置、等配置的任务都不算「待办」：
+  /// 前者要等的是别人跑完，后者要等的是配置变化，都不是「时间到」
+  /// （见 `jobs::next_wakeup`）。
   final DateTime? nextWakeup;
 
   const JobRunSummary({
@@ -998,7 +1009,11 @@ class JobStatus {
   final PlatformInt64 queued;
   final PlatformInt64 running;
   final PlatformInt64 retryWait;
+
+  /// 等配置：现在只有「语义索引在等本地模型配好」（`error_code = waiting_model`）。
   final PlatformInt64 waitingConfiguration;
+
+  /// 等前置：`index` / `semantic_index` 在等 `extract` 收尾。
   final PlatformInt64 waitingDependency;
   final PlatformInt64 waitingNetwork;
 
@@ -1095,6 +1110,52 @@ enum MatchedBy {
 
   Future<void> wire() =>
       RustLib.instance.api.diaryCoreModelMatchedByWire(that: this);
+}
+
+/// 原生上报的录音状态。后端不虚构麦克风状态。
+class NativeRecordingStatus {
+  final String recordingId;
+  final RecordingState state;
+  final DateTime wallClock;
+  final PlatformInt64 elapsedMs;
+
+  /// 已经持久化的位置，恢复时用来判断缺口。
+  final PlatformInt64 persistedThroughMs;
+  final bool inputDeviceChanged;
+  final String? message;
+
+  const NativeRecordingStatus({
+    required this.recordingId,
+    required this.state,
+    required this.wallClock,
+    required this.elapsedMs,
+    required this.persistedThroughMs,
+    required this.inputDeviceChanged,
+    this.message,
+  });
+
+  @override
+  int get hashCode =>
+      recordingId.hashCode ^
+      state.hashCode ^
+      wallClock.hashCode ^
+      elapsedMs.hashCode ^
+      persistedThroughMs.hashCode ^
+      inputDeviceChanged.hashCode ^
+      message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NativeRecordingStatus &&
+          runtimeType == other.runtimeType &&
+          recordingId == other.recordingId &&
+          state == other.state &&
+          wallClock == other.wallClock &&
+          elapsedMs == other.elapsedMs &&
+          persistedThroughMs == other.persistedThroughMs &&
+          inputDeviceChanged == other.inputDeviceChanged &&
+          message == other.message;
 }
 
 /// 派生内容的处理状态。取值沿用契约第 3 节「索引」行。
@@ -1297,6 +1358,128 @@ enum ProviderTestStatus {
       RustLib.instance.api.diaryCoreModelProviderTestStatusWire(that: this);
 }
 
+/// 最终化结果。转写不阻塞完成。
+class RecordingFinalizeResult {
+  final String recordingId;
+  final String assetId;
+  final RecordingState state;
+  final PlatformInt64 segmentCount;
+  final bool transcriptionQueued;
+  final PlatformInt64 logicalDurationMs;
+
+  const RecordingFinalizeResult({
+    required this.recordingId,
+    required this.assetId,
+    required this.state,
+    required this.segmentCount,
+    required this.transcriptionQueued,
+    required this.logicalDurationMs,
+  });
+
+  @override
+  int get hashCode =>
+      recordingId.hashCode ^
+      assetId.hashCode ^
+      state.hashCode ^
+      segmentCount.hashCode ^
+      transcriptionQueued.hashCode ^
+      logicalDurationMs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RecordingFinalizeResult &&
+          runtimeType == other.runtimeType &&
+          recordingId == other.recordingId &&
+          assetId == other.assetId &&
+          state == other.state &&
+          segmentCount == other.segmentCount &&
+          transcriptionQueued == other.transcriptionQueued &&
+          logicalDurationMs == other.logicalDurationMs;
+}
+
+/// 恢复结果：不假设最后一段完好，明确报告缺口。
+class RecordingRecovery {
+  final String? recordingId;
+  final RecordingState state;
+  final Int64List closedSegmentIndexes;
+
+  /// 已知缺口的总时长；无法估计时为 0 并在 notes 里说明。
+  final PlatformInt64 gapMs;
+  final List<String> notes;
+
+  const RecordingRecovery({
+    this.recordingId,
+    required this.state,
+    required this.closedSegmentIndexes,
+    required this.gapMs,
+    required this.notes,
+  });
+
+  @override
+  int get hashCode =>
+      recordingId.hashCode ^
+      state.hashCode ^
+      closedSegmentIndexes.hashCode ^
+      gapMs.hashCode ^
+      notes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RecordingRecovery &&
+          runtimeType == other.runtimeType &&
+          recordingId == other.recordingId &&
+          state == other.state &&
+          closedSegmentIndexes == other.closedSegmentIndexes &&
+          gapMs == other.gapMs &&
+          notes == other.notes;
+}
+
+/// 录音会话快照。
+class RecordingSession {
+  final String recordingId;
+  final String assetId;
+  final RecordingState state;
+  final PlatformInt64 elapsedMs;
+  final PlatformInt64 durableThroughMs;
+  final PlatformInt64 segmentCount;
+  final String? lastError;
+
+  const RecordingSession({
+    required this.recordingId,
+    required this.assetId,
+    required this.state,
+    required this.elapsedMs,
+    required this.durableThroughMs,
+    required this.segmentCount,
+    this.lastError,
+  });
+
+  @override
+  int get hashCode =>
+      recordingId.hashCode ^
+      assetId.hashCode ^
+      state.hashCode ^
+      elapsedMs.hashCode ^
+      durableThroughMs.hashCode ^
+      segmentCount.hashCode ^
+      lastError.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RecordingSession &&
+          runtimeType == other.runtimeType &&
+          recordingId == other.recordingId &&
+          assetId == other.assetId &&
+          state == other.state &&
+          elapsedMs == other.elapsedMs &&
+          durableThroughMs == other.durableThroughMs &&
+          segmentCount == other.segmentCount &&
+          lastError == other.lastError;
+}
+
 /// 录音状态，契约第 3 节「录音」行。
 enum RecordingState {
   idle,
@@ -1322,6 +1505,32 @@ enum RecordingState {
 
   Future<void> wire() =>
       RustLib.instance.api.diaryCoreModelRecordingStateWire(that: this);
+}
+
+/// 录音票据。`staging_ticket` 是平台层唯一被允许写入的目录。
+class RecordingTicket {
+  final String recordingId;
+  final String assetId;
+  final String stagingTicket;
+
+  const RecordingTicket({
+    required this.recordingId,
+    required this.assetId,
+    required this.stagingTicket,
+  });
+
+  @override
+  int get hashCode =>
+      recordingId.hashCode ^ assetId.hashCode ^ stagingTicket.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RecordingTicket &&
+          runtimeType == other.runtimeType &&
+          recordingId == other.recordingId &&
+          assetId == other.assetId &&
+          stagingTicket == other.stagingTicket;
 }
 
 /// 一次主动回应的请求回执，契约第 4.4 节 `responses.request`。
@@ -1575,6 +1784,80 @@ class SearchSnapshot {
           cursor == other.cursor &&
           indexCoverage == other.indexCoverage &&
           warnings == other.warnings;
+}
+
+/// 一个已封闭片段的描述，契约第 4.2 节。
+class SegmentManifest {
+  final String segmentId;
+
+  /// 相对暂存目录的文件名，不是绝对路径。
+  final String relativeFileName;
+  final PlatformInt64 durationMs;
+  final String sha256;
+  final PlatformInt64 byteSize;
+  final DateTime? closedAt;
+
+  const SegmentManifest({
+    required this.segmentId,
+    required this.relativeFileName,
+    required this.durationMs,
+    required this.sha256,
+    required this.byteSize,
+    this.closedAt,
+  });
+
+  @override
+  int get hashCode =>
+      segmentId.hashCode ^
+      relativeFileName.hashCode ^
+      durationMs.hashCode ^
+      sha256.hashCode ^
+      byteSize.hashCode ^
+      closedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SegmentManifest &&
+          runtimeType == other.runtimeType &&
+          segmentId == other.segmentId &&
+          relativeFileName == other.relativeFileName &&
+          durationMs == other.durationMs &&
+          sha256 == other.sha256 &&
+          byteSize == other.byteSize &&
+          closedAt == other.closedAt;
+}
+
+/// 片段登记回执。
+class SegmentReceipt {
+  final String segmentId;
+  final PlatformInt64 segmentIndex;
+  final bool durable;
+  final DateTime recordedAt;
+
+  const SegmentReceipt({
+    required this.segmentId,
+    required this.segmentIndex,
+    required this.durable,
+    required this.recordedAt,
+  });
+
+  @override
+  int get hashCode =>
+      segmentId.hashCode ^
+      segmentIndex.hashCode ^
+      durable.hashCode ^
+      recordedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SegmentReceipt &&
+          runtimeType == other.runtimeType &&
+          segmentId == other.segmentId &&
+          segmentIndex == other.segmentIndex &&
+          durable == other.durable &&
+          recordedAt == other.recordedAt;
 }
 
 /// 材料类型，契约第 2.3 节的 SourceKind。

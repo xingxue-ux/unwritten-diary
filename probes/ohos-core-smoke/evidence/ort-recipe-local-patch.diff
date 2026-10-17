@@ -1,0 +1,35 @@
+--- /tmp/requests-wt/archives/o/onnxruntime/1.29.1/conanfile.py	2026-10-12 21:42:01.411927073 +0800
++++ conanfile.py	2026-10-16 18:21:56.565352767 +0800
+@@ -257,13 +257,31 @@
+         return self._get_source_dir() / "mirror"
+ 
+     def _get_ohos_toolchain(self):
+-        """Find the OHOS NDK CMake toolchain file."""
++        """Find the OHOS NDK CMake toolchain file.
++
++        NOTE (WSL 本地复现补丁，2026-10-16): 原配方只认鸿蒙电脑上的
++        /data/service/hnp/ohos-sdk.org/<ver>/ohos/native/...；WSL 上 SDK 在
++        ~/command-line-tools/sdk/default/openharmony/native/...，所以这里加了
++        环境变量与本地路径兜底。**产品 CI 上应当用 OHOS_SDK_ROOT 显式给路径。**
++        """
+         sdk_root = Path("/data/service/hnp/ohos-sdk.org")
+         if sdk_root.exists():
+             for sdk_dir in sorted(sdk_root.iterdir(), reverse=True):
+                 toolchain = sdk_dir / "ohos" / "native" / "build" / "cmake" / "ohos.toolchain.cmake"
+                 if toolchain.exists():
+                     return str(toolchain)
++        env_tc = os.environ.get("OHOS_NDK_TOOLCHAIN_FILE")
++        if env_tc and Path(env_tc).exists():
++            return env_tc
++        sdk_env = os.environ.get("OHOS_SDK_ROOT", "")
++        candidates = []
++        if sdk_env:
++            candidates.append(Path(sdk_env) / "native" / "build" / "cmake" / "ohos.toolchain.cmake")
++        candidates.append(Path.home() / "command-line-tools" / "sdk" / "default" / "openharmony"
++                          / "native" / "build" / "cmake" / "ohos.toolchain.cmake")
++        for c in candidates:
++            if c.exists():
++                return str(c)
+         raise RuntimeError("OHOS NDK toolchain not found")
+ 
+     def _find_tool(self, name):
