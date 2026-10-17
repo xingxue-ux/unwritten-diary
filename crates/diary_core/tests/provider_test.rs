@@ -452,11 +452,12 @@ fn a_capability_the_adapter_does_not_implement_is_never_usable() {
         Some(&ProviderTestStatus::Failed)
     );
     assert!(!report.actual_call_made, "没实现的能力不该发起调用");
-    assert!(
-        report.message.as_deref().unwrap().contains("未发起调用"),
-        "{:?}",
-        report.message
-    );
+    let message = report.message.as_deref().unwrap();
+    assert!(message.contains("未发起调用"), "{message}");
+    // 只有未实现的能力：零次真实调用，报告不许写「端点/认证/模型均已验证」（#96）。
+    assert!(!message.contains("可达"), "{message}");
+    assert!(!message.contains("认证通过"), "{message}");
+    assert!(message.contains("都没验过"), "{message}");
     assert_eq!(transport.call_count(), 0);
 }
 
@@ -657,6 +658,20 @@ fn an_unsupported_capability_is_reported_without_a_fake_call() {
     assert!(message.contains("没有声明"), "{message}");
     assert!(message.contains("未发起调用"), "{message}");
     assert!(message.contains("下一步"), "{message}");
+    // 回归（评审 #96 第三条）：一次调用都没发，报告里**不许**出现「端点可达 /
+    // 认证通过」这类谁都没验过的结论。
+    assert!(
+        !message.contains("可达"),
+        "没发过请求就不能说端点可达：{message}"
+    );
+    assert!(
+        !message.contains("认证通过"),
+        "没发过请求就不能说认证通过：{message}"
+    );
+    assert!(
+        message.contains("都没验过"),
+        "要如实说这三项都没验过：{message}"
+    );
     assert_eq!(transport.call_count(), 0, "不成立的能力一次都不发");
 
     // 这一轮不算「验过」：状态落成 failed，闸门仍然不可用。
@@ -699,6 +714,233 @@ fn a_partial_test_scope_keeps_the_other_verified_capabilities() {
         .provider_capability_gate(ProviderCapability::TranscribeAudio)
         .unwrap()
         .ready);
+}
+
+// ------------------------------------------------------------------ 验证结论只在功能参数变化时作废（评审 #96）
+
+/// 文件库版本的服务：下面这几条回归要**直接读 `providers` 的验证四列**
+/// （`test_status` / `verified_capabilities` / `last_error_code` / `last_tested_at`，
+/// 契约的 `Provider` 对象里没有它们），内存库开不了第二个连接，所以用文件库。
+fn file_core_with_provider(
+    path: &Path,
+    capabilities: &[ProviderCapability],
+    script: Vec<std::result::Result<HttpResponse, TransportError>>,
+) -> (Core, Arc<ScriptedTransport>, Provider) {
+    let transport = Arc::new(ScriptedTransport::new(script));
+    let mut core = Core::open(path).unwrap();
+    core.set_transport_for_test(transport.clone() as Arc<dyn Transport>);
+    let provider = core
+        .save_provider(
+            &provider_config("prv_a", capabilities, true),
+            Some("sk-test-secret-0123456789"),
+        )
+        .unwrap();
+    (core, transport, provider)
+}
+
+/// 直接读验证四列：闸门只看结论，想验「有没有被清掉」就得自己开一个连接看库。
+fn verdict_columns(path: &Path) -> (String, String, Option<String>, Option<String>) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.query_row(
+        "SELECT test_status, verified_capabilities, last_error_code, last_tested_at \
+         FROM providers WHERE id = ?1",
+        rusqlite::params!["prv_a"],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
+    .unwrap()
+}
+
+fn auth_failed_script() -> Vec<std::result::Result<HttpResponse, TransportError>> {
+    vec![Ok(HttpResponse::new(
+        401,
+        "{\"error\":\"invalid api key\"}",
+    ))]
+}
+
+/// 回归（评审 #96）：一次失败之后，只改显示名或切 `enabled` 开关**不得**把
+/// `test_status` 洗回 `untested`。洗掉的后果很具体：闸门对 `untested` 会跳过
+/// 「验过没有」这一条，一个刚被证伪的服务又被放行。
+///
+/// 把 `save` 里的重置条件改回「任何变化都重置」，这条用例就会红。
+#[test]
+fn renaming_or_toggling_a_failed_provider_keeps_the_failed_verdict() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let (mut core, transport, provider) = file_core_with_provider(
+        &path,
+        &[ProviderCapability::GenerateText],
+        auth_failed_script(),
+    );
+
+    // 先制造一次真实的失败结论（401 → authentication_failed）。
+    let error = core
+        .test_provider(&provider.id, &[ProviderCapability::GenerateText])
+        .unwrap_err();
+    assert_eq!(code_of(&error), "authentication_failed");
+    let (status, verified, last_error, tested_at) = verdict_columns(&path);
+    assert_eq!(status, "failed");
+    assert_eq!(verified, "[]");
+    assert_eq!(last_error.as_deref(), Some("authentication_failed"));
+    assert!(tested_at.is_some(), "跑过测试就该有时间");
+
+    // 1) 只改显示名：不碰任何功能参数，也不重填密钥。
+    let mut renamed = provider_config("prv_a", &[ProviderCapability::GenerateText], true);
+    renamed.label = "改了个显示名".to_owned();
+    renamed.credential_ref = provider.credential_ref.clone();
+    let saved = core.save_provider(&renamed, None).unwrap();
+    assert_eq!(saved.label, "改了个显示名");
+    assert_eq!(
+        saved.credential_ref, provider.credential_ref,
+        "没给新密钥，引用该照旧"
+    );
+    let (status, verified, last_error, tested_at) = verdict_columns(&path);
+    assert_eq!(
+        status, "failed",
+        "改标签把失败结论洗成了 untested（评审 #96 的 bug）"
+    );
+    assert_eq!(verified, "[]");
+    assert_eq!(last_error.as_deref(), Some("authentication_failed"));
+    assert!(tested_at.is_some(), "没有功能变化就不该抹掉上次测试时间");
+
+    let gate = core
+        .provider_capability_gate(ProviderCapability::GenerateText)
+        .unwrap();
+    assert!(!gate.ready, "失败结论还在，闸门必须继续拒绝：{}", gate.reason);
+    assert_eq!(gate.code, "authentication_failed");
+
+    // 2) 切开关：关掉再打开，结论同样不许被洗掉。
+    let mut disabled = renamed.clone();
+    disabled.enabled = false;
+    core.save_provider(&disabled, None).unwrap();
+    assert_eq!(verdict_columns(&path).0, "failed");
+
+    let mut reenabled = disabled.clone();
+    reenabled.enabled = true;
+    core.save_provider(&reenabled, None).unwrap();
+    assert_eq!(
+        verdict_columns(&path).0,
+        "failed",
+        "切开关把失败结论洗成了 untested"
+    );
+    let gate = core
+        .provider_capability_gate(ProviderCapability::GenerateText)
+        .unwrap();
+    assert!(!gate.ready, "重新启用不等于重新可信：{}", gate.reason);
+
+    // 3) 排任务入口也仍然拒绝，而且一次请求都不再发。
+    let capture_id = capture_with_text(&mut core, "还是想让它写。", "op1");
+    let error = core
+        .request_response(&[capture_id], "试试看", Some(&provider.id))
+        .unwrap_err();
+    assert_eq!(code_of(&error), "provider_not_configured");
+    assert_eq!(core.count_jobs(None).unwrap(), 0, "不排注定失败的任务");
+    assert_eq!(transport.call_count(), 1, "被拒绝的任务不再发请求");
+}
+
+/// 回归（评审 #96）：密钥按**明文**比，不按引用比——`SecretStore::put` 每次都发
+/// 新引用，而设置页每次保存都会把当前密钥一起提交；按引用比等于每次保存都作废旧结论。
+#[test]
+fn resubmitting_the_same_secret_is_not_a_functional_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let secret = "sk-test-secret-0123456789";
+    let (mut core, _transport, provider) = file_core_with_provider(
+        &path,
+        &[ProviderCapability::GenerateText],
+        auth_failed_script(),
+    );
+    core.test_provider(&provider.id, &[ProviderCapability::GenerateText])
+        .unwrap_err();
+    assert_eq!(verdict_columns(&path).0, "failed");
+
+    // 1) 原样重填同一把钥匙：明文没变 → 结论不作废（引用换新的是另一回事）。
+    let mut config = provider_config("prv_a", &[ProviderCapability::GenerateText], true);
+    config.credential_ref = provider.credential_ref.clone();
+    let saved = core.save_provider(&config, Some(secret)).unwrap();
+    assert_ne!(
+        saved.credential_ref, provider.credential_ref,
+        "put 每次发新引用（正因为如此才不能拿引用比）"
+    );
+    assert_eq!(
+        verdict_columns(&path).0,
+        "failed",
+        "同一把钥匙重新提交不该作废验证结论"
+    );
+    assert!(!core
+        .provider_capability_gate(ProviderCapability::GenerateText)
+        .unwrap()
+        .ready);
+
+    // 2) 换一把钥匙：功能参数真变了 → 结论作废，闸门按「没测过」放行
+    //    （声明过 + 配置完整——这是既有口径：作废的是结论，不是配置）。
+    let saved = core
+        .save_provider(&config, Some("sk-better-secret-9876543210"))
+        .unwrap();
+    assert!(saved.credential_ref.is_some());
+    let (status, verified, last_error, tested_at) = verdict_columns(&path);
+    assert_eq!(status, "untested", "换密钥要作废旧结论");
+    assert_eq!(verified, "[]");
+    assert_eq!(last_error, None, "旧配置的失败码不该挂到新密钥上");
+    assert_eq!(tested_at, None);
+    assert!(core
+        .provider_capability_gate(ProviderCapability::GenerateText)
+        .unwrap()
+        .ready);
+}
+
+/// 另一半：#96 不是「什么都不重置」。适配器 / 端点 / 模型变了，旧结论（含失败码与
+/// 测试时间）必须一起清回 `untested` —— 那是**对旧配置**的验证结论。
+#[test]
+fn changing_endpoint_or_model_invalidates_the_old_verdict() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let (mut core, _transport, provider) = file_core_with_provider(
+        &path,
+        &[ProviderCapability::GenerateText],
+        auth_failed_script(),
+    );
+    core.test_provider(&provider.id, &[ProviderCapability::GenerateText])
+        .unwrap_err();
+    let (status, _, last_error, _) = verdict_columns(&path);
+    assert_eq!(status, "failed");
+    assert_eq!(last_error.as_deref(), Some("authentication_failed"));
+
+    // 换端点，顺带清掉模型（好观察失败码确实清掉了：配置不完整的拒绝理由与
+    // 失败码是两条不同的信号）。
+    let mut moved = provider_config("prv_a", &[ProviderCapability::GenerateText], true);
+    moved.credential_ref = provider.credential_ref.clone();
+    moved.endpoint = Some("http://127.0.0.1:2244/v1".to_owned());
+    moved.model = None;
+    core.save_provider(&moved, None).unwrap();
+    let (status, verified, last_error, tested_at) = verdict_columns(&path);
+    assert_eq!(status, "untested", "端点变了，旧结论要作废");
+    assert_eq!(verified, "[]");
+    assert_eq!(
+        last_error, None,
+        "旧配置的 authentication_failed 不该挂在新配置上"
+    );
+    assert_eq!(tested_at, None);
+
+    let gate = core
+        .provider_capability_gate(ProviderCapability::GenerateText)
+        .unwrap();
+    assert!(!gate.ready);
+    assert!(gate.reason.contains("模型"), "{}", gate.reason);
+    assert_eq!(
+        gate.code, "provider_not_configured",
+        "失败码如果没清，这里会残留 authentication_failed：{}",
+        gate.reason
+    );
+
+    // 把模型配回来：`untested` 按「明确配置」放行——作废结论不等于永久拉黑
+    // （口径见 docs/architecture/m3-Provider-配置与能力.md 第 4 条）。
+    let mut complete = moved.clone();
+    complete.model = Some("qwen-next".to_owned());
+    core.save_provider(&complete, None).unwrap();
+    let gate = core
+        .provider_capability_gate(ProviderCapability::GenerateText)
+        .unwrap();
+    assert!(gate.ready, "{}", gate.reason);
 }
 
 // ------------------------------------------------------------------ 错误归一化（走真实作业路径）

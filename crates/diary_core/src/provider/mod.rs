@@ -50,15 +50,22 @@ const RESPOND_PRIORITY: JobPriority = JobPriority::UserOrganize;
 const PROVIDER_COLUMNS: &str = "id, label, adapter_id, endpoint, model, declared_capabilities, \
                                 verified_capabilities, credential_ref, enabled, test_status";
 
-/// 更新配置时先读出来的旧行：协议、端点、模型、凭据引用、创建时间、已验能力。
-type ExistingProvider = (
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    String,
-    String,
-);
+/// 更新配置时先读出来的旧行：功能参数（协议、端点、模型、凭据引用）、创建时间，
+/// 以及**验证结论**（已验能力、测试状态、失败码与测试时间）。
+///
+/// 验证结论要一起读出来是有原因的（#96）：只有功能参数真的变了，这一组才作废；
+/// 只改显示名或 `enabled` 开关时得把旧结论原样写回去。
+struct ExistingProvider {
+    adapter_id: String,
+    endpoint: Option<String>,
+    model: Option<String>,
+    credential_ref: Option<String>,
+    created_at: String,
+    verified_capabilities: String,
+    test_status: String,
+    last_error_code: Option<String>,
+    last_tested_at: Option<String>,
+}
 
 type RawProvider = (
     String,
@@ -308,39 +315,36 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
         config.id.trim().to_owned()
     };
 
-    // 更新时先看旧行：`created_at` 要保留，而且**协议/端点/模型变了，旧的验证结论
-    // 就作废**（那是对旧配置的验证）。只改显示名或开关不动验证结论。
+    // 更新时先看旧行：`created_at` 要保留，而且**功能参数（适配器/端点/模型/密钥）
+    // 变了，旧的验证结论就作废**（那是对旧配置的验证）。只改显示名或开关不动结论。
     let existing: Option<ExistingProvider> = core
         .conn
             .query_row(
                 "SELECT adapter_id, endpoint, model, credential_ref, created_at, \
-                 verified_capabilities FROM providers WHERE id = ?1",
+                 verified_capabilities, test_status, last_error_code, last_tested_at \
+                 FROM providers WHERE id = ?1",
                 params![provider_id],
                 |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
+                    Ok(ExistingProvider {
+                        adapter_id: row.get(0)?,
+                        endpoint: row.get(1)?,
+                        model: row.get(2)?,
+                        credential_ref: row.get(3)?,
+                        created_at: row.get(4)?,
+                        verified_capabilities: row.get(5)?,
+                        test_status: row.get(6)?,
+                        last_error_code: row.get(7)?,
+                        last_tested_at: row.get(8)?,
+                    })
                 },
             )
             .optional()?;
 
-    let config_changed = match &existing {
-        None => true,
-        Some((adapter_id, old_endpoint, old_model, _, _, _)) => {
-            adapter_id != &config.adapter_id
-                || old_endpoint.as_deref() != endpoint.as_deref()
-                || old_model.as_deref() != model.as_deref()
-        }
-    };
-
     // 密钥：给了新明文就存新的（旧引用没人再用就删掉）；没给就沿用配置里的引用；
     // 引用为空表示「清掉凭据」。
-    let old_ref = existing.as_ref().and_then(|row| row.3.clone());
+    let old_ref = existing
+        .as_ref()
+        .and_then(|row| row.credential_ref.clone());
     let new_ref = match secret.map(str::trim) {
         Some(value) if !value.is_empty() => Some(core.secrets().put(&provider_id, value)?),
         Some(_) => {
@@ -354,13 +358,46 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
     // `forget_secret` 会以为「还有人用」而不删。
     let stale_ref = old_ref.filter(|old| Some(old) != new_ref.as_ref());
 
-    let declared = capabilities_json(&config.capabilities)?;
-    let verified = match &existing {
-        Some((_, _, _, _, _, verified)) if !config_changed => verified.clone(),
-        _ => "[]".to_owned(),
+    // 「功能参数变化」= 适配器 / 端点 / 模型 / 密钥。**显示名与 `enabled` 开关不算**：
+    // 它们不改变远端收到的请求，凭什么作废一次真实的验证结论——作废的后果很具体，
+    // 失败结论被洗成 `untested` 后，能力闸门会跳过「验过没有」这一条，把服务重新放行
+    // （#96；评审给的两个触发点：改标签、切开关）。
+    let functional_change = match &existing {
+        None => true,
+        Some(old) => {
+            old.adapter_id != config.adapter_id
+                || old.endpoint.as_deref() != endpoint.as_deref()
+                || old.model.as_deref() != model.as_deref()
+                || secret_changed(
+                    core,
+                    old.credential_ref.as_deref(),
+                    new_ref.as_deref(),
+                    secret,
+                )?
+        }
     };
+
+    let declared = capabilities_json(&config.capabilities)?;
+    // 验证结论三件套（`test_status` / `verified_capabilities` / `last_error_code`）：
+    // 功能参数没变就**原样保留**，变了才一起清回「没测过」（`last_tested_at` 同理——
+    // 留着上一次的时间会让人以为新配置测过）。
+    let (verified, test_status, last_error_code, last_tested_at) =
+        match (&existing, functional_change) {
+            (Some(old), false) => (
+                old.verified_capabilities.clone(),
+                old.test_status.clone(),
+                old.last_error_code.clone(),
+                old.last_tested_at.clone(),
+            ),
+            _ => (
+                "[]".to_owned(),
+                ProviderTestStatus::Untested.wire().to_owned(),
+                None,
+                None,
+            ),
+        };
     let created_at = match &existing {
-        Some((_, _, _, _, created_at, _)) => created_at.clone(),
+        Some(old) => old.created_at.clone(),
         None => support::to_iso(now()),
     };
     let now_text = support::to_iso(now());
@@ -369,13 +406,14 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
         "INSERT INTO providers (id, label, adapter_id, endpoint, model, declared_capabilities, \
          verified_capabilities, credential_ref, enabled, test_status, last_tested_at, \
          last_error_code, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, ?11, ?12) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
          ON CONFLICT(id) DO UPDATE SET label = excluded.label, adapter_id = excluded.adapter_id, \
          endpoint = excluded.endpoint, model = excluded.model, \
          declared_capabilities = excluded.declared_capabilities, \
          verified_capabilities = excluded.verified_capabilities, \
          credential_ref = excluded.credential_ref, enabled = excluded.enabled, \
-         test_status = excluded.test_status, updated_at = excluded.updated_at",
+         test_status = excluded.test_status, last_tested_at = excluded.last_tested_at, \
+         last_error_code = excluded.last_error_code, updated_at = excluded.updated_at",
         params![
             provider_id,
             label,
@@ -386,7 +424,9 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
             verified,
             new_ref,
             i64::from(config.enabled),
-            ProviderTestStatus::Untested.wire(),
+            test_status,
+            last_tested_at,
+            last_error_code,
             created_at,
             now_text,
         ],
@@ -399,6 +439,27 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
     // 配置一变，之前「等配置」的任务可能就能跑了（也可能反过来）。两边都重评一次。
     promote_configuration_waits(core, now())?;
     load_provider(&core.conn, &provider_id)
+}
+
+/// 密钥算不算「功能参数变化」。**按明文比，不按引用比**：`SecretStore::put` 每次
+/// 都发一个新引用，拿引用比会把「原样重填同一把钥匙」也当成变化——而设置页每次保存
+/// 都会把当前密钥一起提交，那等于每次保存都作废验证结论，正是 #96 要修掉的那类误判。
+///
+/// 给不出旧明文（以前没凭据、或凭据已经不在托管里）就算变化：那确实可能换了一把钥匙。
+/// 没给新明文时只看引用变没变（换引用、或清空凭据）。
+fn secret_changed(
+    core: &Core,
+    old_ref: Option<&str>,
+    new_ref: Option<&str>,
+    secret: Option<&str>,
+) -> Result<bool> {
+    match secret.map(str::trim) {
+        Some(value) if !value.is_empty() => match old_ref {
+            Some(old_ref) => Ok(core.secrets().get(old_ref)?.as_deref() != Some(value)),
+            None => Ok(true),
+        },
+        _ => Ok(old_ref != new_ref),
+    }
 }
 
 /// 移除配置。**不删除任何日记、也不删除已经生成的回应**：回应只是历史事实，
@@ -726,6 +787,8 @@ fn blocked_code(last_error: Option<&str>) -> &'static str {
 /// - `results`：逐能力的结论（ok / failed）；
 /// - `actual_call_made`：**数出来的**真实调用次数是否大于 0；
 /// - `message`：可达性 / 认证 / 模型 / 实际能力集 / 端点是本机还是远端 / 下一步。
+///   **一次调用都没发时不说「可达 / 认证通过 / 模型可用」**——那三项没人验过，报告
+///   如实写「未发起调用、都未验证」（#96）。
 ///
 /// 认证失败、超时这类**拿到了明确失败原因**的情况按契约走错误码（可区分的
 /// `authentication_failed` / `provider_timeout` …），错误消息里同样写明「本次
@@ -835,21 +898,32 @@ pub(crate) fn test(
     };
     record_test_outcome(core, provider_id, &probed_ok, &verified, all_ok, error_code)?;
 
-    let mut message = format!(
-        "端点 {endpoint}（{}）可达；认证通过；模型 {} 可用；实际能力集：{}；\
-         本次测试发起了 {calls} 次真实请求（可能计费）",
-        endpoint_scope(endpoint),
-        provider.model.as_deref().unwrap_or("<未配置>"),
-        if verified.is_empty() {
-            "（本次范围内没有验证通过的能力）".to_owned()
-        } else {
-            verified
-                .iter()
-                .map(|item| item.wire())
-                .collect::<Vec<_>>()
-                .join("、")
-        },
-    );
+    // 报告口径：**只有真的发过调用**，才谈得上「端点可达 / 认证通过 / 模型可用」。
+    // 一次都没发（范围里全是适配器没实现、或配置没声明的能力）时如实说这三项都没验过——
+    // 否则报告会写出一句谁都没验过的「端点/认证/模型均已验证」（#96 评审的第三条）。
+    let verified_text = if verified.is_empty() {
+        "（本次范围内没有验证通过的能力）".to_owned()
+    } else {
+        verified
+            .iter()
+            .map(|item| item.wire())
+            .collect::<Vec<_>>()
+            .join("、")
+    };
+    let mut message = if calls == 0 {
+        format!(
+            "本次测试**没有发起任何真实调用**（范围里没有「适配器实现了且配置声明了」的\
+             能力），所以端点连通性、认证、模型可用性**都没验过**；\
+             实际验证通过的能力集：{verified_text}"
+        )
+    } else {
+        format!(
+            "端点 {endpoint}（{}）可达；认证通过；模型 {} 可用；实际能力集：{verified_text}；\
+             本次测试发起了 {calls} 次真实请求（可能计费）",
+            endpoint_scope(endpoint),
+            provider.model.as_deref().unwrap_or("<未配置>"),
+        )
+    };
     if !notes.is_empty() {
         message.push('；');
         message.push_str(&notes.join("；"));
