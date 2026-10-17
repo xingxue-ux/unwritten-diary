@@ -45,7 +45,10 @@ abstract class DiaryApi {
   // ------------------------------------------------------- 记录与来源
 
   /// 创建草稿。`occurredAt` 为空时由核心按当前时间填充。
-  Future<Capture> createDraft({DateTime? occurredAt, required String operationId});
+  Future<Capture> createDraft({
+    DateTime? occurredAt,
+    required String operationId,
+  });
 
   /// 保存草稿正文。频繁保存只更新草稿与恢复日志，不制造永久版本。
   Future<DraftSaveResult> saveDraft({
@@ -77,6 +80,16 @@ abstract class DiaryApi {
     required int expectedRevision,
     required String operationId,
   });
+
+  /// 当前来源的提取结果；尚未提取时返回空。结果只对应当前修订。
+  Future<ExtractedContent?> extractedContent(String sourceId);
+
+  /// 当前修订的上一版，供原正文和修改对比；首次提交时返回空。
+  Future<SourceRevision?> previousSourceRevision(String sourceId);
+
+  /// 提取来源当前修订，或按修订 ID 读取原件型历史正文。
+  /// 历史修订仍被默认检索的“仅当前版”规则排除。
+  Future<ExtractedContent> extractSource(String sourceRef);
 
   /// 调整日记归属日期。调整不改录音时间戳，也不静默搬动历史。
   Future<Capture> moveDay({
