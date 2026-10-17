@@ -517,6 +517,64 @@ impl BridgeSession {
         Ok(core.get_diary_version(&version_id)?)
     }
 
+    /// 保存人工编辑：新写一条 `user_edit` 版本并让它成为当前，契约 `diary.saveEdit`。
+    ///
+    /// **不原地改基版**（基版一个字节都不动），旧当前版退成候选。`expectedRevision`
+    /// 是这一天的版本数（`candidateVersionIds.length + (currentVersionId == null ? 0 : 1)`），
+    /// 不符报 `revision_conflict` 且零改动；同一条 `operationId` 重试返回原版本。
+    pub fn save_diary_edit(
+        &self,
+        base_version_id: String,
+        body: String,
+        expected_revision: i64,
+        operation_id: String,
+    ) -> Result<DiaryVersion, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.save_diary_edit(
+            &base_version_id,
+            &body,
+            expected_revision,
+            &operation_id,
+        )?)
+    }
+
+    /// 指定某一天的当前版本，契约 `diary.setCurrent`。
+    ///
+    /// 只能指向这一天自己的版本（不存在 `not_found`、跨天 `invalid_argument`）；
+    /// `expectedRevision` 不符 `revision_conflict`；切到已经是当前的版本是**无操作**，
+    /// 所以这一行契约没有 `operationId`（不产生任何东西，重复调用收敛到同一状态）。
+    pub fn set_diary_current(
+        &self,
+        day_key: String,
+        version_id: String,
+        expected_revision: i64,
+    ) -> Result<DiaryDay, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.set_diary_current(&day_key, &version_id, expected_revision)?)
+    }
+
+    /// 把两版（或多版）合并成一条新版本，契约 `diary.merge`。
+    ///
+    /// `body` 是用户确认后的正文（核心不调模型）；来源记在
+    /// `generationInfo.generationOptions.mergeSourceVersionIds`；参与合并的版本全部保留。
+    pub fn merge_diary_versions(
+        &self,
+        base_version_id: String,
+        candidate_version_ids: Vec<String>,
+        body: String,
+        expected_revision: i64,
+        operation_id: String,
+    ) -> Result<DiaryVersion, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.merge_diary_versions(
+            &base_version_id,
+            &candidate_version_ids,
+            &body,
+            expected_revision,
+            &operation_id,
+        )?)
+    }
+
     /// 已经接到桥上的契约方法名。
     pub fn capabilities(&self) -> Vec<String> {
         wired_capabilities()
@@ -597,6 +655,9 @@ fn wired_capabilities() -> Vec<String> {
         "diary.generate",
         "diary.listVersions",
         "diary.getVersion",
+        "diary.saveEdit",
+        "diary.setCurrent",
+        "diary.merge",
         "core.events",
     ]
     .iter()

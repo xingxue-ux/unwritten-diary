@@ -7,7 +7,14 @@
 use rusqlite::{params, Connection};
 
 /// 本构建支持的 schema 版本。
-pub const SCHEMA_VERSION: i64 = 10;
+///
+/// **11 留给 B4e（整理与自动化，#92）**：那一片在另一条分支上（`feat/B4e-organize`），
+/// 本分支的树里没有它。所以这里从 10 直接用到 12，两边合并后 11（B4e 的表）与
+/// 12（`diary_days.revision`）各有一段自己的迁移块，互不覆盖。
+///
+/// 合并时的注意事项写在 `docs/architecture/m3-日记生成与版本.md` 的迁移一节：
+/// 只跑过本分支（库已经是 12、但没有 11 的表）的库，在合并后的构建里需要补跑 11。
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -69,6 +76,18 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 生成记录）。老库里没有任何日记版本——B4b 之前核心根本没有日记表。也**不能**
         // 在迁移里替用户把旧记录「补生成」一版：那会凭空造出用户没有确认过的正文，
         // 与「AI 正文不冒充用户手写」直接冲突。
+    }
+    // 11 是 B4e（整理与自动化）的段号，不在本分支的树里：这里**故意跳号**，
+    // 不写 `if current < 11`，否则合并后会与 B4e 的 11 撞车（见 SCHEMA_VERSION 的说明）。
+    if current < 12 {
+        tx.execute_batch(V12)?;
+        // **回填成「这一天的版本数」**：升级前调用方从 `diary.getDay` 能算出来的就是
+        // 这个数字（`candidateVersionIds.length + (currentVersionId == null ? 0 : 1)`），
+        // 所以老库升级不会让任何在飞的 `expectedRevision` 突然对不上。升级之后的每一次
+        // 状态推进（新增一版、`setCurrent` 换指针）再从这个数往上加。
+        // 这一天一条 `diary_days` 行都没有时不用管：`day_revision` 对没有行的天返回 0，
+        // 而没有行也就没有版本可切。
+        tx.execute_batch(V12_BACKFILL)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.execute(
@@ -637,4 +656,23 @@ CREATE TABLE diary_generations (
 );
 CREATE INDEX idx_diary_generations_snapshot ON diary_generations(snapshot_id, created_at, id);
 CREATE INDEX idx_diary_generations_day ON diary_generations(day_key, created_at DESC, id DESC);
+"#;
+
+/// v12：`diary_days` 加一列**持久、单调递增**的 `revision`（#101）。
+///
+/// 为什么必须有这一列：`diary.setCurrent` 的契约承诺 `expectedRevision` 冲突保护，
+/// 但「这一天的 revision」以前是「版本数」——换当前版本不增加版本数，所以两个窗口
+/// 拿着同一个 `expectedRevision` 都能切成功，后一次会**静默覆盖**前一次的选择：
+/// 那是假的冲突保护。指针变更本身也是一次状态推进，必须有自己的持久计数。
+///
+/// `DEFAULT 0` 只服务于「这一天还没有任何推进」，实际取值由迁移回填与写路径维护。
+const V12: &str = r#"
+ALTER TABLE diary_days ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+"#;
+
+/// v12 的回填：把老库的 `revision` 从「这一天的版本数」起步（升级前调用方算的就是它）。
+const V12_BACKFILL: &str = r#"
+UPDATE diary_days SET revision = (
+    SELECT COUNT(*) FROM diary_versions WHERE diary_versions.day_key = diary_days.day_key
+);
 "#;

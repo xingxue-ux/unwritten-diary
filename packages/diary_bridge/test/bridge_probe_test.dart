@@ -68,10 +68,10 @@ void main() {
     expect(info.capabilities, contains('diary.getDay'));
     expect(info.capabilities, contains('diary.listVersions'));
     expect(info.capabilities, contains('diary.getVersion'));
-    // 诚实的能力声明：用户编辑/切换/合并（B4c）还没接，不该出现在清单里。
-    expect(info.capabilities, isNot(contains('diary.saveEdit')));
-    expect(info.capabilities, isNot(contains('diary.setCurrent')));
-    expect(info.capabilities, isNot(contains('diary.merge')));
+    // B4c 的编辑/切换/合并接上了：能力清单如实列出三个方法。
+    expect(info.capabilities, contains('diary.saveEdit'));
+    expect(info.capabilities, contains('diary.setCurrent'));
+    expect(info.capabilities, contains('diary.merge'));
     expect(info.recovery.pendingJobs, 0);
   });
 

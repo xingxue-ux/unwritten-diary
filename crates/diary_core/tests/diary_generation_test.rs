@@ -297,21 +297,22 @@ fn user_written_version_is_never_overwritten_by_generation() {
     let capture_id = capture_with_text(&mut core, "今天去公园散步。", "op-a");
     let source_id = first_source(&core, &capture_id);
 
-    // 先生成一版并让它成为当前，再让用户自己写一版并切换过去。
+    // 先生成一版并让它成为当前，再让用户自己写一版（B4c 的 diary.saveEdit：
+    // 新版本自动成为当前，旧当前版退成候选）。
     core.generate_diary("2026-10-16", None, DiaryGenerationReason::Manual, "op-gen-1")
         .unwrap();
     drive(&mut core);
     let generated = versions(&core)[0].clone();
     let mine = core
-        .save_diary_version_for_test(
-            "2026-10-16",
-            Some(&generated.id),
+        .save_diary_edit(
+            &generated.id,
             "我自己写的：今天去公园，风很大。",
-            DiaryVersionOrigin::UserEdit,
+            1,
+            "op-user-edit",
         )
         .unwrap();
     assert_eq!(mine.origin, DiaryVersionOrigin::UserEdit);
-    let day = core.set_diary_current_for_test("2026-10-16", &mine.id).unwrap();
+    let day = day_of(&core);
     assert_eq!(day.current_version_id.as_deref(), Some(mine.id.as_str()));
 
     // 新材料到了，自动整理产出候选：当前人工版本与它的正文都不许动。
@@ -332,7 +333,12 @@ fn user_written_version_is_never_overwritten_by_generation() {
     let still_mine = core.get_diary_version(&mine.id).unwrap();
     assert_eq!(still_mine.body, "我自己写的：今天去公园，风很大。");
     assert_eq!(still_mine.origin, DiaryVersionOrigin::UserEdit);
-    let generated_again = versions(&core)[0].clone();
+    // 用正文认出自动整理产出的那一版，**不断言列表顺序**：版本按 created_at（墙钟）排，
+    // 而本机（WSL）的墙钟会跳，顺序断言会偶发失败——被测的是「当前版本没被顶掉」。
+    let generated_again = versions(&core)
+        .into_iter()
+        .find(|version| version.body == "新材料的候选正文。")
+        .expect("自动整理应该产出一版新候选");
     assert_eq!(generated_again.origin, DiaryVersionOrigin::Generated);
     assert_ne!(generated_again.id, mine.id);
 
@@ -357,12 +363,22 @@ fn user_written_version_is_never_overwritten_by_generation() {
         capture.day_key
     };
     assert_eq!(other_day, "2026-10-17");
-    let handwritten = core
-        .save_diary_version_for_test(
-            "2026-10-17",
-            None,
-            "十七号我自己先写了一段。",
-            DiaryVersionOrigin::UserEdit,
+    // 「有用户版本、但没有当前版本」这个状态，B4c 之后**没有任何产品路径造得出来**
+    // （`diary.saveEdit` / `diary.merge` 的新版本都会成为当前），所以这里直接写一行
+    // 版本来构造它：被测的是**不变量**（生成永远不许顶掉用户版本），而升级上来的旧库、
+    // 或将来新增的路径都可能落在这个状态上。直接插行是构造状态，不是被测行为。
+    let handwritten_id = "dver_test_handwritten_17";
+    Connection::open(dir.path().join("library.sqlite"))
+        .unwrap()
+        .execute(
+            "INSERT INTO diary_versions (id, day_key, parent_version_id, origin, body, \
+             provenance_links, created_at) VALUES (?1, '2026-10-17', NULL, 'user_edit', ?2, \
+             '[]', ?3)",
+            rusqlite::params![
+                handwritten_id,
+                "十七号我自己先写了一段。",
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            ],
         )
         .unwrap();
     core.generate_diary("2026-10-17", None, DiaryGenerationReason::Manual, "op-gen-3")
@@ -373,7 +389,7 @@ fn user_written_version_is_never_overwritten_by_generation() {
         day.current_version_id, None,
         "这一天有用户自己的版本，生成结果只能进候选"
     );
-    assert!(day.candidate_version_ids.contains(&handwritten.id));
+    assert!(day.candidate_version_ids.contains(&handwritten_id.to_owned()));
     assert_eq!(day.candidate_version_ids.len(), 2);
 }
 
@@ -599,8 +615,20 @@ fn same_snapshot_and_operation_produce_one_version_and_one_provider_call() {
     let all = versions(&core);
     assert_eq!(all.len(), 2);
     let day = day_of(&core);
-    assert_eq!(day.current_version_id.as_deref(), Some(all[1].id.as_str()));
-    assert_eq!(day.candidate_version_ids, vec![all[0].id.clone()]);
+    // 不断言列表顺序（版本按 created_at 排，本机 WSL 的墙钟会跳）：用正文认出
+    // 「当前」与「候选」各是哪一版，这正是这一段要钉的事实。
+    let current_id = day.current_version_id.clone().expect("首次生成成为当前");
+    let current = all
+        .iter()
+        .find(|version| version.id == current_id)
+        .expect("当前版本在列表里");
+    assert_eq!(current.body, "第一版。", "再生成不覆盖当前版本");
+    assert_eq!(day.candidate_version_ids.len(), 1);
+    let candidate = all
+        .iter()
+        .find(|version| version.id == day.candidate_version_ids[0])
+        .expect("候选版本在列表里");
+    assert_eq!(candidate.body, "再生成的一版。");
 }
 
 // ------------------------------------------------------------------ 长材料两步走
@@ -649,11 +677,27 @@ fn long_materials_take_two_steps_with_traceable_intermediate_facts() {
     let requests = transport.requests();
     let (_, first_batch) = messages(&requests[0]);
     let (_, second_batch) = messages(&requests[1]);
-    // 分段：第一批里看不到第二批的材料。
-    assert!(first_batch.contains(&"甲".repeat(50)));
-    assert!(!first_batch.contains(&"乙".repeat(50)));
-    assert!(second_batch.contains(&"乙".repeat(50)));
-    assert!(!second_batch.contains(&"甲".repeat(50)));
+    // 分段：两批各只有一份材料，谁也看不到对方。
+    // **不断言「甲一定在第一段」**：材料按 occurred_at（提交时的墙钟）排序，而本机
+    // （WSL）的墙钟会跳，谁在前面是环境决定的、不是被测行为；被测的是「材料被分段、
+    // 两段互不重叠」。
+    let batches = [&first_batch, &second_batch];
+    assert_eq!(
+        batches
+            .iter()
+            .filter(|batch| batch.contains(&"甲".repeat(50)))
+            .count(),
+        1,
+        "甲的材料只出现在两段中的一段里"
+    );
+    assert_eq!(
+        batches
+            .iter()
+            .filter(|batch| batch.contains(&"乙".repeat(50)))
+            .count(),
+        1,
+        "乙的材料只出现在两段中的一段里"
+    );
     // 第二步用的是中间事实，不是原始材料。
     let (_, final_prompt) = messages(&requests[2]);
     assert!(final_prompt.contains("上午在公园散步"));
@@ -902,14 +946,9 @@ fn ai_body_is_marked_and_distinguishable_from_user_text() {
     assert_eq!(info.model.as_deref(), Some("qwen-test"));
     assert!(!version.provenance_links.is_empty(), "正文与原件有关联");
 
-    // 用户手写版本与 AI 版本一眼可分。
+    // 用户手写版本与 AI 版本一眼可分（B4c 的产品入口：saveEdit 写新版本、不覆盖基版）。
     let mine = core
-        .save_diary_version_for_test(
-            "2026-10-16",
-            Some(&version.id),
-            "我自己写的。",
-            DiaryVersionOrigin::UserEdit,
-        )
+        .save_diary_edit(&version.id, "我自己写的。", 1, "op-user-edit")
         .unwrap();
     assert_eq!(mine.origin, DiaryVersionOrigin::UserEdit);
     assert!(mine.generation_info.is_none());

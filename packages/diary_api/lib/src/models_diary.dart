@@ -44,6 +44,7 @@ class DiaryDay {
     required this.updatedAt,
     this.currentVersionId,
     this.candidateVersionIds = const [],
+    this.revision = 0,
     this.materialCounts = const MaterialCounts(),
     this.coverage = Coverage.unavailable,
   });
@@ -58,6 +59,14 @@ class DiaryDay {
   /// 候选版本，等待用户选择。
   final List<String> candidateVersionIds;
 
+  /// 这一天的 **revision**：持久、单调递增的状态推进计数。
+  ///
+  /// 每次成功写入 +1（新增一版算一次，换当前版本也算一次）；调用方把这个值原样
+  /// 回传给 [DiaryApi.saveDiaryEdit] / [DiaryApi.setCurrentVersion] /
+  /// [DiaryApi.mergeDiary] 的 `expectedRevision`。冲突保护就建立在它上：两个窗口
+  /// 读到同一个 revision 时，后一个写会被拒绝，而不是静默覆盖前一个。
+  final int revision;
+
   final MaterialCounts materialCounts;
   final Coverage coverage;
 
@@ -66,6 +75,7 @@ class DiaryDay {
     DateTime? updatedAt,
     String? currentVersionId,
     List<String>? candidateVersionIds,
+    int? revision,
     MaterialCounts? materialCounts,
     Coverage? coverage,
     bool clearCurrentVersion = false,
@@ -77,6 +87,7 @@ class DiaryDay {
         currentVersionId:
             clearCurrentVersion ? null : (currentVersionId ?? this.currentVersionId),
         candidateVersionIds: candidateVersionIds ?? this.candidateVersionIds,
+        revision: revision ?? this.revision,
         materialCounts: materialCounts ?? this.materialCounts,
         coverage: coverage ?? this.coverage,
       );
@@ -89,6 +100,7 @@ class DiaryDay {
       other.updatedAt == updatedAt &&
       other.currentVersionId == currentVersionId &&
       listEquals(other.candidateVersionIds, candidateVersionIds) &&
+      other.revision == revision &&
       other.materialCounts == materialCounts &&
       other.coverage == coverage;
 
@@ -99,12 +111,14 @@ class DiaryDay {
         updatedAt,
         currentVersionId,
         Object.hashAll(candidateVersionIds),
+        revision,
         materialCounts,
         coverage,
       );
 
   @override
-  String toString() => 'DiaryDay($dayKey, current: $currentVersionId)';
+  String toString() =>
+      'DiaryDay($dayKey, current: $currentVersionId, revision: $revision)';
 }
 
 /// 生成过程的审计信息。契约第 2.5、6.2 节。

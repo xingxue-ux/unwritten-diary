@@ -198,7 +198,14 @@ abstract class DiaryApi {
 
   Future<DiaryVersion> getVersion(String versionId);
 
-  /// 保存人工编辑，创建新的 user_edit 版本，不覆盖基版。
+  /// 保存人工编辑：创建新的 `user_edit` 版本，**不覆盖基版**。
+  ///
+  /// `expectedRevision` 是这一天的 revision（[DiaryDay.revision]）：不符抛
+  /// `revisionConflict`，核心一个字节都不改。新版本成为当前，旧当前版退成候选
+  /// （[DiaryDay.candidateVersionIds]），`getVersion` 仍能取回原文。
+  ///
+  /// 同一条 `operationId` 重试返回原版本；换了正文/基版/`expectedRevision` 抛
+  /// `idempotencyConflict`。空正文抛 `invalidArgument`；正文不设长度上限。
   Future<DiaryVersion> saveDiaryEdit({
     required String baseVersionId,
     required String body,
@@ -206,16 +213,32 @@ abstract class DiaryApi {
     required String operationId,
   });
 
+  /// 在一天的版本之间指定当前版本（例如退回上一版）。
+  ///
+  /// 只能指向这一天自己的版本：不存在抛 `notFound`、属于别的天抛 `invalidArgument`；
+  /// `expectedRevision`（[DiaryDay.revision]）不符抛 `revisionConflict`。旧当前版变候选、
+  /// 不删除；切到已经是当前的版本是无操作（这一行契约没有 `operationId`：它不产生任何东西）。
+  ///
+  /// **换当前版本本身也推进这一天的 revision**：两个窗口读到同一个 revision 时，
+  /// 后一个的切换会被 `revisionConflict` 拒绝，而不是静默覆盖前一个窗口的选择。
   Future<DiaryDay> setCurrentVersion({
     required String dayKey,
     required String versionId,
     required int expectedRevision,
   });
 
+  /// 把两版（或多版）合成一条新的 `merge` 版本；[body] 是**用户确认后的正文**。
+  ///
+  /// 来源记在新版本的 `generationInfo.generationOptions.mergeSourceVersionIds`；
+  /// 参与合并的版本全部保留、随时可 `getVersion` 取回；新版本成为当前。
+  /// 候选列表为空 / 有重复 / 含基版自己 / 跨天抛 `invalidArgument`，版本不存在抛
+  /// `notFound`；`expectedRevision` 与 `operationId` 的语义同 [saveDiaryEdit]
+  /// （这一条按契约第 1.2 节的修改并发规则同样带 `expectedRevision`）。
   Future<DiaryVersion> mergeDiary({
     required String baseVersionId,
     required List<String> candidateVersionIds,
     required String body,
+    required int expectedRevision,
     required String operationId,
   });
 
