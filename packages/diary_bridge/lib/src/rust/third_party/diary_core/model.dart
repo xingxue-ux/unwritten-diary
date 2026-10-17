@@ -7,7 +7,7 @@ import '../../frb_generated.dart';
 import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NativeRecordingStatus`, `NewJob`, `RecordingFinalizeResult`, `RecordingRecovery`, `RecordingSession`, `RecordingTicket`, `SegmentManifest`, `SegmentReceipt`, `SourceItem`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NewJob`, `SourceItem`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
 
@@ -1065,6 +1065,52 @@ enum MatchedBy {
       RustLib.instance.api.diaryCoreModelMatchedByWire(that: this);
 }
 
+/// 原生上报的录音状态。后端不虚构麦克风状态。
+class NativeRecordingStatus {
+  final String recordingId;
+  final RecordingState state;
+  final DateTime wallClock;
+  final PlatformInt64 elapsedMs;
+
+  /// 已经持久化的位置，恢复时用来判断缺口。
+  final PlatformInt64 persistedThroughMs;
+  final bool inputDeviceChanged;
+  final String? message;
+
+  const NativeRecordingStatus({
+    required this.recordingId,
+    required this.state,
+    required this.wallClock,
+    required this.elapsedMs,
+    required this.persistedThroughMs,
+    required this.inputDeviceChanged,
+    this.message,
+  });
+
+  @override
+  int get hashCode =>
+      recordingId.hashCode ^
+      state.hashCode ^
+      wallClock.hashCode ^
+      elapsedMs.hashCode ^
+      persistedThroughMs.hashCode ^
+      inputDeviceChanged.hashCode ^
+      message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NativeRecordingStatus &&
+          runtimeType == other.runtimeType &&
+          recordingId == other.recordingId &&
+          state == other.state &&
+          wallClock == other.wallClock &&
+          elapsedMs == other.elapsedMs &&
+          persistedThroughMs == other.persistedThroughMs &&
+          inputDeviceChanged == other.inputDeviceChanged &&
+          message == other.message;
+}
+
 /// 派生内容的处理状态。取值沿用契约第 3 节「索引」行。
 enum ProcessingStatus {
   pending,
@@ -1118,6 +1164,128 @@ class ProcessingSummary {
           needsAttention == other.needsAttention;
 }
 
+/// 最终化结果。转写不阻塞完成。
+class RecordingFinalizeResult {
+  final String recordingId;
+  final String assetId;
+  final RecordingState state;
+  final PlatformInt64 segmentCount;
+  final bool transcriptionQueued;
+  final PlatformInt64 logicalDurationMs;
+
+  const RecordingFinalizeResult({
+    required this.recordingId,
+    required this.assetId,
+    required this.state,
+    required this.segmentCount,
+    required this.transcriptionQueued,
+    required this.logicalDurationMs,
+  });
+
+  @override
+  int get hashCode =>
+      recordingId.hashCode ^
+      assetId.hashCode ^
+      state.hashCode ^
+      segmentCount.hashCode ^
+      transcriptionQueued.hashCode ^
+      logicalDurationMs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RecordingFinalizeResult &&
+          runtimeType == other.runtimeType &&
+          recordingId == other.recordingId &&
+          assetId == other.assetId &&
+          state == other.state &&
+          segmentCount == other.segmentCount &&
+          transcriptionQueued == other.transcriptionQueued &&
+          logicalDurationMs == other.logicalDurationMs;
+}
+
+/// 恢复结果：不假设最后一段完好，明确报告缺口。
+class RecordingRecovery {
+  final String? recordingId;
+  final RecordingState state;
+  final Int64List closedSegmentIndexes;
+
+  /// 已知缺口的总时长；无法估计时为 0 并在 notes 里说明。
+  final PlatformInt64 gapMs;
+  final List<String> notes;
+
+  const RecordingRecovery({
+    this.recordingId,
+    required this.state,
+    required this.closedSegmentIndexes,
+    required this.gapMs,
+    required this.notes,
+  });
+
+  @override
+  int get hashCode =>
+      recordingId.hashCode ^
+      state.hashCode ^
+      closedSegmentIndexes.hashCode ^
+      gapMs.hashCode ^
+      notes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RecordingRecovery &&
+          runtimeType == other.runtimeType &&
+          recordingId == other.recordingId &&
+          state == other.state &&
+          closedSegmentIndexes == other.closedSegmentIndexes &&
+          gapMs == other.gapMs &&
+          notes == other.notes;
+}
+
+/// 录音会话快照。
+class RecordingSession {
+  final String recordingId;
+  final String assetId;
+  final RecordingState state;
+  final PlatformInt64 elapsedMs;
+  final PlatformInt64 durableThroughMs;
+  final PlatformInt64 segmentCount;
+  final String? lastError;
+
+  const RecordingSession({
+    required this.recordingId,
+    required this.assetId,
+    required this.state,
+    required this.elapsedMs,
+    required this.durableThroughMs,
+    required this.segmentCount,
+    this.lastError,
+  });
+
+  @override
+  int get hashCode =>
+      recordingId.hashCode ^
+      assetId.hashCode ^
+      state.hashCode ^
+      elapsedMs.hashCode ^
+      durableThroughMs.hashCode ^
+      segmentCount.hashCode ^
+      lastError.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RecordingSession &&
+          runtimeType == other.runtimeType &&
+          recordingId == other.recordingId &&
+          assetId == other.assetId &&
+          state == other.state &&
+          elapsedMs == other.elapsedMs &&
+          durableThroughMs == other.durableThroughMs &&
+          segmentCount == other.segmentCount &&
+          lastError == other.lastError;
+}
+
 /// 录音状态，契约第 3 节「录音」行。
 enum RecordingState {
   idle,
@@ -1143,6 +1311,32 @@ enum RecordingState {
 
   Future<void> wire() =>
       RustLib.instance.api.diaryCoreModelRecordingStateWire(that: this);
+}
+
+/// 录音票据。`staging_ticket` 是平台层唯一被允许写入的目录。
+class RecordingTicket {
+  final String recordingId;
+  final String assetId;
+  final String stagingTicket;
+
+  const RecordingTicket({
+    required this.recordingId,
+    required this.assetId,
+    required this.stagingTicket,
+  });
+
+  @override
+  int get hashCode =>
+      recordingId.hashCode ^ assetId.hashCode ^ stagingTicket.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RecordingTicket &&
+          runtimeType == other.runtimeType &&
+          recordingId == other.recordingId &&
+          assetId == other.assetId &&
+          stagingTicket == other.stagingTicket;
 }
 
 /// 检索过滤条件，契约第 2.6 节。
@@ -1375,6 +1569,80 @@ class SearchSnapshot {
           cursor == other.cursor &&
           indexCoverage == other.indexCoverage &&
           warnings == other.warnings;
+}
+
+/// 一个已封闭片段的描述，契约第 4.2 节。
+class SegmentManifest {
+  final String segmentId;
+
+  /// 相对暂存目录的文件名，不是绝对路径。
+  final String relativeFileName;
+  final PlatformInt64 durationMs;
+  final String sha256;
+  final PlatformInt64 byteSize;
+  final DateTime? closedAt;
+
+  const SegmentManifest({
+    required this.segmentId,
+    required this.relativeFileName,
+    required this.durationMs,
+    required this.sha256,
+    required this.byteSize,
+    this.closedAt,
+  });
+
+  @override
+  int get hashCode =>
+      segmentId.hashCode ^
+      relativeFileName.hashCode ^
+      durationMs.hashCode ^
+      sha256.hashCode ^
+      byteSize.hashCode ^
+      closedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SegmentManifest &&
+          runtimeType == other.runtimeType &&
+          segmentId == other.segmentId &&
+          relativeFileName == other.relativeFileName &&
+          durationMs == other.durationMs &&
+          sha256 == other.sha256 &&
+          byteSize == other.byteSize &&
+          closedAt == other.closedAt;
+}
+
+/// 片段登记回执。
+class SegmentReceipt {
+  final String segmentId;
+  final PlatformInt64 segmentIndex;
+  final bool durable;
+  final DateTime recordedAt;
+
+  const SegmentReceipt({
+    required this.segmentId,
+    required this.segmentIndex,
+    required this.durable,
+    required this.recordedAt,
+  });
+
+  @override
+  int get hashCode =>
+      segmentId.hashCode ^
+      segmentIndex.hashCode ^
+      durable.hashCode ^
+      recordedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SegmentReceipt &&
+          runtimeType == other.runtimeType &&
+          segmentId == other.segmentId &&
+          segmentIndex == other.segmentIndex &&
+          durable == other.durable &&
+          recordedAt == other.recordedAt;
 }
 
 /// 材料类型，契约第 2.3 节的 SourceKind。

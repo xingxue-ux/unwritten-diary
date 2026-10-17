@@ -1,10 +1,17 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:diary_api/diary_api.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_selector/file_selector.dart';
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
 
 import 'capture_controller.dart';
+import 'file_import_controller.dart';
+import 'file_import_journal.dart';
+import 'core_wakeup.dart';
 import 'search_controller.dart';
 import 'revision_controller.dart';
 import 'revision_diff.dart';
@@ -32,6 +39,11 @@ class _ExperienceShellState extends State<ExperienceShell>
     with WidgetsBindingObserver {
   late final CaptureController _capture;
   late final DiarySearchController _coreSearch;
+  late final FileImportController _fileImports;
+  bool _importsAvailable = false;
+  bool _pickingFiles = false;
+  bool _importsRecoveryWarning = false;
+  String? _importsNotice;
   late final RevisionController _revisions;
   late final Listenable _contentChanges;
   final _editor = TextEditingController();
@@ -80,8 +92,17 @@ class _ExperienceShellState extends State<ExperienceShell>
       widget.api,
       supportsHybridUpgrade: widget.supportsHybridUpgrade,
     );
+    _fileImports = FileImportController(widget.api);
     _revisions = RevisionController(widget.api);
-    _contentChanges = Listenable.merge([_capture, _coreSearch, _revisions]);
+    _contentChanges = Listenable.merge([
+      _capture,
+      _coreSearch,
+      _fileImports,
+      _revisions,
+    ]);
+    if (!widget.demoMode) {
+      unawaited(_initializeImports());
+    }
     _search.addListener(_onSearchValueChanged);
     unawaited(
       _capture.initialize(opened: true).then((_) {
@@ -93,11 +114,44 @@ class _ExperienceShellState extends State<ExperienceShell>
     _editVersion.text = _demoBody;
   }
 
+  Future<void> _initializeImports() async {
+    try {
+      final snapshot = await widget.api.snapshot();
+      final available = const {
+        'imports.prepare',
+        'imports.finish',
+        'imports.status',
+      }.every(snapshot.coreInfo.capabilities.contains);
+      if (!available) {
+        if (mounted) {
+          setState(() => _importsNotice = '当前核心不支持文件导入，请更新应用后重试。');
+        }
+        return;
+      }
+      try {
+        final support = await getApplicationSupportDirectory();
+        _fileImports.attachJournal(
+          FileImportJournal(
+            File(path.join(support.path, 'file-import-recovery.jsonl')),
+          ),
+        );
+        await _fileImports.restore();
+      } catch (_) {
+        if (mounted) setState(() => _importsRecoveryWarning = true);
+        return;
+      }
+      if (mounted) setState(() => _importsAvailable = true);
+    } catch (_) {
+      if (mounted) setState(() => _importsNotice = '暂时无法确认文件导入能力，请稍后重试。');
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _capture.dispose();
     _coreSearch.dispose();
+    _fileImports.dispose();
     _revisions.dispose();
     _editor.dispose();
     _search.removeListener(_onSearchValueChanged);
@@ -120,6 +174,120 @@ class _ExperienceShellState extends State<ExperienceShell>
   }
 
   void _flushDraft() => unawaited(_capture.saveNow().then<void>((_) {}));
+
+  Future<int?> _pickedFileSize(XFile file) async {
+    try {
+      return await file.length();
+    } catch (_) {
+      // Some providers cannot report length. The streaming cap still applies.
+      return null;
+    }
+  }
+
+  Future<void> _pickFiles() async {
+    if (_pickingFiles) return;
+    setState(() => _pickingFiles = true);
+    try {
+      final files = await openFiles();
+      if (!mounted || files.isEmpty) return;
+      final selected = <SelectedImportFile>[];
+      for (final file in files) {
+        selected.add(
+          SelectedImportFile(
+            name: file.name,
+            mimeHint: file.mimeType,
+            size: await _pickedFileSize(file),
+            openRead: () => file.openRead(),
+          ),
+        );
+      }
+      unawaited(
+        _fileImports
+            .add(selected)
+            .then((_) async {
+              if (mounted) await _capture.refresh();
+            })
+            .catchError((Object _) {
+              if (mounted) _toast('文件导入未完成，请查看材料状态。');
+            }),
+      );
+    } catch (_) {
+      if (mounted) _toast('无法打开文件选择器，请稍后重试。');
+    } finally {
+      if (mounted) setState(() => _pickingFiles = false);
+    }
+  }
+
+  Future<void> _reselectImport(FileImportEntry entry) async {
+    try {
+      final file = await openFile();
+      if (file == null || !mounted) return;
+      if (file.name != entry.file.name) {
+        _toast('请选择同名的原文件；不同文件请使用“导入文件”新建记录。');
+        return;
+      }
+      await _fileImports.retryWithFile(
+        entry,
+        SelectedImportFile(
+          name: file.name,
+          mimeHint: file.mimeType,
+          size: await _pickedFileSize(file),
+          openRead: () => file.openRead(),
+        ),
+      );
+      if (mounted) await _capture.refresh();
+    } catch (_) {
+      if (mounted) _toast('重新选择文件未完成，原材料状态没有改变。');
+    }
+  }
+
+  Widget _importCard(FileImportEntry entry) {
+    final state = switch (entry.phase) {
+      FileImportPhase.queued => '等待导入',
+      FileImportPhase.copying => '正在复制 · ${entry.copiedBytes} 字节',
+      FileImportPhase.verifying => '正在校验',
+      FileImportPhase.saved => '已保存',
+      FileImportPhase.interrupted => '已停止复制',
+      FileImportPhase.failed => '未完成',
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(entry.file.name, maxLines: 2, overflow: TextOverflow.ellipsis),
+          Text(entry.message ?? state),
+          if (entry.phase == FileImportPhase.copying ||
+              entry.phase == FileImportPhase.queued)
+            TextButton(
+              onPressed: () => _fileImports.cancel(entry),
+              child: const Text('停止复制'),
+            ),
+          if (entry.canRefresh)
+            TextButton(
+              onPressed: () async {
+                await _fileImports.refresh(entry);
+                if (mounted) await _capture.refresh();
+              },
+              child: const Text('刷新校验状态'),
+            ),
+          if (entry.canRetry)
+            TextButton(
+              onPressed: () async {
+                await _fileImports.retry(entry);
+                if (mounted) await _capture.refresh();
+              },
+              child: const Text('重试导入'),
+            ),
+          if (entry.needsReselection)
+            TextButton(
+              onPressed: () => _reselectImport(entry),
+              child: const Text('重新选择原文件'),
+            ),
+        ],
+      ),
+    );
+  }
 
   void _go(int tab) {
     _flushDraft();
@@ -765,7 +933,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         _notice(
           widget.demoMode
               ? '交互演示 · 文字仅保留本次运行；附件和录音是流程预览。'
-              : '记录会保存到本地资料库；附件和录音仍是流程预览。',
+              : '记录保存在本地；文件可单独导入，录音仍在接入。',
         ),
       ],
     );
@@ -812,6 +980,11 @@ class _ExperienceShellState extends State<ExperienceShell>
             ),
             const SizedBox(height: 16),
             const Divider(color: SketchColors.ink, thickness: .8),
+            if (_importsRecoveryWarning)
+              const Text('导入恢复记录暂时不可用；请检查应用存储空间后重试。'),
+            if (_importsNotice != null) Text(_importsNotice!),
+            if (!widget.demoMode)
+              for (final entry in _fileImports.entries) _importCard(entry),
             CallbackShortcuts(
               bindings: {
                 const SingleActivator(
@@ -872,12 +1045,14 @@ class _ExperienceShellState extends State<ExperienceShell>
               runSpacing: 8,
               children: [
                 SketchAction(
-                  label: '添加材料',
+                  label: widget.demoMode ? '添加材料' : '导入文件为新记录',
                   icon: Icons.attach_file,
                   compact: true,
                   onPressed: widget.demoMode
                       ? _showAttachmentChoices
-                      : () => _toast('材料导入正在接入，当前只能保存文字。'),
+                      : _pickingFiles || !_importsAvailable
+                      ? null
+                      : _pickFiles,
                 ),
                 SketchAction(
                   label: '录音',
@@ -948,6 +1123,9 @@ class _ExperienceShellState extends State<ExperienceShell>
 
   Future<void> _finish() async {
     final success = await _capture.finish();
+    if (success && !widget.demoMode) {
+      unawaited(CoreWakeupScheduler.afterCoreMutation(widget.api));
+    }
     if (!mounted) return;
     if (success) {
       _editor.clear();

@@ -1,18 +1,33 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:diary_api/diary_api.dart';
 import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'src/app_services.dart';
+import 'src/core_wakeup.dart';
 import 'src/experience_shell.dart';
 import 'src/sketch_ui.dart';
 import 'src/theme.dart';
 
 const _previewMode = bool.fromEnvironment('DIARY_DEMO_MODE');
 
-void main() => runApp(
-  DiaryApp(api: _previewMode ? MockDiaryApi() : null, demoMode: _previewMode),
-);
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  if (Platform.isAndroid && !_previewMode) {
+    // A scheduler failure must never prevent the diary from opening for text.
+    try {
+      await CoreWakeupScheduler.initialize();
+    } on Object catch (error) {
+      debugPrint('Background wakeup registration failed: $error');
+    }
+  }
+  runApp(
+    DiaryApp(api: _previewMode ? MockDiaryApi() : null, demoMode: _previewMode),
+  );
+}
 
 class DiaryApp extends StatelessWidget {
   const DiaryApp({super.key, this.api, this.demoMode = false});
@@ -87,6 +102,9 @@ class _BootGateState extends State<_BootGate> {
         requiredCaptureCapabilities,
       )) {
         throw _CoreUnavailable('资料库缺少记录所需能力，请更新核心后再打开。');
+      }
+      if (Platform.isAndroid && !widget.demoMode) {
+        unawaited(CoreWakeupScheduler.afterOpen(api, snapshot));
       }
       return (api: api, snapshot: snapshot);
     } catch (failure, stackTrace) {
