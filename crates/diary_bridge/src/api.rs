@@ -26,6 +26,7 @@ use flutter_rust_bridge::frb;
 ///
 /// frb 会把它变成 Dart 侧的异常类型，所以前端可以用 `on BridgeError catch (e)`
 /// 直接读 `e.code`。
+#[derive(Debug)]
 pub struct BridgeError {
     pub code: String,
     pub message: String,
