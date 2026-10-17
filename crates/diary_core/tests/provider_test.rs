@@ -23,6 +23,14 @@ fn new_core(dir: &Path) -> Core {
     Core::open_in_memory_at(dir).unwrap()
 }
 
+/// 这个进程配了本地模型吗？配了的话「语义任务等模型配置」那条路跑不到（CI 上没配，
+/// 跨 kind 一致性用例会真跑）。判据与 `semantic_job_test.rs` 里那条一致。
+fn model_configured() -> bool {
+    std::env::var_os("DIARY_MODEL_DIR").is_some()
+        || std::env::var_os("DIARY_ORT_DYLIB").is_some()
+        || std::env::var_os("ORT_DYLIB_PATH").is_some()
+}
+
 fn capture_with_text(core: &mut Core, text: &str, operation_id: &str) -> String {
     let capture = core
         .create_draft(CreateDraftInput {
@@ -485,7 +493,12 @@ fn queued_work_waits_for_configuration_instead_of_hammering_the_provider() {
     assert_eq!(job.state, JobState::WaitingConfiguration);
     assert_eq!(job.error_code.as_deref(), Some("provider_not_configured"));
     assert!(job.requires_user_action, "要出现在状态里等用户处理");
-    assert_eq!(job.attempt_count, 0, "等配置不消耗尝试次数");
+    assert_eq!(
+        job.attention_key.as_deref(),
+        Some("job-config:respond:provider_not_configured"),
+        "界面靠 attentionKey 深链到「去配哪个服务」"
+    );
+    assert_eq!(job.attempt_count, 0, "闸门在领取前挡下：没跑过就不计尝试");
     let status = core.job_status().unwrap();
     assert_eq!(status.waiting_configuration, 1);
 
@@ -502,6 +515,82 @@ fn queued_work_waits_for_configuration_instead_of_hammering_the_provider() {
         .unwrap();
     assert_eq!(response.body, "好呀，我在。");
     assert_eq!(core.get_job(&ticket.job_id).unwrap().state, JobState::Succeeded);
+}
+
+/// **跨 kind 一把尺**（#96 合 main 时暴露的真不一致）：`waiting_configuration` 无论由
+/// 哪条 kind、由哪条路落进来，对「要不要用户动手」必须给**同一个答案**。
+///
+/// 这里让两条**闸门**（都在领取前挡下）各落一条任务：
+/// - `semantic_index` 等本地模型（`waiting_model`）；
+/// - `respond` 等一个被移除的服务（`provider_not_configured`）。
+///
+/// 两个 kind 的名称、错误码、谁来挡都不同，但 `requiresUserAction` 必须**相同且为真**，
+/// `attentionKey` 必须各自指到「配哪一个」。把任一侧改回旧口径（例如「等配置不置
+/// `requiresUserAction`」），这条立刻红——这正是合 main 时两侧测试各钉相反期望的那处。
+///
+/// `attemptCount` 是唯一允许不同的东西：两条都是闸门路（没有执行者跑过），所以都是 0；
+/// 「真跑了一次」的执行期那条在 401 用例里钉着（如实记账，见
+/// `job_failures_map_to_contract_codes_with_the_right_retry_semantics` 的 401 段）。
+#[test]
+fn waiting_configuration_means_the_same_thing_across_job_kinds() {
+    if model_configured() {
+        eprintln!("跳过：这个进程配了本地模型，语义任务不会停在等配置");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, _transport, provider) = core_with_provider(
+        dir.path(),
+        &[ProviderCapability::GenerateText],
+        vec![Ok(chat_ok("不该被调用", "qwen-test"))],
+    );
+    let capture_id = capture_with_text(&mut core, "有点想说话。", "op-cross-kind");
+    let ticket = core
+        .request_response(&[capture_id], "陪我说说话", Some(&provider.id))
+        .unwrap();
+    let semantic = core
+        .schedule_semantic_index("跨 kind 一致性", "op-cross-kind-semantic")
+        .unwrap();
+
+    // 服务没了：`respond` 的闸门落配置等待；同一个核心里语义任务也在等模型。
+    core.remove_provider(&provider.id).unwrap();
+    let summary = core
+        .run_due_jobs(chrono::Utc::now(), 60_000, "test", 32)
+        .unwrap();
+    assert_eq!(summary.processed, 0, "两条都该被闸门挡住：一条都不跑");
+    assert_eq!(summary.failed, 0, "等配置不是失败");
+    assert_eq!(summary.retrying, 0, "也不排退避");
+
+    let provider_job = core.get_job(&ticket.job_id).unwrap();
+    let semantic_job = core.get_job(&semantic.id).unwrap();
+    assert_ne!(provider_job.kind, semantic_job.kind, "这确实是两个 kind");
+    assert_eq!(provider_job.state, JobState::WaitingConfiguration);
+    assert_eq!(semantic_job.state, JobState::WaitingConfiguration);
+    assert_ne!(
+        provider_job.error_code, semantic_job.error_code,
+        "等的事不一样（一个等服务、一个等模型），错误码就该不一样"
+    );
+
+    // 同一个状态，同一个答案：要不要用户动手，不因 kind 而异。
+    assert_eq!(
+        provider_job.requires_user_action, semantic_job.requires_user_action,
+        "同一个 waiting_configuration，跨 kind 必须一把尺"
+    );
+    assert!(provider_job.requires_user_action, "等服务要用户去配服务");
+    assert!(semantic_job.requires_user_action, "等模型要用户去配模型");
+
+    // 界面深链到「配哪一个」：形状只有一处（`jobs::configuration_attention_key`）。
+    assert_eq!(
+        provider_job.attention_key.as_deref(),
+        Some("job-config:respond:provider_not_configured")
+    );
+    assert_eq!(
+        semantic_job.attention_key.as_deref(),
+        Some("job-config:semantic_index:waiting_model")
+    );
+
+    // 两条都是闸门路（领取前挡下）：没跑过就不计尝试。
+    assert_eq!(provider_job.attempt_count, 0);
+    assert_eq!(semantic_job.attempt_count, 0);
 }
 
 // ------------------------------------------------------------------ 连接测试的四种结果
@@ -1028,6 +1117,17 @@ fn job_failures_map_to_contract_codes_with_the_right_retry_semantics() {
         let job = core.get_job(&ticket.job_id).unwrap();
         assert_eq!(job.state, JobState::WaitingConfiguration);
         assert_eq!(job.error_code.as_deref(), Some("authentication_failed"));
+        // 执行期那条路（真的跑过一次才撞上 401）：状态口径与闸门路**一字不差**
+        // （要用户去改配置、key 指到同一个服务），差别只在 `attempt_count` 如实记账。
+        assert!(job.requires_user_action, "401 要用户去换密钥，不是无需理会的状态");
+        assert_eq!(
+            job.attention_key.as_deref(),
+            Some("job-config:respond:authentication_failed")
+        );
+        assert_eq!(
+            job.attempt_count, 1,
+            "真跑了一次就如实记账（不像闸门路那样停在 0）"
+        );
         assert_eq!(transport.call_count(), 1);
 
         // 结论已经落库成失败，第二次驱动连试都不试。
