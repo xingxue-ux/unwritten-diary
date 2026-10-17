@@ -8,7 +8,7 @@ import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NewJob`, `SourceItem`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
 
 /// 资产在文件库中的状态，契约第 2.3 节。
@@ -38,6 +38,241 @@ enum AuthorType {
 
   Future<void> wire() =>
       RustLib.instance.api.diaryCoreModelAuthorTypeWire(that: this);
+}
+
+/// 备份快照里的关键行数。
+///
+/// 这三件事都靠它，所以它既是**清单字段**、也是**报告字段**：
+/// - 创建备份时按快照现算，写进清单；
+/// - 恢复时拿恢复出来的库**逐项对**，对不上就是「清单与内容不一致」；
+/// - 报告里如实给用户/上层看「这一份备份里有多少条记录、多少个原件」。
+///
+/// `Option` 不是「可能读不到」，而是**老 schema 的包**：`blobs` / `assets` /
+/// `import_sessions` 从 v2 起、`recording_sessions` 从 v3 起才存在，拿一个 v1 时代的
+/// 备份来恢复时这些表本来就不该有。核心自己产出的清单永远是全的。
+///
+/// 清单里的字段名是 camelCase（与清单其它字段、与契约的口径一致）。
+class BackupCounts {
+  /// 记录数（含草稿与回收站：备份是整库，不按界面口径过滤）。
+  final PlatformInt64 captures;
+
+  /// 原始文字/原件修订数。
+  final PlatformInt64 sourceRevisions;
+
+  /// 资产数（`assets` 行数，同一份内容被导入两次算两条）。
+  final PlatformInt64? assets;
+
+  /// 内容寻址的原件数（`blobs` 行数，同一份内容只算一条、只存一份）。
+  final PlatformInt64? blobs;
+
+  /// 快照里还没走完的导入数（`prepared` / `copying` / `verifying` / `recoverable`）。
+  final PlatformInt64? importsInFlight;
+
+  /// 快照里还没收尾的录音数。
+  final PlatformInt64? openRecordings;
+
+  const BackupCounts({
+    required this.captures,
+    required this.sourceRevisions,
+    this.assets,
+    this.blobs,
+    this.importsInFlight,
+    this.openRecordings,
+  });
+
+  @override
+  int get hashCode =>
+      captures.hashCode ^
+      sourceRevisions.hashCode ^
+      assets.hashCode ^
+      blobs.hashCode ^
+      importsInFlight.hashCode ^
+      openRecordings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BackupCounts &&
+          runtimeType == other.runtimeType &&
+          captures == other.captures &&
+          sourceRevisions == other.sourceRevisions &&
+          assets == other.assets &&
+          blobs == other.blobs &&
+          importsInFlight == other.importsInFlight &&
+          openRecordings == other.openRecordings;
+}
+
+/// 备份包检查结果（`backups.inspect`）。
+///
+/// **不抛错**：包坏了、路径越界、版本不兼容都如实进 `issues`，让界面能先展示
+/// 「这个包有什么问题」再决定要不要恢复。只有连清单都读不出来（不是 zip、没有
+/// 清单）才报 `corrupted_backup`。
+class BackupInspection {
+  final String packagePath;
+
+  /// 包格式版本（`formatVersion`）。
+  final PlatformInt64 formatVersion;
+  final PlatformInt64 schemaVersion;
+  final String apiVersion;
+  final String coreVersion;
+  final DateTime createdAt;
+  final PlatformInt64 byteSize;
+  final PlatformInt64 blobCount;
+  final PlatformInt64 blobBytes;
+  final PlatformInt64 assetCount;
+  final PlatformInt64 transientClipCount;
+  final BackupCounts counts;
+
+  /// 逐条目重算哈希、比大小、比清单之后**仍然为空**才算没有问题的包。
+  ///
+  /// 每条 `issues` 的格式是 `种类: 细节`，种类只有三种：
+  /// `corrupted`（哈希/结构/清单不一致）、`unsafe_path`（越界路径）、
+  /// `incompatible`（版本高于本核心）。机器可读的是种类，给人看的是细节。
+  final List<String> issues;
+
+  /// 本构建能不能恢复这个包（`schemaVersion` / `apiVersion` 都在可处理范围内）。
+  final bool compatible;
+
+  /// 是否逐条目校验过哈希。检查被中断时为 false，且 `issues` 非空。
+  final bool hashesVerified;
+
+  const BackupInspection({
+    required this.packagePath,
+    required this.formatVersion,
+    required this.schemaVersion,
+    required this.apiVersion,
+    required this.coreVersion,
+    required this.createdAt,
+    required this.byteSize,
+    required this.blobCount,
+    required this.blobBytes,
+    required this.assetCount,
+    required this.transientClipCount,
+    required this.counts,
+    required this.issues,
+    required this.compatible,
+    required this.hashesVerified,
+  });
+
+  @override
+  int get hashCode =>
+      packagePath.hashCode ^
+      formatVersion.hashCode ^
+      schemaVersion.hashCode ^
+      apiVersion.hashCode ^
+      coreVersion.hashCode ^
+      createdAt.hashCode ^
+      byteSize.hashCode ^
+      blobCount.hashCode ^
+      blobBytes.hashCode ^
+      assetCount.hashCode ^
+      transientClipCount.hashCode ^
+      counts.hashCode ^
+      issues.hashCode ^
+      compatible.hashCode ^
+      hashesVerified.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BackupInspection &&
+          runtimeType == other.runtimeType &&
+          packagePath == other.packagePath &&
+          formatVersion == other.formatVersion &&
+          schemaVersion == other.schemaVersion &&
+          apiVersion == other.apiVersion &&
+          coreVersion == other.coreVersion &&
+          createdAt == other.createdAt &&
+          byteSize == other.byteSize &&
+          blobCount == other.blobCount &&
+          blobBytes == other.blobBytes &&
+          assetCount == other.assetCount &&
+          transientClipCount == other.transientClipCount &&
+          counts == other.counts &&
+          issues == other.issues &&
+          compatible == other.compatible &&
+          hashesVerified == other.hashesVerified;
+}
+
+/// 创建备份的结果（`backups.create`）。
+class BackupReport {
+  /// 备份包（归档文件）的最终路径。写完并**自校验通过**之后才有这个文件。
+  final String packagePath;
+
+  /// 备份包的字节数。
+  final PlatformInt64 byteSize;
+
+  /// 快照的 schema 版本（`PRAGMA user_version`）。
+  final PlatformInt64 schemaVersion;
+
+  /// 产出这份备份的核心 API 版本，口径与 `CoreInfo.apiVersion` 一致。
+  final String apiVersion;
+
+  /// 产出这份备份的核心构建版本。
+  final String coreVersion;
+
+  /// 快照的导出时刻。
+  final DateTime createdAt;
+
+  /// 随包的内容寻址原件数（`blobs`）。
+  final PlatformInt64 blobCount;
+
+  /// 这些原件的原始字节数合计（压缩前的口径）。
+  final PlatformInt64 blobBytes;
+
+  /// 随包的**未收尾录音片段**数（不是内容寻址的那一类，见架构文档）。
+  final PlatformInt64 transientClipCount;
+
+  /// 快照里的关键行数。
+  final BackupCounts counts;
+
+  /// 需要调用方知道的事实（未完成的导入/录音、暂存片段没进包等）。
+  final List<String> warnings;
+
+  const BackupReport({
+    required this.packagePath,
+    required this.byteSize,
+    required this.schemaVersion,
+    required this.apiVersion,
+    required this.coreVersion,
+    required this.createdAt,
+    required this.blobCount,
+    required this.blobBytes,
+    required this.transientClipCount,
+    required this.counts,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      packagePath.hashCode ^
+      byteSize.hashCode ^
+      schemaVersion.hashCode ^
+      apiVersion.hashCode ^
+      coreVersion.hashCode ^
+      createdAt.hashCode ^
+      blobCount.hashCode ^
+      blobBytes.hashCode ^
+      transientClipCount.hashCode ^
+      counts.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BackupReport &&
+          runtimeType == other.runtimeType &&
+          packagePath == other.packagePath &&
+          byteSize == other.byteSize &&
+          schemaVersion == other.schemaVersion &&
+          apiVersion == other.apiVersion &&
+          coreVersion == other.coreVersion &&
+          createdAt == other.createdAt &&
+          blobCount == other.blobCount &&
+          blobBytes == other.blobBytes &&
+          transientClipCount == other.transientClipCount &&
+          counts == other.counts &&
+          warnings == other.warnings;
 }
 
 /// 一次混合记录，契约第 2.1 节。
@@ -1337,6 +1572,77 @@ class RecordingTicket {
           recordingId == other.recordingId &&
           assetId == other.assetId &&
           stagingTicket == other.stagingTicket;
+}
+
+/// 恢复到新库的结果（`backups.restore`）。
+class RestoreReport {
+  /// 恢复出来的资料库文件路径：调用方拿它直接 `Core::open`。
+  final String libraryPath;
+
+  /// 恢复出来的资料库根目录（原件与资料库文件所在目录）。
+  final String rootDir;
+  final PlatformInt64 schemaVersion;
+  final String apiVersion;
+  final String coreVersion;
+
+  /// 备份包的导出时刻。
+  final DateTime createdAt;
+  final PlatformInt64 byteSize;
+  final PlatformInt64 blobCount;
+  final PlatformInt64 blobBytes;
+  final PlatformInt64 transientClipCount;
+  final BackupCounts counts;
+
+  /// 如实说明恢复出来的库里「还没做完」的东西（不假装完成）。
+  final List<String> warnings;
+
+  const RestoreReport({
+    required this.libraryPath,
+    required this.rootDir,
+    required this.schemaVersion,
+    required this.apiVersion,
+    required this.coreVersion,
+    required this.createdAt,
+    required this.byteSize,
+    required this.blobCount,
+    required this.blobBytes,
+    required this.transientClipCount,
+    required this.counts,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      libraryPath.hashCode ^
+      rootDir.hashCode ^
+      schemaVersion.hashCode ^
+      apiVersion.hashCode ^
+      coreVersion.hashCode ^
+      createdAt.hashCode ^
+      byteSize.hashCode ^
+      blobCount.hashCode ^
+      blobBytes.hashCode ^
+      transientClipCount.hashCode ^
+      counts.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RestoreReport &&
+          runtimeType == other.runtimeType &&
+          libraryPath == other.libraryPath &&
+          rootDir == other.rootDir &&
+          schemaVersion == other.schemaVersion &&
+          apiVersion == other.apiVersion &&
+          coreVersion == other.coreVersion &&
+          createdAt == other.createdAt &&
+          byteSize == other.byteSize &&
+          blobCount == other.blobCount &&
+          blobBytes == other.blobBytes &&
+          transientClipCount == other.transientClipCount &&
+          counts == other.counts &&
+          warnings == other.warnings;
 }
 
 /// 检索过滤条件，契约第 2.6 节。

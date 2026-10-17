@@ -32,6 +32,10 @@ pub enum ErrorCode {
     SearchExpired,
     /// 游标过期或不属于这个会话，前端应从头翻。
     CursorExpired,
+    /// 备份包结构、哈希或清单与内容不一致（含越界路径），不能用来恢复。
+    CorruptedBackup,
+    /// 备份包来自更新的核心（`schemaVersion` / `apiVersion` 高于本构建）。
+    IncompatibleBackup,
 }
 
 impl ErrorCode {
@@ -49,6 +53,8 @@ impl ErrorCode {
             Self::UnsupportedFormat => "unsupported_format",
             Self::SearchExpired => "search_expired",
             Self::CursorExpired => "cursor_expired",
+            Self::CorruptedBackup => "corrupted_backup",
+            Self::IncompatibleBackup => "incompatible_backup",
         }
     }
 }
@@ -93,6 +99,20 @@ pub enum CoreError {
     #[error("检索游标已失效：{reason}")]
     CursorExpired { reason: String },
 
+    /// 备份包坏了：哈希、结构、清单与内容对不上，或清单里有越界路径。
+    ///
+    /// 契约第 7 节的 `corrupted_backup`：用户可见行为是「恢复失败原因清晰」，
+    /// 自动行为是「不修改现有库」——所以这个错误**只在什么都没改之前**返回。
+    #[error("备份包不可用：{reason}")]
+    CorruptedBackup { reason: String },
+
+    /// 备份包来自更新的核心：本构建不认识它的 schema / API 版本。
+    ///
+    /// 契约第 7 节的 `incompatible_backup`。高低版本都可能是「不认识」，
+    /// 但只有**高于**本构建的才拒；低于本构建的照常恢复，由开库时的迁移接手。
+    #[error("备份包与当前版本不兼容：{reason}")]
+    IncompatibleBackup { reason: String },
+
     #[error("文件操作失败：{0}")]
     Io(#[from] std::io::Error),
 
@@ -121,6 +141,8 @@ impl CoreError {
             Self::ExtractionFailed { .. } => ErrorCode::UnsupportedFormat,
             Self::SearchExpired { .. } => ErrorCode::SearchExpired,
             Self::CursorExpired { .. } => ErrorCode::CursorExpired,
+            Self::CorruptedBackup { .. } => ErrorCode::CorruptedBackup,
+            Self::IncompatibleBackup { .. } => ErrorCode::IncompatibleBackup,
             Self::Io(err) => io_code(err),
             Self::CorruptedData { .. } | Self::Serialization(_) => ErrorCode::InvalidState,
             Self::Database(err) => database_code(err),

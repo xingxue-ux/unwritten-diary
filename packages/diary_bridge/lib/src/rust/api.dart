@@ -28,6 +28,20 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
+  /// 创建备份包（B7 / 验收 E34；契约 `backups.create` 的同步入口）。
+  ///
+  /// 核心先取 SQLite 的一致性快照（`VACUUM INTO`，**不拷 .sqlite 文件**），再复制被
+  /// 快照引用的内容寻址原件，写完之后**自校验**一遍（重开包逐条目重算哈希）——过了才
+  /// 把包放到 `target_path` 上。备份期间资料库可以继续写，不加全局写锁。
+  ///
+  /// `target_path` 是**包文件的完整路径**，父目录会被创建；已存在时报
+  /// `invalid_argument`（绝不覆盖旧备份）。任何一步失败：目标路径上不留东西。
+  ///
+  /// 与契约的差异：契约 `backups.create` 返回 `jobId`（任务化，#70）。这一片先给
+  /// **同步**入口并把返回换成真实报告——任务化不属于 #86；Dart 适配层因此**不**把
+  /// `backups.create` 列进能力清单（能力是窄化过的，见 `wired_capabilities`）。
+  Future<BackupReport> createBackup({required String targetPath});
+
   /// 创建草稿，契约第 4.1 节 `captures.createDraft`。
   Future<Capture> createDraft({
     DateTime? occurredAt,
@@ -71,6 +85,13 @@ abstract class BridgeSession implements RustOpaqueInterface {
 
   /// 核心信息与恢复摘要。
   Future<LibraryInfo> info();
+
+  /// 检查备份包（契约 `backups.inspect` 的同步入口）：结构、版本、路径与逐条目哈希。
+  ///
+  /// 坏在哪就列在哪（`issues` 每条的格式是 `种类: 细节`，种类只有 `corrupted` /
+  /// `unsafe_path` / `incompatible`），**不抛错**；只有连清单都读不出来才报
+  /// `corrupted_backup`。界面据此先展示问题，再决定要不要恢复。
+  Future<BackupInspection> inspectBackup({required String packagePath});
 
   /// 任务面板状态：各状态计数、到期积压、下次唤醒与最近错误。
   ///
@@ -163,6 +184,18 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String recordingId,
     required PlatformInt64 segmentIndex,
     required SegmentManifest segment,
+  });
+
+  /// 恢复到**新的空目录**（E34/E35；契约 `backups.restore` 的同步入口）。
+  ///
+  /// **绝不覆盖当前资料库**：目标必须是新的空目录；解包先落在目标同级的暂存目录，
+  /// 全部校验通过才一次 rename 落地，中途失败只删暂存目录。拒绝口径：
+  /// 损坏 ⇒ `corrupted_backup`；越界路径 ⇒ `corrupted_backup`（绝不按它解包）；
+  /// 版本高于本核心 ⇒ `incompatible_backup`。返回的 `library_path` 直接交给
+  /// `BridgeSession.open` 就能打开恢复出来的库。
+  Future<RestoreReport> restoreBackup({
+    required String packagePath,
+    required String targetDir,
   });
 
   /// 修改某一篇来源的原始文字：新建一个修订，旧修订保留。

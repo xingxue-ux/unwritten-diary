@@ -1223,3 +1223,114 @@ pub struct SearchSnapshot {
     pub index_coverage: Coverage,
     pub warnings: Vec<String>,
 }
+
+// ---------------------------------------------------------------- 备份与恢复（B7）
+
+/// 备份快照里的关键行数。
+///
+/// 这三件事都靠它，所以它既是**清单字段**、也是**报告字段**：
+/// - 创建备份时按快照现算，写进清单；
+/// - 恢复时拿恢复出来的库**逐项对**，对不上就是「清单与内容不一致」；
+/// - 报告里如实给用户/上层看「这一份备份里有多少条记录、多少个原件」。
+///
+/// `Option` 不是「可能读不到」，而是**老 schema 的包**：`blobs` / `assets` /
+/// `import_sessions` 从 v2 起、`recording_sessions` 从 v3 起才存在，拿一个 v1 时代的
+/// 备份来恢复时这些表本来就不该有。核心自己产出的清单永远是全的。
+///
+/// 清单里的字段名是 camelCase（与清单其它字段、与契约的口径一致）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupCounts {
+    /// 记录数（含草稿与回收站：备份是整库，不按界面口径过滤）。
+    pub captures: i64,
+    /// 原始文字/原件修订数。
+    pub source_revisions: i64,
+    /// 资产数（`assets` 行数，同一份内容被导入两次算两条）。
+    pub assets: Option<i64>,
+    /// 内容寻址的原件数（`blobs` 行数，同一份内容只算一条、只存一份）。
+    pub blobs: Option<i64>,
+    /// 快照里还没走完的导入数（`prepared` / `copying` / `verifying` / `recoverable`）。
+    pub imports_in_flight: Option<i64>,
+    /// 快照里还没收尾的录音数。
+    pub open_recordings: Option<i64>,
+}
+
+/// 创建备份的结果（`backups.create`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackupReport {
+    /// 备份包（归档文件）的最终路径。写完并**自校验通过**之后才有这个文件。
+    pub package_path: String,
+    /// 备份包的字节数。
+    pub byte_size: i64,
+    /// 快照的 schema 版本（`PRAGMA user_version`）。
+    pub schema_version: i64,
+    /// 产出这份备份的核心 API 版本，口径与 `CoreInfo.apiVersion` 一致。
+    pub api_version: String,
+    /// 产出这份备份的核心构建版本。
+    pub core_version: String,
+    /// 快照的导出时刻。
+    pub created_at: DateTime<Utc>,
+    /// 随包的内容寻址原件数（`blobs`）。
+    pub blob_count: i64,
+    /// 这些原件的原始字节数合计（压缩前的口径）。
+    pub blob_bytes: i64,
+    /// 随包的**未收尾录音片段**数（不是内容寻址的那一类，见架构文档）。
+    pub transient_clip_count: i64,
+    /// 快照里的关键行数。
+    pub counts: BackupCounts,
+    /// 需要调用方知道的事实（未完成的导入/录音、暂存片段没进包等）。
+    pub warnings: Vec<String>,
+}
+
+/// 备份包检查结果（`backups.inspect`）。
+///
+/// **不抛错**：包坏了、路径越界、版本不兼容都如实进 `issues`，让界面能先展示
+/// 「这个包有什么问题」再决定要不要恢复。只有连清单都读不出来（不是 zip、没有
+/// 清单）才报 `corrupted_backup`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackupInspection {
+    pub package_path: String,
+    /// 包格式版本（`formatVersion`）。
+    pub format_version: i64,
+    pub schema_version: i64,
+    pub api_version: String,
+    pub core_version: String,
+    pub created_at: DateTime<Utc>,
+    pub byte_size: i64,
+    pub blob_count: i64,
+    pub blob_bytes: i64,
+    pub asset_count: i64,
+    pub transient_clip_count: i64,
+    pub counts: BackupCounts,
+    /// 逐条目重算哈希、比大小、比清单之后**仍然为空**才算没有问题的包。
+    ///
+    /// 每条 `issues` 的格式是 `种类: 细节`，种类只有三种：
+    /// `corrupted`（哈希/结构/清单不一致）、`unsafe_path`（越界路径）、
+    /// `incompatible`（版本高于本核心）。机器可读的是种类，给人看的是细节。
+    pub issues: Vec<String>,
+    /// 本构建能不能恢复这个包（`schemaVersion` / `apiVersion` 都在可处理范围内）。
+    pub compatible: bool,
+    /// 是否逐条目校验过哈希。检查被中断时为 false，且 `issues` 非空。
+    pub hashes_verified: bool,
+}
+
+/// 恢复到新库的结果（`backups.restore`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RestoreReport {
+    /// 恢复出来的资料库文件路径：调用方拿它直接 `Core::open`。
+    pub library_path: String,
+    /// 恢复出来的资料库根目录（原件与资料库文件所在目录）。
+    pub root_dir: String,
+    pub schema_version: i64,
+    pub api_version: String,
+    pub core_version: String,
+    /// 备份包的导出时刻。
+    pub created_at: DateTime<Utc>,
+    pub byte_size: i64,
+    pub blob_count: i64,
+    pub blob_bytes: i64,
+    pub transient_clip_count: i64,
+    pub counts: BackupCounts,
+    /// 如实说明恢复出来的库里「还没做完」的东西（不假装完成）。
+    pub warnings: Vec<String>,
+}

@@ -14,11 +14,12 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use chrono::{DateTime, Utc};
 use diary_core::{
-    Capture, CapturePage, CommitResult, Core, CoreError, DomainEvent, DraftSaveResult,
-    ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job,
-    JobRunSummary, JobState, JobStatus, NativeRecordingStatus, RecordingFinalizeResult,
-    RecordingRecovery, RecordingSession, RecordingTicket, SearchRequest, SearchSnapshot,
-    SegmentManifest, SegmentReceipt, SourceLocation, SourceLocator, SourceRevision,
+    BackupInspection, BackupReport, Capture, CapturePage, CommitResult, Core, CoreError,
+    DomainEvent, DraftSaveResult, ExtractedContent, ImportManifest, ImportOrigin, ImportStatus,
+    ImportTicket, IndexStatus, Job, JobRunSummary, JobState, JobStatus, NativeRecordingStatus,
+    RecordingFinalizeResult, RecordingRecovery, RecordingSession, RecordingTicket, RestoreReport,
+    SearchRequest, SearchSnapshot, SegmentManifest, SegmentReceipt, SourceLocation, SourceLocator,
+    SourceRevision,
 };
 use flutter_rust_bridge::frb;
 
@@ -151,7 +152,7 @@ impl BridgeSession {
         let capture_count = core.count_captures()?;
         let last_event_sequence = core.last_event_sequence()?;
         Ok(LibraryInfo {
-            api_version: "1.0".to_owned(),
+            api_version: diary_core::API_VERSION.to_owned(),
             data_schema_version: core.schema_version()?,
             build_version: env!("CARGO_PKG_VERSION").to_owned(),
             library_id: self.library_id.clone(),
@@ -257,6 +258,51 @@ impl BridgeSession {
     pub fn import_status(&self, import_id: String) -> Result<ImportStatus, BridgeError> {
         let core = self.lock()?;
         Ok(core.import_status(&import_id)?)
+    }
+
+    // ------------------------------------------------------------ 备份与恢复
+
+    /// 创建备份包（B7 / 验收 E34；契约 `backups.create` 的同步入口）。
+    ///
+    /// 核心先取 SQLite 的一致性快照（`VACUUM INTO`，**不拷 .sqlite 文件**），再复制被
+    /// 快照引用的内容寻址原件，写完之后**自校验**一遍（重开包逐条目重算哈希）——过了才
+    /// 把包放到 `target_path` 上。备份期间资料库可以继续写，不加全局写锁。
+    ///
+    /// `target_path` 是**包文件的完整路径**，父目录会被创建；已存在时报
+    /// `invalid_argument`（绝不覆盖旧备份）。任何一步失败：目标路径上不留东西。
+    ///
+    /// 与契约的差异：契约 `backups.create` 返回 `jobId`（任务化，#70）。这一片先给
+    /// **同步**入口并把返回换成真实报告——任务化不属于 #86；Dart 适配层因此**不**把
+    /// `backups.create` 列进能力清单（能力是窄化过的，见 `wired_capabilities`）。
+    pub fn create_backup(&self, target_path: String) -> Result<BackupReport, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.create_backup(&target_path)?)
+    }
+
+    /// 检查备份包（契约 `backups.inspect` 的同步入口）：结构、版本、路径与逐条目哈希。
+    ///
+    /// 坏在哪就列在哪（`issues` 每条的格式是 `种类: 细节`，种类只有 `corrupted` /
+    /// `unsafe_path` / `incompatible`），**不抛错**；只有连清单都读不出来才报
+    /// `corrupted_backup`。界面据此先展示问题，再决定要不要恢复。
+    pub fn inspect_backup(&self, package_path: String) -> Result<BackupInspection, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.inspect_backup(&package_path)?)
+    }
+
+    /// 恢复到**新的空目录**（E34/E35；契约 `backups.restore` 的同步入口）。
+    ///
+    /// **绝不覆盖当前资料库**：目标必须是新的空目录；解包先落在目标同级的暂存目录，
+    /// 全部校验通过才一次 rename 落地，中途失败只删暂存目录。拒绝口径：
+    /// 损坏 ⇒ `corrupted_backup`；越界路径 ⇒ `corrupted_backup`（绝不按它解包）；
+    /// 版本高于本核心 ⇒ `incompatible_backup`。返回的 `library_path` 直接交给
+    /// `BridgeSession.open` 就能打开恢复出来的库。
+    pub fn restore_backup(
+        &self,
+        package_path: String,
+        target_dir: String,
+    ) -> Result<RestoreReport, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.restore_backup(&package_path, &target_dir)?)
     }
 
     pub fn cancel_import(&self, import_id: String) -> Result<(), BridgeError> {
@@ -596,6 +642,11 @@ fn wired_capabilities() -> Vec<String> {
         "jobs.runDue",
         "jobs.nextWakeup",
         "core.events",
+        // B7：备份与恢复这一轮是**同步**入口（契约那三行返回 jobId，任务化见 #70）。
+        // 名字照契约写，界面看到的仍是 Dart 适配层窄化过的清单。
+        "backups.create",
+        "backups.inspect",
+        "backups.restore",
     ]
     .iter()
     .map(|name| (*name).to_owned())
