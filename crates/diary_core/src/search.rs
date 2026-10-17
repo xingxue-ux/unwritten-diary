@@ -589,7 +589,7 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
     // 语义这一路的数字全部**算出来**：生效代次、块数与其中有这一代向量的块数、
     // 生效代次那一批向量的口径。没有向量时 `model_version` 是 `None`
     // ——那是「库里的真值」，不是「这一片还没接模型」这种会被时间打脸的话。
-    let (active_generation, _building_generation) = crate::chunks::generations(core)?;
+    let (active_generation, building_generation) = crate::chunks::generations(core)?;
     let chunk_counts = crate::chunks::counts(core, source_scope)?;
     // 生效代次那一批向量的口径。**不能只看任意一行**：整代一致才报一个版本；混了不止
     // 一种就是历史遗留的混合代次（`Mixed`）——既不给单一 `model_version`，也不说「就绪」。
@@ -686,6 +686,36 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
     };
     if let Some(reason) = semantic_reason {
         reasons.push(reason);
+    }
+    // 有一代**在建**（上一次被杀/取消留下的，或作业正在分段跑、上一次让出了）：
+    // 如实说一句。`semantic_index_ready` 说的是**生效代次**覆盖够不够（那是正在
+    // 服务检索的那一代），而有代次在建这件事它一个字都说不出——不说就会让人以为
+    // 「覆盖够 = 这就是最终状态」。两句话各说一件事，不冲突。
+    //
+    // 措辞避开「未就绪」：`semantic_index_ready` 与「未就绪」的对应关系是严格互补的
+    // （见上面 `semantic_reason` 的说明），这里的在建只是一句补充事实。
+    if let Some(building) = building_generation {
+        // 「这一代已经写了多少块」按**行数**数：正常路径上这一代的行都是同一口径的
+        // （续跑前核对，口径不一致就整代清掉），所以行数就是进度。
+        //
+        // 分子分母都用**整库**的块数（代次是全局的）：`chunk_counts` 带来源范围时
+        // 是范围内的块，拿它当分母会出「写了 5 / 3 块」这种自相矛盾的句子。
+        let building_vectors: i64 = core.conn.query_row(
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = ?1",
+            params![building],
+            |row| row.get(0),
+        )?;
+        let all_chunks: i64 =
+            core.conn
+                .query_row("SELECT COUNT(*) FROM text_chunks", [], |row| row.get(0))?;
+        let serving = match active_generation {
+            Some(active) => format!("生效代次仍是第 {active} 代，检索照旧读它"),
+            None => "还没有生效代次，检索暂时读不到向量".to_owned(),
+        };
+        reasons.push(format!(
+            "语义索引有一代在建（第 {building} 代）：已经写了 {building_vectors} / {all_chunks} 块的向量；\
+             {serving}；重建任务会接着没算完的块继续（不会重头，也不会把半成品切过去）"
+        ));
     }
     // 旧修订的行不计入上面的数字，也不参与默认检索。这一句必须说，否则
     // 「索引表里还留着词项、状态数字里却没有」看起来就像漏统计。

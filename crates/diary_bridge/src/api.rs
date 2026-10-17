@@ -8,14 +8,18 @@
 //! 核心的公开模型（`diary_core::model`）已经写进 `flutter_rust_bridge.yaml` 的
 //! `rust_input`，所以这里返回的是真正的字段级镜像，而不是不透明句柄。
 
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use chrono::{DateTime, Utc};
 use diary_core::{
     BackupInspection, BackupReport, Capture, CapturePage, CommitResult, Core, CoreError,
     DomainEvent, DraftSaveResult, ExtractedContent, ImportManifest, ImportOrigin, ImportStatus,
-    ImportTicket, IndexStatus, Job, JobRunSummary, JobState, JobStatus, RestoreReport,
-    SearchRequest, SearchSnapshot, SourceLocation, SourceLocator, SourceRevision,
+    ImportTicket, IndexStatus, Job, JobRunSummary, JobState, JobStatus, NativeRecordingStatus,
+    RecordingFinalizeResult, RecordingRecovery, RecordingSession, RecordingTicket, RestoreReport,
+    SearchRequest, SearchSnapshot, SegmentManifest, SegmentReceipt, SourceLocation, SourceLocator,
+    SourceRevision,
 };
 use flutter_rust_bridge::frb;
 
@@ -23,6 +27,7 @@ use flutter_rust_bridge::frb;
 ///
 /// frb 会把它变成 Dart 侧的异常类型，所以前端可以用 `on BridgeError catch (e)`
 /// 直接读 `e.code`。
+#[derive(Debug)]
 pub struct BridgeError {
     pub code: String,
     pub message: String,
@@ -68,8 +73,36 @@ pub struct LibraryInfo {
 /// 一个打开的资料库会话。Dart 侧持有的就是这个句柄。
 #[frb(opaque)]
 pub struct BridgeSession {
-    inner: Mutex<Core>,
+    inner: Arc<Mutex<Core>>,
     library_id: String,
+}
+
+// WorkManager starts a second Dart isolate in this Android process. All bridge
+// handles for one library must share the same Core lock: opening a second Core
+// would run recover_on_open while a foreground import is still copying, and
+// two runDue calls could both claim the same job. Weak entries let the last
+// session really close the database. This is an in-process guarantee; a
+// separate Android process must not open the library concurrently.
+static OPEN_LIBRARIES: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<Core>>>>> = OnceLock::new();
+
+fn library_key(path: &Path) -> Result<PathBuf, BridgeError> {
+    let file_name = path.file_name().ok_or_else(|| BridgeError {
+        code: "invalid_argument".to_owned(),
+        message: "资料库路径必须指向一个文件".to_owned(),
+        retryable: false,
+    })?;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(CoreError::from)?
+            .join(path)
+    };
+    // The file may not exist on its first open; canonicalize its parent so
+    // relative and absolute callers still meet at the same registry entry.
+    let parent = absolute.parent().unwrap_or_else(|| Path::new("."));
+    let canonical_parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    Ok(canonical_parent.join(file_name))
 }
 
 /// 一轮驱动最多跑几条任务（防御性上限）。
@@ -83,13 +116,29 @@ impl BridgeSession {
     /// 打开（或创建）资料库。
     pub fn open(library_path: String) -> Result<BridgeSession, BridgeError> {
         let path = std::path::PathBuf::from(&library_path);
-        let core = Core::open(&path)?;
+        let key = library_key(&path)?;
+        let mut registry = OPEN_LIBRARIES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|_| BridgeError {
+                code: "invalid_state".to_owned(),
+                message: "资料库会话登记表已损坏".to_owned(),
+                retryable: false,
+            })?;
+        let inner = match registry.get(&key).and_then(Weak::upgrade) {
+            Some(existing) => existing,
+            None => {
+                let opened = Arc::new(Mutex::new(Core::open(&key)?));
+                registry.insert(key, Arc::downgrade(&opened));
+                opened
+            }
+        };
         let library_id = path
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_else(|| "library".to_owned());
         Ok(Self {
-            inner: Mutex::new(core),
+            inner,
             library_id,
         })
     }
@@ -256,6 +305,58 @@ impl BridgeSession {
         Ok(core.restore_backup(&package_path, &target_dir)?)
     }
 
+    pub fn cancel_import(&self, import_id: String) -> Result<(), BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.cancel_import(&import_id)?)
+    }
+
+    // ------------------------------------------------------------ 录音交接
+
+    pub fn prepare_recording(
+        &self,
+        capture_id: String,
+        operation_id: String,
+    ) -> Result<RecordingTicket, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.prepare_recording(&capture_id, &operation_id)?)
+    }
+
+    pub fn register_segment(
+        &self,
+        recording_id: String,
+        segment_index: i64,
+        segment: SegmentManifest,
+    ) -> Result<SegmentReceipt, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.register_segment(&recording_id, segment_index, segment)?)
+    }
+
+    pub fn update_recording_state(
+        &self,
+        status: NativeRecordingStatus,
+    ) -> Result<RecordingSession, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.update_recording_state(status)?)
+    }
+
+    pub fn finalize_recording(
+        &self,
+        recording_id: String,
+        last_segment_index: i64,
+        end_reason: String,
+    ) -> Result<RecordingFinalizeResult, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.finalize_recording(&recording_id, last_segment_index, &end_reason)?)
+    }
+
+    pub fn recover_recording(
+        &self,
+        recording_id: Option<String>,
+    ) -> Result<RecordingRecovery, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.recover_recording(recording_id.as_deref())?)
+    }
+
     // ------------------------------------------------------------ 提取与定位
 
     /// 对某个来源（来源 id 或修订 id 都行）跑一次提取。
@@ -344,6 +445,30 @@ impl BridgeSession {
         Ok(core.schedule_index_rebuild(&scope, &reason, &operation_id)?)
     }
 
+    /// 排一条**语义索引**重建任务，契约第 4.4 节 `indexes.rebuildSemantic`。
+    ///
+    /// **异步**：只排任务并返回它，不做同步重建。与 `rebuildIndexes` 的区别（三条）：
+    ///
+    /// - **整库**：没有 `scope`。任务业务键是 `(semantic_index, 空目标, 空快照)`，所以
+    ///   「队列里至多一条活着的语义重建」，重复排队不产生第二份工作；
+    /// - **等模型配置**：本地模型没配好时任务落 `waiting_configuration` +
+    ///   `errorCode = waiting_model`（不是失败、不退避），并且不进 `nextWakeup`——配置
+    ///   变化不是时间问题，下一次 `runDueJobs` 的前置评估会把它拉起；
+    /// - **可分段让出**：整库重建会远超一次唤醒的预算，预算到点时它在块与块之间回到
+    ///   `queued`（进度在 `Job.progress` 上、`attemptCount` 不增加），下一轮续跑；
+    ///   代次切换仍是原子的，让出不算「已完成」。
+    ///
+    /// 幂等：同一个 `(reason, operationId)` 重复调用返回同一条任务；同一个 operationId
+    /// 换了原因报 `idempotency_conflict`；任务跑完后再请求会建新的一条（按现状增量重算）。
+    pub fn rebuild_semantic_index(
+        &self,
+        reason: String,
+        operation_id: String,
+    ) -> Result<Job, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.schedule_semantic_index(&reason, &operation_id)?)
+    }
+
     // ------------------------------------------------------------ 检索会话
 
     /// 发起一次检索，契约第 4.4 节 `search.start`。
@@ -426,12 +551,7 @@ impl BridgeSession {
         trigger: String,
     ) -> Result<JobRunSummary, BridgeError> {
         let mut core = self.lock()?;
-        Ok(core.run_due_jobs(
-            Utc::now(),
-            u64::from(budget_ms),
-            &trigger,
-            RUN_DUE_MAX_JOBS,
-        )?)
+        Ok(core.run_due_jobs(Utc::now(), u64::from(budget_ms), &trigger, RUN_DUE_MAX_JOBS)?)
     }
 
     /// 建议的下次唤醒时刻；没有待办时为空。
@@ -465,9 +585,7 @@ fn recovery_summary(core: &Core) -> Result<RecoverySummary, CoreError> {
     let recoverable_imports = core.count_imports_in_flight()? as u32;
     let open_recordings = core.count_open_recordings()? as u32;
     // 走精确计数：`list_jobs` 的 limit 会被夹到 200，拿它当计数会在任务多时少报。
-    let pending_jobs = core
-        .count_jobs(Some(&[JobState::Queued, JobState::RetryWait]))?
-        as u32;
+    let pending_jobs = core.count_jobs(Some(&[JobState::Queued, JobState::RetryWait]))? as u32;
 
     let mut notes = Vec::new();
     if recoverable_imports > 0 {
@@ -499,6 +617,12 @@ fn wired_capabilities() -> Vec<String> {
         "imports.prepare",
         "imports.finish",
         "imports.status",
+        "imports.cancel",
+        "recordings.prepare",
+        "recordings.registerSegment",
+        "recordings.updateState",
+        "recordings.finalize",
+        "recordings.recover",
         "sources.extract",
         "sources.extractedContent",
         "sources.reviseText",
@@ -506,6 +630,7 @@ fn wired_capabilities() -> Vec<String> {
         "sources.locate",
         "indexes.status",
         "indexes.rebuild",
+        "indexes.rebuildSemantic",
         "search.start",
         "search.nextPage",
         "search.snapshot",
@@ -526,4 +651,29 @@ fn wired_capabilities() -> Vec<String> {
     .iter()
     .map(|name| (*name).to_owned())
     .collect()
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn same_library_shares_one_core_until_last_session_closes() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("diary-bridge-shared-{unique}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("library.sqlite");
+        let foreground = BridgeSession::open(path.to_string_lossy().into_owned()).unwrap();
+        let worker = BridgeSession::open(path.to_string_lossy().into_owned()).unwrap();
+        assert!(Arc::ptr_eq(&foreground.inner, &worker.inner));
+        drop(foreground);
+        drop(worker);
+        let reopened = BridgeSession::open(path.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(reopened.info().unwrap().library_id, "library");
+        drop(reopened);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

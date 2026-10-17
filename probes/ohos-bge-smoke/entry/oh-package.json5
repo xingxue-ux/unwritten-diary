@@ -1,0 +1,14 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Minimal entry module of the OHOS bge smoke probe.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {
+    // ★ 关键：把 src/main/cpp/types/libdiary_bge 注册成名为 "libdiary_bge.so" 的本地依赖，
+    //    ArkTS 的 `import diaryBge from 'libdiary_bge.so'` 才能解析到 index.d.ts。
+    //    （DevEco 模板里这一行是自动生成的；纯命令行工程要自己写。）
+    "libdiary_bge.so": "file:./src/main/cpp/types/libdiary_bge"
+  }
+}

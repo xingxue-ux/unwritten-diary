@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1586197656;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1052408493;
 
 // Section: executor
 
@@ -48,6 +48,57 @@ flutter_rust_bridge::frb_generated_default_handler!();
 
 // Section: wire_funcs
 
+fn wire__crate__api__BridgeSession_cancel_import_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_cancel_import",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_import_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::api::BridgeSession::cancel_import(&*api_that_guard, api_import_id)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__BridgeSession_cancel_search_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -471,6 +522,63 @@ fn wire__crate__api__BridgeSession_extracted_content_impl(
                     let output_ok = crate::api::BridgeSession::extracted_content(
                         &*api_that_guard,
                         api_source_id,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__BridgeSession_finalize_recording_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_finalize_recording",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_recording_id = <String>::sse_decode(&mut deserializer);
+            let api_last_segment_index = <i64>::sse_decode(&mut deserializer);
+            let api_end_reason = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::BridgeSession::finalize_recording(
+                        &*api_that_guard,
+                        api_recording_id,
+                        api_last_segment_index,
+                        api_end_reason,
                     )?;
                     std::result::Result::Ok(output_ok)
                 })())
@@ -1205,6 +1313,61 @@ fn wire__crate__api__BridgeSession_prepare_import_impl(
         },
     )
 }
+fn wire__crate__api__BridgeSession_prepare_recording_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_prepare_recording",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_capture_id = <String>::sse_decode(&mut deserializer);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::BridgeSession::prepare_recording(
+                        &*api_that_guard,
+                        api_capture_id,
+                        api_operation_id,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__BridgeSession_previous_source_revision_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1308,6 +1471,171 @@ fn wire__crate__api__BridgeSession_rebuild_indexes_impl(
                         api_scope,
                         api_reason,
                         api_operation_id,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__BridgeSession_rebuild_semantic_index_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_rebuild_semantic_index",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_reason = <String>::sse_decode(&mut deserializer);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::BridgeSession::rebuild_semantic_index(
+                        &*api_that_guard,
+                        api_reason,
+                        api_operation_id,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__BridgeSession_recover_recording_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_recover_recording",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_recording_id = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::BridgeSession::recover_recording(
+                        &*api_that_guard,
+                        api_recording_id,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__BridgeSession_register_segment_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_register_segment",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_recording_id = <String>::sse_decode(&mut deserializer);
+            let api_segment_index = <i64>::sse_decode(&mut deserializer);
+            let api_segment = <diary_core::model::SegmentManifest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::BridgeSession::register_segment(
+                        &*api_that_guard,
+                        api_recording_id,
+                        api_segment_index,
+                        api_segment,
                     )?;
                     std::result::Result::Ok(output_ok)
                 })())
@@ -1699,6 +2027,60 @@ fn wire__crate__api__BridgeSession_start_search_impl(
                         &*api_that_guard,
                         api_request,
                         api_query_revision,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__BridgeSession_update_recording_state_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_update_recording_state",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_status =
+                <diary_core::model::NativeRecordingStatus>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::BridgeSession::update_recording_state(
+                        &*api_that_guard,
+                        api_status,
                     )?;
                     std::result::Result::Ok(output_ok)
                 })())
@@ -3286,11 +3668,54 @@ const _: fn() = || {
         let _: Vec<diary_core::model::JobErrorSummary> = JobStatus.recent_errors;
     }
     {
+        let NativeRecordingStatus = None::<diary_core::model::NativeRecordingStatus>.unwrap();
+        let _: String = NativeRecordingStatus.recording_id;
+        let _: diary_core::model::RecordingState = NativeRecordingStatus.state;
+        let _: chrono::DateTime<chrono::Utc> = NativeRecordingStatus.wall_clock;
+        let _: i64 = NativeRecordingStatus.elapsed_ms;
+        let _: i64 = NativeRecordingStatus.persisted_through_ms;
+        let _: bool = NativeRecordingStatus.input_device_changed;
+        let _: Option<String> = NativeRecordingStatus.message;
+    }
+    {
         let ProcessingSummary = None::<diary_core::model::ProcessingSummary>.unwrap();
         let _: u32 = ProcessingSummary.unprocessed;
         let _: u32 = ProcessingSummary.processing;
         let _: u32 = ProcessingSummary.searchable;
         let _: u32 = ProcessingSummary.needs_attention;
+    }
+    {
+        let RecordingFinalizeResult = None::<diary_core::model::RecordingFinalizeResult>.unwrap();
+        let _: String = RecordingFinalizeResult.recording_id;
+        let _: String = RecordingFinalizeResult.asset_id;
+        let _: diary_core::model::RecordingState = RecordingFinalizeResult.state;
+        let _: i64 = RecordingFinalizeResult.segment_count;
+        let _: bool = RecordingFinalizeResult.transcription_queued;
+        let _: i64 = RecordingFinalizeResult.logical_duration_ms;
+    }
+    {
+        let RecordingRecovery = None::<diary_core::model::RecordingRecovery>.unwrap();
+        let _: Option<String> = RecordingRecovery.recording_id;
+        let _: diary_core::model::RecordingState = RecordingRecovery.state;
+        let _: Vec<i64> = RecordingRecovery.closed_segment_indexes;
+        let _: i64 = RecordingRecovery.gap_ms;
+        let _: Vec<String> = RecordingRecovery.notes;
+    }
+    {
+        let RecordingSession = None::<diary_core::model::RecordingSession>.unwrap();
+        let _: String = RecordingSession.recording_id;
+        let _: String = RecordingSession.asset_id;
+        let _: diary_core::model::RecordingState = RecordingSession.state;
+        let _: i64 = RecordingSession.elapsed_ms;
+        let _: i64 = RecordingSession.durable_through_ms;
+        let _: i64 = RecordingSession.segment_count;
+        let _: Option<String> = RecordingSession.last_error;
+    }
+    {
+        let RecordingTicket = None::<diary_core::model::RecordingTicket>.unwrap();
+        let _: String = RecordingTicket.recording_id;
+        let _: String = RecordingTicket.asset_id;
+        let _: String = RecordingTicket.staging_ticket;
     }
     {
         let RestoreReport = None::<diary_core::model::RestoreReport>.unwrap();
@@ -3347,6 +3772,22 @@ const _: fn() = || {
         let _: Option<String> = SearchSnapshot.cursor;
         let _: diary_core::model::Coverage = SearchSnapshot.index_coverage;
         let _: Vec<String> = SearchSnapshot.warnings;
+    }
+    {
+        let SegmentManifest = None::<diary_core::model::SegmentManifest>.unwrap();
+        let _: String = SegmentManifest.segment_id;
+        let _: String = SegmentManifest.relative_file_name;
+        let _: i64 = SegmentManifest.duration_ms;
+        let _: String = SegmentManifest.sha256;
+        let _: i64 = SegmentManifest.byte_size;
+        let _: Option<chrono::DateTime<chrono::Utc>> = SegmentManifest.closed_at;
+    }
+    {
+        let SegmentReceipt = None::<diary_core::model::SegmentReceipt>.unwrap();
+        let _: String = SegmentReceipt.segment_id;
+        let _: i64 = SegmentReceipt.segment_index;
+        let _: bool = SegmentReceipt.durable;
+        let _: chrono::DateTime<chrono::Utc> = SegmentReceipt.recorded_at;
     }
     {
         let SourceLocation = None::<diary_core::model::SourceLocation>.unwrap();
@@ -4220,6 +4661,18 @@ impl SseDecode for Vec<f64> {
     }
 }
 
+impl SseDecode for Vec<i64> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<i64>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<u8> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -4293,6 +4746,28 @@ impl SseDecode for diary_core::model::MatchedBy {
             1 => diary_core::model::MatchedBy::Semantic,
             2 => diary_core::model::MatchedBy::Metadata,
             _ => unreachable!("Invalid variant for MatchedBy: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for diary_core::model::NativeRecordingStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_recordingId = <String>::sse_decode(deserializer);
+        let mut var_state = <diary_core::model::RecordingState>::sse_decode(deserializer);
+        let mut var_wallClock = <chrono::DateTime<chrono::Utc>>::sse_decode(deserializer);
+        let mut var_elapsedMs = <i64>::sse_decode(deserializer);
+        let mut var_persistedThroughMs = <i64>::sse_decode(deserializer);
+        let mut var_inputDeviceChanged = <bool>::sse_decode(deserializer);
+        let mut var_message = <Option<String>>::sse_decode(deserializer);
+        return diary_core::model::NativeRecordingStatus {
+            recording_id: var_recordingId,
+            state: var_state,
+            wall_clock: var_wallClock,
+            elapsed_ms: var_elapsedMs,
+            persisted_through_ms: var_persistedThroughMs,
+            input_device_changed: var_inputDeviceChanged,
+            message: var_message,
         };
     }
 }
@@ -4603,6 +5078,66 @@ impl SseDecode for diary_core::model::ProcessingSummary {
     }
 }
 
+impl SseDecode for diary_core::model::RecordingFinalizeResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_recordingId = <String>::sse_decode(deserializer);
+        let mut var_assetId = <String>::sse_decode(deserializer);
+        let mut var_state = <diary_core::model::RecordingState>::sse_decode(deserializer);
+        let mut var_segmentCount = <i64>::sse_decode(deserializer);
+        let mut var_transcriptionQueued = <bool>::sse_decode(deserializer);
+        let mut var_logicalDurationMs = <i64>::sse_decode(deserializer);
+        return diary_core::model::RecordingFinalizeResult {
+            recording_id: var_recordingId,
+            asset_id: var_assetId,
+            state: var_state,
+            segment_count: var_segmentCount,
+            transcription_queued: var_transcriptionQueued,
+            logical_duration_ms: var_logicalDurationMs,
+        };
+    }
+}
+
+impl SseDecode for diary_core::model::RecordingRecovery {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_recordingId = <Option<String>>::sse_decode(deserializer);
+        let mut var_state = <diary_core::model::RecordingState>::sse_decode(deserializer);
+        let mut var_closedSegmentIndexes = <Vec<i64>>::sse_decode(deserializer);
+        let mut var_gapMs = <i64>::sse_decode(deserializer);
+        let mut var_notes = <Vec<String>>::sse_decode(deserializer);
+        return diary_core::model::RecordingRecovery {
+            recording_id: var_recordingId,
+            state: var_state,
+            closed_segment_indexes: var_closedSegmentIndexes,
+            gap_ms: var_gapMs,
+            notes: var_notes,
+        };
+    }
+}
+
+impl SseDecode for diary_core::model::RecordingSession {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_recordingId = <String>::sse_decode(deserializer);
+        let mut var_assetId = <String>::sse_decode(deserializer);
+        let mut var_state = <diary_core::model::RecordingState>::sse_decode(deserializer);
+        let mut var_elapsedMs = <i64>::sse_decode(deserializer);
+        let mut var_durableThroughMs = <i64>::sse_decode(deserializer);
+        let mut var_segmentCount = <i64>::sse_decode(deserializer);
+        let mut var_lastError = <Option<String>>::sse_decode(deserializer);
+        return diary_core::model::RecordingSession {
+            recording_id: var_recordingId,
+            asset_id: var_assetId,
+            state: var_state,
+            elapsed_ms: var_elapsedMs,
+            durable_through_ms: var_durableThroughMs,
+            segment_count: var_segmentCount,
+            last_error: var_lastError,
+        };
+    }
+}
+
 impl SseDecode for diary_core::model::RecordingState {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -4618,6 +5153,20 @@ impl SseDecode for diary_core::model::RecordingState {
             7 => diary_core::model::RecordingState::Recoverable,
             8 => diary_core::model::RecordingState::Error,
             _ => unreachable!("Invalid variant for RecordingState: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for diary_core::model::RecordingTicket {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_recordingId = <String>::sse_decode(deserializer);
+        let mut var_assetId = <String>::sse_decode(deserializer);
+        let mut var_stagingTicket = <String>::sse_decode(deserializer);
+        return diary_core::model::RecordingTicket {
+            recording_id: var_recordingId,
+            asset_id: var_assetId,
+            staging_ticket: var_stagingTicket,
         };
     }
 }
@@ -4788,6 +5337,42 @@ impl SseDecode for diary_core::model::SearchSnapshot {
     }
 }
 
+impl SseDecode for diary_core::model::SegmentManifest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_segmentId = <String>::sse_decode(deserializer);
+        let mut var_relativeFileName = <String>::sse_decode(deserializer);
+        let mut var_durationMs = <i64>::sse_decode(deserializer);
+        let mut var_sha256 = <String>::sse_decode(deserializer);
+        let mut var_byteSize = <i64>::sse_decode(deserializer);
+        let mut var_closedAt = <Option<chrono::DateTime<chrono::Utc>>>::sse_decode(deserializer);
+        return diary_core::model::SegmentManifest {
+            segment_id: var_segmentId,
+            relative_file_name: var_relativeFileName,
+            duration_ms: var_durationMs,
+            sha256: var_sha256,
+            byte_size: var_byteSize,
+            closed_at: var_closedAt,
+        };
+    }
+}
+
+impl SseDecode for diary_core::model::SegmentReceipt {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_segmentId = <String>::sse_decode(deserializer);
+        let mut var_segmentIndex = <i64>::sse_decode(deserializer);
+        let mut var_durable = <bool>::sse_decode(deserializer);
+        let mut var_recordedAt = <chrono::DateTime<chrono::Utc>>::sse_decode(deserializer);
+        return diary_core::model::SegmentReceipt {
+            segment_id: var_segmentId,
+            segment_index: var_segmentIndex,
+            durable: var_durable,
+            recorded_at: var_recordedAt,
+        };
+    }
+}
+
 impl SseDecode for diary_core::model::SourceKind {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -4919,156 +5504,190 @@ fn pde_ffi_dispatcher_primary_impl(
 ) {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        1 => wire__crate__api__BridgeSession_cancel_search_impl(port, ptr, rust_vec_len, data_len),
-        2 => wire__crate__api__BridgeSession_capabilities_impl(port, ptr, rust_vec_len, data_len),
-        3 => wire__crate__api__BridgeSession_commit_impl(port, ptr, rust_vec_len, data_len),
-        4 => wire__crate__api__BridgeSession_create_backup_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__BridgeSession_create_draft_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__BridgeSession_events_since_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__BridgeSession_extract_source_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__BridgeSession_extracted_content_impl(
+        1 => wire__crate__api__BridgeSession_cancel_import_impl(port, ptr, rust_vec_len, data_len),
+        2 => wire__crate__api__BridgeSession_cancel_search_impl(port, ptr, rust_vec_len, data_len),
+        3 => wire__crate__api__BridgeSession_capabilities_impl(port, ptr, rust_vec_len, data_len),
+        4 => wire__crate__api__BridgeSession_commit_impl(port, ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__BridgeSession_create_backup_impl(port, ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__BridgeSession_create_draft_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__BridgeSession_events_since_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__BridgeSession_extract_source_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__BridgeSession_extracted_content_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        9 => wire__crate__api__BridgeSession_finish_import_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__BridgeSession_get_capture_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__BridgeSession_get_job_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__BridgeSession_import_status_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__BridgeSession_index_status_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__BridgeSession_info_impl(port, ptr, rust_vec_len, data_len),
-        15 => {
+        10 => wire__crate__api__BridgeSession_finalize_recording_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        11 => wire__crate__api__BridgeSession_finish_import_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__BridgeSession_get_capture_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__BridgeSession_get_job_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__BridgeSession_import_status_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__BridgeSession_index_status_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__BridgeSession_info_impl(port, ptr, rust_vec_len, data_len),
+        17 => {
             wire__crate__api__BridgeSession_inspect_backup_impl(port, ptr, rust_vec_len, data_len)
         }
-        16 => wire__crate__api__BridgeSession_job_status_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__BridgeSession_list_captures_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__BridgeSession_list_jobs_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__BridgeSession_locate_source_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__BridgeSession_next_wakeup_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__BridgeSession_open_impl(port, ptr, rust_vec_len, data_len),
-        22 => {
+        18 => wire__crate__api__BridgeSession_job_status_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__BridgeSession_list_captures_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__BridgeSession_list_jobs_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__BridgeSession_locate_source_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__BridgeSession_next_wakeup_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__BridgeSession_open_impl(port, ptr, rust_vec_len, data_len),
+        24 => {
             wire__crate__api__BridgeSession_prepare_import_impl(port, ptr, rust_vec_len, data_len)
         }
-        23 => wire__crate__api__BridgeSession_previous_source_revision_impl(
+        25 => wire__crate__api__BridgeSession_prepare_recording_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        24 => {
+        26 => wire__crate__api__BridgeSession_previous_source_revision_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        27 => {
             wire__crate__api__BridgeSession_rebuild_indexes_impl(port, ptr, rust_vec_len, data_len)
         }
-        25 => {
+        28 => wire__crate__api__BridgeSession_rebuild_semantic_index_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        29 => wire__crate__api__BridgeSession_recover_recording_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        30 => {
+            wire__crate__api__BridgeSession_register_segment_impl(port, ptr, rust_vec_len, data_len)
+        }
+        31 => {
             wire__crate__api__BridgeSession_restore_backup_impl(port, ptr, rust_vec_len, data_len)
         }
-        26 => wire__crate__api__BridgeSession_revise_text_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__BridgeSession_run_due_jobs_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__BridgeSession_save_draft_impl(port, ptr, rust_vec_len, data_len),
-        29 => {
+        32 => wire__crate__api__BridgeSession_revise_text_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__BridgeSession_run_due_jobs_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__BridgeSession_save_draft_impl(port, ptr, rust_vec_len, data_len),
+        35 => {
             wire__crate__api__BridgeSession_search_next_page_impl(port, ptr, rust_vec_len, data_len)
         }
-        30 => {
+        36 => {
             wire__crate__api__BridgeSession_search_snapshot_impl(port, ptr, rust_vec_len, data_len)
         }
-        31 => wire__crate__api__BridgeSession_start_search_impl(port, ptr, rust_vec_len, data_len),
-        32 => {
+        37 => wire__crate__api__BridgeSession_start_search_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__BridgeSession_update_recording_state_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        39 => {
             wire__crate__api__BridgeSession_upgrade_search_impl(port, ptr, rust_vec_len, data_len)
         }
-        33 => wire__diary_core__model__asset_storage_state_from_wire_impl(
+        40 => wire__diary_core__model__asset_storage_state_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        34 => wire__diary_core__model__asset_storage_state_wire_impl(
+        41 => wire__diary_core__model__asset_storage_state_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        35 => {
+        42 => {
             wire__diary_core__model__author_type_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        36 => wire__diary_core__model__author_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        37 => {
+        43 => wire__diary_core__model__author_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        44 => {
             wire__diary_core__model__capture_state_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        38 => wire__diary_core__model__capture_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__diary_core__model__coverage_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__diary_core__model__coverage_wire_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__diary_core__model__event_type_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__diary_core__model__event_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        43 => {
+        45 => wire__diary_core__model__capture_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__diary_core__model__coverage_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__diary_core__model__coverage_wire_impl(port, ptr, rust_vec_len, data_len),
+        48 => wire__diary_core__model__event_type_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__diary_core__model__event_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        50 => {
             wire__diary_core__model__import_origin_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        44 => wire__diary_core__model__import_origin_wire_impl(port, ptr, rust_vec_len, data_len),
-        45 => {
+        51 => wire__diary_core__model__import_origin_wire_impl(port, ptr, rust_vec_len, data_len),
+        52 => {
             wire__diary_core__model__import_state_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        46 => wire__diary_core__model__import_state_is_in_flight_impl(
+        53 => wire__diary_core__model__import_state_is_in_flight_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        47 => wire__diary_core__model__import_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__diary_core__model__job_priority_value_impl(port, ptr, rust_vec_len, data_len),
-        49 => wire__diary_core__model__job_state_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        50 => {
+        54 => wire__diary_core__model__import_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        55 => wire__diary_core__model__job_priority_value_impl(port, ptr, rust_vec_len, data_len),
+        56 => wire__diary_core__model__job_state_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        57 => {
             wire__diary_core__model__job_state_is_terminal_impl(port, ptr, rust_vec_len, data_len)
         }
-        51 => wire__diary_core__model__job_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        52 => {
+        58 => wire__diary_core__model__job_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        59 => {
             wire__diary_core__model__locator_type_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        53 => wire__diary_core__model__locator_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        54 => wire__diary_core__model__matched_by_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        55 => wire__diary_core__model__matched_by_wire_impl(port, ptr, rust_vec_len, data_len),
-        56 => wire__diary_core__model__processing_status_from_wire_impl(
+        60 => wire__diary_core__model__locator_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        61 => wire__diary_core__model__matched_by_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        62 => wire__diary_core__model__matched_by_wire_impl(port, ptr, rust_vec_len, data_len),
+        63 => wire__diary_core__model__processing_status_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        57 => {
+        64 => {
             wire__diary_core__model__processing_status_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        58 => wire__diary_core__model__processing_summary_default_impl(
+        65 => wire__diary_core__model__processing_summary_default_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        59 => wire__diary_core__model__recording_state_from_wire_impl(
+        66 => wire__diary_core__model__recording_state_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        60 => {
+        67 => {
             wire__diary_core__model__recording_state_is_open_impl(port, ptr, rust_vec_len, data_len)
         }
-        61 => wire__diary_core__model__recording_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        62 => {
+        68 => wire__diary_core__model__recording_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        69 => {
             wire__diary_core__model__search_filters_default_impl(port, ptr, rust_vec_len, data_len)
         }
-        63 => {
+        70 => {
             wire__diary_core__model__search_mode_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        64 => wire__diary_core__model__search_mode_wire_impl(port, ptr, rust_vec_len, data_len),
-        65 => {
+        71 => wire__diary_core__model__search_mode_wire_impl(port, ptr, rust_vec_len, data_len),
+        72 => {
             wire__diary_core__model__search_phase_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        66 => wire__diary_core__model__search_phase_wire_impl(port, ptr, rust_vec_len, data_len),
-        67 => {
+        73 => wire__diary_core__model__search_phase_wire_impl(port, ptr, rust_vec_len, data_len),
+        74 => {
             wire__diary_core__model__source_kind_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        68 => wire__diary_core__model__source_kind_wire_impl(port, ptr, rust_vec_len, data_len),
-        69 => {
+        75 => wire__diary_core__model__source_kind_wire_impl(port, ptr, rust_vec_len, data_len),
+        76 => {
             wire__diary_core__model__source_locator_document_impl(port, ptr, rust_vec_len, data_len)
         }
-        70 => wire__diary_core__model__source_locator_text_range_impl(
+        77 => wire__diary_core__model__source_locator_text_range_impl(
             port,
             ptr,
             rust_vec_len,
@@ -5927,6 +6546,32 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::MatchedBy>>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::NativeRecordingStatus> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.0.recording_id.into_into_dart().into_dart(),
+            self.0.state.into_into_dart().into_dart(),
+            self.0.wall_clock.into_into_dart().into_dart(),
+            self.0.elapsed_ms.into_into_dart().into_dart(),
+            self.0.persisted_through_ms.into_into_dart().into_dart(),
+            self.0.input_device_changed.into_into_dart().into_dart(),
+            self.0.message.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<diary_core::model::NativeRecordingStatus>
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::NativeRecordingStatus>>
+    for diary_core::model::NativeRecordingStatus
+{
+    fn into_into_dart(self) -> FrbWrapper<diary_core::model::NativeRecordingStatus> {
+        self.into()
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::ProcessingStatus> {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self.0 {
@@ -5975,6 +6620,81 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::ProcessingS
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::RecordingFinalizeResult> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.0.recording_id.into_into_dart().into_dart(),
+            self.0.asset_id.into_into_dart().into_dart(),
+            self.0.state.into_into_dart().into_dart(),
+            self.0.segment_count.into_into_dart().into_dart(),
+            self.0.transcription_queued.into_into_dart().into_dart(),
+            self.0.logical_duration_ms.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<diary_core::model::RecordingFinalizeResult>
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::RecordingFinalizeResult>>
+    for diary_core::model::RecordingFinalizeResult
+{
+    fn into_into_dart(self) -> FrbWrapper<diary_core::model::RecordingFinalizeResult> {
+        self.into()
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::RecordingRecovery> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.0.recording_id.into_into_dart().into_dart(),
+            self.0.state.into_into_dart().into_dart(),
+            self.0.closed_segment_indexes.into_into_dart().into_dart(),
+            self.0.gap_ms.into_into_dart().into_dart(),
+            self.0.notes.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<diary_core::model::RecordingRecovery>
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::RecordingRecovery>>
+    for diary_core::model::RecordingRecovery
+{
+    fn into_into_dart(self) -> FrbWrapper<diary_core::model::RecordingRecovery> {
+        self.into()
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::RecordingSession> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.0.recording_id.into_into_dart().into_dart(),
+            self.0.asset_id.into_into_dart().into_dart(),
+            self.0.state.into_into_dart().into_dart(),
+            self.0.elapsed_ms.into_into_dart().into_dart(),
+            self.0.durable_through_ms.into_into_dart().into_dart(),
+            self.0.segment_count.into_into_dart().into_dart(),
+            self.0.last_error.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<diary_core::model::RecordingSession>
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::RecordingSession>>
+    for diary_core::model::RecordingSession
+{
+    fn into_into_dart(self) -> FrbWrapper<diary_core::model::RecordingSession> {
+        self.into()
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::RecordingState> {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self.0 {
@@ -5999,6 +6719,28 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::RecordingSt
     for diary_core::model::RecordingState
 {
     fn into_into_dart(self) -> FrbWrapper<diary_core::model::RecordingState> {
+        self.into()
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::RecordingTicket> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.0.recording_id.into_into_dart().into_dart(),
+            self.0.asset_id.into_into_dart().into_dart(),
+            self.0.staging_ticket.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<diary_core::model::RecordingTicket>
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::RecordingTicket>>
+    for diary_core::model::RecordingTicket
+{
+    fn into_into_dart(self) -> FrbWrapper<diary_core::model::RecordingTicket> {
         self.into()
     }
 }
@@ -6204,6 +6946,54 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::SearchSnaps
     for diary_core::model::SearchSnapshot
 {
     fn into_into_dart(self) -> FrbWrapper<diary_core::model::SearchSnapshot> {
+        self.into()
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::SegmentManifest> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.0.segment_id.into_into_dart().into_dart(),
+            self.0.relative_file_name.into_into_dart().into_dart(),
+            self.0.duration_ms.into_into_dart().into_dart(),
+            self.0.sha256.into_into_dart().into_dart(),
+            self.0.byte_size.into_into_dart().into_dart(),
+            self.0.closed_at.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<diary_core::model::SegmentManifest>
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::SegmentManifest>>
+    for diary_core::model::SegmentManifest
+{
+    fn into_into_dart(self) -> FrbWrapper<diary_core::model::SegmentManifest> {
+        self.into()
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::SegmentReceipt> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.0.segment_id.into_into_dart().into_dart(),
+            self.0.segment_index.into_into_dart().into_dart(),
+            self.0.durable.into_into_dart().into_dart(),
+            self.0.recorded_at.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<diary_core::model::SegmentReceipt>
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::SegmentReceipt>>
+    for diary_core::model::SegmentReceipt
+{
+    fn into_into_dart(self) -> FrbWrapper<diary_core::model::SegmentReceipt> {
         self.into()
     }
 }
@@ -6963,6 +7753,16 @@ impl SseEncode for Vec<f64> {
     }
 }
 
+impl SseEncode for Vec<i64> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <i64>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<u8> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -7037,6 +7837,19 @@ impl SseEncode for diary_core::model::MatchedBy {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for diary_core::model::NativeRecordingStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.recording_id, serializer);
+        <diary_core::model::RecordingState>::sse_encode(self.state, serializer);
+        <chrono::DateTime<chrono::Utc>>::sse_encode(self.wall_clock, serializer);
+        <i64>::sse_encode(self.elapsed_ms, serializer);
+        <i64>::sse_encode(self.persisted_through_ms, serializer);
+        <bool>::sse_encode(self.input_device_changed, serializer);
+        <Option<String>>::sse_encode(self.message, serializer);
     }
 }
 
@@ -7310,6 +8123,42 @@ impl SseEncode for diary_core::model::ProcessingSummary {
     }
 }
 
+impl SseEncode for diary_core::model::RecordingFinalizeResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.recording_id, serializer);
+        <String>::sse_encode(self.asset_id, serializer);
+        <diary_core::model::RecordingState>::sse_encode(self.state, serializer);
+        <i64>::sse_encode(self.segment_count, serializer);
+        <bool>::sse_encode(self.transcription_queued, serializer);
+        <i64>::sse_encode(self.logical_duration_ms, serializer);
+    }
+}
+
+impl SseEncode for diary_core::model::RecordingRecovery {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.recording_id, serializer);
+        <diary_core::model::RecordingState>::sse_encode(self.state, serializer);
+        <Vec<i64>>::sse_encode(self.closed_segment_indexes, serializer);
+        <i64>::sse_encode(self.gap_ms, serializer);
+        <Vec<String>>::sse_encode(self.notes, serializer);
+    }
+}
+
+impl SseEncode for diary_core::model::RecordingSession {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.recording_id, serializer);
+        <String>::sse_encode(self.asset_id, serializer);
+        <diary_core::model::RecordingState>::sse_encode(self.state, serializer);
+        <i64>::sse_encode(self.elapsed_ms, serializer);
+        <i64>::sse_encode(self.durable_through_ms, serializer);
+        <i64>::sse_encode(self.segment_count, serializer);
+        <Option<String>>::sse_encode(self.last_error, serializer);
+    }
+}
+
 impl SseEncode for diary_core::model::RecordingState {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -7330,6 +8179,15 @@ impl SseEncode for diary_core::model::RecordingState {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for diary_core::model::RecordingTicket {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.recording_id, serializer);
+        <String>::sse_encode(self.asset_id, serializer);
+        <String>::sse_encode(self.staging_ticket, serializer);
     }
 }
 
@@ -7447,6 +8305,28 @@ impl SseEncode for diary_core::model::SearchSnapshot {
         <Option<String>>::sse_encode(self.cursor, serializer);
         <diary_core::model::Coverage>::sse_encode(self.index_coverage, serializer);
         <Vec<String>>::sse_encode(self.warnings, serializer);
+    }
+}
+
+impl SseEncode for diary_core::model::SegmentManifest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.segment_id, serializer);
+        <String>::sse_encode(self.relative_file_name, serializer);
+        <i64>::sse_encode(self.duration_ms, serializer);
+        <String>::sse_encode(self.sha256, serializer);
+        <i64>::sse_encode(self.byte_size, serializer);
+        <Option<chrono::DateTime<chrono::Utc>>>::sse_encode(self.closed_at, serializer);
+    }
+}
+
+impl SseEncode for diary_core::model::SegmentReceipt {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.segment_id, serializer);
+        <i64>::sse_encode(self.segment_index, serializer);
+        <bool>::sse_encode(self.durable, serializer);
+        <chrono::DateTime<chrono::Utc>>::sse_encode(self.recorded_at, serializer);
     }
 }
 

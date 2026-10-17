@@ -45,7 +45,10 @@ abstract class DiaryApi {
   // ------------------------------------------------------- 记录与来源
 
   /// 创建草稿。`occurredAt` 为空时由核心按当前时间填充。
-  Future<Capture> createDraft({DateTime? occurredAt, required String operationId});
+  Future<Capture> createDraft({
+    DateTime? occurredAt,
+    required String operationId,
+  });
 
   /// 保存草稿正文。频繁保存只更新草稿与恢复日志，不制造永久版本。
   Future<DraftSaveResult> saveDraft({
@@ -77,6 +80,16 @@ abstract class DiaryApi {
     required int expectedRevision,
     required String operationId,
   });
+
+  /// 当前来源的提取结果；尚未提取时返回空。结果只对应当前修订。
+  Future<ExtractedContent?> extractedContent(String sourceId);
+
+  /// 当前修订的上一版，供原正文和修改对比；首次提交时返回空。
+  Future<SourceRevision?> previousSourceRevision(String sourceId);
+
+  /// 提取来源当前修订，或按修订 ID 读取原件型历史正文。
+  /// 历史修订仍被默认检索的“仅当前版”规则排除。
+  Future<ExtractedContent> extractSource(String sourceRef);
 
   /// 调整日记归属日期。调整不改录音时间戳，也不静默搬动历史。
   Future<Capture> moveDay({
@@ -304,6 +317,35 @@ abstract class DiaryApi {
   /// `idempotency_conflict`。
   Future<JobTicket> rebuildIndexes({
     required String scope,
+    required String reason,
+    required String operationId,
+  });
+
+  /// 排一条**语义索引**重建任务，返回它的 `jobId`。契约第 4.4 节
+  /// `indexes.rebuildSemantic`。
+  ///
+  /// **异步**：只排任务，不做同步重建。与 [rebuildIndexes]（关键词那一路）的区别：
+  ///
+  /// - **整库**：没有 `scope`。语义的代次与向量是全局的，一次重建总是把块表里所有块
+  ///   在新代次里补齐，所以任务总是整库；业务键让「队列里至多一条活着的语义重建」，
+  ///   重复排队不产生第二份工作；
+  /// - **等模型配置**：本地模型没配好时任务落在 `waiting_configuration`
+  ///   （`errorCode = waiting_model`），**不是失败**、不消耗重试额度，也不出现在
+  ///   [nextWakeup] 里——配置变化不是时间问题，下一次 [runDueJobs] 的前置评估会把它
+  ///   拉起。提取还没收尾时落 `waiting_dependency`；
+  /// - **可分段让出**：整库重建会远超一次唤醒的预算，所以它在块与块之间检查预算，
+  ///   到点就回到 `queued`（进度写在 `Job.progress` 上、`attemptCount` 不增加），
+  ///   下一轮接着算没算完的块。**让出不是失败、也不算「已完成」**：代次切换仍是原子的，
+  ///   [DueRunSummary.succeeded] 只在整代切换之后才发。
+  ///
+  /// 它**不会**顺手重建关键词索引，[rebuildIndexes] 也不会顺手建语义索引：两条独立的
+  /// 索引路，各有各的入口与前置。就绪与覆盖照旧看 [indexesStatus]
+  /// （`semanticIndexReady` / `modelVersion` / `reasons`）。
+  ///
+  /// 幂等：同一个 `(reason, operationId)` 重复调用返回同一条任务（拿到的 `jobId`
+  /// 相同）；同一个 [operationId] 换了原因报 `idempotency_conflict`；任务跑完后再请求
+  /// 会建新的一条（按现状增量重算：口径一致的向量整批复用）。
+  Future<JobTicket> rebuildSemanticIndex({
     required String reason,
     required String operationId,
   });
