@@ -802,6 +802,13 @@ fn batch_materials(materials: &[SnapshotMaterial]) -> Vec<Vec<SnapshotMaterial>>
             continue;
         }
         // 单份材料就超限：切开它。切出来的片段沿用同一份材料的来源标识。
+        //
+        // 切片是**直接进 batches** 的，所以必须先把手上的批次落盘：
+        // 否则「先短后长」的输入会变成「长材料切片先出、前面的短材料后出」，
+        // 生成输入顺序被反转（#98）。
+        if !current.is_empty() {
+            batches.push(std::mem::take(&mut current));
+        }
         let mut start = 0_usize;
         while chars.len() - start > DIRECT_INPUT_CHAR_LIMIT {
             let text: String = chars[start..start + DIRECT_INPUT_CHAR_LIMIT].iter().collect();
@@ -809,11 +816,8 @@ fn batch_materials(materials: &[SnapshotMaterial]) -> Vec<Vec<SnapshotMaterial>>
             start += DIRECT_INPUT_CHAR_LIMIT;
         }
         let remainder: String = chars[start..].iter().collect();
-        if !current.is_empty() && current_chars + remainder.chars().count() > DIRECT_INPUT_CHAR_LIMIT {
-            batches.push(std::mem::take(&mut current));
-            current_chars = 0;
-        }
-        current_chars += remainder.chars().count();
+        debug_assert!(remainder.chars().count() <= DIRECT_INPUT_CHAR_LIMIT);
+        current_chars = remainder.chars().count();
         current.push(slice_of(material, &remainder));
     }
     if !current.is_empty() {
@@ -1958,6 +1962,51 @@ mod tests {
         assert_eq!(plan.steps, 2);
         assert_eq!(plan.intermediate_calls, 2);
         assert_eq!(plan.calls.len(), 2, "计划里只有中间提炼的请求");
+    }
+
+    /// #98 回归：**先短后长**时顺序不能反转。
+    ///
+    /// 长材料的切片是直接进 `batches` 的，如果不在处理长材料前 flush 手上的批次，
+    /// 就会出现「B 的整段切片先出、A 后出」——生成输入顺序与快照顺序相反。
+    #[test]
+    fn short_material_before_long_material_keeps_order() {
+        let short = "短材料甲";
+        let long_text = "长".repeat(DIRECT_INPUT_CHAR_LIMIT + 500);
+        let materials = vec![material("a", short), material("b", &long_text)];
+
+        let batches = batch_materials(&materials);
+        let labels: Vec<Vec<String>> = batches
+            .iter()
+            .map(|batch| {
+                batch
+                    .iter()
+                    .map(|item| item.source_id.clone().unwrap())
+                    .collect()
+            })
+            .collect();
+        // 短 A 独占一批，长 B 切成两批——而且顺序必须是 A 在前。
+        assert_eq!(labels.len(), 3, "短 A 一批 + 长 B 两批");
+        assert_eq!(labels[0], vec!["src_a"], "第一批必须是更早的短材料 A");
+        assert_eq!(labels[1], vec!["src_b"]);
+        assert_eq!(labels[2], vec!["src_b"]);
+
+        // 把各批正文按批次顺序拼起来，必须还原成输入的先后顺序。
+        let joined: String = batches
+            .iter()
+            .flatten()
+            .map(|item| item.text.clone())
+            .collect();
+        assert_eq!(joined, format!("{short}{long_text}"));
+
+        // 生成输入（中间提炼请求）也要按这个顺序：第一份请求里是 A，不是 B 的切片。
+        let plan = plan_generation("2026-10-16", &materials).unwrap();
+        assert_eq!(plan.intermediate_calls, 3);
+        assert!(plan.calls[0].prompt.contains(short), "第一次提炼必须先见到 A");
+        assert!(
+            !plan.calls[0].prompt.contains('长'),
+            "第一次提炼不该先见到后面那份长材料 B"
+        );
+        assert!(plan.calls[1].prompt.contains('长'));
     }
 
     #[test]
