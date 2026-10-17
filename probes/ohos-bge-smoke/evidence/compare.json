@@ -1,0 +1,498 @@
+{
+  "device": {
+    "cpu_count": 20,
+    "first_embed_ms": 8.46,
+    "load_ms": 248.404,
+    "model_read_only_ms": 11.715,
+    "model_sha256_cold_ms": 152.207,
+    "proc_hwm_kb_after_embed": 245724,
+    "proc_hwm_kb_after_load": 189580,
+    "proc_hwm_kb_before_load": 163440,
+    "proc_hwm_kb_end": 287560,
+    "proc_rss_kb_after_embed": 245264,
+    "proc_rss_kb_after_load": 186352,
+    "proc_rss_kb_before_load": 140304,
+    "proc_rss_kb_end": 277028,
+    "session_create_only_ms": 61.701,
+    "tokenizer_load_ms": 15.026,
+    "total_ms": 1197.843
+  },
+  "device_warm": {
+    "cpu_count": 20,
+    "first_embed_ms": 3.161,
+    "load_ms": 248.342,
+    "model_read_only_ms": 9.473,
+    "model_sha256_cold_ms": 152.485,
+    "proc_hwm_kb_after_embed": 247016,
+    "proc_hwm_kb_after_load": 193784,
+    "proc_hwm_kb_before_load": 163424,
+    "proc_hwm_kb_end": 284632,
+    "proc_rss_kb_after_embed": 246500,
+    "proc_rss_kb_after_load": 186964,
+    "proc_rss_kb_before_load": 140140,
+    "proc_rss_kb_end": 277688,
+    "session_create_only_ms": 60.909,
+    "tokenizer_load_ms": 15.006,
+    "total_ms": 1176.69
+  },
+  "host": {
+    "cpu_count": 16,
+    "first_embed_ms": 5.184,
+    "load_ms": 290.745,
+    "model_read_only_ms": 12.889,
+    "model_sha256_cold_ms": 59.463,
+    "proc_hwm_kb_after_embed": 145016,
+    "proc_hwm_kb_after_load": 86172,
+    "proc_hwm_kb_before_load": 32980,
+    "proc_hwm_kb_end": 173768,
+    "proc_rss_kb_after_embed": 145016,
+    "proc_rss_kb_after_load": 86172,
+    "proc_rss_kb_before_load": 10360,
+    "proc_rss_kb_end": 173768,
+    "session_create_only_ms": 57.452,
+    "tokenizer_load_ms": 14.078,
+    "total_ms": 1048.586
+  },
+  "overall": {
+    "all_bit_identical": false,
+    "bit_identical_keys": [],
+    "max_abs_diff": 0.011013790965080261,
+    "min_cosine": 0.9979863373287533
+  },
+  "overlength": {
+    "device": {
+      "err": "当前状态不允许该操作：语义嵌入 bge-small-zh-v1.5-ours 处于 ONNX 前向失败：Non-zero status code returned while running Add node. Name:'node_add_18' Status Message: /home/qianxia/.conan2/p/b/onnxrb1d51c7f51392/b/onnxruntime/core/providers/cpu/math/element_wise_ops.h:583 void onnxruntime::BroadcastIterator::Append(ptrdiff_t, ptrdiff_t) axis == 1 || axis == largest was false. Attempting to broadcast an axis by a dimension other than 1. 512 by 617\n",
+      "ok": false
+    },
+    "host": {
+      "err": "当前状态不允许该操作：语义嵌入 bge-small-zh-v1.5-ours 处于 ONNX 前向失败：Non-zero status code returned while running Add node. Name:'node_add_18' Status Message: /onnxruntime_src/onnxruntime/core/providers/cpu/math/element_wise_ops.h:583 void onnxruntime::BroadcastIterator::Append(ptrdiff_t, ptrdiff_t) axis == 1 || axis == largest was false. Attempting to broadcast an axis by a dimension other than 1. 512 by 617\n",
+      "ok": false
+    }
+  },
+  "per_text": {
+    "d1": {
+      "chars": 19,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 2.198,
+      "device_hot_ms": 6.323,
+      "host_cold_ms": 5.766,
+      "host_hot_ms": 2.588,
+      "tokens": 21
+    },
+    "d2": {
+      "chars": 19,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 6.038,
+      "device_hot_ms": 2.23,
+      "host_cold_ms": 2.872,
+      "host_hot_ms": 2.191,
+      "tokens": 21
+    },
+    "d3": {
+      "chars": 13,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 1.991,
+      "device_hot_ms": 2.465,
+      "host_cold_ms": 2.23,
+      "host_hot_ms": 2.162,
+      "tokens": 15
+    },
+    "d4": {
+      "chars": 17,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 2.666,
+      "device_hot_ms": 3.094,
+      "host_cold_ms": 3.633,
+      "host_hot_ms": 2.718,
+      "tokens": 19
+    },
+    "d5": {
+      "chars": 16,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 1.953,
+      "device_hot_ms": 2.516,
+      "host_cold_ms": 2.301,
+      "host_hot_ms": 3.05,
+      "tokens": 18
+    },
+    "far": {
+      "chars": 29,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 2.974,
+      "device_hot_ms": 4.641,
+      "host_cold_ms": 3.592,
+      "host_hot_ms": 4.997,
+      "tokens": 31
+    },
+    "long": {
+      "chars": 410,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 96.838,
+      "device_hot_ms": 62.421,
+      "host_cold_ms": 71.677,
+      "host_hot_ms": 60.212,
+      "tokens": 412
+    },
+    "main": {
+      "chars": 28,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 8.46,
+      "device_hot_ms": 3.955,
+      "host_cold_ms": 5.184,
+      "host_hot_ms": 3.074,
+      "tokens": 30
+    },
+    "medium": {
+      "chars": 68,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 9.014,
+      "device_hot_ms": 9.662,
+      "host_cold_ms": 7.035,
+      "host_hot_ms": 8.368,
+      "tokens": 70
+    },
+    "near_a": {
+      "chars": 14,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 1.84,
+      "device_hot_ms": 3.697,
+      "host_cold_ms": 4.086,
+      "host_hot_ms": 3.657,
+      "tokens": 16
+    },
+    "near_b": {
+      "chars": 17,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 5.683,
+      "device_hot_ms": 3.939,
+      "host_cold_ms": 3.51,
+      "host_hot_ms": 2.268,
+      "tokens": 19
+    },
+    "q1": {
+      "chars": 6,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 1.351,
+      "device_hot_ms": 1.043,
+      "host_cold_ms": 1.714,
+      "host_hot_ms": 1.898,
+      "tokens": 8
+    },
+    "q2": {
+      "chars": 6,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 1.083,
+      "device_hot_ms": 1.104,
+      "host_cold_ms": 2.09,
+      "host_hot_ms": 2.617,
+      "tokens": 8
+    },
+    "q3": {
+      "chars": 8,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 1.5,
+      "device_hot_ms": 1.346,
+      "host_cold_ms": 3.65,
+      "host_hot_ms": 2.864,
+      "tokens": 10
+    },
+    "q4": {
+      "chars": 8,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 1.263,
+      "device_hot_ms": 1.241,
+      "host_cold_ms": 2.749,
+      "host_hot_ms": 1.477,
+      "tokens": 10
+    },
+    "q5": {
+      "chars": 9,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 2.407,
+      "device_hot_ms": 1.421,
+      "host_cold_ms": 4.061,
+      "host_hot_ms": 2.391,
+      "tokens": 11
+    },
+    "short": {
+      "chars": 28,
+      "device_bit_identical_repeats": true,
+      "device_cold_ms": 12.805,
+      "device_hot_ms": 4.445,
+      "host_cold_ms": 4.361,
+      "host_hot_ms": 6.86,
+      "tokens": 30
+    }
+  },
+  "preconditions_all_same": true,
+  "ranking": {
+    "q1": {
+      "device": [
+        "d1",
+        "d4",
+        "d5",
+        "d2",
+        "d3"
+      ],
+      "host": [
+        "d1",
+        "d4",
+        "d5",
+        "d2",
+        "d3"
+      ],
+      "same": true
+    },
+    "q2": {
+      "device": [
+        "d2",
+        "d5",
+        "d4",
+        "d1",
+        "d3"
+      ],
+      "host": [
+        "d2",
+        "d5",
+        "d4",
+        "d1",
+        "d3"
+      ],
+      "same": true
+    },
+    "q3": {
+      "device": [
+        "d3",
+        "d5",
+        "d4",
+        "d2",
+        "d1"
+      ],
+      "host": [
+        "d3",
+        "d5",
+        "d4",
+        "d2",
+        "d1"
+      ],
+      "same": true
+    },
+    "q4": {
+      "device": [
+        "d4",
+        "d5",
+        "d3",
+        "d1",
+        "d2"
+      ],
+      "host": [
+        "d4",
+        "d5",
+        "d3",
+        "d1",
+        "d2"
+      ],
+      "same": true
+    },
+    "q5": {
+      "device": [
+        "d5",
+        "d4",
+        "d2",
+        "d1",
+        "d3"
+      ],
+      "host": [
+        "d5",
+        "d4",
+        "d2",
+        "d1",
+        "d3"
+      ],
+      "same": true
+    }
+  },
+  "ranking_all_same": true,
+  "ranking_cos_max_abs_diff": 0.0018486380577087402,
+  "semantic": {
+    "main__far": {
+      "device": 0.4640200734138489,
+      "host": 0.46439799666404724
+    },
+    "main__near_a": {
+      "device": 0.8444267511367798,
+      "host": 0.8393555283546448
+    },
+    "main_near_gt_main_far": {
+      "device": true,
+      "host": true
+    },
+    "near_a__far": {
+      "device": 0.4478049576282501,
+      "host": 0.4478049576282501
+    },
+    "near_a__near_b": {
+      "device": 0.8574765920639038,
+      "host": 0.8580846786499023
+    },
+    "near_gt_far": {
+      "device": true,
+      "host": true
+    }
+  },
+  "vectors": {
+    "d1": {
+      "bit_identical": false,
+      "cosine": 0.9999999999999907,
+      "device_sha256": "c7948d8a7134cb5d8f2ccdcd79b15b1ca3945615407c2e7b33a99c53384852c9",
+      "dims": 512,
+      "host_sha256": "ee435cbd24b9afc762ccf3cc753561b53c9f479a07a6940dbdcc22007743b9d5",
+      "max_abs_diff": 4.470348358154297e-08,
+      "mean_abs_diff": 6.297113941400312e-09
+    },
+    "d2": {
+      "bit_identical": false,
+      "cosine": 0.9998229714472996,
+      "device_sha256": "32d6c70af939d7ebb0abc8d8e4fb58114a67348502f9f1138f4b8848ac1c4f03",
+      "dims": 512,
+      "host_sha256": "9c7349e6ca4e2778aec1ee2d3f53dccef232dac2ba41515a59ea6fc2001ae03b",
+      "max_abs_diff": 0.0031659876403864473,
+      "mean_abs_diff": 0.0006402323866669946
+    },
+    "d3": {
+      "bit_identical": false,
+      "cosine": 0.999999999999988,
+      "device_sha256": "30c627a0d00b44923b0cb3a7af3eb542d4ee1e14d0091332a4ac578cba562170",
+      "dims": 512,
+      "host_sha256": "270601c18dee77ff9685ebc88578b79fe11b2f323b4329e8a8f762aba490cf63",
+      "max_abs_diff": 2.9802322387695312e-08,
+      "mean_abs_diff": 5.4249653658189345e-09
+    },
+    "d4": {
+      "bit_identical": false,
+      "cosine": 0.9999999999999774,
+      "device_sha256": "72ae70bdcaa2646c7816cb07fb9edfefd63222eeb65fb931ef5ae2a949802d67",
+      "dims": 512,
+      "host_sha256": "6642cf4af141a34fc051c95bf92a75dea5521fa8a11d705e62014fc0f32257ab",
+      "max_abs_diff": 5.960464477539063e-08,
+      "mean_abs_diff": 7.076963015606452e-09
+    },
+    "d5": {
+      "bit_identical": false,
+      "cosine": 0.9999999999999813,
+      "device_sha256": "46a51a8abcb3b09056a63808bfcd22897e512e34e5b585231487ba62fa886bc8",
+      "dims": 512,
+      "host_sha256": "acdea9240ad76d0b5aed50c7d0a9782bcd03edb6a3f1285017500a80f52445c5",
+      "max_abs_diff": 3.166496753692627e-08,
+      "mean_abs_diff": 6.51297682452423e-09
+    },
+    "far": {
+      "bit_identical": false,
+      "cosine": 0.9999999999999858,
+      "device_sha256": "eaa0ceccbb5988ee89a98e6589d8353fcdb99f07a75774c7f62ddda9eae08583",
+      "dims": 512,
+      "host_sha256": "a1cf408a2428f19a67bd723d46278461da9285f9049741cb6c53e1ad175592e3",
+      "max_abs_diff": 4.470348358154297e-08,
+      "mean_abs_diff": 5.776939815405058e-09
+    },
+    "long": {
+      "bit_identical": false,
+      "cosine": 0.9990971112925079,
+      "device_sha256": "6ebb8ccb29882e78d404a7818f0c3c20d43805183b28f780fb9c5347e6d2ce6b",
+      "dims": 512,
+      "host_sha256": "452424c773b56a55b9e814654e8ae3b910aa272d829158a25f8c49cc0e7b12e0",
+      "max_abs_diff": 0.006021566689014435,
+      "mean_abs_diff": 0.0015229181266285252
+    },
+    "main": {
+      "bit_identical": false,
+      "cosine": 0.998345835301868,
+      "device_sha256": "50b48135fd47ea5882d083346ed6d799e2f7e2785a22a374b64cd29bf4203d5c",
+      "dims": 512,
+      "host_sha256": "84897aa8eebc2dc0ab775d192b910579733ac2258014129d35aac1bd1564d02e",
+      "max_abs_diff": 0.011013790965080261,
+      "mean_abs_diff": 0.0019956728198522455
+    },
+    "medium": {
+      "bit_identical": false,
+      "cosine": 0.9979863373287533,
+      "device_sha256": "2a5bfbdb5808c7d9663aac730b96d7b8225b90410c6f205b287e6c7dca60e5cb",
+      "dims": 512,
+      "host_sha256": "44b95b618228ebb503918bea0cf62dfba68281bdefa1873e11f9c2b330060d4a",
+      "max_abs_diff": 0.009732745587825775,
+      "mean_abs_diff": 0.002254360129136046
+    },
+    "near_a": {
+      "bit_identical": false,
+      "cosine": 0.9999999999999852,
+      "device_sha256": "1d30becc60858fc78aa671ce68365597ebf5047edfdab490b0d8011146cec420",
+      "dims": 512,
+      "host_sha256": "1f2e3d9a055325be06f45e0caca852a39a0f24076383879f062c829258fa92ac",
+      "max_abs_diff": 5.960464477539063e-08,
+      "mean_abs_diff": 5.60422819262385e-09
+    },
+    "near_b": {
+      "bit_identical": false,
+      "cosine": 0.9997742971504382,
+      "device_sha256": "a7b35d18fc904d0921771512e8975c410a349dd7fb3dfe08d5d990c77028948a",
+      "dims": 512,
+      "host_sha256": "3683a4561893c06c1e522a5105d3c4607b3a1860cd20ecc537091d940938beb7",
+      "max_abs_diff": 0.00347813218832016,
+      "mean_abs_diff": 0.0007381095866509924
+    },
+    "q1": {
+      "bit_identical": false,
+      "cosine": 0.9999999999999866,
+      "device_sha256": "a1cfdc57bb4113c3c71634a76abe0dc301273c3ec3657845f1d3ff484d49af93",
+      "dims": 512,
+      "host_sha256": "77422f87a72af4f4c0f2a4a50ecaa77b98a463fd16a45a413c0064ea8b49c218",
+      "max_abs_diff": 4.470348358154297e-08,
+      "mean_abs_diff": 5.41384181929061e-09
+    },
+    "q2": {
+      "bit_identical": false,
+      "cosine": 0.9999999999999836,
+      "device_sha256": "d3c2b21c9ed5f5f6df888923653c856b7e2d0cb87343f791410926953b685ce1",
+      "dims": 512,
+      "host_sha256": "845d3e19c70b9a3a8aa3afe80a0a1714e114dc1ba9983a721b85f8d3887e97e6",
+      "max_abs_diff": 5.960464477539063e-08,
+      "mean_abs_diff": 5.797470947754846e-09
+    },
+    "q3": {
+      "bit_identical": false,
+      "cosine": 0.999999999999984,
+      "device_sha256": "31f9739289a62326c7a141be67f581b31eff3a66b0dd23422b1a42e93bbe54ab",
+      "dims": 512,
+      "host_sha256": "10bfde48ac82da70c9bb91f5811558eb806a2b302eb9adbd2aa571895ff61544",
+      "max_abs_diff": 4.470348358154297e-08,
+      "mean_abs_diff": 7.210417152236914e-09
+    },
+    "q4": {
+      "bit_identical": false,
+      "cosine": 0.9999999999999809,
+      "device_sha256": "c3f04d47b64bfd755df3cd4743dd96a21906baa8e91fc87e9698be5c37121b2e",
+      "dims": 512,
+      "host_sha256": "ce743b8872d105293a8c6df902c2b8f9e98445dc64bc25bbb1ada3ad254f1705",
+      "max_abs_diff": 4.470348358154297e-08,
+      "mean_abs_diff": 8.696048325873562e-09
+    },
+    "q5": {
+      "bit_identical": false,
+      "cosine": 0.9999999999999931,
+      "device_sha256": "7c76a933657d72073d9a4c4e4e091923b6990563ae4e943c7aa06f7f716e1264",
+      "dims": 512,
+      "host_sha256": "818199388e812069dc2479addfe87699be9a3bfc69c4c956c228ad45bfba541a",
+      "max_abs_diff": 2.9802322387695312e-08,
+      "mean_abs_diff": 3.9592293887835694e-09
+    },
+    "short": {
+      "bit_identical": false,
+      "cosine": 0.998345835301868,
+      "device_sha256": "50b48135fd47ea5882d083346ed6d799e2f7e2785a22a374b64cd29bf4203d5c",
+      "dims": 512,
+      "host_sha256": "84897aa8eebc2dc0ab775d192b910579733ac2258014129d35aac1bd1564d02e",
+      "max_abs_diff": 0.011013790965080261,
+      "mean_abs_diff": 0.0019956728198522455
+    }
+  }
+}

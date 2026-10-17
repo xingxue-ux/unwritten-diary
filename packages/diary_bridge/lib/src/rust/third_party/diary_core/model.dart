@@ -8,7 +8,7 @@ import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NewJob`, `SourceItem`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
 
 /// 资产在文件库中的状态，契约第 2.3 节。
@@ -822,6 +822,12 @@ class JobProgress {
 /// 到期任务在 `due_backlog` 里如实报出来，在等前置的任务在 `waiting_dependency`
 /// 里如实报出来。契约 `runDueJobs` 的返回值就是它（`packages/diary_api` 的
 /// `DueRunSummary` 字段与这里一一对应）。
+///
+/// **分段让出的长任务**（现在只有语义索引）算进 `processed`、但不算
+/// `succeeded`/`failed`/`retrying`——它还活着（回到 `queued`，进度在 `Job.progress`
+/// 上），下一轮接着跑。所以 `processed` 可以大于后三者之和，差额正是它；摘要**不为它
+/// 加字段**（契约的字段一个没多），「还没跑完」由 `due_backlog ≥ 1` 与
+/// `next_wakeup` 指向「现在」一起说清楚。
 class JobRunSummary {
   /// 本次运行开始的时刻（调用方给的 `now`）。「补做」以它为界。
   final DateTime startedAt;
@@ -830,7 +836,8 @@ class JobRunSummary {
   /// 核心只用它做观察与排查，不用它改变行为。
   final String trigger;
 
-  /// 本次领取并执行的任务数，不超过调用方给的条数上限。
+  /// 本次领取并执行的任务数，不超过调用方给的条数上限。**分段让出的长任务算在内**
+  /// （它确实被领取并执行了一段）；它不在下面三个计数里（见结构体说明）。
   final PlatformInt64 processed;
 
   /// 其中执行成功、进入 `succeeded` 的数量。
@@ -856,9 +863,12 @@ class JobRunSummary {
   /// 不是一个单独的字段，因为它和这个数字说的是一件事，留两个字段只会互相矛盾。
   final PlatformInt64 dueBacklog;
 
-  /// 本次运行结束时还在等前置条件的任务数（现在只有 `index` 等 `extract`）。
+  /// 本次运行结束时还在等前置条件的任务数（`index` / `semantic_index` 等
+  /// `extract`）。
   ///
   /// 这些任务**没有**被领取、没有消耗重试额度，所以也不在 `processed` 里。
+  /// **等配置**（`waiting_configuration`，例如语义索引等本地模型）不算在这里：
+  /// 它等的是配置而不是前置任务，在 `job_status().waiting_configuration` 里计数。
   final PlatformInt64 waitingDependency;
 
   /// 本次运行里被**闸门**判定「前置不可能再满足」而终态失败的任务数。
@@ -868,8 +878,9 @@ class JobRunSummary {
   /// 单独报出来，是为了让摘要不必把「这一轮什么都没跑」说成「一切正常」。
   final PlatformInt64 dependencyFailed;
 
-  /// 下一个到期时刻；没有待办时为 None。等前置到期的任务不算「待办」：
-  /// 它们要等的是别人跑完，不是时间到（见 `jobs::next_wakeup`）。
+  /// 下一个到期时刻；没有待办时为 None。等前置、等配置的任务都不算「待办」：
+  /// 前者要等的是别人跑完，后者要等的是配置变化，都不是「时间到」
+  /// （见 `jobs::next_wakeup`）。
   final DateTime? nextWakeup;
 
   const JobRunSummary({
@@ -951,7 +962,11 @@ class JobStatus {
   final PlatformInt64 queued;
   final PlatformInt64 running;
   final PlatformInt64 retryWait;
+
+  /// 等配置：现在只有「语义索引在等本地模型配好」（`error_code = waiting_model`）。
   final PlatformInt64 waitingConfiguration;
+
+  /// 等前置：`index` / `semantic_index` 在等 `extract` 收尾。
   final PlatformInt64 waitingDependency;
   final PlatformInt64 waitingNetwork;
 

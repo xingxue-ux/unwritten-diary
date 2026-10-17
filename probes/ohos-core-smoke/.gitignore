@@ -1,0 +1,11 @@
+# 构建产物 / 本地配置（不进仓库）
+build/
+.hvigor/
+oh_modules/
+oh-package-lock.json5
+local.properties
+*.hap
+
+# 原生产物：由 scripts/build-native.sh 现场编出来，二进制不进仓库
+entry/libs/
+rust/target/

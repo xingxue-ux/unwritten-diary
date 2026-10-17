@@ -11,9 +11,15 @@ import '../diary_bridge.dart' as bridge;
 /// 把桥接的 `BridgeSession` 适配成契约的 [api.DiaryApi]。
 ///
 /// **覆盖记录与检索路径**：`open` / `snapshot` / `close` / 记录 CRUD /
-/// `startSearch` / `nextPage` / `searchSnapshot` / `cancelSearch`。其余契约方法一律抛
+/// `startSearch` / `nextPage` / `searchSnapshot` / `cancelSearch`，以及
+/// **语义索引重建**（`rebuildSemanticIndex`，契约 `indexes.rebuildSemantic`：设置页
+/// 要在换过模型之后触发「重建语义索引」，所以这一条必须真的能调）。其余契约方法一律抛
 /// [UnsupportedError]（和 `diary_mock` 的做法一致），并且**不出现在
 /// [api.CoreInfo.capabilities] 里**——能力清单是窄化过的，界面据此决定显示哪些入口。
+///
+/// 关键词那条 `indexes.rebuild`（`rebuildIndexes`）**仍然没接**：现有记录入口照常
+/// 使用，适配层这一层等界面真正要用时再接。两条索引路的能力项因此各自独立——
+/// `indexes.rebuildSemantic` 在能力清单里，`indexes.rebuild` 不在。
 ///
 /// 设计取舍：
 /// - **不另造 DTO**：桥接的字段名已经和契约对得上，这里只做映射与改名，
@@ -55,6 +61,10 @@ class BridgeDiaryApi implements api.DiaryApi {
     'captures.commit',
     'captures.get',
     'captures.list',
+    'sources.reviseText',
+    'sources.previousRevision',
+    'sources.extractedContent',
+    'sources.extract',
     'search.start',
     'search.nextPage',
     'search.snapshot',
@@ -71,6 +81,7 @@ class BridgeDiaryApi implements api.DiaryApi {
     'recordings.finalize',
     'recordings.recover',
     'search.upgrade',
+    'indexes.rebuildSemantic',
   };
 
   /// 幂等地初始化 frb 运行时。
@@ -208,6 +219,45 @@ class BridgeDiaryApi implements api.DiaryApi {
       nextCursor: page.nextCursor,
     );
   }
+
+  @override
+  Future<api.SourceRevision> reviseText({
+    required String sourceId,
+    required String text,
+    required int expectedRevision,
+    required String operationId,
+  }) async => _sourceRevision(
+    await _translate(
+      () => _open.reviseText(
+        sourceId: sourceId,
+        text: text,
+        expectedRevision: expectedRevision,
+        operationId: operationId,
+      ),
+    ),
+  );
+
+  @override
+  Future<api.SourceRevision?> previousSourceRevision(String sourceId) async {
+    final revision = await _translate(
+      () => _open.previousSourceRevision(sourceId: sourceId),
+    );
+    return revision == null ? null : _sourceRevision(revision);
+  }
+
+  @override
+  Future<api.ExtractedContent?> extractedContent(String sourceId) async {
+    final content = await _translate(
+      () => _open.extractedContent(sourceId: sourceId),
+    );
+    return content == null ? null : _extractedContent(content);
+  }
+
+  @override
+  Future<api.ExtractedContent> extractSource(String sourceRef) async =>
+      _extractedContent(
+        await _translate(() => _open.extractSource(sourceRef: sourceRef)),
+      );
 
   @override
   Future<api.SearchSnapshot> startSearch({
@@ -476,6 +526,33 @@ class BridgeDiaryApi implements api.DiaryApi {
     );
   }
 
+  // ------------------------------------------------------------ 索引
+
+  /// 排一条**语义索引**重建任务，契约第 4.4 节 `indexes.rebuildSemantic`。
+  ///
+  /// **异步**：只排任务并返回它的 `jobId`（这里交出契约的 [api.JobTicket]），真正的
+  /// 重建由 `semantic_index` 执行者在 `runDueJobs` 里跑。它**等模型配置**（没配好时
+  /// 任务落 `waiting_configuration`，不是失败），并且**可分段让出**：预算到点就回到
+  /// `queued`、进度写在 `Job.progress` 上，下一轮接着算——所以「换过模型、重建整库」
+  /// 这件事不会把一次唤醒拖死，也不会假装已经建好。
+  ///
+  /// 幂等：同一个 `(reason, operationId)` 重复调用返回同一条任务（拿到的 `jobId`
+  /// 相同）；同一个 operationId 换了原因报 `idempotency_conflict`；任务跑完后再请求
+  /// 会建新的一条。
+  @override
+  Future<api.JobTicket> rebuildSemanticIndex({
+    required String reason,
+    required String operationId,
+  }) async {
+    final job = await _translate(
+      () => _open.rebuildSemanticIndex(
+        reason: reason,
+        operationId: operationId,
+      ),
+    );
+    return api.JobTicket(jobId: job.id);
+  }
+
   /// 没接的方法一律明确报错——照 `diary_mock` 的做法，避免悄悄返回空数据。
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
@@ -578,6 +655,31 @@ class BridgeDiaryApi implements api.DiaryApi {
         },
         occurredAt: value.occurredAt,
         // 桥接侧目前不提供 provenance（契约里它是可空字段），如实留空。
+      );
+
+  api.ExtractedContent _extractedContent(bridge.ExtractedContent value) =>
+      api.ExtractedContent(
+        id: value.id,
+        sourceId: value.sourceId,
+        sourceRevisionId: value.sourceRevisionId,
+        extractorId: value.extractorId,
+        extractorVersion: value.extractorVersion,
+        status: api.ProcessingStatus.values.byName(value.status.name),
+        coverage: api.Coverage.values.byName(value.coverage.name),
+        text: value.text,
+        segments: value.segments
+            .map(
+              (segment) => api.ExtractedSegment(
+                text: segment.text,
+                locator: _locator(segment.locator),
+                coverage: api.Coverage.values.byName(value.coverage.name),
+              ),
+            )
+            .toList(growable: false),
+        errorCode: value.errorCode == null
+            ? null
+            : _errorCode(value.errorCode!),
+        coverageReason: value.coverageReason,
       );
 
   api.SearchSnapshot _searchSnapshot(bridge.SearchSnapshot value) =>

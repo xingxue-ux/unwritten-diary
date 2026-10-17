@@ -9,7 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'third_party/diary_core/model.dart';
 
 // These functions are ignored because they are not marked as `pub`: `library_key`, `lock`, `recovery_summary`, `wired_capabilities`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`, `from`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>>
 abstract class BridgeSession implements RustOpaqueInterface {
@@ -133,6 +133,26 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// operationId 换了 scope 或原因报 `idempotency_conflict`。
   Future<Job> rebuildIndexes({
     required String scope,
+    required String reason,
+    required String operationId,
+  });
+
+  /// 排一条**语义索引**重建任务，契约第 4.4 节 `indexes.rebuildSemantic`。
+  ///
+  /// **异步**：只排任务并返回它，不做同步重建。与 `rebuildIndexes` 的区别（三条）：
+  ///
+  /// - **整库**：没有 `scope`。任务业务键是 `(semantic_index, 空目标, 空快照)`，所以
+  ///   「队列里至多一条活着的语义重建」，重复排队不产生第二份工作；
+  /// - **等模型配置**：本地模型没配好时任务落 `waiting_configuration` +
+  ///   `errorCode = waiting_model`（不是失败、不退避），并且不进 `nextWakeup`——配置
+  ///   变化不是时间问题，下一次 `runDueJobs` 的前置评估会把它拉起；
+  /// - **可分段让出**：整库重建会远超一次唤醒的预算，预算到点时它在块与块之间回到
+  ///   `queued`（进度在 `Job.progress` 上、`attemptCount` 不增加），下一轮续跑；
+  ///   代次切换仍是原子的，让出不算「已完成」。
+  ///
+  /// 幂等：同一个 `(reason, operationId)` 重复调用返回同一条任务；同一个 operationId
+  /// 换了原因报 `idempotency_conflict`；任务跑完后再请求会建新的一条（按现状增量重算）。
+  Future<Job> rebuildSemanticIndex({
     required String reason,
     required String operationId,
   });

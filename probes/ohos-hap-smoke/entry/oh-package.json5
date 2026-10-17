@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Minimal entry module of the HAP smoke probe.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {}
+}
