@@ -626,12 +626,12 @@ pub(crate) fn is_attention_acknowledged(core: &Core, attention_key: &str) -> Res
 /// 配置坏了的兜底（例如刚还在的服务这一秒返回了 401）。两条路都落成同一个状态，
 /// 用户看到的是同一件事：**这个任务在等你去改配置**。
 ///
-/// **解冲突备注（#103 合 main）**：与 #96 同形——合并 main 时发现两侧**各自新增**了
-/// 同名的 `defer_for_configuration`，语义不同：main 那份（4 参）是闸门用的
+/// **解冲突备注（#96 合 main）**：合并 main 时发现两侧**各自新增**了同名的
+/// `defer_for_configuration`，语义不同——main 那份（4 参）是闸门用的
 /// 「不置 `requires_user_action`、不消耗尝试次数」；这份是执行期用的
 /// 「`requires_user_action = 1` + `attention_key`（`job-config:<kind>:<code>`）」，
-/// 与 provider 侧 `promote_configuration_waits` 的口径一致。两条口径谁对属于契约
-/// 问题（main 的契约文档写「`attemptCount`、`requiresUserAction` 不动」），
+/// 与 provider 侧 `promote_configuration_waits` 的口径一致。两条口径谁对属于
+/// 契约问题（main 的契约文档写「`attemptCount`、`requiresUserAction` 不动」），
 /// **不在这里擅自选一侧**，先把本分支这份改名保留，等人工统一。
 pub(crate) fn defer_for_configuration_with_attention(
     core: &mut Core,
