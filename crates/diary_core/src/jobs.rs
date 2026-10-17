@@ -1211,6 +1211,13 @@ pub(crate) fn run_due(
         next_wakeup: None,
     };
 
+    // 自动整理的排期在**每轮开始**跑一次（B4e）：把「该整理」的日子冻结成快照、
+    // 排成 `diary_generate` 任务，剩下的退避、补做、配置闸门、租约恢复全部走队列
+    // 既有机制（这一片不另造调度）。**默认关时它什么都不做**，连一次 Provider 调用
+    // 都不会发生。它排了哪些天、哪些被上限挡住，在 `Core::organize_status()` 里看得到
+    // （`JobRunSummary` 的字段由契约固定，不往里加字段）。
+    let _ = crate::organize::plan_due(core, now)?;
+
     // 依赖闸门在**每次领取前**重评估（见下面的循环），不再只在每轮开始跑一次：
     // 上一条前置任务跑完，后继就在同一轮被拉起并执行。这一步不领取、不执行、
     // 不消耗预算：前置已经满足的回到 `queued`（同一轮的下一次领取就能跑），
@@ -1357,6 +1364,7 @@ const HANDLED_KINDS: &[&str] = &[
     KIND_SEMANTIC_INDEX,
     provider::KIND_RESPOND,
     crate::transcription::KIND_TRANSCRIBE,
+    crate::diary::KIND_DIARY_GENERATE,
 ];
 
 /// 这个 kind 现在有执行者吗。
@@ -1385,6 +1393,9 @@ fn execute(
         }
         kind if kind == crate::transcription::KIND_TRANSCRIBE => {
             run_transcribe(core, job).map(|()| HandlerOutcome::Completed)
+        }
+        kind if kind == crate::diary::KIND_DIARY_GENERATE => {
+            run_diary_generate(core, job).map(|()| HandlerOutcome::Completed)
         }
         _ => Err(HandlerFailure::terminal(
             "no_handler",
@@ -1527,6 +1538,23 @@ fn run_respond(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFai
         ));
     }
     provider::run_respond(core, job).map_err(HandlerFailure::from_error)
+}
+
+/// `diary_generate` 的执行者：只读冻结快照，调用模型，把正文落成新版本（B4b）。
+///
+/// 失败处置与 `respond` 同一套（`HandlerFailure::from_error`，时间语义只由错误码决定）：
+/// 没配好/鉴权失败/额度用尽 → `waiting_configuration`（不消耗额度）；超时/断网/限流 →
+/// 退避重试；模型或端点不对 → 终态失败。**任何一条失败都不会留下版本**。
+///
+/// 空目标是结构性错误：没有生成记录就没有快照，重试也不会变好。
+fn run_diary_generate(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailure> {
+    if job.target_ids.is_empty() {
+        return Err(HandlerFailure::terminal(
+            provider::ERROR_NO_TARGET,
+            "日记生成任务没有目标（生成记录），重试也不会变好".to_owned(),
+        ));
+    }
+    crate::diary::run_generate(core, job).map_err(HandlerFailure::from_error)
 }
 
 /// `index` 的执行者：对任务 `target_ids` 里的**来源**重跑关键词索引重建。

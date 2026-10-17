@@ -16,6 +16,11 @@ mod assets;
 mod backup;
 mod chunker;
 mod chunks;
+/// 日记生成与版本（B4b）：冻结输入快照、候选/当前语义、防注入、两步走、去重。
+///
+/// 公开是为了让集成测试能直接断言提示词拼装（`SYSTEM_INSTRUCTIONS` /
+/// `DIRECT_INPUT_CHAR_LIMIT`）——产品代码只走 `Core::generate_diary` 与队列。
+pub mod diary;
 mod error;
 /// 本地向量模型接入（B3c-2）。公开是为了让测试与 `tools/probe` 能显式注入 stub 或
 /// 指定模型包——这是给测试/量测的入口，不是让产品代码去直接碰 ORT。
@@ -25,6 +30,11 @@ mod index_rebuild;
 mod jobs;
 /// 数据对象。公开是为了让桥接层的 codegen 能扫描它们（见 flutter_rust_bridge.yaml）。
 pub mod model;
+/// 整理与自动化（B4e，issue #92）：整理模板、开关与触发边界、待处理判据、配额上限。
+///
+/// 公开是为了让集成测试能直接断言模板规则与判据（`render_rule` / `LIMITS` /
+/// `candidates`）——产品代码只走 `Core::organize_*` 与驱动。
+pub mod organize;
 /// Provider 适配与配置（B4a）：配置、密钥托管、能力协商、连接测试与可注入传输层。
 ///
 /// 公开是为了让测试与 `tools/probe` 能注入回放/记账传输层——这是给测试与量测的
@@ -76,17 +86,39 @@ pub use provider::transport::{
 };
 pub use model::{
     AiResponse, Asset, AssetLease, AssetStorageState, AuthorType, BackupCounts, BackupInspection,
-    BackupReport, Capture, CapturePage, CaptureState, CommitResult, Coverage, DomainEvent,
-    DraftSaveResult, EventType, ExtractedContent, ExtractedSegment, ImportManifest, ImportOrigin,
-    ImportState, ImportStatus, ImportTicket, IndexStatus, Job, JobErrorSummary, JobPriority,
-    JobProgress, JobRunSummary, JobState, JobStatus, LocatorType, MatchedBy, NativeRecordingStatus,
-    NewJob, ProcessingStatus, ProcessingSummary, Provider, ProviderCapability, ProviderTestReport,
+    BackupReport, Capture, CapturePage, CaptureState, CommitResult, Coverage, DiaryDay,
+    DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion, DiaryVersionOrigin,
+    DiaryVersionPage, DomainEvent, DraftSaveResult, EventType, ExtractedContent, ExtractedSegment,
+    GenerationInfo, ImportManifest, ImportOrigin, ImportState, ImportStatus, ImportTicket,
+    IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress, JobRunSummary, JobState,
+    JobStatus, LocatorType, MatchedBy, MaterialCounts, NativeRecordingStatus, NewJob,
+    OrganizePendingDay, OrganizePlanSummary, OrganizeQuota, OrganizeRunInfo, OrganizeSettings,
+    OrganizeSkippedDay, OrganizeStatus, OrganizeTemplate, OrganizeTemplateParam, ProcessingStatus,
+    ProcessingSummary, ProvenanceLink, Provider, ProviderCapability, ProviderTestReport,
     ProviderTestStatus, RecordingFinalizeResult, RecordingRecovery, RecordingSession,
     RecordingState, RecordingTicket, ResponseTicket, RestoreReport, SearchFilters, SearchHit,
     SearchMode, SearchPhase, SearchRequest, SearchSnapshot, SegmentManifest, SegmentReceipt,
     SourceItem, SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
 };
 pub use provider::CapabilityGate;
+pub use diary::{
+    DEFAULT_STYLE_SNAPSHOT_ID, DIRECT_INPUT_CHAR_LIMIT, MAX_INTERMEDIATE_CALLS,
+    MERGE_PROMPT_VERSION, PROMPT_VERSION, SYSTEM_INSTRUCTIONS,
+};
+pub use organize::{
+    DEFAULT_AUTO_ORGANIZE_TIME, DEFAULT_TEMPLATE_ID, FAILURE_WINDOW_HOURS, LIMITS, LOOKBACK_DAYS,
+    MIN_FAILURE_SAMPLES, ORGANIZE_PROMPT_VERSION,
+};
+
+/// 仅供测试：某一天的整理计划时刻（本地 `HH:mm` 按当天偏移折成 UTC）。
+#[doc(hidden)]
+pub fn organize_due_at_for_test(
+    day_key: &str,
+    time: &str,
+    utc_offset_minutes: i64,
+) -> Result<DateTime<Utc>> {
+    organize::due_at(day_key, time, utc_offset_minutes)
+}
 pub use chunker::{
     chunks_for, pack_pieces, Chunk, ChunkSpan, Piece, CHUNKER_VERSION, CHUNK_OVERLAP_CHARS,
     MAX_CHUNK_CHARS,
@@ -1399,6 +1431,193 @@ impl Core {
     /// 读取一条回应，契约第 4.3 节 `responses.get`。
     pub fn get_response(&self, response_id: &str) -> Result<AiResponse> {
         provider::get_response(self, response_id)
+    }
+
+    // ------------------------------------------------------------ 日记生成与版本（B4b）
+
+    /// 生成一篇日记，契约第 4.3 节 `diary.generate`。
+    ///
+    /// **输入在返回之前就冻结**：这一天的材料清单（来源、修订、提取版本、覆盖范围、
+    /// 时间范围、风格、提示词版本与生成选项）写进不可变的快照行并算出哈希，返回的
+    /// `source_snapshot_id` 指的就是它。真正的调用由队列在 `run_due_jobs` 里执行，
+    /// 执行时**只读快照**——事后改了材料也不会改变这一版基于什么。
+    ///
+    /// 候选/当前：首次（这一天没有当前版本、也没有用户自己的版本）生成的结果会成为
+    /// 当前版本；其余一律候选，**当前版本不会被生成改写**。同一份快照哈希与同一条
+    /// `operationId` 不重复产版本（`reason = regenerate` 是「用户明确要再来一版」的例外）。
+    ///
+    /// 没有可用的服务**照样返回票据**：那条任务由队列停在 `waiting_configuration`
+    /// 等配置（与 #66 的能力闸门同一口径），不是一次调用失败。
+    pub fn generate_diary(
+        &mut self,
+        day_key: &str,
+        style_id: Option<&str>,
+        reason: DiaryGenerationReason,
+        operation_id: &str,
+    ) -> Result<DiaryGenerationTicket> {
+        diary::request_generation(self, day_key, style_id, reason, operation_id)
+    }
+
+    /// 某一天的当前/候选与材料覆盖，契约第 4.3 节 `diary.getDay`。
+    ///
+    /// 候选与当前只在这里区分（契约的 `DiaryVersion` 没有状态字段）。空日报 `not_found`。
+    pub fn get_diary_day(&self, day_key: &str) -> Result<DiaryDay> {
+        diary::get_day(self, day_key)
+    }
+
+    /// 分页读某一天的日记版本，契约第 4.3 节 `diary.listVersions`。最新在前。
+    pub fn list_diary_versions(
+        &self,
+        day_key: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<DiaryVersionPage> {
+        diary::list_versions(self, day_key, cursor, limit)
+    }
+
+    /// 读一条完整的日记版本（含生成信息与来源关联），契约第 4.3 节 `diary.getVersion`。
+    pub fn get_diary_version(&self, version_id: &str) -> Result<DiaryVersion> {
+        diary::get_version(self, version_id)
+    }
+
+    /// 保存人工编辑：写一条新的 `user_edit` 版本，契约第 4.3 节 `diary.saveEdit`。
+    ///
+    /// **绝不原地改**：基版（`baseVersionId`）一个字节都不动，新版本的 `parentVersionId`
+    /// 指向它、`origin = user_edit`；新版本**成为当前**（用户手写编辑就是「我要用这一版」），
+    /// 旧当前版退成候选、不删除（`diary.getDay` 的 `candidateVersionIds`）。
+    ///
+    /// `expectedRevision` 是这一天的版本数（`candidateVersionIds.length +
+    /// (currentVersionId == null ? 0 : 1)`）：不符报 `revision_conflict`，**零改动**。
+    /// 同一条 `operationId` 重试返回原版本；换了正文/基版/`expectedRevision` 报
+    /// `idempotency_conflict`。空正文报 `invalid_argument`；正文**不设长度上限**。
+    pub fn save_diary_edit(
+        &mut self,
+        base_version_id: &str,
+        body: &str,
+        expected_revision: i64,
+        operation_id: &str,
+    ) -> Result<DiaryVersion> {
+        diary::save_edit(self, base_version_id, body, expected_revision, operation_id)
+    }
+
+    /// 指定某一天的当前版本，契约第 4.3 节 `diary.setCurrent`。
+    ///
+    /// **只允许指向这一天自己的版本**：版本不存在报 `not_found`，属于别的天报
+    /// `invalid_argument`。`expectedRevision`（版本数）不符报 `revision_conflict`，零改动。
+    /// 旧当前版变候选、仍可取回；按目标状态幂等：切到已经是当前的版本是**无操作**
+    /// （不重复发事件、不新增版本），所以这一行契约没有 `operationId`。
+    pub fn set_diary_current(
+        &mut self,
+        day_key: &str,
+        version_id: &str,
+        expected_revision: i64,
+    ) -> Result<DiaryDay> {
+        diary::set_current(self, day_key, version_id, expected_revision)
+    }
+
+    /// 把两版（或多版）合并成一条新版本，契约第 4.3 节 `diary.merge`。
+    ///
+    /// `body` 是**用户确认后的正文**（核心不替用户合并、不调模型：`modelCalls = 0`）。
+    /// 新版本 `origin = merge`、`parentVersionId = baseVersionId`，参与合并的全部版本 id
+    /// 记在 `generationInfo.generationOptions.mergeSourceVersionIds`（来源可追溯）；
+    /// **参与合并的版本一行都不改**，随时可以取回原文。新版本成为当前。
+    ///
+    /// 候选列表为空 / 有重复 / 包含基版自己 / 版本不属于这一天 → `invalid_argument`
+    /// （版本不存在 → `not_found`）；`expectedRevision` 与 `operationId` 的语义同 `saveEdit`。
+    pub fn merge_diary_versions(
+        &mut self,
+        base_version_id: &str,
+        candidate_version_ids: &[String],
+        body: &str,
+        expected_revision: i64,
+        operation_id: &str,
+    ) -> Result<DiaryVersion> {
+        diary::merge_versions(
+            self,
+            base_version_id,
+            candidate_version_ids,
+            body,
+            expected_revision,
+            operation_id,
+        )
+    }
+
+    // ------------------------------------------------------------ 整理与自动化（B4e）
+
+    /// 全部可用整理模板（现在只有三个核心内置的；插件模板见 #88）。
+    ///
+    /// 模板规则是**产品指令**，参数只接受整数与布尔——两者都不接受自由文本，
+    /// 所以调用方（或将来的插件）没有地方能把「指令」塞进提示词的指令槽。
+    pub fn organize_templates(&self) -> Vec<OrganizeTemplate> {
+        organize::list_templates()
+    }
+
+    /// 整理设置：开关（**默认关**）、模板与参数、各项上限、计划触发时间。
+    pub fn organize_settings(&self) -> Result<OrganizeSettings> {
+        organize::load_settings(self)
+    }
+
+    /// 更新整理设置，契约第 4.4 节 `settings.update` 的落地（整理这一段）。
+    ///
+    /// 口径：
+    /// - **必须显式开启**：`enabled` 默认是 `false`，只有调用方明确传 `true` 才会打开；
+    /// - **校验先行**：模板不存在 `not_found`；参数类型/范围、各项上限、`HH:mm`
+    ///   不合法都是 `invalid_argument`，且**零改动**；
+    /// - **过期就拒绝**：`expectedRevision` 不符报 `revision_conflict`，零改动；
+    /// - **按目标状态幂等**：值没变就是无操作（`revision` 不 +1）。
+    ///
+    /// 传入对象里的 `revision` / `updatedAt` 是**只读结论，会被忽略**（与
+    /// `providers.save` 忽略 `testStatus` 同一个口径）。
+    pub fn update_organize_settings(
+        &mut self,
+        settings: &OrganizeSettings,
+        expected_revision: i64,
+    ) -> Result<OrganizeSettings> {
+        organize::update_settings(self, settings, expected_revision)
+    }
+
+    /// 整理状态：开关、模板、**什么时候会跑、会跑哪些材料**、配额用量与最近一次结果。
+    ///
+    /// **只读**：不发请求、不排任务、不改任何东西。没开启时也能看出「开启后会跑什么」。
+    pub fn organize_status(&self) -> Result<OrganizeStatus> {
+        organize::status(self)
+    }
+
+    /// 排一轮自动整理：把「该整理」的日子冻结成快照、排成 `diary_generate` 任务。
+    ///
+    /// 驱动（`run_due_jobs`）每轮开始时会自己调它；单独暴露是为了测试与将来的界面
+    /// （例如用户刚打开开关，想立刻看看会排什么）。**默认关时它什么都不做**。
+    pub fn plan_organize(&mut self, now: DateTime<Utc>) -> Result<OrganizePlanSummary> {
+        organize::plan_due(self, now)
+    }
+
+    /// 仅供测试/量测：按一句只读查询取一行文本。
+    ///
+    /// 产品代码不调它：核心的读取入口都有自己的方法与语义（例如快照 `body` 是内部
+    /// 形状，不在契约里）。测试用它核对**落库的原始事实**，不另造一套读取路径。
+    #[doc(hidden)]
+    pub fn debug_query_text(&self, sql: &str, param: Option<&str>) -> Result<Option<String>> {
+        let mut statement = self.conn.prepare(sql)?;
+        let value = match param {
+            Some(value) => statement
+                .query_row(params![value], |row| row.get::<_, String>(0))
+                .optional()?,
+            None => statement
+                .query_row([], |row| row.get::<_, String>(0))
+                .optional()?,
+        };
+        Ok(value)
+    }
+
+    /// 仅供测试/量测：按一句只读查询取一个计数。
+    #[doc(hidden)]
+    pub fn debug_query_count(&self, sql: &str, param: Option<&str>) -> Result<i64> {
+        let mut statement = self.conn.prepare(sql)?;
+        let value = match param {
+            Some(value) => statement.query_row(params![value], |row| row.get::<_, i64>(0))?,
+            None => statement.query_row([], |row| row.get::<_, i64>(0))?,
+        };
+        Ok(value)
     }
 
     // ------------------------------------------------------------ 备份与恢复

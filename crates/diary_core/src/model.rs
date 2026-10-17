@@ -1354,6 +1354,377 @@ pub struct AiResponse {
     pub model: Option<String>,
 }
 
+// ---------------------------------------------------------------- 日记与版本（B4b）
+
+/// 生成日记的原因，契约 4.3 节 `diary.generate` 的入参。
+///
+/// 它进幂等指纹（同一个 operationId 换了原因就是换了内容），也进快照的审计信息。
+/// `Regenerate` 是唯一被允许「同一份输入再产一版」的原因——用户明确说了要再来一版，
+/// 其余原因对同一快照哈希**不重复产版本**（见 `diary` 模块）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiaryGenerationReason {
+    Manual,
+    Scheduled,
+    Automatic,
+    Regenerate,
+}
+
+impl DiaryGenerationReason {
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Scheduled => "scheduled",
+            Self::Automatic => "automatic",
+            Self::Regenerate => "regenerate",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "manual" => Some(Self::Manual),
+            "scheduled" => Some(Self::Scheduled),
+            "automatic" => Some(Self::Automatic),
+            "regenerate" => Some(Self::Regenerate),
+            _ => None,
+        }
+    }
+
+    /// 是不是**自动整理**这一路（B4e）。
+    ///
+    /// 这一路与用户主动要一版（`manual` / `regenerate`）有三处不同：
+    /// 1. 用设置里选中的**整理模板**（写进冻结快照）拼提示词；
+    /// 2. 结果**一律进候选**，绝不成为当前版本（用户确认走 `diary.setCurrent`）；
+    /// 3. 受整理设置里的**配额上限**约束（单次/每日调用次数、材料条数与字数、失败率）。
+    pub fn is_organize(self) -> bool {
+        matches!(self, Self::Scheduled | Self::Automatic)
+    }
+}
+
+/// 日记版本的来源，契约 2.5 节。
+///
+/// **AI 生成的正文永远是 `Generated`**，绝不写成 `UserEdit`——`source_revisions`
+/// 的 `AuthorType` 只有 user/import，AI 文本也不写进用户原件（见 `diary` 模块）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiaryVersionOrigin {
+    Generated,
+    UserEdit,
+    Merge,
+}
+
+impl DiaryVersionOrigin {
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Generated => "generated",
+            Self::UserEdit => "user_edit",
+            Self::Merge => "merge",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "generated" => Some(Self::Generated),
+            "user_edit" => Some(Self::UserEdit),
+            "merge" => Some(Self::Merge),
+            _ => None,
+        }
+    }
+
+    /// 是不是用户自己写的（手写或用户确认后的合并）。
+    ///
+    /// 「首次生成可成为 current」这条例外的边界靠它：只要这一天有用户自己的版本，
+    /// 自动生成的版本就**不会**被设成当前版本。
+    pub fn is_user_authored(self) -> bool {
+        matches!(self, Self::UserEdit | Self::Merge)
+    }
+}
+
+/// 当天的材料统计，契约 2.5 节。数字都是真值，不是估计。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MaterialCounts {
+    /// 当天的记录数（不含回收站）。
+    pub captures: i64,
+    /// 已经有可用正文的材料数（用户的文字天然算「已处理」）。
+    pub processed: i64,
+    /// 还在等提取的材料数。
+    pub pending: i64,
+    /// 提取失败、暂无可读正文的材料数。
+    pub failed: i64,
+}
+
+/// 某一天的日记聚合视图，契约 2.5 节 `DiaryDay`。
+///
+/// **候选与当前只在这里区分**：契约的 `DiaryVersion` 没有状态字段，所以「哪一版是当前、
+/// 哪些是候选」由 `current_version_id` 与 `candidate_version_ids` 表达，不给版本另造状态。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiaryDay {
+    pub day_key: String,
+    /// 这一天的时区名。没有任何材料也没有生成过时是 `UTC`（缺省，不是推测）。
+    pub time_zone: String,
+    /// 当前版本；这一天还没有任何版本时为 None。
+    pub current_version_id: Option<String>,
+    /// 候选版本（这一天的全部版本里除当前版本之外的那些），最新在前。
+    pub candidate_version_ids: Vec<String>,
+    /// 这一天的 **revision**：持久、单调递增的状态推进计数（`diary_days.revision`）。
+    ///
+    /// 每次成功写入 +1：新增一版（生成 / 编辑 / 合并）算一次，`diary.setCurrent`
+    /// 真的换了当前版本也算一次；没有推进的调用（切到已经是当前的版本）不加。
+    /// 调用方把读到的这个值原样回传给 `saveEdit` / `setCurrent` / `merge` 的
+    /// `expectedRevision`（契约 2.5 / 4.3）；没有推进过的天是 0。
+    pub revision: i64,
+    pub material_counts: MaterialCounts,
+    pub coverage: Coverage,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 生成过程的审计信息，契约 2.5 节。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationInfo {
+    pub prompt_version: String,
+    pub provider_id: Option<String>,
+    pub model: Option<String>,
+    /// 生成选项：固定的协议参数与**如实记录的步数**
+    /// （`steps` / `intermediateCalls` / `repairCalls`），不虚构。
+    pub generation_options: std::collections::HashMap<String, String>,
+    /// 快照里已处理的材料数。
+    pub covered_source_count: i64,
+    /// 快照里明确记为「暂未处理」的材料数（不假装完整）。
+    pub unprocessed_source_count: i64,
+}
+
+/// 正文与来源的关联，契约 2.5 节。涉及事实的内容要能追溯；不要求每句修辞都有引用。
+///
+/// 长材料两步走时，第一步提炼出来的**中间事实**也记在这里（`note` 是那条派生事实，
+/// 来源是它真正来自的记录/片段），所以中间结果不脱离来源独立存在。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProvenanceLink {
+    pub source_id: String,
+    pub source_revision_id: String,
+    pub locator: SourceLocator,
+    /// 正文中对应的字符区间；整段关联或位置不可靠时为空（不伪造）。
+    pub body_range: Option<TextRange>,
+    pub note: Option<String>,
+}
+
+/// 日记版本，契约 2.5 节。正文是自然段，来源关联放在独立字段。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiaryVersion {
+    pub id: String,
+    pub day_key: String,
+    pub parent_version_id: Option<String>,
+    pub origin: DiaryVersionOrigin,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    /// 不可变的输入清单快照（用了哪些材料、哪些修订、覆盖范围的真相）。
+    pub source_snapshot_id: Option<String>,
+    pub style_snapshot_id: Option<String>,
+    pub generation_info: Option<GenerationInfo>,
+    pub provenance_links: Vec<ProvenanceLink>,
+}
+
+/// 分页的版本列表，契约 4.3 节 `diary.listVersions`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiaryVersionPage {
+    pub versions: Vec<DiaryVersion>,
+    pub next_cursor: Option<String>,
+}
+
+/// 一次日记生成的票据，契约 4.3 节 `diary.generate`。
+///
+/// 输入在**返回之前**就已经冻结（快照已落库、哈希已算），真正的调用由队列驱动执行。
+/// Provider 还没配好时**照样返回票据**：那条任务会停在 `waiting_configuration` 等配置，
+/// 而不是把「还没有配置服务」说成一次调用失败（与 #66 的队列闸门同一口径）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiaryGenerationTicket {
+    pub job_id: String,
+    pub source_snapshot_id: String,
+}
+
+// ------------------------------------------------------------ 整理与自动化（B4e，#92）
+
+/// 整理模板的一个可选参数：**只允许整数与布尔**，不接受自由文本。
+///
+/// 为什么参数不能是文本：模板规则属于**产品指令**，只在 system 消息里。如果参数能带
+/// 任意文字，调用方（或将来某个插件）就能把「忽略上面的指令」写进指令槽——那正是
+/// #64 花力气堵住的那条路（材料是数据，不是指令）。限定成整数/布尔之后，参数**没有
+/// 地方**可以承载指令文本。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizeTemplateParam {
+    /// 参数键（wire 名，例如 `targetChars`）。
+    pub key: String,
+    /// 中文短名，设置页直接用。
+    pub label: String,
+    /// 参数类型：`integer` 或 `boolean`。
+    pub kind: String,
+    /// 整数参数的取值范围（布尔参数两者都为空）。
+    pub minimum: Option<i64>,
+    pub maximum: Option<i64>,
+    /// 默认值（字符串形式，`true` / `false` 或十进制整数）。
+    pub default_value: String,
+    pub description: String,
+}
+
+/// 一个整理模板：核心内置规则，或将来由 #88 的声明式插件提供的规则。
+///
+/// **这一片只实现内置三类**（`source = "builtin"`）。`source` 字段就是留给 #88 的
+/// 对接点：插件模板进来时，`source = "plugin"` 并且 `plugin_id` 有值——解析、校验、
+/// 提示词拼装的路径都不变（见 `docs/architecture/m4-整理与自动化.md`「#88 的对接点」）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizeTemplate {
+    /// 模板 id（不透明字符串，进冻结快照）。
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    /// 规则文本：**产品指令**，只在 system 消息里出现，由核心常量拼出。
+    pub rule: String,
+    pub params: Vec<OrganizeTemplateParam>,
+    /// `builtin`（核心内置）或 `plugin`（#88 的声明式插件，尚未实现）。
+    pub source: String,
+    /// 插件模板所属的插件 id；内置模板为空。
+    pub plugin_id: Option<String>,
+}
+
+/// 整理设置。默认**全关**：`enabled = false`，核心不会自动调用任何服务。
+///
+/// 这是「必须由用户显式开启」的落点：`Core::open` 建出来的资料库（含从旧版本升级上来
+/// 的）都是关的，只有显式 `update_organize_settings` 才能打开。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrganizeSettings {
+    pub enabled: bool,
+    pub template_id: String,
+    /// 显式覆盖的参数（生效值 = 覆盖 + 模板默认值）。**只允许整数与布尔**。
+    pub template_params: std::collections::HashMap<String, String>,
+    /// 单次整理的材料条数上限。
+    pub max_materials: i64,
+    /// 单次整理的材料字数上限（Unicode 标量值）。
+    pub max_chars: i64,
+    /// 单次整理的模型调用次数上限（含两步走与格式修复）。
+    pub max_calls_per_run: i64,
+    /// 最近 24 小时内自动整理的模型调用次数上限。
+    pub max_calls_per_day: i64,
+    /// 失败率上限（0.0–1.0）：最近窗口内样本 ≥3 且失败比例超过它就停下。
+    pub max_failure_rate: f64,
+    /// 计划触发时间 `HH:mm`（本地时间，按当天材料的 UTC 偏移折算）。**不是完成承诺**。
+    pub auto_organize_time: String,
+    /// 当天已有当前版本、之后又来了新材料时，是否自动补做一份候选。关掉就只手动。
+    pub supplement_on_new_materials: bool,
+    /// 设置版本（乐观锁；每次真的改动 +1）。
+    pub revision: i64,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 自动整理的配额与用量现状。数字都来自**真实的调用账本**，不是估算。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrganizeQuota {
+    /// 最近 24 小时（滚动窗口）真的发出去的整理调用次数。
+    pub calls_last_24h: i64,
+    pub max_calls_per_day: i64,
+    /// 还能发几次（不会小于 0）。
+    pub calls_remaining: i64,
+    /// 失败率窗口里的样本数（最近 24 小时的整理调用，最多取最近 20 条）。
+    pub failure_samples: i64,
+    /// 窗口里的失败比例（0.0–1.0）；没有样本时为 0。
+    pub failure_rate: f64,
+    pub max_failure_rate: f64,
+    pub last_call_at: Option<DateTime<Utc>>,
+}
+
+/// 一个「该整理」的日子，以及它为什么该整理。
+///
+/// 判据全是可判定的（见 `docs/architecture/m4-整理与自动化.md`），没有一条是
+/// 「AI 觉得该整理」。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrganizePendingDay {
+    pub day_key: String,
+    /// 该整理的理由：`first`（这一天还没有任何版本）/ `supplement`（已有版本，之后又来了新材料）。
+    pub reason: String,
+    /// 可读正文的材料条数。
+    pub materials: i64,
+    /// 这些材料的字符总数（Unicode 标量值）。
+    pub chars: i64,
+    /// 按现有材料估算的模型调用次数（1 = 一步；N+1 = 两步走）。
+    pub estimated_calls: i64,
+    /// 这一天的计划触发时刻（`autoOrganizeTime` 折成 UTC）。
+    pub due_at: DateTime<Utc>,
+    /// 这一天的当前版本（没有就是空）。
+    pub current_version_id: Option<String>,
+}
+
+/// 被跳过的日子与原因（超限、材料有问题……），如实报出来。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizeSkippedDay {
+    pub day_key: String,
+    /// 契约第 7 节的错误码（现在只会用到 `quota_exceeded`）。
+    pub code: String,
+    /// 可执行的说明：哪一条上限、已经做了什么、下一步怎么办。
+    pub message: String,
+}
+
+/// 最近一次自动整理的真实结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizeRunInfo {
+    pub day_key: String,
+    /// 生成行的状态：`pending`（还没有结论：在队列里、在等配置、或在退避重试）/
+    /// `ready`（产出了版本）/ `failed`（终态失败，**没有**版本）。
+    pub state: String,
+    pub error_code: Option<String>,
+    pub version_id: Option<String>,
+    /// 这次真的发出去了几次调用（来自账本，不是估算）。
+    pub calls: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 自动整理的状态：开关、模板、**什么时候会跑、会跑哪些材料**、配额与最近结果。
+///
+/// 这是「开启后要能说清会跑什么、什么时候跑」的落点。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrganizeStatus {
+    pub settings: OrganizeSettings,
+    /// 选中的模板（含规则与参数声明）。
+    pub template: OrganizeTemplate,
+    /// 生效参数（覆盖 + 默认值），键有序。
+    pub effective_params: std::collections::HashMap<String, String>,
+    /// 现在就该跑的日子。
+    pub due_days: Vec<OrganizePendingDay>,
+    /// 已经该整理、但还没到计划触发时刻的日子（`nextRunAt` 就是其中最早的）。
+    pub scheduled_days: Vec<OrganizePendingDay>,
+    /// 下一次计划触发时刻；没有待办时为空。
+    pub next_run_at: Option<DateTime<Utc>>,
+    pub quota: OrganizeQuota,
+    /// Provider 能力闸门（没配好时给出原因与可执行的下一步）。**只读，不发请求**。
+    pub provider_code: Option<String>,
+    pub provider_reason: Option<String>,
+    pub provider_next_step: Option<String>,
+    /// 全局停下时的错误码与说明（例如 `quota_exceeded`：失败率过高）。
+    pub blocked_code: Option<String>,
+    pub blocked_reason: Option<String>,
+    /// 被跳过的日子（单日超限等）。
+    pub skipped_days: Vec<OrganizeSkippedDay>,
+    pub last_run: Option<OrganizeRunInfo>,
+    /// 如实补充说明（观察窗、默认关、哪些不算待处理……）。
+    pub notes: Vec<String>,
+}
+
+/// 一轮自动整理的排期结果（驱动每轮开始时调用一次）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizePlanSummary {
+    /// 观察窗内被盘点过的日子数。
+    pub considered_days: i64,
+    /// 这一轮排出去的日子（已入队 `diary_generate`）。
+    pub queued_days: Vec<String>,
+    /// 现在就该跑、但因为全局上限被挡住的日子。
+    pub blocked_days: Vec<String>,
+    /// 被跳过的日子与原因。
+    pub skipped_days: Vec<OrganizeSkippedDay>,
+    /// 全局停下的错误码与说明；没有全局停下时为空。
+    pub blocked_code: Option<String>,
+    pub blocked_reason: Option<String>,
+    pub notes: Vec<String>,
+}
+
+
 // ---------------------------------------------------------------- 备份与恢复（B7）
 
 /// 备份快照里的关键行数。

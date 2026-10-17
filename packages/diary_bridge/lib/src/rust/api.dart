@@ -72,7 +72,31 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required ImportManifest manifest,
   });
 
+  /// 生成一篇日记，契约 `diary.generate`。
+  ///
+  /// **输入在返回之前就冻结**（`sourceSnapshotId` 指的那一行），真正的调用由
+  /// `run_due_jobs` 执行。首次生成可成为当前版本；之后一律候选，**当前版本不会被
+  /// 生成改写**（`reason = regenerate` 是「用户明确再要一版」的例外，产新候选）。
+  ///
+  /// 没有配好服务**照样返回票据**：那条任务会停在 `waiting_configuration` 等配置，
+  /// 由 `jobs.get` 看得到状态；不是一次调用失败，也不产生任何版本。
+  Future<DiaryGenerationTicket> generateDiary({
+    required String dayKey,
+    String? styleId,
+    required DiaryGenerationReason reason,
+    required String operationId,
+  });
+
   Future<Capture> getCapture({required String captureId});
+
+  /// 某一天的日记聚合视图，契约 `diary.getDay`。
+  ///
+  /// **候选与当前只在这里区分**：契约的 `DiaryVersion` 没有状态字段，所以
+  /// `currentVersionId` / `candidateVersionIds` 是唯一的口径。空日报 `not_found`。
+  Future<DiaryDay> getDiaryDay({required String dayKey});
+
+  /// 读一条完整的日记版本（含生成信息与来源关联），契约 `diary.getVersion`。
+  Future<DiaryVersion> getDiaryVersion({required String versionId});
 
   Future<Job> getJob({required String jobId});
 
@@ -108,6 +132,13 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required int limit,
   });
 
+  /// 分页读某一天的日记版本，契约 `diary.listVersions`。最新在前。
+  Future<DiaryVersionPage> listDiaryVersions({
+    required String dayKey,
+    String? cursor,
+    required int limit,
+  });
+
   /// 按状态列出任务；不传状态就列全部。
   Future<List<Job>> listJobs({List<JobState>? states, required int limit});
 
@@ -122,12 +153,47 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required SourceLocator locator,
   });
 
+  /// 把两版（或多版）合并成一条新版本，契约 `diary.merge`。
+  ///
+  /// `body` 是用户确认后的正文（核心不调模型）；来源记在
+  /// `generationInfo.generationOptions.mergeSourceVersionIds`；参与合并的版本全部保留。
+  Future<DiaryVersion> mergeDiaryVersions({
+    required String baseVersionId,
+    required List<String> candidateVersionIds,
+    required String body,
+    required PlatformInt64 expectedRevision,
+    required String operationId,
+  });
+
   /// 建议的下次唤醒时刻；没有待办时为空。
   Future<DateTime?> nextWakeup();
 
   /// 打开（或创建）资料库。
   static Future<BridgeSession> open({required String libraryPath}) =>
       RustLib.instance.api.crateApiBridgeSessionOpen(libraryPath: libraryPath);
+
+  /// 整理设置：开关（**默认关**）、模板与参数、各项上限与计划触发时间。
+  ///
+  /// 这是「必须由用户显式开启」的落点：新建与升级上来的资料库都是关的，
+  /// 只有 `update_organize_settings` 显式传 `enabled = true` 才会打开。
+  ///
+  /// **能力清单里不出现在 `settings.get` 名下**（那是契约里覆盖全部可编辑设置的
+  /// 方法，还包含日记时区等平台层字段，这一片没有实现）：这里是核心真实的整理
+  /// 设置对象，界面按需直接调用，不做能力名上的假装。
+  Future<OrganizeSettings> organizeSettings();
+
+  /// 整理状态：开关、模板、**什么时候会跑、会跑哪些材料**、配额用量与最近一次结果。
+  ///
+  /// **只读**：不发请求、不排任务、不改任何东西。没开启时也能看出「开启后会跑什么」。
+  /// 配额与失败率都来自真实的调用账本；超限停下时 `blockedCode` / `blockedReason`
+  /// 写清哪一条上限、已经做了什么、下一步怎么办。
+  Future<OrganizeStatus> organizeStatus();
+
+  /// 全部可用的整理模板（现在只有三个核心内置的；声明式插件模板见 #88）。
+  ///
+  /// 模板的规则是**产品指令**（只在 system 消息里），参数只接受整数与布尔——
+  /// 两者都不接受自由文本，所以「把材料里的文字变成指令」没有入口。
+  Future<List<OrganizeTemplate>> organizeTemplates();
 
   /// 申请导入暂存位置。平台层只能往票据指向的文件里写。
   Future<ImportTicket> prepareImport({
@@ -247,6 +313,18 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String trigger,
   });
 
+  /// 保存人工编辑：新写一条 `user_edit` 版本并让它成为当前，契约 `diary.saveEdit`。
+  ///
+  /// **不原地改基版**（基版一个字节都不动），旧当前版退成候选。`expectedRevision`
+  /// 是这一天的版本数（`candidateVersionIds.length + (currentVersionId == null ? 0 : 1)`），
+  /// 不符报 `revision_conflict` 且零改动；同一条 `operationId` 重试返回原版本。
+  Future<DiaryVersion> saveDiaryEdit({
+    required String baseVersionId,
+    required String body,
+    required PlatformInt64 expectedRevision,
+    required String operationId,
+  });
+
   /// 保存草稿。只有核心确认落盘后才返回 `durable = true`。
   Future<DraftSaveResult> saveDraft({
     required String captureId,
@@ -273,6 +351,17 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 读当前快照；会话不存在或索引变了报 `search_expired`。
   Future<SearchSnapshot> searchSnapshot({required String sessionId});
 
+  /// 指定某一天的当前版本，契约 `diary.setCurrent`。
+  ///
+  /// 只能指向这一天自己的版本（不存在 `not_found`、跨天 `invalid_argument`）；
+  /// `expectedRevision` 不符 `revision_conflict`；切到已经是当前的版本是**无操作**，
+  /// 所以这一行契约没有 `operationId`（不产生任何东西，重复调用收敛到同一状态）。
+  Future<DiaryDay> setDiaryCurrent({
+    required String dayKey,
+    required String versionId,
+    required PlatformInt64 expectedRevision,
+  });
+
   /// 发起一次检索，契约第 4.4 节 `search.start`。
   Future<SearchSnapshot> startSearch({
     required SearchRequest request,
@@ -288,6 +377,17 @@ abstract class BridgeSession implements RustOpaqueInterface {
   Future<ProviderTestReport> testProvider({
     required String providerId,
     required List<ProviderCapability> scope,
+  });
+
+  /// 更新整理设置（契约 `settings.update` 的整理那一段）：整份替换 + `expectedRevision`。
+  ///
+  /// 校验先行（未知模板 `not_found`；参数/上限/时间不合法 `invalid_argument`；
+  /// 过期 `revision_conflict`），**被拒的调用零改动**；值没变就是无操作
+  /// （`revision` 不 +1）。传入对象里的 `revision` / `updatedAt` 会被忽略
+  /// （它们是只读结论，与 `providers.save` 忽略 `testStatus` 同一个口径）。
+  Future<OrganizeSettings> updateOrganizeSettings({
+    required OrganizeSettings settings,
+    required PlatformInt64 expectedRevision,
   });
 
   Future<RecordingSession> updateRecordingState({

@@ -129,7 +129,7 @@ fn capabilities_json(capabilities: &HashSet<ProviderCapability>) -> Result<Strin
     Ok(serde_json::to_string(&names)?)
 }
 
-fn load_provider(conn: &rusqlite::Connection, provider_id: &str) -> Result<Provider> {
+pub(crate) fn load_provider(conn: &rusqlite::Connection, provider_id: &str) -> Result<Provider> {
     let sql = format!("SELECT {PROVIDER_COLUMNS} FROM providers WHERE id = ?1");
     let raw: Option<RawProvider> = conn
         .query_row(&sql, params![provider_id], raw_provider_row)
@@ -177,7 +177,7 @@ fn verified_capabilities(
     }
 }
 
-fn provider_secret(core: &Core, provider: &Provider) -> Result<Option<String>> {
+pub(crate) fn provider_secret(core: &Core, provider: &Provider) -> Result<Option<String>> {
     match provider.credential_ref.as_deref() {
         Some(credential_ref) => core.secrets().get(credential_ref),
         None => Ok(None),
@@ -1445,7 +1445,11 @@ fn record_test_outcome(
 /// 为什么必须做：闸门认「测过就要验过」，所以这一笔会让等在 `waiting_configuration`
 /// 的任务**真的停下来等用户**，而不是每次唤醒都去撞一次 401（契约第 7 节：
 /// 等待配置，不频繁重试）。超时与断网不改结论——那是暂时性的，不该让用户重测。
-fn mark_provider_verdict_failed(core: &mut Core, provider_id: &str, error_code: &str) -> Result<()> {
+pub(crate) fn mark_provider_verdict_failed(
+    core: &mut Core,
+    provider_id: &str,
+    error_code: &str,
+) -> Result<()> {
     if !matches!(error_code, "authentication_failed" | "model_unavailable") {
         return Ok(());
     }
@@ -1744,14 +1748,18 @@ fn mark_response_error(core: &mut Core, response_id: &str, error_code: &str) -> 
 /// `transcribe` 还没有执行者，所以没有列它（队列对没有执行者的 kind 走诚实的
 /// `no_handler`）；#91 把执行者接上了，`transcribe` 于是也能在这里被闸门挡住——
 /// 引擎/模型没就绪时任务停在 `waiting_configuration`，不会先跑一次再失败。
+/// `diary_generate`（B4b 的日记生成）与 `respond` 一样需要 `generate_text`，
+/// 也在**领取前**就被这条闸门挡住（`waiting_configuration`），配置好了再跑——
+/// 这正是「没配服务也不算调用失败」的落地。
 ///
-/// 两条**能力需求**不同：
-/// - `respond` 需要 `generate_text`（HTTP 服务）；
+/// 几条**能力需求**不同：
+/// - `respond` / `diary_generate` 需要 `generate_text`（HTTP 服务）；
 /// - `transcribe` 需要 `transcribe_audio`，而且录音这条链**只跑本机引擎**
 ///   （见 `job_gate` 的 `local_only`）。
 pub(crate) fn job_capability(kind: &str) -> Option<ProviderCapability> {
     match kind {
         KIND_RESPOND => Some(ProviderCapability::GenerateText),
+        kind if kind == crate::diary::KIND_DIARY_GENERATE => Some(ProviderCapability::GenerateText),
         crate::transcription::KIND_TRANSCRIBE => Some(ProviderCapability::TranscribeAudio),
         _ => None,
     }
@@ -1762,16 +1770,23 @@ pub(crate) fn job_gate(core: &Core, job: &Job) -> Result<Option<CapabilityGate>>
     let Some(capability) = job_capability(&job.kind) else {
         return Ok(None);
     };
-    // `respond` 在请求受理时就把服务钉死了：判定要与执行者用同一个服务，
-    // 否则会出现「闸门说可以 → 执行者说不行 → 每次唤醒都撞一次」的抖动。
-    let pinned = if job.kind == KIND_RESPOND {
-        job.target_ids
+    // `respond` / `diary_generate` 在请求受理时就把服务钉死了：判定要与执行者用同一个
+    // 服务，否则会出现「闸门说可以 → 执行者说不行 → 每次唤醒都撞一次」的抖动。
+    // 受理时没有可用服务（`provider_id` 为空）时两边都按「挑一个」的同一次调用判定。
+    let pinned = match job.kind.as_str() {
+        KIND_RESPOND => job
+            .target_ids
             .first()
             .map(|response_id| pinned_provider(core, response_id))
             .transpose()?
-            .flatten()
-    } else {
-        None
+            .flatten(),
+        kind if kind == crate::diary::KIND_DIARY_GENERATE => job
+            .target_ids
+            .first()
+            .map(|generation_id| crate::diary::pinned_provider(core, generation_id))
+            .transpose()?
+            .flatten(),
+        _ => None,
     };
     // 转写这一路**只认本机引擎**：录音的转写链跑的是本机 ONNX 引擎
     // （`transcription` 模块），远端服务不在它的执行范围里——闸门不能说

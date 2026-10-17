@@ -208,7 +208,13 @@ pub(crate) fn start(
     let mut warnings = Vec::new();
 
     if request.filters.include_old_diary_versions {
-        warnings.push("日记历史版本还没有进索引，这个开关暂时没有效果".to_owned());
+        // B4c 之后这句话要说全：**当前版本也没有进索引**——否则前端会以为「只有旧版没进，
+        // 当前版是搜得到的」。旧版正文的取回路径是按需按 id 读，所以在警告里直接指出来。
+        warnings.push(
+            "日记历史版本还没有进索引（当前版本也没有）：这个开关暂时没有效果，\
+             日记正文请用 diary.listVersions / diary.getVersion 按需读取"
+                .to_owned(),
+        );
     }
 
     let (ordered, index_coverage, phase) = match request.mode {
