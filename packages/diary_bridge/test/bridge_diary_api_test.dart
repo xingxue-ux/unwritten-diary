@@ -101,6 +101,50 @@ void main() {
     expect(after.pendingJobCount, greaterThanOrEqualTo(0));
   });
 
+  test('导入取消与录音恢复交接到真实核心', () async {
+    final bridge = BridgeDiaryApi(
+      coreLibraryPath: File(
+        Platform.environment['DIARY_BRIDGE_LIB'] ?? _defaultLibraryPath(),
+      ).absolute.path,
+      libraryPath: '${workDir.path}/handoff.sqlite',
+      timeZone: 'Asia/Shanghai',
+      utcOffsetMinutes: 480,
+    );
+    try {
+      final opened = await bridge.open();
+      expect(opened.coreInfo.capabilities, contains('imports.cancel'));
+      expect(opened.coreInfo.capabilities, contains('recordings.prepare'));
+      final draft = await bridge.createDraft(operationId: 'handoff-draft');
+      final import = await bridge.prepareImport(
+        captureId: draft.id,
+        displayName: 'unfinished.txt',
+        operationId: 'handoff-import',
+      );
+      expect(
+        (await bridge.importStatus(import.importId)).state,
+        ImportState.prepared,
+      );
+      await bridge.cancelImport(import.importId);
+      await expectLater(
+        bridge.importStatus(import.importId),
+        throwsA(isA<DiaryException>()),
+      );
+
+      final recording = await bridge.prepareRecording(
+        captureId: draft.id,
+        operationId: 'handoff-recording',
+      );
+      expect(recording.stagingTicket, isNotEmpty);
+      final recovery = await bridge.recoverRecording(
+        recordingId: recording.recordingId,
+      );
+      expect(recovery.recordingId, recording.recordingId);
+      expect(recovery.closedSegmentIndexes, isEmpty);
+    } finally {
+      await bridge.close();
+    }
+  });
+
   test('开库失败抛契约异常，且不留下已释放的会话', () async {
     // 回归：审查发现 `open()` 没走 `_translate`，会把原始 BridgeError 泄漏给
     // 只依赖 DiaryApi 的调用方；而且它 dispose 旧会话后没有清空引用，开库失败

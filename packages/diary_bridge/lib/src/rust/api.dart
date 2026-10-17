@@ -8,11 +8,13 @@ import 'lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'third_party/diary_core/model.dart';
 
-// These functions are ignored because they are not marked as `pub`: `lock`, `recovery_summary`, `wired_capabilities`
+// These functions are ignored because they are not marked as `pub`: `library_key`, `lock`, `recovery_summary`, `wired_capabilities`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>>
 abstract class BridgeSession implements RustOpaqueInterface {
+  Future<void> cancelImport({required String importId});
+
   /// 取消后续处理；不删除任何原件。
   Future<SearchSnapshot> cancelSearch({required String sessionId});
 
@@ -42,6 +44,12 @@ abstract class BridgeSession implements RustOpaqueInterface {
 
   /// 读取某个来源当前版本的派生内容；没提取过时返回空。
   Future<ExtractedContent?> extractedContent({required String sourceId});
+
+  Future<RecordingFinalizeResult> finalizeRecording({
+    required String recordingId,
+    required PlatformInt64 lastSegmentIndex,
+    required String endReason,
+  });
 
   /// 声明复制完成。核心会自己重算哈希并比对。
   Future<ImportStatus> finishImport({
@@ -102,6 +110,11 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
+  Future<RecordingTicket> prepareRecording({
+    required String captureId,
+    required String operationId,
+  });
+
   /// 取某个来源**当前修订的父修订**（上一版正文），供界面「看原正文」用。
   ///
   /// 没有上一版时返回空。返回的是修订，不是 diff：差在哪由前端算。
@@ -122,6 +135,14 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String scope,
     required String reason,
     required String operationId,
+  });
+
+  Future<RecordingRecovery> recoverRecording({String? recordingId});
+
+  Future<SegmentReceipt> registerSegment({
+    required String recordingId,
+    required PlatformInt64 segmentIndex,
+    required SegmentManifest segment,
   });
 
   /// 修改某一篇来源的原始文字：新建一个修订，旧修订保留。
@@ -173,6 +194,10 @@ abstract class BridgeSession implements RustOpaqueInterface {
   Future<SearchSnapshot> startSearch({
     required SearchRequest request,
     required PlatformInt64 queryRevision,
+  });
+
+  Future<RecordingSession> updateRecordingState({
+    required NativeRecordingStatus status,
   });
 
   /// 把混合会话从关键词阶段升级到融合阶段（#69）；幂等，重复调用不重复算。
