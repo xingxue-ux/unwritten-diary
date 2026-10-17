@@ -10,7 +10,9 @@
 //!    `waiting_extract`（不发注定失败的工作、不消耗重试额度），并且**保持不变式**
 //!    「有等待态 ⇒ `next_wakeup` 非空」；提取一完成就在**同一次**驱动里跑完；
 //! 3. **等配置**（没有模型时）：落在 `waiting_configuration` + `waiting_model`，不失败、
-//!    不消耗额度；配置好了（注入嵌入器）之后**不需要任何唤醒提示**，下一次驱动的闸门
+//!    不消耗额度（闸门在领取前挡下，没跑过就不计尝试），但**要用户去配模型**——
+//!    `requires_user_action = 1` + `attention_key = job-config:semantic_index:waiting_model`；
+//!    配置好了（注入嵌入器）之后**不需要任何唤醒提示**，下一次驱动的闸门
 //!    就把它拉起来跑完；
 //! 4. **可恢复**：模拟「跑到一半被杀」（任务停在 `running`、`building_generation` 里已经
 //!    写好一块向量）→ 驱动回收它并**续跑**，只算没算完的块（用嵌入调用次数钉住「不重头」），
@@ -314,7 +316,8 @@ fn a_semantic_job_waits_for_the_extraction_and_then_runs_in_the_same_round() {
 
 // ------------------------------------------------------------ 3. 等配置
 
-/// 没有模型：语义任务落在 `waiting_configuration` + `waiting_model`（不是失败、不挂死），
+/// 没有模型：语义任务落在 `waiting_configuration` + `waiting_model`（不是失败、不挂死，
+/// 但**要用户去配模型**：`requires_user_action` + `attention_key` 都给出来），
 /// 配置好了之后由下一次驱动的闸门拉起并跑完——不需要任何唤醒提示。
 #[test]
 fn without_a_model_the_semantic_job_waits_for_configuration_and_then_runs() {
@@ -335,8 +338,19 @@ fn without_a_model_the_semantic_job_waits_for_configuration_and_then_runs() {
     let waiting = core.get_job(&job.id).unwrap();
     assert_eq!(waiting.state, JobState::WaitingConfiguration);
     assert_eq!(waiting.error_code.as_deref(), Some("waiting_model"));
-    assert_eq!(waiting.attempt_count, 0, "等配置不动尝试次数");
-    assert!(!waiting.requires_user_action);
+    assert_eq!(
+        waiting.attempt_count, 0,
+        "闸门在领取前挡下：没跑过就不计尝试"
+    );
+    assert!(
+        waiting.requires_user_action,
+        "等配置要用户去配模型：不是失败，但也不是无需理会的状态"
+    );
+    assert_eq!(
+        waiting.attention_key.as_deref(),
+        Some("job-config:semantic_index:waiting_model"),
+        "界面靠 attentionKey 深链到「配哪一个」"
+    );
     assert!(waiting.next_attempt_at.is_none(), "排期照旧：它本来就入队即到期");
     // 状态摘要里看得见「等配置」，而不是混在排队里。
     let status = core.job_status().unwrap();

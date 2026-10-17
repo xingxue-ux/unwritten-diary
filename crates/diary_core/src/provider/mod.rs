@@ -1801,7 +1801,13 @@ fn pinned_provider(core: &Core, response_id: &str) -> Result<Option<String>> {
 /// `waiting_configuration` 并写清「在等什么」。
 ///
 /// 与依赖闸门同一形状（`jobs::resolve_dependencies`）：**领取前**评估，所以
-/// 等配置的任务**不会**消耗尝试次数，也不会把「没有服务」说成「失败」。
+/// 等配置的任务**不会**消耗尝试次数（没跑过就不计尝试），也不会把「没有服务」
+/// 说成「失败」。但它**要置 `requires_user_action = 1` 并写
+/// `attention_key = job-config:<kind>:<code>`**：等配置不是失败，但**不是一个用户
+/// 无需理会的状态**——用户得去把服务配上。这一句跨 kind 一把尺（语义索引等模型的
+/// 闸门 `jobs::defer_for_configuration` 与执行期那条
+/// `jobs::defer_for_configuration_after_attempt` 给同一个答案），key 的形状也只有
+/// 一处（`jobs::configuration_attention_key`）。
 /// 每一次 Provider 配置变更（保存 / 移除 / 连接测试）都会调用它一次。
 pub(crate) fn promote_configuration_waits(core: &mut Core, at: DateTime<Utc>) -> Result<i64> {
     let jobs: Vec<Job> = {
@@ -1842,17 +1848,14 @@ pub(crate) fn promote_configuration_waits(core: &mut Core, at: DateTime<Utc>) ->
         }
 
         let code = gate.code.as_str();
+        // `attention_key` 的形状只有一处（三条写入者共用），界面靠它深链到「配哪个服务」。
+        let attention = crate::jobs::configuration_attention_key(&job.kind, code);
         if !waiting || job.error_code.as_deref() != Some(code) {
             core.conn.execute(
                 "UPDATE jobs SET state = 'waiting_configuration', error_code = ?1, \
                  next_attempt_at = NULL, requires_user_action = 1, attention_key = ?2, \
                  updated_at = ?3 WHERE id = ?4",
-                params![
-                    code,
-                    format!("job-config:{}:{code}", job.kind),
-                    now_text,
-                    job.id
-                ],
+                params![code, attention, now_text, job.id],
             )?;
             let tx = core.conn.transaction()?;
             crate::insert_event(&tx, crate::model::EventType::JobChanged, &job.id, 1)?;

@@ -78,6 +78,9 @@ pub(crate) const WAITING_TRANSCRIBE: &str = "waiting_transcribe";
 /// 落在 `waiting_configuration` 而不是 `waiting_dependency`：它等的不是「别人跑完」，
 /// 是**配置**（模型目录 / ORT 动态库）。所以它**不进 `next_wakeup`**——配置变化不是
 /// 时间问题，下一次驱动（前台/唤醒/配置变化之后）由闸门重新评估并拉起它。
+///
+/// 它也不是「用户无需理会」的状态：任务带着 `requires_user_action = 1` 与
+/// `attention_key = job-config:<kind>:waiting_model`，等用户去把模型配上。
 pub(crate) const WAITING_MODEL: &str = "waiting_model";
 
 /// `index` 的终态失败码：`extract` 这一环不会再有执行者来满足了（前置任务被取消、
@@ -615,41 +618,53 @@ pub(crate) fn is_attention_acknowledged(core: &Core, attention_key: &str) -> Res
     Ok(found.is_some())
 }
 
-/// 配置坏了的兜底（**本分支版**）：进 `waiting_configuration`，**不排退避、不消耗重试额度**。
+/// 等配置的 `attention_key` 口径：`job-config:<kind>:<code>`。
 ///
-/// 用在哪：已经领取的任务在执行时发现「服务没配置 / 鉴权失败 / 额度用尽」。
-/// 契约第 7 节给这三类的自动行为是「等待配置，不频繁重试」，所以它们既不能算
-/// 失败（用户什么都没做错），也不能排退避（重试一百次也是同样的 401）。
+/// **一个形状，三个写入者共用这一处**：Provider 闸门
+/// （`provider::promote_configuration_waits`）、依赖闸门（`defer_for_configuration`）、
+/// 执行期（`defer_for_configuration_after_attempt`）。界面顺着它就能深链到「去配哪个
+/// 服务 / 哪台机器的模型」，同一个待处理问题也只提示一次（`attention_acks`）。
+pub(crate) fn configuration_attention_key(kind: &str, error_code: &str) -> String {
+    format!("job-config:{kind}:{error_code}")
+}
+
+/// **执行期**才发现配置不可用（任务**已经领取、真的跑过一次**）：落回
+/// `waiting_configuration`，把这次尝试如实收尾。
 ///
-/// 与依赖闸门（`resolve_dependencies`）的分工：闸门在**领取前**就把配置不满足的
-/// 任务挡在 `waiting_configuration`（连一次尝试都不消耗）；这里是执行期才发现
-/// 配置坏了的兜底（例如刚还在的服务这一秒返回了 401）。两条路都落成同一个状态，
-/// 用户看到的是同一件事：**这个任务在等你去改配置**。
+/// 用在哪：Provider 作业真的发了请求才发现 401 / 额度用尽 / 服务没了；语义索引在闸门
+/// 放行（`Configured`，只表示「配了」，不表示「加载得起来」）之后真的去加载模型才发现
+/// 加载失败。两类都是「配置坏了」，所以：
 ///
-/// **解冲突备注（#96 合 main）**：合并 main 时发现两侧**各自新增**了同名的
-/// `defer_for_configuration`，语义不同——main 那份（4 参）是闸门用的
-/// 「不置 `requires_user_action`、不消耗尝试次数」；这份是执行期用的
-/// 「`requires_user_action = 1` + `attention_key`（`job-config:<kind>:<code>`）」，
-/// 与 provider 侧 `promote_configuration_waits` 的口径一致。两条口径谁对属于
-/// 契约问题（main 的契约文档写「`attemptCount`、`requiresUserAction` 不动」），
-/// **不在这里擅自选一侧**，先把本分支这份改名保留，等人工统一。
-pub(crate) fn defer_for_configuration_with_attention(
+/// - **不排退避、不重试**：重试一百次还是同一个 401，等的是人去改配置（契约第 7 节
+///   「等待配置，不频繁重试」）；
+/// - **`requires_user_action = 1`**：等配置不是失败，但**不是一个用户无需理会的状态**
+///   ——用户得去把服务 / 模型配上。这是它跨 kind、跨两条路的**唯一答案**；
+/// - **`attention_key = job-config:<kind>:<code>`**：界面靠它深链到「配哪一个」；
+/// - **`attempt_count` 如实记账**：这条真的领过一次、真的跑过一次
+///   （`claim_next_due_record` 已经 +1），所以**不回退**它；那次尝试同时在
+///   `job_attempts` 里以 `outcome = 'waiting_configuration'` 收尾，不挂在 `running` 上。
+///
+/// 与**闸门**那条路（`defer_for_configuration`）的区别**只有 `attempt_count` 一个
+/// 字段**：闸门在领取前就把配置不满足的任务挡下，没有执行者跑过，就**一次都不记**（0）
+/// ——没跑过就不计尝试，真跑了一次就如实记账，这就是全部的差别。
+pub(crate) fn defer_for_configuration_after_attempt(
     core: &mut Core,
     job_id: &str,
+    kind: &str,
     error_code: &str,
     message: &str,
-    attention_key: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Job> {
     let now_text = support::to_iso(now);
+    let attention = configuration_attention_key(kind, error_code);
     let tx = core.conn.transaction()?;
     tx.execute(
         "UPDATE jobs SET state = 'waiting_configuration', error_code = ?1, \
          next_attempt_at = NULL, requires_user_action = 1, attention_key = ?2, updated_at = ?3 \
          WHERE id = ?4",
-        params![error_code, attention_key, now_text, job_id],
+        params![error_code, attention, now_text, job_id],
     )?;
-    // 这次尝试如实记下结局（它确实跑过、确实失败了），但不排下一次。
+    // 这次尝试如实收尾（它确实跑过、确实没成），但不排下一次。
     tx.execute(
         "UPDATE job_attempts SET finished_at = ?1, outcome = 'waiting_configuration', \
          error_code = ?2, message = ?3 WHERE job_id = ?4 AND finished_at IS NULL",
@@ -858,7 +873,9 @@ fn semantic_index_dependency(core: &Core, _job: &Job) -> Result<Dependency> {
 ///
 /// 它**不领取、不执行、不动 `attempt_count`、不排退避**：在等前置不是一次失败，
 /// 不该消耗重试额度。它是**纯查询**（只把状态推到真相），不消耗预算。改状态时照旧
-/// 发 `job.changed`。
+/// 发 `job.changed`。唯一的例外是「等的是配置」那条：它**要置
+/// `requires_user_action` 与 `attention_key`**（见 `defer_for_configuration`）——
+/// 没有执行者跑过，所以不记尝试；但用户确实得动手，不能藏成「无事发生」。
 ///
 /// 返回值是这一轮**被闸门终态失败**的任务数（没有任何执行者跑过），如实报进
 /// `JobRunSummary::dependency_failed`。
@@ -898,7 +915,7 @@ fn resolve_dependencies(core: &mut Core, now: DateTime<Utc>) -> Result<i64> {
                 if job.state != JobState::WaitingConfiguration
                     || job.error_code.as_deref() != Some(reason)
                 {
-                    defer_for_configuration(core, &job_id, reason, now)?;
+                    defer_for_configuration(core, &job_id, &job.kind, reason, now)?;
                 }
             }
             Dependency::Broken(code) => {
@@ -921,7 +938,10 @@ fn resolve_dependencies(core: &mut Core, now: DateTime<Utc>) -> Result<i64> {
 /// 前置已满足：把在等的任务放回 `queued`，这一轮**到期就**可跑。
 ///
 /// 等待依赖与等待配置共用这一步：两种等待都不是失败，「等的是什么」在满足的那一刻
-/// 就不成立了，所以 `error_code` 一起清掉。
+/// 就不成立了，所以 `error_code` 一起清掉。等配置的那条还会把
+/// `requires_user_action` / `attention_key` 一起清掉——「要用户去配」这件事随配置
+/// 配好而消失，留着一个置位的待办会让界面在 `queued`/`running` 的任务上继续喊人去
+/// 动手（与 Provider 闸门的 `promote_configuration_waits` 同口径）。
 ///
 /// **保留 `next_attempt_at`（#67 二轮复审）**：排期是这条任务「本该何时跑」的
 /// 事实，等待前置不该把它抹掉。保留之后，「依赖刚满足但排期还在未来」的任务落在
@@ -933,8 +953,8 @@ fn resolve_dependencies(core: &mut Core, now: DateTime<Utc>) -> Result<i64> {
 fn promote_dependency(core: &mut Core, job_id: &str, now: DateTime<Utc>) -> Result<()> {
     let tx = core.conn.transaction()?;
     tx.execute(
-        "UPDATE jobs SET state = 'queued', error_code = NULL, \
-         updated_at = ?1 WHERE id = ?2",
+        "UPDATE jobs SET state = 'queued', error_code = NULL, requires_user_action = 0, \
+         attention_key = NULL, updated_at = ?1 WHERE id = ?2",
         params![support::to_iso(now), job_id],
     )?;
     crate::insert_event(&tx, EventType::JobChanged, job_id, 1)?;
@@ -972,25 +992,32 @@ fn defer_for_dependency(
 /// 前置是**配置**（现在只有 `semantic_index` 等模型）：留在 `waiting_configuration`，
 /// 把「在等什么」写在 `error_code` 上（`waiting_model`）。
 ///
-/// 与 `defer_for_dependency` 的区别只有状态名，但那个名字是有信息量的：
-/// - 平台层看 `JobStatus.waiting_configuration` 就知道「这不是排队等资源，是没配好」；
-/// - **它不进 `next_wakeup`**（两者都不进）：配置变化不是时间问题。模型配好之后，
-///   下一次 `run_due`（前台/唤醒/配置变化时都会调）的闸门就会把它拉回 `queued`。
+/// 这是**闸门**（领取前）那条路：没有执行者跑过，所以**不记账**——`attempt_count`
+/// 一个数都不动（它本来就是 0，也不该凭空记一次尝试）。它**不排退避**、**不进
+/// `next_wakeup`**：配置变化不是时间问题，模型配好之后下一次 `run_due` 的闸门就会把
+/// 它拉回 `queued`。
 ///
-/// 同样不碰 `attempt_count`、不置 `requires_user_action`：等配置不是失败。
-/// （模型文件坏了要用户去修，这件事由 `index_status().reasons` 与
-/// `EmbedderReadiness::Failed` 的原文如实说出来，不靠这条任务报。）
+/// 但它**要置 `requires_user_action = 1` 并写 `attention_key`
+/// （`job-config:<kind>:<code>`）**：等配置不是失败，但**不是一个用户无需理会的状态**
+/// ——用户得去把模型配好，界面靠这个 key 深链到「配哪一个」。这一句**跨 kind 一把尺**：
+/// Provider 的闸门（`provider::promote_configuration_waits`）与执行期那条
+/// （`defer_for_configuration_after_attempt`）给的是同一个答案。
+///
+/// 与 `defer_for_dependency` 的区别只有状态名 + 上面那两件事，但状态名有信息量：
+/// 平台层看 `JobStatus.waiting_configuration` 就知道「这不是排队等资源，是没配好」。
 fn defer_for_configuration(
     core: &mut Core,
     job_id: &str,
+    kind: &str,
     reason: &str,
     now: DateTime<Utc>,
 ) -> Result<()> {
+    let attention = configuration_attention_key(kind, reason);
     let tx = core.conn.transaction()?;
     tx.execute(
         "UPDATE jobs SET state = 'waiting_configuration', error_code = ?1, \
-         requires_user_action = 0, attention_key = NULL, updated_at = ?2 WHERE id = ?3",
-        params![reason, support::to_iso(now), job_id],
+         requires_user_action = 1, attention_key = ?2, updated_at = ?3 WHERE id = ?4",
+        params![reason, attention, support::to_iso(now), job_id],
     )?;
     crate::insert_event(&tx, EventType::JobChanged, job_id, 1)?;
     tx.commit()?;
@@ -1022,7 +1049,9 @@ fn dependency_message(code: &str, job: &Job) -> String {
 /// - `Retry`：换个时间可能就好（原件暂时不在、断网、超时、限流）→ 退避重试，
 ///   消耗额度；
 /// - `WaitConfiguration`：等用户改配置（没配置服务、鉴权失败、额度用尽）→
-///   `waiting_configuration`，**不消耗重试额度、不频繁重试**。
+///   `waiting_configuration` + `requires_user_action = 1` +
+///   `attention_key = job-config:<kind>:<code>`，**不消耗重试额度、不频繁重试**
+///   （见 `defer_for_configuration_after_attempt`：这次真的跑过的尝试照实记账）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FailureDisposition {
     Terminal,
@@ -1098,8 +1127,14 @@ enum HandlerOutcome {
     /// 只有**自己知道怎么安全停下**的执行者才返回它（现在只有语义索引）。
     Yielded { completed: i64, total: i64 },
     /// 前置其实是**配置**没就绪（闸门放行时是「配了但还没加载」，真正加载失败）：
-    /// 落回 `waiting_configuration`，不算失败、不退避、不消耗额度。
-    WaitingConfiguration(&'static str),
+    /// 落回 `waiting_configuration`，不算失败、不退避、不消耗额度，但**要用户去配**。
+    ///
+    /// `reason` 是错误码（`error_code`）；`message` 是这次到底为什么没成（进
+    /// `job_attempts.message`，与 Provider 那一路的失败一样，是排查用的原文）。
+    WaitingConfiguration {
+        reason: &'static str,
+        message: String,
+    },
 }
 
 /// 跑到期任务：领取 → 按 `kind` 执行 → 把结果落回队列。
@@ -1222,13 +1257,21 @@ pub(crate) fn run_due(
                 set_progress(core, &job.id, completed, total)?;
                 yield_back(core, &job.id, now)?;
             }
-            Ok(HandlerOutcome::WaitingConfiguration(reason)) => {
+            Ok(HandlerOutcome::WaitingConfiguration { reason, message }) => {
                 // 执行者发现配置其实没就绪（闸门放行时是 `Configured`，真正加载失败）。
-                // 如实落回 `waiting_configuration`：不算失败、不退避、不消耗额度。
-                // 用户把模型配好之后，下一次驱动的闸门就会把它拉起来。
-                // 已经写进库的向量与进度都留着（这条路径上一般一块都没算——加载失败
-                // 发生在算第一块之前），下一轮从 `building_generation` 续跑。
-                defer_for_configuration_after_claim(core, &job.id, reason, now)?;
+                // 如实落回 `waiting_configuration`：不算失败、不退避、不消耗额度，但
+                // **要用户去配**（`requires_user_action = 1` + `attention_key`），而且
+                // 确实跑过的这一笔**照实记**。用户把模型配好之后，下一次驱动的闸门就会
+                // 把它拉起来。已经写进库的向量与进度都留着（这条路径上一般一块都没算
+                // ——加载失败发生在算第一块之前），下一轮从 `building_generation` 续跑。
+                defer_for_configuration_after_attempt(
+                    core,
+                    &job.id,
+                    &job.kind,
+                    reason,
+                    &message,
+                    now,
+                )?;
             }
             Err(failure) => match failure.disposition {
                 FailureDisposition::Terminal => {
@@ -1264,13 +1307,14 @@ pub(crate) fn run_due(
                     // `waiting_configuration` 的计数在 `job_status()` 里看得到，
                     // `DueRunSummary` 没有这个字段（契约没给），所以它不计入
                     // failed / retrying——不谎报「已经失败」，也不谎报「在重试」。
-                    let attention = format!("job-config:{}:{}", job.kind, failure.code);
-                    defer_for_configuration_with_attention(
+                    // 状态与 attention_key 的口径由函数自己保证（跨 kind 一把尺），
+                    // 它只额外做一件事：把这次**真的跑过**的尝试如实记账。
+                    defer_for_configuration_after_attempt(
                         core,
                         &job.id,
+                        &job.kind,
                         &failure.code,
                         &failure.message,
-                        Some(&attention),
                         now,
                     )?;
                 }
@@ -1544,7 +1588,8 @@ fn run_index(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailu
 /// - **让出**（预算到点）→ `HandlerOutcome::Yielded`：任务回 `queued`，下一轮续跑。
 ///   不是失败、不消耗重试额度（见 `yield_back`）；
 /// - **模型拿不到**（没配 / 配了但加载失败，闸门放行时只看到「配了」）→
-///   `HandlerOutcome::WaitingConfiguration(WAITING_MODEL)`：落回 `waiting_configuration`。
+///   `HandlerOutcome::WaitingConfiguration { reason: WAITING_MODEL, .. }`：落回
+///   `waiting_configuration`。
 ///   这不是失败——用户把模型配好之后闸门会重新拉起它；
 /// - **可恢复原因**（IO / 数据库暂时不可用）→ `HandlerFailure::retryable`：退避重试，
 ///   消耗额度；`building_generation` 与已写的向量留着，额度内重试就是续跑；
@@ -1583,9 +1628,13 @@ fn run_semantic_index(
                 total: checkpoint.total_chunks,
             })
         }
-        // 「拿不到嵌入器」是**配置**问题，不是失败：如实落回等待配置。
+        // 「拿不到嵌入器」是**配置**问题，不是失败：如实落回等待配置，并把
+        // 「为什么拿不到」的原文交给驱动记进这次尝试（诊断用，不进状态摘要）。
         Err(error) if crate::semantic::is_embedder_unavailable(&error) => {
-            Ok(HandlerOutcome::WaitingConfiguration(WAITING_MODEL))
+            Ok(HandlerOutcome::WaitingConfiguration {
+                reason: WAITING_MODEL,
+                message: error.to_string(),
+            })
         }
         // 确定性的问题（维度不符、状态不允许）不拖到五轮退避之后才报：直接终态失败，
         // 让用户现在就看见。数据库/IO 这类才走退避重试（`building_generation` 与已写的
@@ -1623,59 +1672,18 @@ fn is_structural_failure(error: &CoreError) -> bool {
 /// 它落到 `queued` 且入队即到期，于是 `next_wakeup` 指向「现在」、
 /// `due_backlog ≥ 1`——平台层照摘要立刻再叫一次驱动就继续算。
 fn yield_back(core: &mut Core, job_id: &str, now: DateTime<Utc>) -> Result<()> {
-    settle_without_failure(core, job_id, JobState::Queued, None, "yielded", now)
-}
-
-/// 执行者发现「其实是配置没就绪」：落回 `waiting_configuration`，不算失败、不退避、
-/// 不消耗额度（同 `yield_back` 的 `attempt_count` 口径）。
-///
-/// 与闸门那条路（`defer_for_configuration`）的区别：这条是**领取之后**才发现
-/// （闸门只看「配了没」而不加载模型），所以要把领取时记下的那次尝试也如实收尾。
-/// `next_attempt_at` 保留：让出/等配置都不该抹掉任务原本的排期；它本来通常是空的
-/// （入队即到期），配置好了就会被立刻领走。
-fn defer_for_configuration_after_claim(
-    core: &mut Core,
-    job_id: &str,
-    reason: &str,
-    now: DateTime<Utc>,
-) -> Result<()> {
-    settle_without_failure(
-        core,
-        job_id,
-        JobState::WaitingConfiguration,
-        Some(reason),
-        "waiting_configuration",
-        now,
-    )
-}
-
-/// 「不是失败」地收尾一次已经领取的尝试：改状态、把 `attempt_count` 减回去、结束
-/// `job_attempts` 里那次记录。让出（`queued`）与等配置（`waiting_configuration`）
-/// 共用这段。
-///
-/// 排期口径：回到 `queued` 时**清空** `next_attempt_at`（让出是「还想接着跑」，
-/// 立刻可再跑）；`waiting_configuration` 时**保留**原排期（等配置不该抹掉它）。
-fn settle_without_failure(
-    core: &mut Core,
-    job_id: &str,
-    state: JobState,
-    error_code: Option<&str>,
-    outcome: &str,
-    now: DateTime<Utc>,
-) -> Result<()> {
     let now_text = support::to_iso(now);
     let tx = core.conn.transaction()?;
     tx.execute(
-        "UPDATE jobs SET state = ?1, error_code = ?2, \
-         next_attempt_at = CASE WHEN ?1 = 'queued' THEN NULL ELSE next_attempt_at END, \
+        "UPDATE jobs SET state = 'queued', error_code = NULL, next_attempt_at = NULL, \
          attempt_count = MAX(attempt_count - 1, 0), requires_user_action = 0, \
-         attention_key = NULL, updated_at = ?3 WHERE id = ?4",
-        params![state.wire(), error_code, now_text, job_id],
+         attention_key = NULL, updated_at = ?1 WHERE id = ?2",
+        params![now_text, job_id],
     )?;
     tx.execute(
-        "UPDATE job_attempts SET finished_at = ?1, outcome = ?2, error_code = ?3 \
-         WHERE job_id = ?4 AND finished_at IS NULL",
-        params![now_text, outcome, error_code, job_id],
+        "UPDATE job_attempts SET finished_at = ?1, outcome = 'yielded' \
+         WHERE job_id = ?2 AND finished_at IS NULL",
+        params![now_text, job_id],
     )?;
     crate::insert_event(&tx, EventType::JobChanged, job_id, 1)?;
     tx.commit()?;

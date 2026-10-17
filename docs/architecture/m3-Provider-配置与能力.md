@@ -115,12 +115,14 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 |---|---|
 | `Core::provider_capability_gate(capability)` | 给「能不能用 / 为什么 / 下一步做什么」。`reason` 与 `next_step` 都是给用户看的（去配置什么、去点哪一步） |
 | 排任务入口（`responses.request`） | 闸门不通过就**直接拒绝、不创建任务**，错误码 `provider_not_configured`，消息里带可执行的下一步 |
-| 队列驱动（`jobs::run_due`） | **领取前**评估（`provider::promote_configuration_waits`）：不满足的任务落在 `waiting_configuration`，**不发请求、不消耗尝试次数**；配置改好后同一轮驱动就能接着跑 |
+| 队列驱动（`jobs::run_due`） | **领取前**评估（`provider::promote_configuration_waits`）：不满足的任务落在 `waiting_configuration` + `requires_user_action = 1` + `attention_key = job-config:<kind>:<code>`，**不发请求、不消耗尝试次数**（没跑过就不计尝试）；配置改好后同一轮驱动就能接着跑 |
 
 排队中的任务被钉在某个服务上（`ai_responses.provider_id`），判定用的是**同一个服务**——
 不然会出现「闸门说可以 → 执行者说不行 → 每次唤醒都撞一次」的抖动。执行期才发现配置坏了
 （例如刚还在的服务返回 401）也会把服务的结论如实改成失败（`verified` 清空），
-任务停在 `waiting_configuration` 等用户，而不是反复去撞。
+任务停在 `waiting_configuration` 等用户（同样的 `requires_user_action` / `attention_key`，
+`attempt_count` 如实记账——那一次确实跑过），而不是反复去撞。`waiting_configuration`
+的完整语义（跨 kind 一把尺）见 `docs/architecture/m4-任务调度与补做.md` 的「等配置的语义」。
 
 `transcribe` 的边界要说清：**转写能力可以声明、可以验证、可以查询**（连接测试会真的上传
 一小段静音 WAV），但「读音频 → 调用 → 落库」的转写管线是 B4b，队列对**没有执行者**的 kind
@@ -167,9 +169,9 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 
 | 情况 | 契约错误码 | 可重试 | 作业侧 |
 |---|---|---|---|
-| 没配置 / 没启用 / 适配器没实现 / 未通过验证 | `provider_not_configured` | 否（等配置） | `waiting_configuration`，不消耗尝试次数 |
-| 401、403（不带额度字样） | `authentication_failed` | 否（等配置） | `waiting_configuration`；并把服务结论改成失败，避免反复撞 |
-| 402、403 + 额度字样、`insufficient_quota` | `quota_exceeded` | 否（暂停） | `waiting_configuration` |
+| 没配置 / 没启用 / 适配器没实现 / 未通过验证 | `provider_not_configured` | 否（等配置） | `waiting_configuration` + `requires_user_action` + `job-config:<kind>:<code>`，不消耗尝试次数（闸门在领取前挡下） |
+| 401、403（不带额度字样） | `authentication_failed` | 否（等配置） | `waiting_configuration` + 同样的 `requires_user_action` / `attention_key`（执行期才发现，`attempt_count` 如实记账）；并把服务结论改成失败，避免反复撞 |
+| 402、403 + 额度字样、`insufficient_quota` | `quota_exceeded` | 否（暂停） | `waiting_configuration`（同上，执行期记账） |
 | 429 | `rate_limited` | 是（**尊重 `Retry-After`**，上限 1 小时） | `retry_wait` |
 | 408、连接/读写超时 | `provider_timeout` | 是（有限重试） | `retry_wait`；**不承诺远端未计费** |
 | 断网、连不上、TLS 失败、5xx | `network_unavailable` | 是（退避重试） | `retry_wait` |
@@ -239,14 +241,19 @@ multipart 是手写的（一个文件字段 + 两个文本字段，boundary 是�
 
 ## 验证到了什么
 
-`crates/diary_core/tests/provider_test.rs`（24 条）与 `provider/*.rs` 的单元测试覆盖：
+`crates/diary_core/tests/provider_test.rs`（30 条）与 `provider/*.rs` 的单元测试覆盖：
 
 - 配置往返、**脱敏**（逐列扫 `providers` 表、扫资料库目录所有文件都找不到密钥明文、
   Unix 上文件 `0600`）、移除配置**不删日记**且清掉没人引用的凭据；
 - 默认不联网的证明（panic 替身 + 记账替身两条）；
 - 能力门控：只声明生成的服务承担不了转写（闸门 + 排任务入口都拒绝、一条任务都不排）；
   测过没验过的能力不再排任务；适配器没实现的能力声明了也不算；
-  队列侧门控让任务停在 `waiting_configuration`（状态可见、尝试次数为 0），配置回来后一轮跑完；
+  队列侧门控让任务停在 `waiting_configuration`（状态可见、尝试次数为 0、`requires_user_action`
+  + `attention_key = job-config:respond:<code>`），配置回来后一轮跑完；
+- **跨 kind 一致性**（`waiting_configuration_means_the_same_thing_across_job_kinds`）：
+  同一个状态在 `respond`（等服务）与 `semantic_index`（等模型）两个 kind 上给出**相同**的
+  `requiresUserAction`（都为真），`attentionKey` 各指各的「配哪一个」；把任一侧改回旧口径
+  这条就红——它钉的是 #96 合 main 时暴露的那处语义冲突；
 - 连接测试四种结果：可达（含「2 次真实请求」与两个端点 URL）、认证失败（码 + 擦除 + 调用次数）、
   超时、能力不支持（不发请求、`actualCallMade = false`）；
 - 错误归一化映射表（每条码 → 可重试 / 等配置 / 永久），并走真实作业路径验证
