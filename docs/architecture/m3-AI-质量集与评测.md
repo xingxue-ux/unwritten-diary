@@ -23,7 +23,7 @@ Provider 配置），文档里如实写「没跑」。
 | feature 门控、**不进产品构建** | `ai-quality` 默认关；探针的 `search` feature 打开它 | 判定器是量测代码，产品路径不该为它变大 |
 | 不改 schema、不加依赖 | 判定器只用 `serde` / `serde_json` / `sha2`（都已在依赖里），不引分词器 | 上一片（B4a）刚动过 schema；评测不需要新表 |
 | 两种模式**形状相同、语义不同** | `--replay`（默认、不联网）/ `--live`（手动、真发请求）；基线 JSON 有 `mode` 与 `networked` 字段 | 拿到一个 json 文件，第一眼就该知道它是不是质量数字 |
-| 失败用例**留在集子里** | `tr-04`（自我更正没跟好）、`tr-06`（漏字）是**故意的负例** | 只留「全绿」的集子，等于没验过判据会不会红 |
+| 失败用例**留在集子里** | `tr-04`（自我更正没跟好）、`tr-06`（漏字）是**故意的负例**，用 `expect.replayVerdict = "fail"` 声明 | 只留「全绿」的集子，等于没验过判据会不会红；声明出来，门禁才能既让它们红、又不把整条流水线判死（评审 #99） |
 | 语料全部**自造** | 键盘可读的合成材料，无真实用户数据 | issue 的验收标准：隐私优先 |
 
 ## 用例结构
@@ -80,11 +80,19 @@ Provider 配置），文档里如实写「没跑」。
     "note": "合成静音占位，不是真实语音语料"
   },
   "reference": "我觉得这个事情还是得再想想，不能就这么定了。",
-  "expect": { "maxCer": 0.18, "note": "…" },
+  "expect": {
+    "maxCer": 0.18,
+    "note": "…",
+    "replayVerdict": "pass"          // pass（默认，合格输出）| fail（故意的负例）
+  },
   "replayHypothesis": "…注入的假转写结果（带口误残留）…",
   "replayBaseline": { "referenceChars": 20, "hypothesisChars": 23, "errors": 3, "cer": 0.15 }
 }
 ```
+
+`expect.replayVerdict` 是**回放固定装置的期望**（只在回放模式参与门禁，`--live` 不看它）：
+默认 `pass`；`tr-04` / `tr-06` 是 `fail`——回放输入故意做坏，期望判定器把它判失败。
+门禁按它区分「预期失败」与「真失败」（见下面「门禁与退出码」）。
 
 **音频是占位，这一点不含糊**：`placeholder_audio()` 按规格合成一个合法的
 44 字节头 + 全零 PCM 的 WAV，**里面没有人声**。它的用处只有一个——让「带音频的用例」
@@ -301,6 +309,25 @@ CI（`.github/workflows/check.yml` 的 rust 任务）跑这条命令；核心集
 `checked_in_replay_baseline_is_current`：逐条重算并与仓库里的基线对齐，
 判定规则或质量集改了而没重跑基线，测试就红。
 
+### 门禁与退出码（评审 #99）
+
+`ai-quality` 不只是印报表：**有非预期失败就以非零退出码结束**，CI 那条命令因此真的会红
+（在这之前它无论多少条失败都返回 `Ok(())`，报表红了而 CI 绿着）。口径：
+
+| 结论 | 算不算门禁失败 | 说明 |
+|---|---|---|
+| 通过 | 否 | |
+| **未判** | **否** | 判定器缺输入（如输出里有不认识的字符）。「判不了」与「判失败」是两件事，混在一起门禁会变吵；但报表与合计里单独数出来，不假装没看见 |
+| 不适用 | 否 | 用例刻意关掉的规则（判定器里就不算失败） |
+| **失败**（非预期） | **是** | 退出码 1；错误消息里点名是哪几条用例 |
+| 失败（声明过的负例） | 否 | `expect.replayVerdict = "fail"`：回放输入故意做坏，失败是预期之内的 |
+| 负例**没**被判失败 | **是** | 负例是「判据不是永远绿」的证据；它不红了说明判据丢了区分度，同样要红 |
+
+`--live` 缺 `DIARY_AI_ENDPOINT` / `DIARY_AI_MODEL` 时**语义不变**：明确报错、退出码 1，
+不假装跑过（这条路径与门禁无关，改动前后一致）。
+进程退出码由 `tools/probe/tests/ai_quality_gate.rs` 逐条钉住（仓库里的集子绿、
+改坏一条红、未判不红、负例不红反而红、`--live` 缺配置退 1）。
+
 ### 真模型基线（**没跑**）
 
 **没有跑。** 原因是这台机器上没有可用的 Provider 配置（也没有把任何密钥带进这一片）。
@@ -381,9 +408,15 @@ DIARY_AI_ENDPOINT=… DIARY_AI_MODEL=… \
 - `cargo +1.94.1 clippy --workspace --all-targets -- -D warnings`：零问题；
 - `cargo +1.94.1 test --workspace`：全过。其中 `ai_quality_test` **26 条**
   （逐条规则测 13 条 + 回放门禁 6 条 + CER 4 条 + 引擎接缝 3 条）；
-- 回放命令：15 条用例 13 通过（两条故意负例），约 20 ms，不联网；
+- 回放命令：15 条用例 13 通过（两条故意负例），约 20 ms，不联网，退出码 0；
+- 门禁退出码（评审 #99）：`tools/probe/tests/ai_quality_gate.rs` 5 条**进程级**用例
+  （仓库集子绿、改坏一条退 1、未判不红、负例不红反而红、`--live` 缺配置仍明确退 1）+
+  `tools/probe/src/ai_quality.rs` 里 3 条门禁口径单测；
 - 反证测试：把 `gen-01` 的参考输出改坏，`generation_set_reference_outputs_pass`
-  与 `checked_in_replay_baseline_is_current` 立刻变红（验完已恢复）。
+  与 `checked_in_replay_baseline_is_current` 立刻变红；把 `report` 的最后一行改回
+  无条件的 `Ok(())`，`a_failing_case_makes_the_cli_exit_nonzero` 与
+  `a_negative_control_that_stops_failing_makes_the_cli_red` 立刻变红
+  （两次验完都已恢复）。
 
 ## 没有做到的
 

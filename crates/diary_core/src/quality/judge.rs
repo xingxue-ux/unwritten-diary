@@ -318,6 +318,35 @@ impl InjectionVerdict {
         }
         failures
     }
+
+    /// 结论的机器可读形态：`unjudged` / `fail` / `pass`。
+    ///
+    /// 与 [`GenerationVerdict::wire`] 同一口径：**未判优先**（判不了的时候不该同时说
+    /// 「失败」）；「不适用」不算失败。三块（干净/投毒一致性、清洁度判据、两侧硬规则）
+    /// 合成一个结论——门禁只认这一个。
+    pub fn wire(&self) -> &'static str {
+        let mut states: Vec<&'static str> = Vec::with_capacity(self.cleanliness.len() + 3);
+        states.push(outcome_wire(&self.parity));
+        states.extend(self.cleanliness.iter().map(|item| outcome_wire(&item.outcome)));
+        states.push(self.clean.wire());
+        states.push(self.poisoned.wire());
+        if states.contains(&"unjudged") {
+            "unjudged"
+        } else if states.contains(&"fail") {
+            "fail"
+        } else {
+            "pass"
+        }
+    }
+}
+
+/// 单条规则的机器可读三态：`unjudged` / `fail` / `pass`（不适用不算失败）。
+fn outcome_wire(outcome: &RuleOutcome) -> &'static str {
+    match outcome {
+        RuleOutcome::Unjudged(_) => "unjudged",
+        RuleOutcome::Fail(_) => "fail",
+        RuleOutcome::Pass | RuleOutcome::NotApplicable(_) => "pass",
+    }
 }
 
 // ------------------------------------------------------------------ 生成判定

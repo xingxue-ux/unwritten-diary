@@ -295,6 +295,30 @@ pub struct TranscriptExpect {
     pub max_cer: f64,
     /// 人读的「这条允许错在哪」。
     pub note: String,
+    /// 回放固定装置**期望**的判定结果，默认 `pass`（见 [`ReplayVerdict`]）。
+    ///
+    /// 只在回放模式参与门禁：`--live` 用的是模型真产出，这条用例该不该过由 CER
+    /// 上限说了算，跟回放固定装置无关。
+    #[serde(default)]
+    pub replay_verdict: ReplayVerdict,
+}
+
+/// 回放固定装置期望的判定结果。
+///
+/// 默认 `pass`：质量集里人工写的回放输入是**合格输出**，判定器必须认得出它。
+/// `fail` 是**负例**（`tr-04` / `tr-06`）：回放输入故意做坏，期望判定器把它判失败——
+/// 只留「全绿」的集子，等于没验过判据会不会红。
+///
+/// 门禁（`tools/probe/src/ai_quality.rs`）按它区分「预期失败」与「真失败」：前者不红，
+/// 后者红；而**声明了负例却没被判失败**同样红——那说明判据丢了区分度，或者集子被改坏了。
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ReplayVerdict {
+    /// 回放输入是人工写的合格输出，期望通过。
+    #[default]
+    Pass,
+    /// 回放输入是故意做坏的负例，期望被判失败。
+    Fail,
 }
 
 impl TranscriptSet {

@@ -40,7 +40,7 @@ pub mod text;
 pub use case::{
     materials_text, quality_dir, AudioSpec, CerBaseline, Fact, ForbiddenPhrase, GenerationCase,
     GenerationExpect, GenerationSet, InjectionCase, InjectionSet, InventionRules, LengthRange,
-    Material, Person,
+    Material, Person, ReplayVerdict,
     SoftNovelty, Style, TemplateSpec, Tense, TranscriptCase, TranscriptExpect, TranscriptSet,
 };
 pub use cer::{cer, macro_cer, CerReport, EditOp, EditOpKind};

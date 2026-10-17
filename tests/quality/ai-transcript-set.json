@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "B4b（#93 前半）转写质量集：短音频 + 参考文本 + CER 上限。音频是**合成静音占位**（kind = synthetic_silence），不是真实语音语料——今天没有自造的真实音频，所以这一集能验的是「CER 算法与报表算得对」，不是「转写质量好」。CER 口径见 crates/diary_core/src/quality/cer.rs：**去掉空白与标点**，只算字与数字（转写模型吐不吐标点是随机的，把标点算进分母会让指标随运气抖动）。replayBaseline 是**回放基线**（与 replayHypothesis 绑定的计算结果），用来当计算回归的锚：CER 算错了这里就对不上。它不是质量数字。tr-04 与 tr-06 是**故意的失败负例**（证明判据不是永远绿）。",
+  "note": "B4b（#93 前半）转写质量集：短音频 + 参考文本 + CER 上限。音频是**合成静音占位**（kind = synthetic_silence），不是真实语音语料——今天没有自造的真实音频，所以这一集能验的是「CER 算法与报表算得对」，不是「转写质量好」。CER 口径见 crates/diary_core/src/quality/cer.rs：**去掉空白与标点**，只算字与数字（转写模型吐不吐标点是随机的，把标点算进分母会让指标随运气抖动）。replayBaseline 是**回放基线**（与 replayHypothesis 绑定的计算结果），用来当计算回归的锚：CER 算错了这里就对不上。它不是质量数字。tr-04 与 tr-06 是**故意的失败负例**（证明判据不是永远绿），它们用 `expect.replayVerdict = \"fail\"` 声明出来：回放门禁据此区分「预期失败」与「真失败」，而声明了负例却没被判失败同样是门禁失败。",
   "cases": [
     {
       "id": "tr-01-meeting",
@@ -88,7 +88,8 @@
       "reference": "电视坏了，我打算这个周末回老家看看。",
       "expect": {
         "maxCer": 0.15,
-        "note": "多出「那个」与语气词「啊」，应有插入错误。"
+        "note": "多出「那个」与语气词「啊」，应有插入错误。",
+        "replayVerdict": "fail"
       },
       "replayHypothesis": "电视坏了，我打算那个这个周末啊回老家看看。",
       "replayBaseline": {
@@ -136,7 +137,8 @@
       "reference": "他说下周三之前把报告交到办公室。",
       "expect": {
         "maxCer": 0.1,
-        "note": "漏了「之前」与「办公室」，CER 会明显超上限——这条是**故意的负例**（回放基线里它就是不通过的）。"
+        "note": "漏了「之前」与「办公室」，CER 会明显超上限——这条是**故意的负例**（回放基线里它就是不通过的）。",
+        "replayVerdict": "fail"
       },
       "replayHypothesis": "他说下周三把报告交到。",
       "replayBaseline": {

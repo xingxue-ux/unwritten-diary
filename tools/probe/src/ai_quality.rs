@@ -13,10 +13,18 @@
 //! **回放不是质量基线**：它量的是「判定器 + 报表 + 门禁这条管线通不通」，
 //! 不是「模型好不好」。报表与文档里都这么写，避免以后有人把回放的绿当成质量。
 //!
+//! # 退出码就是门禁（评审 #99）
+//!
+//! 有**非预期失败**时进程以非零退出码结束（`bail!` → anyhow → 退出码 1），CI 因此会红；
+//! 报表里的失败计数与退出码是同一件事，不再出现「报表红了、CI 绿着」。
+//! **未判 / 不适用不算失败**；质量集里声明过的负例（`expect.replayVerdict = "fail"`）
+//! 按预期失败，不算门禁失败——但它们反而不红了同样要红（判据丢了区分度）。
+//! 逐条口径见 [`gate`]。
+//!
 //! # 用法
 //!
 //! ```bash
-//! # 回放（默认；CI 就跑这条，不联网）
+//! # 回放（默认；CI 就跑这条，不联网；有失败项时退出码非 0）
 //! cargo run -p diary_probe -- ai-quality
 //! cargo run -p diary_probe -- ai-quality --json tests/quality/ai-quality-baseline.json
 //!
@@ -41,8 +49,8 @@ use anyhow::{bail, Context, Result};
 use diary_core::quality as core_quality;
 use diary_core::quality::{
     cer, judge_generation, judge_injection, GenerateEngine, GenerationCase, GenerationSet,
-    GenerationVerdict, InjectionCase, InjectionSet, InjectionVerdict, Material, RuleOutcome,
-    TemplateSpec, TranscriptCase, TranscriptEngine, TranscriptSet,
+    GenerationVerdict, InjectionCase, InjectionSet, InjectionVerdict, Material, ReplayVerdict,
+    RuleOutcome, TemplateSpec, TranscriptCase, TranscriptEngine, TranscriptSet,
 };
 
 /// 命令行开关。
@@ -296,12 +304,88 @@ fn build_request(
     }
 }
 
+/// 用例级结论：判定器的四态落到报表与门禁上的三态。
+///
+/// `不适用`（用例刻意关掉的规则）在判定器里就不算失败，并进 `Pass`；`未判` 单独一态——
+/// **门禁不把它算失败**（「判不了」与「判失败」是两件事，混在一起门禁会变吵），
+/// 但报表与汇总要单独数出来。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaseVerdict {
+    Pass,
+    Fail,
+    Unjudged,
+}
+
+impl CaseVerdict {
+    /// 报表里的一行标记（人读）。
+    fn mark(self) -> &'static str {
+        match self {
+            Self::Pass => "通过",
+            Self::Fail => "**失败**",
+            Self::Unjudged => "**未判**",
+        }
+    }
+
+    /// 错误消息里的说法（不带 markdown 标记）。
+    fn plain(self) -> &'static str {
+        match self {
+            Self::Pass => "通过",
+            Self::Fail => "失败",
+            Self::Unjudged => "未判",
+        }
+    }
+
+    fn is_pass(self) -> bool {
+        matches!(self, Self::Pass)
+    }
+
+    fn is_fail(self) -> bool {
+        matches!(self, Self::Fail)
+    }
+
+    /// 判定器给出的机器可读三态（`GenerationVerdict::wire` / `InjectionVerdict::wire`）。
+    ///
+    /// 未知取值按「通过」处理：`wire()` 只有这三个取值，真出现第四个是判定器改了，
+    /// 那时候报表的逐条明细里也看得到。
+    fn from_wire(wire: &str) -> Self {
+        match wire {
+            "unjudged" => Self::Unjudged,
+            "fail" => Self::Fail,
+            _ => Self::Pass,
+        }
+    }
+
+    /// 单条规则的结论 → 用例级结论（`不适用` 不算失败）。
+    fn from_outcome(outcome: &RuleOutcome) -> Self {
+        match outcome {
+            RuleOutcome::Pass | RuleOutcome::NotApplicable(_) => Self::Pass,
+            RuleOutcome::Fail(_) => Self::Fail,
+            RuleOutcome::Unjudged(_) => Self::Unjudged,
+        }
+    }
+
+    /// 合并两条结论：**未判优先于失败**（判不了的时候不该同时说「失败」，与判定器同一口径）。
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Unjudged, _) | (_, Self::Unjudged) => Self::Unjudged,
+            (Self::Fail, _) | (_, Self::Fail) => Self::Fail,
+            _ => Self::Pass,
+        }
+    }
+}
+
 /// 每条用例的判定结果（报表与 json 都用它）。
 struct CaseResult {
     id: String,
     category: String,
     kind: &'static str,
-    passed: bool,
+    /// 判定结论（三态；四态里的「不适用」已经并进通过）。
+    verdict: CaseVerdict,
+    /// 回放固定装置**声明**了期望失败（负例，`expect.replayVerdict = "fail"`）。
+    ///
+    /// 只在回放模式下为 true：那时它失败是预期之内的，不算门禁失败；反过来它没被判失败
+    /// 才是问题。`--live` 用的是模型真产出，该不该过由 CER 上限说了算，与固定装置无关。
+    expected_fail: bool,
     /// 逐条规则的结论（`规则 → 通过/失败/未判 + 原因`）。
     features: Vec<(String, String)>,
     /// 软信号（只警告）。
@@ -310,12 +394,20 @@ struct CaseResult {
     cer_text: Option<String>,
 }
 
+impl CaseResult {
+    /// 基线 JSON 里的 `passed`：**只有「通过」才算通过**，未判不是通过。
+    fn passed(&self) -> bool {
+        self.verdict.is_pass()
+    }
+}
+
 fn generation_result(case: &GenerationCase, verdict: &GenerationVerdict) -> CaseResult {
     CaseResult {
         id: case.id.clone(),
         category: case.category.clone(),
         kind: "generation",
-        passed: verdict.passed(),
+        verdict: CaseVerdict::from_wire(verdict.wire()),
+        expected_fail: false,
         features: feature_rows(verdict),
         soft: soft_rows(verdict, ""),
         cer_text: None,
@@ -341,7 +433,8 @@ fn injection_result(case: &InjectionCase, verdict: &InjectionVerdict) -> CaseRes
         id: case.id.clone(),
         category: case.category.clone(),
         kind: "injection",
-        passed: verdict.passed(),
+        verdict: CaseVerdict::from_wire(verdict.wire()),
+        expected_fail: false,
         features,
         soft,
         cer_text: None,
@@ -380,6 +473,7 @@ fn transcript_result(case: &TranscriptCase, hypothesis: &str, live: bool) -> Cas
             "参考文本规范化之后是空的，CER 没有分母（不编一个数）".to_owned(),
         ),
     };
+    let mut verdict = CaseVerdict::from_outcome(&cer_outcome);
     features.push(("CER 上限".to_owned(), cer_outcome.summary()));
 
     // 2. 回放模式下核对**回放基线**：CER 算错了这里就对不上（计算回归的锚）。
@@ -407,12 +501,10 @@ fn transcript_result(case: &TranscriptCase, hypothesis: &str, live: bool) -> Cas
                 baseline.cer
             )])
         };
+        verdict = verdict.merge(CaseVerdict::from_outcome(&outcome));
         features.push(("回放基线一致".to_owned(), outcome.summary()));
     }
 
-    let passed = features
-        .iter()
-        .all(|(_, summary)| summary == "通过");
     let cer_text = format!(
         "参考 {} 字 · 假设 {} 字 · 替换 {} / 删除 {} / 插入 {} · CER {}",
         report.reference_len,
@@ -430,7 +522,9 @@ fn transcript_result(case: &TranscriptCase, hypothesis: &str, live: bool) -> Cas
         id: case.id.clone(),
         category: case.category.clone(),
         kind: "transcript",
-        passed,
+        verdict,
+        // 负例只在**回放**模式参与门禁：`--live` 的数字由模型产出决定。
+        expected_fail: !live && case.expect.replay_verdict == ReplayVerdict::Fail,
         features,
         soft: Vec::new(),
         cer_text: Some(cer_text),
@@ -443,12 +537,21 @@ fn report(results: &[CaseResult], options: &Options) -> Result<()> {
     println!("\n-------------------------------------------");
     println!("逐条明细（全通过的只印一行；失败与未判逐条列原因）");
     for result in results {
-        let mark = if result.passed { "通过" } else { "**失败**" };
-        println!("\n  {:<28} [{}] {}", result.id, result.kind, mark);
+        let expected = if result.expected_fail {
+            "（负例：回放输入故意做坏，**期望就是失败**）"
+        } else {
+            ""
+        };
+        println!(
+            "\n  {:<28} [{}] {}{expected}",
+            result.id,
+            result.kind,
+            result.verdict.mark()
+        );
         if let Some(cer_text) = &result.cer_text {
             println!("    {cer_text}");
         }
-        if result.passed {
+        if result.verdict.is_pass() {
             for signal in &result.soft {
                 println!("    ~ 软信号 {signal}");
             }
@@ -481,7 +584,7 @@ fn report(results: &[CaseResult], options: &Options) -> Result<()> {
             .entry((result.kind, result.category.as_str()))
             .or_insert((0, 0));
         entry.0 += 1;
-        if result.passed {
+        if result.verdict.is_pass() {
             entry.1 += 1;
         }
     }
@@ -503,7 +606,7 @@ fn report(results: &[CaseResult], options: &Options) -> Result<()> {
         if group.is_empty() {
             continue;
         }
-        let ok = group.iter().filter(|result| result.passed).count();
+        let ok = group.iter().filter(|result| result.verdict.is_pass()).count();
         println!(
             "  {:<12} {ok}/{} 通过（{:.0}%）",
             kind,
@@ -512,11 +615,30 @@ fn report(results: &[CaseResult], options: &Options) -> Result<()> {
         );
     }
     let total = results.len();
-    let passed = results.iter().filter(|result| result.passed).count();
+    let passed = results.iter().filter(|result| result.verdict.is_pass()).count();
+    let failed = results.iter().filter(|result| result.verdict.is_fail()).count();
+    let unjudged = total - passed - failed;
+    let expected_failed = results
+        .iter()
+        .filter(|result| result.expected_fail && result.verdict.is_fail())
+        .count();
     println!(
         "\n  合计：{passed}/{total} 通过（{:.0}%）",
         passed as f64 / total as f64 * 100.0
     );
+    if failed > 0 {
+        println!(
+            "  被判失败 {failed} 条：其中 {expected_failed} 条是质量集里**声明过的负例**\
+             （回放输入故意做坏，预期之内），{} 条是**非预期失败**（门禁会红）",
+            failed - expected_failed
+        );
+    }
+    if unjudged > 0 {
+        println!(
+            "  **未判** {unjudged} 条：判定器缺输入，既不算通过也不算失败。\
+             门禁不因为它变红，但别当没看见——去补判定器要的输入"
+        );
+    }
     if !options.live {
         println!(
             "  提醒：这是**回放**数字——输入是人工写的参考输出与注入的假转写结果，\n\
@@ -527,6 +649,52 @@ fn report(results: &[CaseResult], options: &Options) -> Result<()> {
     if let Some(path) = &options.json {
         write_baseline(path, results, options)?;
     }
+    // 报表与基线都出完了，最后按门禁定退出码——CI 看的就是这一位（评审 #99）。
+    gate(results)
+}
+
+/// 质量门禁：有**非预期失败**（或负例没被判失败）就返回错误 → 进程退出码非 0。
+///
+/// 口径（评审 #99）：
+///
+/// - **未判 / 不适用不算失败**——「判不了」与「判失败」是两件事，混在一起门禁会变吵
+///   （也正因如此，`CaseVerdict` 才有第三态）；
+/// - 质量集里声明了负例（`expect.replayVerdict = "fail"`）的用例，回放模式下失败是
+///   **预期**的，不算门禁失败；但如果它反过来通过了（或未判），说明判据丢了区分度，
+///   同样要红——这比「任何失败都红」更强，也让留在集子里的负例真的有意义；
+/// - 其余失败项一律红。
+///
+/// `--live` 的用例不会带 `expected_fail`（见 `transcript_result`），所以真模型跑出来的
+/// 失败永远算失败。
+fn gate(results: &[CaseResult]) -> Result<()> {
+    let unexpected: Vec<String> = results
+        .iter()
+        .filter(|result| result.verdict.is_fail() && !result.expected_fail)
+        .map(|result| format!("{}（{}）", result.id, result.category))
+        .collect();
+    if !unexpected.is_empty() {
+        bail!(
+            "AI 质量门禁未通过：{} 条**非预期失败**——{}。逐条原因见上面的报表；\
+             回放就失败说明判定器 / 质量集 / 报表哪个环节坏了，CI 靠这个退出码变红",
+            unexpected.len(),
+            unexpected.join("、")
+        );
+    }
+
+    let dangling: Vec<String> = results
+        .iter()
+        .filter(|result| result.expected_fail && !result.verdict.is_fail())
+        .map(|result| format!("{}（现在判定为{}）", result.id, result.verdict.plain()))
+        .collect();
+    if !dangling.is_empty() {
+        bail!(
+            "AI 质量门禁未通过：声明为负例的用例没被判失败——{}。\
+             负例是「判据不是永远绿」的证据：它不红了说明判据丢了区分度，\
+             或者质量集 / 回放基线被改坏了",
+            dangling.join("、")
+        );
+    }
+
     Ok(())
 }
 
@@ -540,7 +708,7 @@ fn write_baseline(path: &PathBuf, results: &[CaseResult], options: &Options) -> 
                 "id": result.id,
                 "kind": result.kind,
                 "category": result.category,
-                "passed": result.passed,
+                "passed": result.passed(),
                 "cer": result.cer_text,
                 "failedRules": result
                     .features
@@ -553,7 +721,7 @@ fn write_baseline(path: &PathBuf, results: &[CaseResult], options: &Options) -> 
         })
         .collect();
     let total = results.len();
-    let passed = results.iter().filter(|result| result.passed).count();
+    let passed = results.iter().filter(|result| result.passed()).count();
     let document = serde_json::json!({
         "version": 1,
         "mode": if options.live { "live" } else { "replay" },
@@ -584,6 +752,79 @@ fn write_baseline(path: &PathBuf, results: &[CaseResult], options: &Options) -> 
 
 fn kind_totals(results: &[CaseResult], kind: &str) -> serde_json::Value {
     let group: Vec<&CaseResult> = results.iter().filter(|result| result.kind == kind).collect();
-    let passed = group.iter().filter(|result| result.passed).count();
+    let passed = group.iter().filter(|result| result.passed()).count();
     serde_json::json!({ "cases": group.len(), "passed": passed })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn case(id: &str, verdict: CaseVerdict, expected_fail: bool) -> CaseResult {
+        CaseResult {
+            id: id.to_owned(),
+            category: "test".to_owned(),
+            kind: "generation",
+            verdict,
+            expected_fail,
+            features: Vec::new(),
+            soft: Vec::new(),
+            cer_text: None,
+        }
+    }
+
+    /// 门禁只在**非预期失败**上红（评审 #99）：未判不是失败，负例的失败是预期的。
+    #[test]
+    fn gate_fails_only_on_unexpected_failures() {
+        assert!(gate(&[case("a", CaseVerdict::Pass, false)]).is_ok());
+        // 未判不算失败——判不了与判失败是两件事，别让门禁变吵。
+        assert!(gate(&[case("b", CaseVerdict::Unjudged, false)]).is_ok());
+        // 负例失败了：预期之内。
+        assert!(gate(&[case("tr-04-repeat", CaseVerdict::Fail, true)]).is_ok());
+
+        let error = gate(&[
+            case("good", CaseVerdict::Pass, false),
+            case("bad", CaseVerdict::Fail, false),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("非预期失败"), "{error}");
+        assert!(error.contains("bad"), "要点名失败的用例：{error}");
+        // 绿的那条不该被连坐点名。
+        assert!(!error.contains("good"), "{error}");
+    }
+
+    /// 负例反过来不红了 = 判据丢了区分度，门禁同样要红（声明了负例就得真的红）。
+    #[test]
+    fn a_negative_control_that_stops_failing_is_a_gate_failure() {
+        for verdict in [CaseVerdict::Pass, CaseVerdict::Unjudged] {
+            let error = gate(&[case("tr-06-missing", verdict, true)])
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("负例"), "{error}");
+            assert!(error.contains("tr-06-missing"), "{error}");
+        }
+    }
+
+    /// 三态合成：**未判优先于失败**（与判定器的 `wire()` 同一口径），不适用不算失败。
+    #[test]
+    fn case_verdict_precedence_matches_the_judge() {
+        assert_eq!(
+            CaseVerdict::Fail.merge(CaseVerdict::Unjudged),
+            CaseVerdict::Unjudged
+        );
+        assert_eq!(CaseVerdict::Pass.merge(CaseVerdict::Fail), CaseVerdict::Fail);
+        assert_eq!(CaseVerdict::Pass.merge(CaseVerdict::Pass), CaseVerdict::Pass);
+        assert_eq!(
+            CaseVerdict::from_outcome(&RuleOutcome::NotApplicable("关掉了".to_owned())),
+            CaseVerdict::Pass
+        );
+        assert_eq!(
+            CaseVerdict::from_outcome(&RuleOutcome::Unjudged("缺输入".to_owned())),
+            CaseVerdict::Unjudged
+        );
+        assert_eq!(CaseVerdict::from_wire("fail"), CaseVerdict::Fail);
+        assert_eq!(CaseVerdict::from_wire("unjudged"), CaseVerdict::Unjudged);
+        assert_eq!(CaseVerdict::from_wire("pass"), CaseVerdict::Pass);
+    }
 }

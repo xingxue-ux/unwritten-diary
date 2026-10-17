@@ -137,8 +137,13 @@ jobs:
       - name: 单元测试
         run: cargo test --workspace
       # AI 质量集的**回放**跑法：不联网（回放引擎不碰 Transport），秒级完成。
-      # 它守的是「判定器 + 质量集 + 报表」三者对得上——回放数字**不是质量基线**，
+      # 它守的是「判定器 + 质量集 + 报表 + 门禁」四者对得上——回放数字**不是质量基线**，
       # 真模型基线要手动跑并如实记录（见 docs/architecture/m3-AI-质量集与评测.md）。
+      #
+      # **这一步的退出码就是门禁**（评审 #99）：有非预期失败项时 CLI 以非零退出码结束，
+      # 这一步跟着红。未判 / 不适用不算失败；质量集里声明过的负例（tr-04 / tr-06，
+      # `expect.replayVerdict = "fail"`）按预期失败，不算失败——但它们要是不红了，
+      # 说明判据丢了区分度，同样红。
       - name: AI 质量集（回放，不联网）
         run: cargo run -p diary_probe -- ai-quality --json /tmp/ai-quality-replay-baseline.json
 
