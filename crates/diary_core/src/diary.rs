@@ -186,17 +186,25 @@ pub(crate) struct SnapshotBody {
     organize: Option<SnapshotOrganize>,
 }
 
-/// 冻结在快照里的整理模板：模板 id、生效参数、规则哈希。
+/// 冻结在快照里的整理模板：模板 id、生效参数、**规则全文**与它的哈希。
 ///
-/// 存规则**哈希**而不是规则全文：规则是产品常量，改规则就换 `promptVersion`；
-/// 存哈希能回答「这一版用的是哪一版规则」，又不会让一份旧快照假装自己带着
-/// 一组已经过时的指令文本。
+/// **存规则全文（#111）**：执行时不再按 `template_id` 重新渲染当前构建的规则，而是用
+/// 冻结的这一份。原因是升级期间排队的任务：如果执行时重渲染，输出用的是**新**规则、
+/// 而快照与版本的审计里记的是排队那一刻的哈希——「这一版基于什么生成的」就答不出来，
+/// 重试也复现不了。规则全文进快照后，`rule_hash` 只是它的指纹（用来发现快照被改动）。
+///
+/// `#[serde(default)]` 让 B4e 早期冻结的旧快照（那时只存哈希）照样读得出来：那一路
+/// 按 `template_id` 重渲染，但**必须与快照里的哈希对上**，对不上就明确失败——绝不
+/// 「用新规则、记旧哈希」。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SnapshotOrganize {
     template_id: String,
     template_label: String,
     /// 生效参数（覆盖 + 默认值），键有序。
     params: BTreeMap<String, String>,
+    /// 冻结时的规则全文。旧快照没有这一项（空串），走「重渲染 + 校验哈希」的兼容路径。
+    #[serde(default)]
+    rule: String,
     rule_hash: String,
 }
 
@@ -580,6 +588,7 @@ fn canonical_body(
             template_id: freeze.template_id.clone(),
             template_label: freeze.template_label.clone(),
             params: freeze.params.clone(),
+            rule: freeze.rule.clone(),
             rule_hash: freeze.rule_hash.clone(),
         }),
     }
@@ -701,25 +710,76 @@ fn data_section(materials: &[&SnapshotMaterial]) -> String {
 }
 
 /// 从冻结快照里取回模板信息（执行时用；手动的快照没有它）。
+///
+/// **规则文本来自快照本身**（#111）：排队那一刻渲染出来的那一份就是执行时用的那一份，
+/// 与当前构建里的模板常量、与用户后来改过的设置都无关。这么做的代价是快照 body 变大
+/// （规则几百字），换来的是「输出用的规则」与「审计记的 `rule_hash`」永远一致，
+/// 升级期间排队的任务也能复现。
+///
+/// - 新快照（带规则全文）：先校验 `rule_hash == sha256(rule)`，对不上按**快照损坏**
+///   处理，不拿一份被改过的指令去调模型；
+/// - 旧快照（B4e 早期只存哈希）：按 `template_id` + 参数重渲染，但**必须与快照里的
+///   哈希一致**。不一致（例如应用升级换了规则文本、或模板已经不存在）就明确失败——
+///   绝不「悄悄用新规则，却记着旧哈希」。
 fn snapshot_freeze(body: &SnapshotBody) -> Result<Option<OrganizeFreeze>> {
     let Some(organize) = &body.organize else {
         return Ok(None);
     };
-    let rule = organize::render_rule(&organize.template_id, &organize.params).map_err(|_| {
-        CoreError::InvalidState {
-            entity: "整理模板",
-            id: organize.template_id.clone(),
-            state: "这一版快照用的模板不在本构建里（插件模板机制见 #88，尚未落地）".to_owned(),
+    let rule = if organize.rule.is_empty() {
+        // 兼容路径：老快照没有冻结的规则全文。
+        let rendered =
+            organize::render_rule(&organize.template_id, &organize.params).map_err(|_| {
+                CoreError::InvalidState {
+                    entity: "整理模板",
+                    id: organize.template_id.clone(),
+                    state: "这一版快照用的模板不在本构建里（插件模板机制见 #88，尚未落地）"
+                        .to_owned(),
+                }
+            })?;
+        if organize::rule_hash(&rendered) != organize.rule_hash {
+            return Err(CoreError::InvalidState {
+                entity: "整理快照",
+                id: organize.template_id.clone(),
+                state: format!(
+                    "这一版快照冻结时用的规则与当前构建渲染出来的不一致\
+                     （快照记 {}，当前渲染 {}）：规则文本无法复现，所以这一版不生成——\
+                     不拿新规则冒充旧规则，也不落一版审计对不上的正文",
+                    short_hash(&organize.rule_hash),
+                    short_hash(&organize::rule_hash(&rendered)),
+                ),
+            });
         }
-    })?;
+        rendered
+    } else {
+        let actual = organize::rule_hash(&organize.rule);
+        if actual != organize.rule_hash {
+            return Err(CoreError::InvalidState {
+                entity: "整理快照",
+                id: organize.template_id.clone(),
+                state: format!(
+                    "这一版快照里的规则文本与它自己的哈希对不上（记 {}，算出来 {}）：\
+                     快照被改动过，拒绝用它拼提示词",
+                    short_hash(&organize.rule_hash),
+                    short_hash(&actual),
+                ),
+            });
+        }
+        organize.rule.clone()
+    };
     Ok(Some(OrganizeFreeze {
         template_id: organize.template_id.clone(),
         template_label: organize.template_label.clone(),
         params: organize.params.clone(),
-        rule_hash: organize::rule_hash(&rule),
+        // 用快照里记的那份哈希（上面已经证明它与真正要用的规则文本一致）。
+        rule_hash: organize.rule_hash.clone(),
         rule,
         prompt_version: body.prompt_version.clone(),
     }))
+}
+
+/// 错误消息里只放哈希前 12 位：够定位，不用把 64 位十六进制整个塞进用户能看到的文案。
+fn short_hash(hash: &str) -> String {
+    hash.chars().take(12).collect()
 }
 
 /// 这一次生成要用的 system 消息（**只有指令，没有材料**）。
@@ -1311,20 +1371,12 @@ pub(crate) fn request_generation(
         });
     }
 
-    // 自动整理这一路用设置里的模板（冻结进快照），并先过单次材料上限。
+    // 自动整理这一路用设置里的模板（冻结进快照）。
     let freeze = if reason.is_organize() {
         Some(organize::freeze_for_settings(core)?)
     } else {
         None
     };
-    if freeze.is_some() {
-        let settings = organize::load_settings(core)?;
-        ensure_material_caps(day_materials.materials.len() as i64, &day_materials, &settings)?;
-        // 配额预检：每日调用额度用完、或失败率过高时**直接拒绝**，不排一条注定停在
-        // 上限上的任务（与 #66 的「不排注定失败的任务」同一口径）。真正逐次的判断
-        // 在执行期（`call_generate`），那才是「绝不静默刷爆配额」的落点。
-        organize::ensure_call_allowed(core, reason, 0)?;
-    }
 
     // 先算规范形与哈希、查幂等回执，**再**落库：被拒掉的调用不留副作用。
     let body = canonical_body(&day_materials, None, freeze.as_ref());
@@ -1336,8 +1388,21 @@ pub(crate) fn request_generation(
         reason.wire(),
         &hash,
     ]);
+    // **回执先于一切「新请求」的闸门**（契约 1.2：先查已完成操作）。重试一条已经
+    // 受理过的请求时，材料上限与配额预检都不该再挡路：配额用完之后拿着同一条
+    // operationId 来取原票据，必须取得到（#111）。
     if let Some(json) = core.receipt("diary.generate", &fingerprint, operation_id.trim())? {
         return Ok(serde_json::from_str(&json)?);
+    }
+
+    // 到这里才是**新请求**：单次材料上限与配额预检只挡新请求。
+    if freeze.is_some() {
+        let settings = organize::load_settings(core)?;
+        ensure_material_caps(day_materials.materials.len() as i64, &day_materials, &settings)?;
+        // 配额预检：每日调用额度用完、或失败率过高时**直接拒绝**，不排一条注定停在
+        // 上限上的任务（与 #66 的「不排注定失败的任务」同一口径）。真正逐次的判断
+        // 在执行期（`call_generate`），那才是「绝不静默刷爆配额」的落点。
+        organize::ensure_call_allowed(core, reason, 0)?;
     }
 
     let ticket = persist_and_enqueue(

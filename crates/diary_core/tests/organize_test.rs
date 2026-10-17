@@ -19,8 +19,16 @@ use diary_core::{
     ScriptedTransport, Transport, TransportError, PanicTransport,
 };
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 
 // ------------------------------------------------------------------ 工具
+
+/// 规则文本的 sha256（与 `organize::rule_hash` 同一算法）：快照里的哈希就是这个。
+fn sha256_hex(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
 
 fn new_core(dir: &Path) -> Core {
     let mut core = Core::open(dir.join("library.sqlite")).unwrap();
@@ -404,6 +412,41 @@ fn operation_id_replay_is_idempotent_on_the_organize_entry() {
     drive(&mut core);
     assert_eq!(transport.call_count(), 1);
     assert_eq!(versions_of(&core, &day_key).len(), 1);
+}
+
+/// #111 回归②：**回执先于配额预检**。配额用尽之后，拿着同一条 `operationId` 重试
+/// 一条已经受理过的请求，必须照样取回原票据——而不是被配额错误挡在回执之外。
+/// 新请求（新的 `operationId`）仍然被配额挡住：预检没有消失，只是挪到了回执之后。
+#[test]
+fn quota_exhaustion_does_not_hide_an_already_accepted_ticket() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, transport) = core_with_transport(dir.path(), vec![chat_ok("整理结果。")]);
+    save_provider(&mut core);
+    let (_, day_key) = capture_with_text(&mut core, days_ago(1), "今天的材料。", "op-a");
+    enable_organize(&mut core, |settings| settings.max_calls_per_day = 1);
+
+    // 第一次受理（配额还没用）→ 驱动把唯一一次调用花掉 → 配额到顶。
+    let first = core
+        .generate_diary(&day_key, None, DiaryGenerationReason::Automatic, "op-quota-1")
+        .unwrap();
+    drive(&mut core);
+    assert_eq!(transport.call_count(), 1);
+    assert_eq!(core.organize_status().unwrap().quota.calls_last_24h, 1);
+    assert_eq!(core.organize_status().unwrap().quota.calls_remaining, 0);
+
+    // 配额用尽后重试同一条 operationId：拿回原票据，不是配额错误。
+    let replay = core
+        .generate_diary(&day_key, None, DiaryGenerationReason::Automatic, "op-quota-1")
+        .unwrap();
+    assert_eq!(replay, first, "重试取回原票据（回执先于配额预检）");
+
+    // 新的 operationId 仍然被配额挡住，而且一次调用都没发。
+    let error = core
+        .generate_diary(&day_key, None, DiaryGenerationReason::Automatic, "op-quota-2")
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::QuotaExceeded);
+    assert_eq!(transport.call_count(), 1, "被挡住的新请求不发请求");
+    assert_eq!(versions_of(&core, &day_key).len(), 1, "重试不产第二个版本");
 }
 
 #[test]
@@ -808,6 +851,188 @@ fn injected_material_cannot_change_the_organize_instructions() {
         .update_organize_settings(&settings, settings.revision)
         .unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidArgument);
+}
+
+// ------------------------------------------------------------------ 冻结规则文本（#111）
+
+/// #111 回归①：**执行时用快照里冻结的那份规则文本**，不按当前构建重新渲染模板。
+///
+/// 用「任务排队之后应用升级」来钉：另一个构建为同一个模板渲染出来的规则不一样
+/// （快照自身是自洽的——规则文本与哈希配套）。修复前执行会重渲染当前构建的规则、
+/// 把旧哈希记进版本（审计对不上、重试复现不了）；修复后请求里必须是冻结的那一份，
+/// 版本里的 `organizeRuleHash` 与快照一致。
+#[test]
+fn queued_organize_uses_the_frozen_rule_text_not_the_current_build() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let old_build_rule = "【另一个构建冻结的规则】只改错别字与标点（proofread）：旧版口径。";
+    let day_key = {
+        let mut core = Core::open(&path).unwrap();
+        core.set_transport_for_test(Arc::new(PanicTransport::new()) as Arc<dyn Transport>);
+        save_provider(&mut core);
+        let (_, day_key) = capture_with_text(&mut core, days_ago(1), "今天的材料。", "op-a");
+        enable_organize(&mut core, |settings| {
+            settings.template_id = "proofread".to_owned();
+        });
+
+        // 排队（冻结）：快照里带着规则全文与它的哈希。
+        let ticket = core
+            .generate_diary(&day_key, None, DiaryGenerationReason::Automatic, "op-frozen-rule")
+            .unwrap();
+        let body = snapshot_body(&core, &ticket.source_snapshot_id);
+        let frozen_rule = body["organize"]["rule"]
+            .as_str()
+            .expect("快照里必须冻结规则全文")
+            .to_owned();
+        assert!(
+            frozen_rule.contains("只改错别字与标点（proofread）"),
+            "冻结的是排队那一刻的模板规则：{frozen_rule}"
+        );
+        assert_eq!(
+            body["organize"]["rule_hash"].as_str().unwrap(),
+            sha256_hex(&frozen_rule),
+            "快照里的哈希是这份规则的指纹"
+        );
+
+        // 模拟「应用升级」：另一个构建为同一个模板渲染出的规则文本不一样。
+        // 快照仍然自洽（文本与哈希配套），所以这不是「快照被改动」那条路。
+        rewrite_snapshot_organize(
+            &path,
+            &ticket.source_snapshot_id,
+            old_build_rule,
+            &sha256_hex(old_build_rule),
+        );
+        day_key
+    };
+
+    let transport = Arc::new(ScriptedTransport::ok(vec![chat_ok("按冻结规则整理的结果。")]));
+    let mut core = Core::open(&path).unwrap();
+    core.set_transport_for_test(transport.clone() as Arc<dyn Transport>);
+    drive(&mut core);
+    assert_eq!(transport.call_count(), 1);
+
+    let request = transport.requests().into_iter().next().unwrap();
+    let request_body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    let system = request_body["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system.contains("【另一个构建冻结的规则】"),
+        "执行必须用快照里冻结的那份规则文本"
+    );
+    assert!(
+        !system.contains("只做最小修改"),
+        "不许用当前构建重新渲染的规则：那样输出与审计记的哈希对不上"
+    );
+
+    // 版本审计里的哈希 = 快照里的哈希 = 真正用掉的规则文本的哈希：三者一致才叫可复现。
+    let day = core.get_diary_day(&day_key).unwrap();
+    let version = core
+        .get_diary_version(&day.candidate_version_ids[0])
+        .unwrap();
+    let info = version.generation_info.expect("生成版本带审计信息");
+    assert_eq!(
+        info.generation_options["organizeRuleHash"],
+        sha256_hex(old_build_rule)
+    );
+    assert_eq!(info.generation_options["organizeTemplateId"], "proofread");
+}
+
+/// #111 回归①（兼容路径）：B4e 早期冻结的旧快照**没有规则全文**。那一路只能按
+/// `template_id` 重渲染，但**必须与快照记的哈希对上**——跨升级（规则文本变了）时
+/// 明确失败、不产版本、不发请求，绝不「用新规则却记旧哈希」。
+///
+/// 同一条旧路径在规则没变时必须照常工作（下一段断言）。
+#[test]
+fn legacy_snapshot_without_a_frozen_rule_needs_the_hash_to_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let (day_key, stored_hash) = {
+        let mut core = Core::open(&path).unwrap();
+        core.set_transport_for_test(Arc::new(PanicTransport::new()) as Arc<dyn Transport>);
+        save_provider(&mut core);
+        let (_, day_key) = capture_with_text(&mut core, days_ago(1), "今天的材料。", "op-a");
+        enable_organize(&mut core, |settings| {
+            settings.template_id = "proofread".to_owned();
+        });
+        let ticket = core
+            .generate_diary(&day_key, None, DiaryGenerationReason::Automatic, "op-legacy-1")
+            .unwrap();
+        let body = snapshot_body(&core, &ticket.source_snapshot_id);
+        let hash = body["organize"]["rule_hash"].as_str().unwrap().to_owned();
+        // 改回「老形态」：没有规则全文，只有哈希（模拟 B4e 早期冻结的快照）。
+        rewrite_snapshot_organize(&path, &ticket.source_snapshot_id, "", &hash);
+        (day_key, hash)
+    };
+
+    // 规则没变（同一构建）：重渲染出来的哈希与快照一致 → 照常生成。
+    let transport = Arc::new(ScriptedTransport::ok(vec![chat_ok("旧快照也能整理。")]));
+    let mut core = Core::open(&path).unwrap();
+    core.set_transport_for_test(transport.clone() as Arc<dyn Transport>);
+    drive(&mut core);
+    assert_eq!(transport.call_count(), 1, "规则没变时旧快照照常工作");
+    assert_eq!(versions_of(&core, &day_key).len(), 1);
+    let day = core.get_diary_day(&day_key).unwrap();
+    let version = core
+        .get_diary_version(&day.candidate_version_ids[0])
+        .unwrap();
+    let info = version.generation_info.unwrap();
+    assert_eq!(info.generation_options["organizeRuleHash"], stored_hash);
+
+    // 跨升级（快照记的是**另一个构建**的规则哈希）：明确失败，不产版本、不发请求。
+    let dir2 = tempfile::tempdir().unwrap();
+    let path2 = dir2.path().join("library.sqlite");
+    let (snapshot_id2, day_key2) = {
+        let mut core = Core::open(&path2).unwrap();
+        core.set_transport_for_test(Arc::new(PanicTransport::new()) as Arc<dyn Transport>);
+        save_provider(&mut core);
+        let (_, day_key) = capture_with_text(&mut core, days_ago(1), "今天的材料。", "op-a");
+        enable_organize(&mut core, |settings| {
+            settings.template_id = "proofread".to_owned();
+        });
+        let ticket = core
+            .generate_diary(&day_key, None, DiaryGenerationReason::Automatic, "op-legacy-2")
+            .unwrap();
+        // 老形态 + 一个别的构建才会有的哈希。
+        rewrite_snapshot_organize(&path2, &ticket.source_snapshot_id, "", &"0".repeat(64));
+        (ticket.source_snapshot_id, day_key)
+    };
+    let transport2 = Arc::new(ScriptedTransport::ok(vec![chat_ok("不该产出的正文。")]));
+    let mut core = Core::open(&path2).unwrap();
+    core.set_transport_for_test(transport2.clone() as Arc<dyn Transport>);
+    let summary = drive(&mut core);
+    assert_eq!(summary.failed, 1, "对不上就如实失败");
+    assert_eq!(transport2.call_count(), 0, "没有发任何请求");
+    assert!(versions_of(&core, &day_key2).is_empty(), "不落一版审计对不上的正文");
+    let job = core
+        .list_jobs(None, 10)
+        .unwrap()
+        .into_iter()
+        .find(|job| job.kind == "diary_generate")
+        .unwrap();
+    assert_eq!(job.error_code.as_deref(), Some("invalid_state"));
+    assert!(job.requires_user_action);
+    // 快照本身没被改动：失败的是「无法复现」，不是「快照坏了」。
+    let body = snapshot_body(&core, &snapshot_id2);
+    assert_eq!(body["organize"]["rule"].as_str().unwrap(), "");
+}
+
+/// 把快照 body 里的 `organize` 改写成指定形态（模拟旧快照 / 另一个构建的哈希）。
+fn rewrite_snapshot_organize(path: &Path, snapshot_id: &str, rule: &str, rule_hash: &str) {
+    let conn = Connection::open(path).unwrap();
+    let text: String = conn
+        .query_row(
+            "SELECT body FROM diary_source_snapshots WHERE id = ?1",
+            rusqlite::params![snapshot_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut body: serde_json::Value = serde_json::from_str(&text).unwrap();
+    body["organize"]["rule"] = serde_json::Value::String(rule.to_owned());
+    body["organize"]["rule_hash"] = serde_json::Value::String(rule_hash.to_owned());
+    conn.execute(
+        "UPDATE diary_source_snapshots SET body = ?1 WHERE id = ?2",
+        rusqlite::params![body.to_string(), snapshot_id],
+    )
+    .unwrap();
 }
 
 // ------------------------------------------------------------------ 模板与设置校验
