@@ -15,6 +15,11 @@ desktop.ini
 .vscode/
 *.code-workspace
 
+# ---------- 工具的缓存（不进仓库） ----------
+# tools/ 下的辅助脚本（check_docs.py、quality_measure.py）不需要缓存入库。
+__pycache__/
+*.pyc
+
 # ---------- 私人资料与凭据（绝不入库） ----------
 *.key
 *.pem

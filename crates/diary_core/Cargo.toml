@@ -30,6 +30,12 @@ ureq.workspace = true
 ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "std"] }
 tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
 
+[features]
+# AI 质量集的**判定器**（issue #93，B4b-ai-quality）。默认不开：判定器不是产品代码，
+# 产品路径一个字节都不该为它变大。`cargo test -p diary_core`（dev-dependencies 生效时
+# 测试自带 `cfg(test)`）与 `tools/probe` 显式打开它。
+ai-quality = []
+
 [dev-dependencies]
 tempfile = "3"
 # 实测脚本要直接看 EXPLAIN QUERY PLAN：核心不暴露连接，测试自己开一个只读连接。
