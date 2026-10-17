@@ -530,6 +530,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "diary_capi"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "diary_core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "diary_core"
 version = "0.1.0"
 dependencies = [
