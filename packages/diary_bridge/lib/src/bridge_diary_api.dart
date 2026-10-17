@@ -456,8 +456,7 @@ class BridgeDiaryApi implements api.DiaryApi {
 
   /// 保存人工编辑：**新写一条 `user_edit` 版本**（基版一个字节都不动），并让它成为当前。
   ///
-  /// `expectedRevision` 是这一天的版本数：`getDay` 的
-  /// `candidateVersionIds.length + (currentVersionId == null ? 0 : 1)`。
+  /// `expectedRevision` 是这一天的 revision（`getDay().revision`）。
   /// 不符 → `revisionConflict`（核心零改动）；同一条 `operationId` 重试返回原版本，
   /// 换了内容 → `idempotencyConflict`。
   @override
@@ -482,6 +481,8 @@ class BridgeDiaryApi implements api.DiaryApi {
   /// 指定某一天的当前版本（用户想退回上一版）。只允许这一天自己的版本。
   ///
   /// 旧当前版变成候选、不删除；切到已经是当前的版本是无操作。
+  /// **换当前版本也会推进这一天的 revision**：两个窗口拿着同一个
+  /// `expectedRevision` 时，后一个会被 `revisionConflict` 拒绝，不会静默覆盖前一个。
   @override
   Future<api.DiaryDay> setCurrentVersion({
     required String dayKey,
@@ -704,6 +705,7 @@ class BridgeDiaryApi implements api.DiaryApi {
     updatedAt: value.updatedAt,
     currentVersionId: value.currentVersionId,
     candidateVersionIds: value.candidateVersionIds,
+    revision: value.revision.toInt(),
     materialCounts: api.MaterialCounts(
       captures: value.materialCounts.captures.toInt(),
       processed: value.materialCounts.processed.toInt(),

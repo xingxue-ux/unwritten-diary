@@ -27,7 +27,12 @@
 //! 6. **用户版本只新增、不原地改**（B4c）：`diary.saveEdit` / `diary.merge` 写的是**新版本**
 //!    （`user_edit` / `merge`），基版一个字节都不动；新版本成为当前，旧当前版退成候选。
 //!    编辑/合并同样带 `expectedRevision` 与 `operationId`：过期报 `revision_conflict`、
-//!    重放返回原结果、换内容报 `idempotency_conflict`，**从不静默覆盖**。
+//!    重放返回原结果、换内容报 `idempotency_conflict`，**从不静默覆盖**；
+//! 7. **冲突保护是真的**（#101）：这一天的 `revision` 是 `diary_days.revision` 里**持久、
+//!    单调递增**的状态推进计数（新增一版算一次，`setCurrent` 真的换了指针也算一次，
+//!    调用方从 `diary.getDay` 的 `revision` 字段读）；`expectedRevision` 的校验与写在
+//!    **同一个事务**里，所以两个窗口拿着同一个 revision 时，第二次切换会被拒绝——
+//!    而不是「换个当前版本不推进计数、两次都成功、后一次悄悄覆盖前一次」。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -1029,21 +1034,14 @@ fn current_version_id(conn: &rusqlite::Connection, day_key: &str) -> Result<Opti
     Ok(current.flatten())
 }
 
-/// 这一天有没有用户自己写的版本（手写或用户确认后的合并）。
-fn has_user_version(conn: &rusqlite::Connection, day_key: &str) -> Result<bool> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM diary_versions WHERE day_key = ?1 AND origin != ?2",
-        params![day_key, DiaryVersionOrigin::Generated.wire()],
-        |row| row.get(0),
-    )?;
-    Ok(count > 0)
-}
-
 /// 把某一天的当前版本指向 `version_id`，并发 `diary.currentChanged`（值没变就不发）。
 ///
 /// **只有两个调用方**：首次生成（这一天还没有当前版本、也没有用户版本），
 /// 与用户明确切换（#87 的写入缝）。生成路径不会用它去覆盖任何已有版本。
-fn set_current_in_tx(
+///
+/// 这里**只写指针**：revision 的推进由调用方用 [`finish_day_write`] 统一收口，
+/// 一次成功写入恰好 +1（见那个函数的说明）。
+fn set_current_pointer(
     tx: &Transaction<'_>,
     day_key: &str,
     time_zone: &str,
@@ -1061,19 +1059,56 @@ fn set_current_in_tx(
          current_version_id = excluded.current_version_id, updated_at = excluded.updated_at",
         params![day_key, time_zone, version_id, now_text],
     )?;
-    // `revision` 用这一天的版本数：它随版本增加而增加，是「这一天的状态推进到第几步」。
+    Ok(true)
+}
+
+/// 这一天有没有用户自己写的版本（手写或用户确认后的合并）。
+fn has_user_version(conn: &rusqlite::Connection, day_key: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM diary_versions WHERE day_key = ?1 AND origin != ?2",
+        params![day_key, DiaryVersionOrigin::Generated.wire()],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// 一次状态推进的收尾：把这一天的 `revision` +1（持久、单调），并在指针真的换了时
+/// 发 `diary.currentChanged`（事件带**推进后**的 revision）。
+///
+/// **每个成功的写入恰好调用一次**：新增一版（生成 / 编辑 / 合并）算一次推进，
+/// `diary.setCurrent` 换了指针也算一次；「新增一版并让它成为当前」是一次写入，
+/// 所以只 +1（不是版本 +1、指针再 +1）。
+///
+/// 调用前 `diary_days` 里必须有这一天的行（`set_current_pointer` / `touch_day_in_tx`
+/// 都会建行），否则说明写路径漏了一步，按损坏数据处理而不是悄悄从 0 重新计数。
+fn finish_day_write(
+    tx: &Transaction<'_>,
+    day_key: &str,
+    pointer_changed: bool,
+) -> Result<i64> {
+    let changed = tx.execute(
+        "UPDATE diary_days SET revision = revision + 1 WHERE day_key = ?1",
+        params![day_key],
+    )?;
+    if changed == 0 {
+        return Err(CoreError::CorruptedData {
+            message: format!("{day_key} 没有 diary_days 行，revision 无法推进"),
+        });
+    }
     let revision: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM diary_versions WHERE day_key = ?1",
+        "SELECT revision FROM diary_days WHERE day_key = ?1",
         params![day_key],
         |row| row.get(0),
     )?;
-    crate::insert_event(
-        tx,
-        crate::model::EventType::DiaryCurrentChanged,
-        day_key,
-        revision.max(1),
-    )?;
-    Ok(true)
+    if pointer_changed {
+        crate::insert_event(
+            tx,
+            crate::model::EventType::DiaryCurrentChanged,
+            day_key,
+            revision,
+        )?;
+    }
+    Ok(revision)
 }
 
 /// 只更新时间语义、**不动当前版本**（生成进候选时走这条）。
@@ -1528,12 +1563,15 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
     // 才成为当前。用户手写过的日子，AI 结果只能进候选。
     let no_current = current_version_id(&tx, &day_key)?.is_none();
     let user_version = has_user_version(&tx, &day_key)?;
-    if no_current && !user_version {
-        set_current_in_tx(&tx, &day_key, &snapshot.window.time_zone, &version.id)?;
+    let pointer_changed = if no_current && !user_version {
+        set_current_pointer(&tx, &day_key, &snapshot.window.time_zone, &version.id)?
     } else {
         // 只更新时间语义：**不碰当前版本**，用户手写的正文不会被顶掉。
         touch_day_in_tx(&tx, &day_key, &snapshot.window.time_zone)?;
-    }
+        false
+    };
+    // 新增一版就是一次状态推进：revision +1（指针跟不跟着动都算这一次）。
+    finish_day_write(&tx, &day_key, pointer_changed)?;
     tx.commit()?;
     Ok(())
 }
@@ -1629,12 +1667,12 @@ pub(crate) fn get_day(core: &Core, day_key: &str) -> Result<DiaryDay> {
         }
     }
 
-    let stored: Option<(String, String)> = core
+    let stored: Option<(String, String, i64)> = core
         .conn
         .query_row(
-            "SELECT time_zone, updated_at FROM diary_days WHERE day_key = ?1",
+            "SELECT time_zone, updated_at, revision FROM diary_days WHERE day_key = ?1",
             params![day_key],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
 
@@ -1658,7 +1696,7 @@ pub(crate) fn get_day(core: &Core, day_key: &str) -> Result<DiaryDay> {
         .flatten();
 
     let mut stamps: Vec<DateTime<Utc>> = Vec::new();
-    if let Some((_, at)) = &stored {
+    if let Some((_, at, _)) = &stored {
         stamps.push(support::parse_iso(at)?);
     }
     if let Some(at) = &latest_capture {
@@ -1683,10 +1721,13 @@ pub(crate) fn get_day(core: &Core, day_key: &str) -> Result<DiaryDay> {
     Ok(DiaryDay {
         day_key: day_key.to_owned(),
         time_zone: stored
-            .map(|(zone, _)| zone)
+            .as_ref()
+            .map(|(zone, _, _)| zone.clone())
             .unwrap_or_else(|| day_materials.window.time_zone.clone()),
         current_version_id: current,
         candidate_version_ids: candidates,
+        // 没有 `diary_days` 行 = 这一天还没有任何推进，revision 就是 0。
+        revision: stored.map(|(_, _, revision)| revision).unwrap_or(0),
         material_counts: MaterialCounts {
             captures: day_materials.captures,
             processed: day_materials.processed,
@@ -1769,26 +1810,29 @@ pub(crate) fn get_version(core: &Core, version_id: &str) -> Result<DiaryVersion>
 
 // ------------------------------------------------------------------ 编辑 / 指定当前 / 合并（B4c，#87）
 
-/// 这一天的 `revision`：`diary_versions` 里属于这一天的版本数。
+/// 这一天的 `revision`：`diary_days.revision`，**持久、单调递增**的状态推进计数。
 ///
-/// 它随每一次「新增一版」（生成、编辑、合并）单调 +1；`setCurrent` 不新增版本，
-/// 所以不改变它。契约的 `DiaryDay`（2.5）没有 revision 字段，调用方从
-/// `diary.getDay` 的结果就能算出这个数字：
-/// `candidateVersionIds.length + (currentVersionId == null ? 0 : 1)`。
+/// 每次成功写入 +1：新增一版（生成 / 编辑 / 合并）算一次，`diary.setCurrent` 真的换了
+/// 当前版本也算一次；切到已经是当前的版本是无操作，不加。没有推进过的天（没有
+/// `diary_days` 行）是 0。
 ///
-/// 为什么不另存一个计数器列：那要动 schema（B4b 刚把表结构定在 v10），而且 B4b 已经
-/// 把「这一天推进到第几步」定义成版本数（`diary.currentChanged` 事件的 `revision`）。
-/// 这里沿用同一个定义，不引入第二套「版本号」。
+/// 调用方**从 `diary.getDay` 的 `revision` 字段读它**（契约 2.5），原样回传给
+/// `saveEdit` / `setCurrent` / `merge` 的 `expectedRevision`（契约 4.3）。这里不再用
+/// 「版本数」：换当前版本不增加版本数，用它做闸门等于没有闸门（#101）。
 fn day_revision(conn: &rusqlite::Connection, day_key: &str) -> Result<i64> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM diary_versions WHERE day_key = ?1",
-        params![day_key],
-        |row| row.get(0),
-    )?;
-    Ok(count)
+    let revision: Option<i64> = conn
+        .query_row(
+            "SELECT revision FROM diary_days WHERE day_key = ?1",
+            params![day_key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(revision.unwrap_or(0))
 }
 
-/// `expectedRevision` 的闸门：不匹配就报版本冲突，**一个字节都不写**。
+/// `expectedRevision` 的闸门：不匹配就报版本冲突。**必须在写事务里调用**——
+/// 在事务外先查再写会留下「两个窗口都通过检查、后一个静默覆盖前一个」的缝（#101）。
+/// 校验失败时事务整体回滚：一个字节都不写，连回执都不留。
 fn ensure_day_revision(conn: &rusqlite::Connection, day_key: &str, expected: i64) -> Result<()> {
     let actual = day_revision(conn, day_key)?;
     if actual != expected {
@@ -1824,8 +1868,9 @@ fn day_time_zone(core: &Core, day_key: &str) -> Result<String> {
 ///   指向它、`origin = user_edit`，修订链因此可回溯；
 /// - **新版本成为当前**：用户手写编辑就是「我要用这一版」；旧当前版退成候选
 ///   （`diary.getDay` 的 `candidateVersionIds`），不删除、可按需取回；
-/// - **过期就拒绝**：`expectedRevision` 必须等于这一天当前的版本数，不符报
-///   `revision_conflict`（零改动，不静默覆盖）；
+/// - **过期就拒绝**：`expectedRevision` 必须等于这一天的 `revision`（`diary.getDay`
+///   的 `revision` 字段），不符报 `revision_conflict`（零改动，不静默覆盖）。
+///   **闸门与写在同一个事务里**（见 `ensure_day_revision`）；
 /// - **幂等**：同一条 `operationId` 重试返回**原版本**（`operation_receipts` 先行，
 ///   所以即使 revision 已经变了，重试也返回原结果）；同一条 `operationId` 换了正文/基版/
 ///   `expectedRevision` 报 `idempotency_conflict`；
@@ -1868,11 +1913,13 @@ pub(crate) fn save_edit(
     }
 
     let base = load_version(&core.conn, base_version_id)?;
-    ensure_day_revision(&core.conn, &base.day_key, expected_revision)?;
     let time_zone = day_time_zone(core, &base.day_key)?;
 
     // 新版本 + 当前版本切换 + 幂等回执在**同一个事务**里：要么都成，要么都不成。
+    // `expectedRevision` 的闸门也在事务里：事务外先查再写会让两个窗口都通过检查
+    // （见 `ensure_day_revision` 的说明）。
     let tx = core.conn.transaction()?;
+    ensure_day_revision(&tx, &base.day_key, expected_revision)?;
     let version = insert_version(
         &tx,
         &NewVersion {
@@ -1887,7 +1934,8 @@ pub(crate) fn save_edit(
             operation_id: Some(operation_id.trim()),
         },
     )?;
-    set_current_in_tx(&tx, &base.day_key, &time_zone, &version.id)?;
+    let pointer_changed = set_current_pointer(&tx, &base.day_key, &time_zone, &version.id)?;
+    finish_day_write(&tx, &base.day_key, pointer_changed)?;
     crate::store_receipt(
         &tx,
         operation_id.trim(),
@@ -1904,13 +1952,16 @@ pub(crate) fn save_edit(
 /// 口径：
 /// - **只能指向这一天自己的版本**：版本不存在报 `not_found`；版本属于别的天报
 ///   `invalid_argument`（消息里写清它属于哪一天）；
-/// - **过期就拒绝**：`expectedRevision` 必须等于这一天当前的版本数，不符报
-///   `revision_conflict`（零改动）；
+/// - **过期就拒绝**：`expectedRevision` 必须等于这一天的 `revision`（`diary.getDay`
+///   的 `revision` 字段，持久单调；换当前版本本身也会推进它），不符报
+///   `revision_conflict`（零改动）。**校验与写在同一个事务里**：另一个窗口在两次调用
+///   之间换了当前版本时，这里的 `revision` 已经变了，所以拿着旧值的第二次切换会被
+///   拒绝，而不是静默覆盖前一次选择（#101）；
 /// - **旧当前版变候选**：版本一行都不删，随时能切回来（`candidateVersionIds` 里还在）；
 /// - **按目标状态幂等**：契约这一行没有 `operationId`（`dayKey、versionId、expectedRevision`），
 ///   因为它**不产生任何东西**——重复调用收敛到同一个状态：已经是当前就什么都不做
-///   （不重复发 `diary.currentChanged`、不新增版本）。换成另一个版本是**另一次合法操作**，
-///   不是幂等冲突。
+///   （不重复发 `diary.currentChanged`、不新增版本、**不推进 revision**）。换成另一个
+///   版本是**另一次合法操作**，不是幂等冲突。
 pub(crate) fn set_current(
     core: &mut Core,
     day_key: &str,
@@ -1927,11 +1978,15 @@ pub(crate) fn set_current(
             ),
         });
     }
-    ensure_day_revision(&core.conn, day_key, expected_revision)?;
     let time_zone = day_time_zone(core, day_key)?;
 
     let tx = core.conn.transaction()?;
-    set_current_in_tx(&tx, day_key, &time_zone, version_id)?;
+    ensure_day_revision(&tx, day_key, expected_revision)?;
+    let pointer_changed = set_current_pointer(&tx, day_key, &time_zone, version_id)?;
+    if pointer_changed {
+        // 指针真的换了才算一次推进：重复指定同一个当前版本不推进 revision。
+        finish_day_write(&tx, day_key, true)?;
+    }
     tx.commit()?;
     get_day(core, day_key)
 }
@@ -2064,11 +2119,11 @@ pub(crate) fn merge_versions(
             });
         }
     }
-    ensure_day_revision(&core.conn, &base.day_key, expected_revision)?;
     let time_zone = day_time_zone(core, &base.day_key)?;
 
     let audit = merge_generation_info(base_version_id, &canonical);
     let tx = core.conn.transaction()?;
+    ensure_day_revision(&tx, &base.day_key, expected_revision)?;
     let version = insert_version(
         &tx,
         &NewVersion {
@@ -2083,7 +2138,8 @@ pub(crate) fn merge_versions(
             operation_id: Some(operation_id.trim()),
         },
     )?;
-    set_current_in_tx(&tx, &base.day_key, &time_zone, &version.id)?;
+    let pointer_changed = set_current_pointer(&tx, &base.day_key, &time_zone, &version.id)?;
+    finish_day_write(&tx, &base.day_key, pointer_changed)?;
     crate::store_receipt(
         &tx,
         operation_id.trim(),

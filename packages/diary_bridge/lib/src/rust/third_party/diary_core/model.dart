@@ -231,6 +231,14 @@ class DiaryDay {
 
   /// 候选版本（这一天的全部版本里除当前版本之外的那些），最新在前。
   final List<String> candidateVersionIds;
+
+  /// 这一天的 **revision**：持久、单调递增的状态推进计数（`diary_days.revision`）。
+  ///
+  /// 每次成功写入 +1：新增一版（生成 / 编辑 / 合并）算一次，`diary.setCurrent`
+  /// 真的换了当前版本也算一次；没有推进的调用（切到已经是当前的版本）不加。
+  /// 调用方把读到的这个值原样回传给 `saveEdit` / `setCurrent` / `merge` 的
+  /// `expectedRevision`（契约 2.5 / 4.3）；没有推进过的天是 0。
+  final PlatformInt64 revision;
   final MaterialCounts materialCounts;
   final Coverage coverage;
   final DateTime updatedAt;
@@ -240,6 +248,7 @@ class DiaryDay {
     required this.timeZone,
     this.currentVersionId,
     required this.candidateVersionIds,
+    required this.revision,
     required this.materialCounts,
     required this.coverage,
     required this.updatedAt,
@@ -251,6 +260,7 @@ class DiaryDay {
       timeZone.hashCode ^
       currentVersionId.hashCode ^
       candidateVersionIds.hashCode ^
+      revision.hashCode ^
       materialCounts.hashCode ^
       coverage.hashCode ^
       updatedAt.hashCode;
@@ -264,6 +274,7 @@ class DiaryDay {
           timeZone == other.timeZone &&
           currentVersionId == other.currentVersionId &&
           candidateVersionIds == other.candidateVersionIds &&
+          revision == other.revision &&
           materialCounts == other.materialCounts &&
           coverage == other.coverage &&
           updatedAt == other.updatedAt;

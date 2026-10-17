@@ -4068,16 +4068,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DiaryDay dco_decode_diary_day(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return DiaryDay(
       dayKey: dco_decode_String(arr[0]),
       timeZone: dco_decode_String(arr[1]),
       currentVersionId: dco_decode_opt_String(arr[2]),
       candidateVersionIds: dco_decode_list_String(arr[3]),
-      materialCounts: dco_decode_material_counts(arr[4]),
-      coverage: dco_decode_coverage(arr[5]),
-      updatedAt: dco_decode_Chrono_Utc(arr[6]),
+      revision: dco_decode_i_64(arr[4]),
+      materialCounts: dco_decode_material_counts(arr[5]),
+      coverage: dco_decode_coverage(arr[6]),
+      updatedAt: dco_decode_Chrono_Utc(arr[7]),
     );
   }
 
@@ -5532,6 +5533,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_timeZone = sse_decode_String(deserializer);
     var var_currentVersionId = sse_decode_opt_String(deserializer);
     var var_candidateVersionIds = sse_decode_list_String(deserializer);
+    var var_revision = sse_decode_i_64(deserializer);
     var var_materialCounts = sse_decode_material_counts(deserializer);
     var var_coverage = sse_decode_coverage(deserializer);
     var var_updatedAt = sse_decode_Chrono_Utc(deserializer);
@@ -5540,6 +5542,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       timeZone: var_timeZone,
       currentVersionId: var_currentVersionId,
       candidateVersionIds: var_candidateVersionIds,
+      revision: var_revision,
       materialCounts: var_materialCounts,
       coverage: var_coverage,
       updatedAt: var_updatedAt,
@@ -7456,6 +7459,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.timeZone, serializer);
     sse_encode_opt_String(self.currentVersionId, serializer);
     sse_encode_list_String(self.candidateVersionIds, serializer);
+    sse_encode_i_64(self.revision, serializer);
     sse_encode_material_counts(self.materialCounts, serializer);
     sse_encode_coverage(self.coverage, serializer);
     sse_encode_Chrono_Utc(self.updatedAt, serializer);

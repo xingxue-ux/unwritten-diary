@@ -7,7 +7,7 @@ import 'package:test/test.dart';
 /// B4c 的正文编辑 / 指定当前版本 / 合并：**只经契约接口**（`DiaryApi`）走真核心 + 真 SQLite。
 ///
 /// 「新版本成为当前、旧版退出默认视图、修订链、冲突零改动、幂等、来源可追溯」这些
-/// **语义**在核心侧由 `crates/diary_core/tests/diary_versions_test.rs`（12 条）钉住；
+/// **语义**在核心侧由 `crates/diary_core/tests/diary_versions_test.rs`（14 条）钉住；
 /// 这里钉的是**适配层**：三个方法真的接上了（能力清单如实列出）、参数如实传下去、
 /// 核心的错误码翻成契约的枚举，而且失败时一个版本都不产生。
 ///
@@ -76,6 +76,8 @@ void main() {
     final day = await api.getDay('2026-10-16');
     expect(day.currentVersionId, isNull, reason: '还没有任何版本');
     expect(day.candidateVersionIds, isEmpty);
+    // #101：这一天的 revision 是持久单调计数，桥接如实带过来；没有推进过的天是 0。
+    expect(day.revision, 0, reason: '没有任何版本与指针变更就没有推进');
   });
 
   test('版本不存在时三个方法都报契约错误码，且不产生任何版本', () async {
@@ -183,6 +185,7 @@ void main() {
     final day = await api.getDay('2026-10-16');
     expect(day.currentVersionId, isNull);
     expect(day.candidateVersionIds, isEmpty);
+    expect(day.revision, 0, reason: '被拒绝的调用不推进 revision');
   });
 }
 

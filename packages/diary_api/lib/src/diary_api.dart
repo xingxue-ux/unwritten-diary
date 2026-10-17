@@ -200,10 +200,9 @@ abstract class DiaryApi {
 
   /// 保存人工编辑：创建新的 `user_edit` 版本，**不覆盖基版**。
   ///
-  /// `expectedRevision` 是这一天的版本数（`getDay` 的
-  /// `candidateVersionIds.length + (currentVersionId == null ? 0 : 1)`）：不符抛
+  /// `expectedRevision` 是这一天的 revision（[DiaryDay.revision]）：不符抛
   /// `revisionConflict`，核心一个字节都不改。新版本成为当前，旧当前版退成候选
-  /// （`getDay.candidateVersionIds`），`getVersion` 仍能取回原文。
+  /// （[DiaryDay.candidateVersionIds]），`getVersion` 仍能取回原文。
   ///
   /// 同一条 `operationId` 重试返回原版本；换了正文/基版/`expectedRevision` 抛
   /// `idempotencyConflict`。空正文抛 `invalidArgument`；正文不设长度上限。
@@ -217,8 +216,11 @@ abstract class DiaryApi {
   /// 在一天的版本之间指定当前版本（例如退回上一版）。
   ///
   /// 只能指向这一天自己的版本：不存在抛 `notFound`、属于别的天抛 `invalidArgument`；
-  /// `expectedRevision`（版本数）不符抛 `revisionConflict`。旧当前版变候选、不删除；
-  /// 切到已经是当前的版本是无操作（这一行契约没有 `operationId`：它不产生任何东西）。
+  /// `expectedRevision`（[DiaryDay.revision]）不符抛 `revisionConflict`。旧当前版变候选、
+  /// 不删除；切到已经是当前的版本是无操作（这一行契约没有 `operationId`：它不产生任何东西）。
+  ///
+  /// **换当前版本本身也推进这一天的 revision**：两个窗口读到同一个 revision 时，
+  /// 后一个的切换会被 `revisionConflict` 拒绝，而不是静默覆盖前一个窗口的选择。
   Future<DiaryDay> setCurrentVersion({
     required String dayKey,
     required String versionId,
