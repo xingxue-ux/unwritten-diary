@@ -253,9 +253,54 @@ void main() {
     expect(snapshot.coreInfo.capabilities, contains('captures.list'));
     expect(snapshot.coreInfo.capabilities, contains('search.start'));
     expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.status')));
-    // 桥接侧现在也接了 `indexes.rebuild`（能力项进了核心的 wired_capabilities），
-    // 但适配层的 `_wiredMethods` 这一片没动，所以这里同样必须是「没有」。
+    // **语义**重建这一条接了（设置页要在换过模型之后触发「重建语义索引」）：
+    // 核心入口 → 桥接 → 适配层 → 能力项都在。
+    expect(
+      snapshot.coreInfo.capabilities,
+      contains('indexes.rebuildSemantic'),
+    );
+    // **关键词**那条照旧没接：核心与桥接都通了（能力项进了 wired_capabilities），
+    // 但适配层的 `_wiredMethods` 仍然不含它，所以这里必须是「没有」。
     expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.rebuild')));
+  });
+
+  test('语义索引重建经契约接口排得上，重放拿到同一个 jobId', () async {
+    await api.open();
+    final ticket = await api.rebuildSemanticIndex(
+      reason: '适配层端到端',
+      operationId: 'adapter-semantic-1',
+    );
+    expect(ticket.jobId, isNotEmpty, reason: '拿到的是真实任务 id，不是编出来的');
+
+    // 同一个 (reason, operationId)：同一条任务。
+    final replay = await api.rebuildSemanticIndex(
+      reason: '适配层端到端',
+      operationId: 'adapter-semantic-1',
+    );
+    expect(replay.jobId, ticket.jobId);
+
+    // 换一个 operationId：语义重建总是整库，业务键让它命中活着的那一条。
+    final other = await api.rebuildSemanticIndex(
+      reason: '另一个入口',
+      operationId: 'adapter-semantic-2',
+    );
+    expect(other.jobId, ticket.jobId, reason: '重复排队不产生第二份工作');
+
+    // 同一个 operationId 换了原因：契约 1.2 的幂等冲突，如实翻成契约错误码
+    // （不是悄悄返回旧任务，也不是崩掉）。
+    await expectLater(
+      api.rebuildSemanticIndex(
+        reason: '换了原因',
+        operationId: 'adapter-semantic-1',
+      ),
+      throwsA(
+        isA<DiaryException>().having(
+          (error) => error.code,
+          'code',
+          DiaryErrorCode.idempotencyConflict,
+        ),
+      ),
+    );
   });
 }
 
