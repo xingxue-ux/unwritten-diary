@@ -1446,7 +1446,8 @@ fn run_index(core: &mut Core, job: &Job) -> std::result::Result<(), HandlerFailu
 /// - **让出**（预算到点）→ `HandlerOutcome::Yielded`：任务回 `queued`，下一轮续跑。
 ///   不是失败、不消耗重试额度（见 `yield_back`）；
 /// - **模型拿不到**（没配 / 配了但加载失败，闸门放行时只看到「配了」）→
-///   `HandlerOutcome::WaitingConfiguration(WAITING_MODEL)`：落回 `waiting_configuration`。
+///   `HandlerOutcome::WaitingConfiguration { reason: WAITING_MODEL, .. }`：落回
+///   `waiting_configuration`。
 ///   这不是失败——用户把模型配好之后闸门会重新拉起它；
 /// - **可恢复原因**（IO / 数据库暂时不可用）→ `HandlerFailure::retryable`：退避重试，
 ///   消耗额度；`building_generation` 与已写的向量留着，额度内重试就是续跑；
