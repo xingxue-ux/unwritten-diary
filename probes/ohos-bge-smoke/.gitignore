@@ -1,0 +1,21 @@
+# 构建产物 / 本地配置（不进仓库）
+build/
+.hvigor/
+oh_modules/
+oh-package-lock.json5
+local.properties
+*.hap
+
+# 原生产物：由 scripts/build-native.sh 现场编出来，二进制不进仓库
+entry/libs/
+rust/target/
+
+# ★ 模型不进仓库：真 bge int8（22.73 MiB）+ tokenizer（0.42 MiB）由
+#   scripts/build-hap.sh 在构建前从 $BGE_MODEL_DIR 拷进 rawfile（默认
+#   $HOME/dev/caches/bge-small-zh-v1.5-ours，也可直接指向仓库 models/ 目录）。
+#   仓库里只有 models/manifest 的哈希记录。
+entry/src/main/resources/rawfile/model_quantized.onnx
+entry/src/main/resources/rawfile/tokenizer.json
+
+# 设备侧原始日志与解析结果**要进仓库**（是证据），只有拼装中间产物不进
+evidence/device-wrapper*.json

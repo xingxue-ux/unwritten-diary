@@ -1,0 +1,14 @@
+{
+  "app": {
+    // 临时 bundleName（仅用于冒烟探针，非产品最终值）。
+    // 注意：它必须与调试 Profile（.p7b）里的 bundle-info.bundle-name 一致才能安装，
+    // 详见 probes/ohos-hap-smoke/README.md。
+    "bundleName": "com.xingxue.unwrittendiary.bgesmoke",
+    "vendor": "xingxue",
+    "versionCode": 1000000,
+    "versionName": "1.0.0",
+    "buildVersion": "1",
+    "icon": "$media:layered_image",
+    "label": "$string:app_name"
+  }
+}
