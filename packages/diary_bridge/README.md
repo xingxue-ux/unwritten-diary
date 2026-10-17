@@ -52,17 +52,17 @@ Windows 侧构建要显式带 `--target`，否则产物会写进与 WSL 共用�
 ```bash
 cargo build --release                        # 仓库根目录
 cd packages/diary_bridge
-dart pub get && dart test                    # 6 项，跑完整读写链路
+dart pub get && dart test                    # 全套（当前 41 项），跑完整读写链路
 ```
 
 `DIARY_BRIDGE_LIB` 可指定别的产物路径（例如 Windows 上的 `.dll`）。
 
-测试覆盖的不是「能调通一个函数」，而是：打开资料库 → 建草稿 → 保存 → 提交 → 重读 → 导入文本文件 → 排队并执行提取 → 读派生正文 → 定位原件，外加错误码映射、事件游标补读、中文与 emoji 往返。
+测试覆盖的不是「能调通一个函数」，而是：打开资料库 → 建草稿 → 保存 → 提交 → 重读 → 导入文本文件 → 排队并执行提取 → 读派生正文 → 定位原件 → 检索（关键词/语义/混合与升级）→ Provider 配置与连接测试 → 日记生成票据与版本读取 → 日记编辑/指定当前/合并的错误码与能力声明，外加错误码映射、事件游标补读、中文与 emoji 往返。日记版本的**语义**（新版本成为当前、旧版退出默认视图、修订链、冲突零改动、幂等）在核心侧的 `crates/diary_core/tests/diary_versions_test.rs` 里钉住：造一版日记要一次真实模型调用，而 CI 不联网。
 
 ## 现状与未验证
 
 已验证：Linux（WSL）宿主 6/6、Windows x64 6/6、Android（API 36 x86_64 模拟器）等价探针 5/5；`BridgeSession` 全链路读写、`CoreError` → 契约第 7 节错误码映射、能力清单、中文与 emoji 往返。
 
-**没接的就是 `LibraryInfo.capabilities` 里没列的**：搜索、索引、日记生成、插件、备份、Provider 配置、录音会话、任务执行。
+**没接的就是 `LibraryInfo.capabilities` 里没列的**：录音会话与资产租约、回收站与清理、设置、插件、备份与导出、风格（`styles.*`）、任务的取消/重试/确认提醒。**已经接上**的是记录与导入、提取与来源定位、检索与索引、Provider 配置与回应、日记的生成与版本（含 B4c 的编辑/指定当前/合并）与队列驱动。
 
 未验证：event `Stream`（只有 `events_since` 拉取）、调用取消、后台运行入口、Android arm64 真机。
