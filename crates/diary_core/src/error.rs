@@ -46,6 +46,10 @@ pub enum ErrorCode {
     ProviderTimeout,
     /// 端点/模型不可用或返回内容解析不了：检查配置，重试不会好。
     ModelUnavailable,
+    /// 备份包结构、哈希或清单与内容不一致（含越界路径），不能用来恢复。
+    CorruptedBackup,
+    /// 备份包来自更新的核心（`schemaVersion` / `apiVersion` 高于本构建）。
+    IncompatibleBackup,
 }
 
 impl ErrorCode {
@@ -70,6 +74,8 @@ impl ErrorCode {
             Self::QuotaExceeded => "quota_exceeded",
             Self::ProviderTimeout => "provider_timeout",
             Self::ModelUnavailable => "model_unavailable",
+            Self::CorruptedBackup => "corrupted_backup",
+            Self::IncompatibleBackup => "incompatible_backup",
         }
     }
 }
@@ -146,6 +152,19 @@ pub enum CoreError {
 
     #[error("这个服务不支持所需能力：{reason}")]
     CapabilityUnsupported { reason: String },
+    /// 备份包坏了：哈希、结构、清单与内容对不上，或清单里有越界路径。
+    ///
+    /// 契约第 7 节的 `corrupted_backup`：用户可见行为是「恢复失败原因清晰」，
+    /// 自动行为是「不修改现有库」——所以这个错误**只在什么都没改之前**返回。
+    #[error("备份包不可用：{reason}")]
+    CorruptedBackup { reason: String },
+
+    /// 备份包来自更新的核心：本构建不认识它的 schema / API 版本。
+    ///
+    /// 契约第 7 节的 `incompatible_backup`。高低版本都可能是「不认识」，
+    /// 但只有**高于**本构建的才拒；低于本构建的照常恢复，由开库时的迁移接手。
+    #[error("备份包与当前版本不兼容：{reason}")]
+    IncompatibleBackup { reason: String },
 
     #[error("文件操作失败：{0}")]
     Io(#[from] std::io::Error),
@@ -184,6 +203,8 @@ impl CoreError {
             Self::QuotaExceeded { .. } => ErrorCode::QuotaExceeded,
             Self::ProviderTimeout { .. } => ErrorCode::ProviderTimeout,
             Self::ModelUnavailable { .. } => ErrorCode::ModelUnavailable,
+            Self::CorruptedBackup { .. } => ErrorCode::CorruptedBackup,
+            Self::IncompatibleBackup { .. } => ErrorCode::IncompatibleBackup,
             Self::Io(err) => io_code(err),
             Self::CorruptedData { .. } | Self::Serialization(_) => ErrorCode::InvalidState,
             Self::Database(err) => database_code(err),
