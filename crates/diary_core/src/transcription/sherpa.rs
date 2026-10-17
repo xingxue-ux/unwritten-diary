@@ -31,10 +31,27 @@
 //! 与 `libonnxruntime` 同样的坑（`M0-技术验证.md` 第 4 节）：动态库在退出阶段的
 //! C++ 静态析构会崩。所以库句柄**进程级保留、永不 dlclose**。识别器本身在配置
 //! 变化时会显式销毁并重建（那个是安全的），内存不会随任务数增长。
+//!
+//! # 识别器的生命周期：缓存里放 `Arc`，不在用到它的人手上拿走
+//!
+//! 配置变化时要重建识别器，但**重建不等于把旧的那份立刻销毁**：可能正好有一次
+//! 转写拿着它。所以：
+//!
+//! - [`CACHE`] 里放的是 `Arc<Cached<Loaded>>`，`loaded()` 交给调用方一份 `Arc`——
+//!   转写期间识别器**一定**活着；
+//! - 缓存替换只是「以后来的人用新的」；旧的那份等**最后一个**持有者放掉才
+//!   `destroy`（[`RecognizerHandle`] 的 `Drop`），而且不在缓存锁里做这次 C 调用；
+//! - 因此「一次长转写」不会挡住模型切换（切换照样立刻生效，新的请求用新模型），
+//!   也不会把正在用的识别器销毁（过去返回裸指针 + `cache.take()` 直接销毁，
+//!   是 use-after-free，见 issue #103）。
+//!
+//! 缓存层保证的只是**对象不会在持有者使用期间被销毁**；它不承诺「同一个识别器
+//! 可以被两个线程同时拿去解码」——那条仍是核心「转写调用串行」的约定，
+//! 写在 [`Loaded`] 的 `Send`/`Sync` 说明里。
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::error::{CoreError, Result};
 use crate::model::ProviderCapability;
@@ -54,7 +71,10 @@ pub struct SherpaOnnxEngine;
 static SHERPA: SherpaOnnxEngine = SherpaOnnxEngine;
 
 /// 进程级的引擎缓存：动态库句柄 + 当前配置下的识别器。
-static CACHE: Mutex<Option<Loaded>> = Mutex::new(None);
+///
+/// 缓存项是 `Arc`（见模块文档「识别器的生命周期」）：取用方手里那一份**不会**
+/// 因为缓存被替换而销毁。
+static CACHE: EngineCache<Loaded> = EngineCache::new();
 
 pub fn engine() -> &'static dyn LocalEngine {
     &SHERPA
@@ -201,96 +221,167 @@ struct Api {
 
 /// 加载好的动态库 + 解析出来的符号。库句柄永不释放（见模块文档）。
 struct Loaded {
-    /// 配置指纹：识别器与它绑定，配置变了就重建。
-    identity: String,
     /// 动态库路径（报告里印出来）。
     lib_path: String,
     /// 引擎版本（`SherpaOnnxGetVersionStr`）。
     engine_version: String,
     /// 模型文件的可读标签（报告与派生内容版本里用）。
     model_label: String,
-    recognizer: *const OfflineRecognizer,
+    /// 识别器：它的销毁由 [`RecognizerHandle`] 的 `Drop` 负责，
+    /// 也就是「最后一个持有者放掉它」这一刻，而不是「从缓存里摘下来」这一刻。
+    recognizer: RecognizerHandle,
     /// 库句柄：**不 drop**，所以它一直活着（用 `ManuallyDrop` 表达这个意图）。
     _library: std::mem::ManuallyDrop<libloading::Library>,
     api: Api,
 }
 
-// SAFETY: 这里是裸指针（`recognizer: *const c_void`）跨线程的唯一理由与边界：
-// - 核心对引擎的调用**全部串行**（`Core` 由 `BridgeSession` 的互斥锁串行化，
-//   作业驱动的线程模型是「同一时刻只有一条任务在跑」），所以不存在并发调用；
+/// 识别器的**所有者**：最后一个持有者放掉它时销毁 C 对象。
+///
+/// 单独成一个类型，是为了让「谁负责销毁识别器」只有这一个出口，并且能单测：
+/// 测试用一个只记数的 `destroy` 桩替掉真引擎（见本文件测试）。
+struct RecognizerHandle {
+    pointer: *const OfflineRecognizer,
+    destroy: unsafe extern "C" fn(*const OfflineRecognizer),
+}
+
+impl Drop for RecognizerHandle {
+    fn drop(&mut self) {
+        if self.pointer.is_null() {
+            return;
+        }
+        // SAFETY: `pointer` 由 `SherpaOnnxCreateOfflineRecognizer` 创建，除了这里
+        // 没有任何别的销毁路径（`Drop` 只会跑一次），所以不会重复销毁；库句柄进程级
+        // 保留、永不 dlclose，所以 `destroy` 这个函数指针在调用时一定还有效。
+        unsafe { (self.destroy)(self.pointer) };
+    }
+}
+
+// SAFETY: 与 `Loaded` 同一条边界（见下面的说明）：识别器在 sherpa-onnx 里是只读的
+// 推理对象，每次调用的可变状态是 stream，而 stream 在每次 `transcribe` 内部创建销毁。
+// `Send + Sync` 表达的只是「可以跨线程传递这份所有权」，不改变「核心的转写调用串行」
+// 这条约定。
+unsafe impl Send for RecognizerHandle {}
+unsafe impl Sync for RecognizerHandle {}
+
+// SAFETY: 这里允许裸指针跨线程的边界与**没有**被这次修改放宽的地方：
+// - 本类型里有裸指针（识别器）与函数指针，所以 `Send + Sync` 必须手动声明；
 // - 识别器本身在 sherpa-onnx 里是只读的推理对象，`SherpaOnnxOfflineStream` 才是
 //   每次调用的可变状态，而它**在每次 `transcribe` 内部创建并销毁**，不共享；
-// - `CACHE` 上的 `Mutex` 保证「取出/替换识别器」这一步是互斥的。
-// 结论：把指针标成 `Send + Sync` 不改变运行时的并发事实，只是把上面这套约束
-// 写进类型系统。若将来核心改成多线程并发转写，**必须重新评估这一条**。
+// - **同一个识别器不会被两个线程同时解码**：核心对引擎的调用串行（`Core` 由
+//   `BridgeSession` 的互斥锁串行化，作业驱动是「同一时刻只有一条任务在跑」）。
+//   这是调用方的约定，不是缓存生命周期的一部分——缓存层保证的是「对象不会在
+//   持有者使用期间被销毁」（`Arc`），不保证「同一识别器并发解码安全」。
+// 结论：把指针标成 `Send + Sync` 不改变运行时的并发事实，只是把上面这套约束写进
+// 类型系统。若将来核心改成多线程并发转写，**必须重新评估这一条**。
 unsafe impl Send for Loaded {}
 unsafe impl Sync for Loaded {}
 
 impl SherpaOnnxEngine {
     /// 取得（必要时加载并缓存）引擎。
     ///
-    /// 返回的是一个**指向进程级缓存项的裸指针凭证**（[`Loaded2`]），不是借用：
-    /// 转写期间要创建/销毁 stream 并与识别器交互，不能一直握着 `CACHE` 的锁。
-    /// 这条设计的前提是「核心同一时刻只有一次转写」（见 `unsafe impl Send for Loaded`）。
-    fn loaded(config: &EngineConfig) -> Result<Loaded2> {
+    /// 返回 `Arc<Cached<Loaded>>`：**这份引用活多久由调用方决定**。一次转写期间
+    /// 它一直活着，所以识别器一定活着——即便同时有别的调用把缓存换成了另一个配置
+    /// 下的识别器。既不返回裸指针（过去那样会 use-after-free），也不在转写期间
+    /// 一直握着 `CACHE` 的锁（那样长转写会把模型切换挡住）。
+    fn loaded(config: &EngineConfig) -> Result<Arc<Cached<Loaded>>> {
         let identity = recognizer_identity(config);
-        let mut cache = CACHE.lock().map_err(|_| CoreError::InvalidState {
-            entity: "本机转写引擎",
-            id: SHERPA_ONNX.to_owned(),
-            state: "引擎缓存的锁坏了（上一次转写可能 panic 过）".to_owned(),
-        })?;
-
-        let needs_rebuild = cache
-            .as_ref()
-            .map(|loaded| loaded.identity != identity)
-            .unwrap_or(true);
-        if needs_rebuild {
-            // 配置变了（或第一次）：先把新的一套建好，再销毁旧的识别器。
-            // 顺序不能反——反了会出现「旧的已销毁、新的没建起来」的空窗。
-            let library = load_library(config)?;
-            let api = Api::from_library(&library)?;
-            let engine_version = api.version_string();
-            let recognizer = create_recognizer(&api, config)?;
-            let model_label = config
-                .model_path()
-                .map(|path| {
-                    path.file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string())
+        CACHE.get_or_build(
+            &identity,
+            || CoreError::InvalidState {
+                entity: "本机转写引擎",
+                id: SHERPA_ONNX.to_owned(),
+                state: "引擎缓存的锁坏了（上一次转写可能 panic 过）".to_owned(),
+            },
+            || {
+                // 配置变了（或第一次）：把新的一套**完整建好**（库、符号、识别器）之后
+                // 才让缓存指过去。顺序不能反——反了会出现「旧的没了、新的没建起来」的空窗。
+                let library = load_library(config)?;
+                let api = Api::from_library(&library)?;
+                let engine_version = api.version_string();
+                let recognizer = RecognizerHandle {
+                    pointer: create_recognizer(&api, config)?,
+                    destroy: api.destroy_recognizer,
+                };
+                let model_label = config
+                    .model_path()
+                    .map(|path| {
+                        path.file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string())
+                    })
+                    .unwrap_or_else(|_| "<未知模型>".to_owned());
+                Ok(Loaded {
+                    lib_path: library_path_text(config),
+                    engine_version,
+                    model_label,
+                    recognizer,
+                    _library: std::mem::ManuallyDrop::new(library),
+                    api,
                 })
-                .unwrap_or_else(|_| "<未知模型>".to_owned());
-            if let Some(old) = cache.take() {
-                // SAFETY: 旧识别器已经从缓存里摘掉，不再有任何调用引用它。
-                unsafe { (old.api.destroy_recognizer)(old.recognizer) };
-            }
-            *cache = Some(Loaded {
-                identity,
-                lib_path: library_path_text(config),
-                engine_version,
-                model_label,
-                recognizer,
-                _library: std::mem::ManuallyDrop::new(library),
-                api,
-            });
-        }
-
-        let pointer: *const Loaded = cache.as_ref().expect("上面刚保证缓存里有一项") as *const Loaded;
-        drop(cache);
-        Ok(Loaded2 { loaded: pointer })
+            },
+        )
     }
 }
 
-/// 从缓存里取用期间的一个**裸指针凭证**。
-///
-/// 它不持有锁（转写期间会创建/销毁 stream 并与识别器交互），但保证调用方拿到的
-/// 指针来自当前缓存项。核心的串行调用模型是它的前提（见 `unsafe impl Send`）。
-struct Loaded2 {
-    loaded: *const Loaded,
+/// 缓存里的一项：配置指纹 + 引擎对象。
+struct Cached<T> {
+    /// 配置指纹（见 [`recognizer_identity`]）：变了就重建。
+    identity: String,
+    value: T,
 }
 
-// SAFETY: 同上——核心串行调用，且 `Loaded` 的生命周期由进程级 `CACHE` 保证。
-unsafe impl Send for Loaded2 {}
-unsafe impl Sync for Loaded2 {}
+/// 「配置指纹 → 进程级单例」的缓存骨架。
+///
+/// 它保证的核心性质正是 issue #103 要修的那条：**取出的对象在使用期间一定活着**。
+/// 取用方拿到的是 `Arc`；缓存被替换只意味着「以后来的人用新的」，不会销毁正在被
+/// 用着的那一份。销毁发生在最后一个持有者放掉它的那一刻（`T` 自己的 `Drop`），
+/// 而且**不在缓存锁里**做。
+///
+/// 这段逻辑单独成一个类型，是为了让它能用假的「引擎对象」单测（同一段代码路径）。
+struct EngineCache<T> {
+    slot: Mutex<Option<Arc<Cached<T>>>>,
+}
+
+impl<T> EngineCache<T> {
+    const fn new() -> Self {
+        Self {
+            slot: Mutex::new(None),
+        }
+    }
+
+    /// 取当前项；指纹与缓存里的不一样（或缓存是空的）才用 `build` 建一个新的。
+    ///
+    /// `build` 在锁内跑：两个线程同时发现配置变了时，不会各建一个、互相覆盖，也不会
+    /// 出现「旧的摘了、新的还没建起来」的空窗。锁坏了（上一次在锁里 panic）时用
+    /// `poisoned` 造错误返回，措辞归调用方。
+    fn get_or_build(
+        &self,
+        identity: &str,
+        poisoned: impl FnOnce() -> CoreError,
+        build: impl FnOnce() -> Result<T>,
+    ) -> Result<Arc<Cached<T>>> {
+        let mut slot = self.slot.lock().map_err(|_| poisoned())?;
+        let needs_rebuild = slot
+            .as_ref()
+            .map(|cached| cached.identity != identity)
+            .unwrap_or(true);
+        let mut replaced = None;
+        if needs_rebuild {
+            let value = build()?;
+            replaced = slot.replace(Arc::new(Cached {
+                identity: identity.to_owned(),
+                value,
+            }));
+        }
+        let current = Arc::clone(slot.as_ref().expect("上面刚保证缓存里有一项"));
+        // 先放锁，再放掉旧项：旧项的最后一次 `Drop` 会销毁识别器（一次 C 调用），
+        // 不该占着缓存锁做。而且这时它可能还被某次转写用着——我们放掉的只是**自己
+        // 这一份引用**，对象由最后一个持有者决定什么时候真正销毁。
+        drop(slot);
+        drop(replaced);
+        Ok(current)
+    }
+}
 
 fn recognizer_identity(config: &EngineConfig) -> String {
     format!(
@@ -637,13 +728,15 @@ impl LocalEngine for SherpaOnnxEngine {
 
         let mut config = config.clone();
         config.language = request.language.clone();
-        let loaded = SherpaOnnxEngine::loaded(&config)?;
-        // SAFETY: `loaded` 借用的是进程级缓存里的识别器；调用串行（见 unsafe impl）。
-        let loaded = unsafe { &*loaded.loaded };
+        // `cached` 在**整个转写期间**都被持有（不是只从缓存里取个指针）：即便别的
+        // 调用同时切换了模型、把缓存里的那一份换掉，这一份识别器也一定活到本次
+        // 转写结束（对象由持有者决定，见模块文档「识别器的生命周期」）。
+        let cached = SherpaOnnxEngine::loaded(&config)?;
+        let loaded = &cached.value;
 
         // SAFETY: 下面每个调用都成对（create/destroy），且参数按 C API 契约给。
         unsafe {
-            let stream = (loaded.api.create_stream)(loaded.recognizer);
+            let stream = (loaded.api.create_stream)(loaded.recognizer.pointer);
             if stream.is_null() {
                 return Err(CoreError::ModelUnavailable {
                     reason: "引擎创建解码流失败".to_owned(),
@@ -655,7 +748,7 @@ impl LocalEngine for SherpaOnnxEngine {
                 request.samples.as_ptr(),
                 request.samples.len() as i32,
             );
-            (loaded.api.decode)(loaded.recognizer, stream);
+            (loaded.api.decode)(loaded.recognizer.pointer, stream);
             let json_pointer = (loaded.api.result_json)(stream);
             let parsed = if json_pointer.is_null() {
                 Err(CoreError::ModelUnavailable {
@@ -697,9 +790,8 @@ impl LocalEngine for SherpaOnnxEngine {
             },
         )?;
         // 静音探针转出空文本是**正常**的（没有语音）；这里只要求它没有报错。
-        let loaded = SherpaOnnxEngine::loaded(config)?;
-        // SAFETY: 缓存项在进程级存活。
-        let loaded = unsafe { &*loaded.loaded };
+        let cached = SherpaOnnxEngine::loaded(config)?;
+        let loaded = &cached.value;
         Ok(format!(
             "本机引擎（sherpa-onnx {}，FFI 按 {} 钉死）加载成功；模型 {}；\
              静音探针返回 {} 个字符（静音本来就可能是空的，这一次证明的是「模型能加载、\
@@ -748,6 +840,228 @@ fn excerpt(text: &str) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::thread;
+
+    // ------------------------------------------------ 识别器生命周期（#103）
+
+    /// 测试用的假「识别器对象」：销毁时留痕。
+    ///
+    /// 本体就是这块 `Arc` 的分配；[`fake_recognizer`] 把它的裸指针交给
+    /// [`RecognizerHandle`]，销毁时由桩函数把它标成「已销毁」。
+    ///
+    /// 这条测试不需要（也不能有）真的 sherpa-onnx 库与模型：被验的是**生命周期**
+    /// ——对象会不会在还有人用的时候被销毁——而不是推理结果。
+    #[derive(Default)]
+    struct FakeRecognizerState {
+        alive: AtomicBool,
+        destroys: AtomicUsize,
+        /// 进程内建过的所有假识别器共用的销毁总数（核对「建几份就销毁几份」）。
+        total_destroys: Option<Arc<AtomicUsize>>,
+    }
+
+    impl FakeRecognizerState {
+        fn new(total_destroys: &Arc<AtomicUsize>) -> Arc<Self> {
+            Arc::new(Self {
+                alive: AtomicBool::new(true),
+                destroys: AtomicUsize::new(0),
+                total_destroys: Some(Arc::clone(total_destroys)),
+            })
+        }
+    }
+
+    /// 桩：签名与真的 `SherpaOnnxDestroyOfflineRecognizer` 一致，只记数、不碰引擎。
+    unsafe extern "C" fn fake_destroy(pointer: *const OfflineRecognizer) {
+        if pointer.is_null() {
+            return;
+        }
+        // SAFETY: 这个指针只可能来自 `fake_recognizer` 的 `Arc::into_raw`，而
+        // `RecognizerHandle::drop` 只会调用一次、之后不再使用它；这里把那份引用收回。
+        let state = unsafe { Arc::from_raw(pointer as *const FakeRecognizerState) };
+        state.alive.store(false, Ordering::SeqCst);
+        state.destroys.fetch_add(1, Ordering::SeqCst);
+        if let Some(total) = &state.total_destroys {
+            total.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn fake_recognizer(state: &Arc<FakeRecognizerState>) -> RecognizerHandle {
+        RecognizerHandle {
+            pointer: Arc::into_raw(Arc::clone(state)) as *const OfflineRecognizer,
+            destroy: fake_destroy,
+        }
+    }
+
+    fn fake_poison() -> CoreError {
+        CoreError::InvalidState {
+            entity: "测试缓存",
+            id: "fake".to_owned(),
+            state: "锁坏了".to_owned(),
+        }
+    }
+
+    /// #103 的另一半是**签名**：转写拿到的必须是「可以一直持有的引用」（`Arc`），
+    /// 不是「指向缓存项的裸指针凭证」——后者根本没法表达「它在本次转写期间活着」，
+    /// 那正是 use-after-free 的来源。
+    ///
+    /// 这条断言是编译期的：签名退回裸指针（或换成别的借用）它就编译不过。
+    #[test]
+    fn loaded_hands_out_an_owned_reference_that_outlives_a_cache_switch() {
+        let _: fn(&EngineConfig) -> Result<Arc<Cached<Loaded>>> = SherpaOnnxEngine::loaded;
+    }
+
+    /// #103 的**确定性**回归：缓存被替换不能销毁正在被用的那一份。
+    ///
+    /// 「正在用」就是一个 `Arc`（转写从取到识别器到本次结束一直持有它）。这条断言在
+    /// 「返回裸指针 + 换配置时直接销毁旧识别器」的实现下必红：那时换配置的一刻
+    /// `alive` 会变成 false、`destroys` 会变成 1。
+    #[test]
+    fn switching_the_model_cache_keeps_the_recognizer_in_use_alive() {
+        let total = Arc::new(AtomicUsize::new(0));
+        let cache: EngineCache<RecognizerHandle> = EngineCache::new();
+        let first_state = FakeRecognizerState::new(&total);
+
+        let first = cache
+            .get_or_build("配置-A", fake_poison, || Ok(fake_recognizer(&first_state)))
+            .expect("第一次取用会建一份");
+        assert_eq!(first.identity, "配置-A");
+
+        // 指纹没变：复用同一份，不重建（`build` 直接 panic 来证明它没被调用）。
+        let again = cache
+            .get_or_build("配置-A", fake_poison, || unreachable!("指纹没变就不该重建"))
+            .expect("复用缓存里那一份");
+        assert!(Arc::ptr_eq(&first, &again), "指纹没变时应当拿到同一份");
+        assert_eq!(total.load(Ordering::SeqCst), 0);
+        drop(again);
+
+        // 另一个配置：缓存换成 B（模拟另一个 Core/线程切换模型）。
+        let second_state = FakeRecognizerState::new(&total);
+        let second = cache
+            .get_or_build("配置-B", fake_poison, || Ok(fake_recognizer(&second_state)))
+            .expect("换配置会建一份");
+        assert_eq!(second.identity, "配置-B");
+
+        // A 还在这条「转写」手里：它必须还活着，一次都没被销毁过。
+        assert!(
+            first_state.alive.load(Ordering::SeqCst),
+            "换模型把正在用的识别器销毁了（use-after-free）"
+        );
+        assert_eq!(
+            first_state.destroys.load(Ordering::SeqCst),
+            0,
+            "换模型只该把旧的那份从缓存里摘下来，不该销毁它"
+        );
+        assert_eq!(
+            Arc::strong_count(&first),
+            1,
+            "旧的那份此时只有这次「转写」持有"
+        );
+        assert_eq!(total.load(Ordering::SeqCst), 0, "一份都不该被销毁");
+
+        // 转写结束：放下这份引用，**这时**才销毁，且恰好一次。
+        drop(first);
+        assert!(
+            !first_state.alive.load(Ordering::SeqCst),
+            "最后一个持有者放掉之后才销毁"
+        );
+        assert_eq!(first_state.destroys.load(Ordering::SeqCst), 1);
+        assert_eq!(second_state.destroys.load(Ordering::SeqCst), 0, "B 还在缓存里");
+
+        drop(second);
+        assert_eq!(
+            second_state.destroys.load(Ordering::SeqCst),
+            0,
+            "缓存里还留着一份引用，B 不该被销毁"
+        );
+        // 缓存本身放掉之后，最后一份引用才消失。
+        drop(cache);
+        assert_eq!(second_state.destroys.load(Ordering::SeqCst), 1);
+        assert_eq!(total.load(Ordering::SeqCst), 2, "建两份就销毁两份，不多不少");
+    }
+
+    /// #103 的**并发**回归：一个线程在转写，另一个线程不断切换模型缓存。
+    ///
+    /// 时序是确定的，不靠 sleep 碰运气：转写线程先声明「识别器已经在手」，之后主线程
+    /// 连切 [`SWITCHES`] 次配置（每次切完都断言那一份还活着），切完才放行转写线程。
+    /// 转写线程在整个窗口里反复「使用」它，并在结束时放掉引用。最后核对
+    /// 「建过几份就销毁几份」——漏销毁是泄漏，多销毁/提前销毁就是 use-after-free。
+    #[test]
+    fn transcribing_while_another_thread_switches_models_never_uses_a_destroyed_engine() {
+        const SWITCHES: usize = 64;
+        /// 兜底：主线程如果先失败退出，转写线程不会无限空转；按**单调时钟**算，
+        /// 给的余量足够大（这条测试本身是纯内存的，正常远在毫秒级结束）。
+        const RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+        let total = Arc::new(AtomicUsize::new(0));
+        let cache = Arc::new(EngineCache::<RecognizerHandle>::new());
+        let first_state = FakeRecognizerState::new(&total);
+
+        let (in_use_tx, in_use_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let transcriber = {
+            let cache = Arc::clone(&cache);
+            let state = Arc::clone(&first_state);
+            thread::spawn(move || {
+                let in_use = cache
+                    .get_or_build("配置-A", fake_poison, || Ok(fake_recognizer(&state)))
+                    .expect("转写取到识别器");
+                in_use_tx.send(()).expect("通知主线程：识别器已经在手");
+                let deadline = std::time::Instant::now() + RELEASE_TIMEOUT;
+                while release_rx.try_recv().is_err() {
+                    // 「转写」：整个窗口里反复碰这一份对象。
+                    assert!(
+                        state.alive.load(Ordering::SeqCst),
+                        "转写还在进行，识别器就被销毁了（use-after-free）"
+                    );
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "主线程一直没有放行转写线程"
+                    );
+                    thread::yield_now();
+                }
+                drop(in_use);
+            })
+        };
+
+        in_use_rx.recv().expect("转写线程应当先拿到识别器");
+        for index in 0..SWITCHES {
+            let state = FakeRecognizerState::new(&total);
+            let identity = format!("配置-切换-{index}");
+            let switched = cache
+                .get_or_build(&identity, fake_poison, || Ok(fake_recognizer(&state)))
+                .expect("切换配置");
+            assert_eq!(switched.identity, identity);
+            assert!(
+                first_state.alive.load(Ordering::SeqCst),
+                "第 {index} 次切换销毁了正在被转写用的识别器"
+            );
+            assert_eq!(
+                first_state.destroys.load(Ordering::SeqCst),
+                0,
+                "第 {index} 次切换销毁了正在被转写用的识别器"
+            );
+        }
+        release_tx.send(()).expect("放行转写线程");
+        transcriber.join().expect("转写线程正常结束");
+        assert_eq!(
+            first_state.destroys.load(Ordering::SeqCst),
+            1,
+            "转写结束之后它才该被销毁，且恰好一次"
+        );
+        assert!(!first_state.alive.load(Ordering::SeqCst));
+
+        // 到这里缓存里还留着最后一份：放掉整个缓存后，建过的每一份都应当被销毁。
+        assert_eq!(total.load(Ordering::SeqCst), SWITCHES, "只有转写那一份被销毁了");
+        drop(cache);
+        assert_eq!(
+            total.load(Ordering::SeqCst),
+            SWITCHES + 1,
+            "建过 {} 份就该销毁 {} 份（漏销毁是泄漏，多销毁是双重释放）",
+            SWITCHES + 1,
+            SWITCHES + 1
+        );
+    }
 
     /// ABI 自检：这些数字是用真实头文件（v1.13.8 的 `c-api.h`）跑
     /// `offsetof` / `sizeof` 得到的：
