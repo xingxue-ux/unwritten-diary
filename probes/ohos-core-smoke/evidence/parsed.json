@@ -1,0 +1,133 @@
+{
+  "ORT": {
+    "ort_path": "/data/storage/el1/bundle/libs/arm64/libonnxruntime.so",
+    "dlopen_ok": true,
+    "dlopen_err": "",
+    "dlsym_OrtGetApiBase_ok": true,
+    "dlsym_err": "",
+    "base_nonnull": true,
+    "ort_version_string": "1.29.1",
+    "GetApi17_nonnull": true,
+    "GetApi16_nonnull": true,
+    "CreateEnv_ok": true,
+    "CreateEnv_err": "",
+    "CreateSessionOptions_ok": true,
+    "CreateSessionOptions_err": "",
+    "providers_err": "",
+    "providers": [
+      "CPUExecutionProvider"
+    ],
+    "model_path": "/data/storage/el2/base/haps/entry/files/tiny_add.onnx",
+    "CreateSession_ok": true,
+    "CreateSession_err": "",
+    "input_count": 2,
+    "output_count": 1,
+    "CreateTensorA_err": "",
+    "CreateTensorB_err": "",
+    "Run_ok": true,
+    "Run_err": "",
+    "C": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "C_matches_host": true
+  },
+  "filesDir": {
+    "dlopen_ok": true,
+    "dlopen_used": "libdiary_core_smoke.so",
+    "dlopen_attempts": [
+      {
+        "name": "libdiary_core_smoke.so",
+        "ok": true,
+        "err": ""
+      },
+      {
+        "name": "/data/storage/el1/bundle/libs/arm64/libdiary_core_smoke.so",
+        "ok": true,
+        "err": ""
+      }
+    ],
+    "dlsym_ok": true,
+    "abi": "diary_core_smoke/1 ohos-cdylib",
+    "core_loaded_at": "/data/storage/el1/bundle/libs/arm64/libdiary_core_smoke.so",
+    "core": "{\"core_capture_count\":1,\"core_capture_id\":\"cap_01a1445d554d74b49a75617416a08715\",\"core_chunk_count\":1,\"core_chunks_ms\":0.596,\"core_create_draft_ms\":0.387,\"core_db_bytes\":278528,\"core_db_bytes_after_migrate\":4096,\"core_db_bytes_open\":4096,\"core_db_shm_bytes\":0,\"core_db_shm_bytes_open\":32768,\"core_db_wal_bytes\":0,\"core_db_wal_bytes_open\":461472,\"core_index_ms\":0.362,\"core_indexed_sources\":1,\"core_open_cold_ms\":9.51,\"core_open_warm_ms\":0.772,\"core_read_back_ms\":0.045,\"core_read_back_ok\":true,\"core_read_back_sha256\":\"df5e70ad77b8e65ca2be849f3b9fd2b0eb7fc9ea2ddae970580fab7a356e28c0\",\"core_read_back_text\":\"第二次保存（稳态）\",\"core_save_draft_2nd_ms\":0.485,\"core_save_draft_ms\":121.76,\"core_save_durable\":true,\"core_save_revision\":2,\"core_save_revision_2nd\":3,\"core_schema_version\":8,\"core_search_candidates_鸿蒙\":0,\"core_search_hits_鸿蒙\":0,\"dir\":\"/data/storage/el2/base/haps/entry/files/coredb\",\"dir_listing\":[{\"bytes\":278528,\"is_dir\":false,\"name\":\"core.db\"},{\"bytes\":282624,\"is_dir\":false,\"name\":\"raw_smoke.db\"}],\"errors\":[],\"raw_db_bytes\":282624,\"raw_insert10000_ms\":24.15,\"raw_insert1000_ms\":2.742,\"raw_insert1_ms\":0.174,\"raw_journal_mode\":\"wal\",\"raw_open_ms\":0.378,\"raw_pragma_create_ms\":10.18,\"raw_read_ms\":0.152,\"raw_row7\":\"沙箱记录-6\",\"raw_rows\":11001,\"sqlite_version\":\"3.53.2\",\"stage\":\"ok\",\"total_ms\":174.121}"
+  },
+  "databaseDir": {
+    "dlopen_ok": true,
+    "dlopen_used": "libdiary_core_smoke.so",
+    "dlopen_attempts": [
+      {
+        "name": "libdiary_core_smoke.so",
+        "ok": true,
+        "err": ""
+      },
+      {
+        "name": "/data/storage/el1/bundle/libs/arm64/libdiary_core_smoke.so",
+        "ok": true,
+        "err": ""
+      }
+    ],
+    "dlsym_ok": true,
+    "abi": "diary_core_smoke/1 ohos-cdylib",
+    "core_loaded_at": "/data/storage/el1/bundle/libs/arm64/libdiary_core_smoke.so",
+    "core": "{\"core_capture_count\":1,\"core_capture_id\":\"cap_01a1445d55fa70efb1f2bdd94d2901fe\",\"core_chunk_count\":1,\"core_chunks_ms\":0.41,\"core_create_draft_ms\":0.341,\"core_db_bytes\":278528,\"core_db_bytes_after_migrate\":4096,\"core_db_bytes_open\":4096,\"core_db_shm_bytes\":0,\"core_db_shm_bytes_open\":32768,\"core_db_wal_bytes\":0,\"core_db_wal_bytes_open\":461472,\"core_index_ms\":0.324,\"core_indexed_sources\":1,\"core_open_cold_ms\":9.356,\"core_open_warm_ms\":0.705,\"core_read_back_ms\":0.039,\"core_read_back_ok\":true,\"core_read_back_sha256\":\"df5e70ad77b8e65ca2be849f3b9fd2b0eb7fc9ea2ddae970580fab7a356e28c0\",\"core_read_back_text\":\"第二次保存（稳态）\",\"core_save_draft_2nd_ms\":0.403,\"core_save_draft_ms\":0.423,\"core_save_durable\":true,\"core_save_revision\":2,\"core_save_revision_2nd\":3,\"core_schema_version\":8,\"core_search_candidates_鸿蒙\":0,\"core_search_hits_鸿蒙\":0,\"dir\":\"/data/storage/el2/database/entry/coredb\",\"dir_listing\":[{\"bytes\":278528,\"is_dir\":false,\"name\":\"core.db\"},{\"bytes\":282624,\"is_dir\":false,\"name\":\"raw_smoke.db\"}],\"errors\":[],\"raw_db_bytes\":282624,\"raw_insert10000_ms\":23.82,\"raw_insert1000_ms\":2.538,\"raw_insert1_ms\":0.151,\"raw_journal_mode\":\"wal\",\"raw_open_ms\":0.105,\"raw_pragma_create_ms\":9.887,\"raw_read_ms\":0.056,\"raw_row7\":\"沙箱记录-6\",\"raw_rows\":11001,\"sqlite_version\":\"3.53.2\",\"stage\":\"ok\",\"total_ms\":50.64}"
+  },
+  "DLOPEN_FROM_EL2": {
+    "dst_dir": "/data/storage/el2/base/haps/entry/files",
+    "results": [
+      {
+        "name": "libdiary_napi.so",
+        "src": "/data/storage/el1/bundle/libs/arm64/libdiary_napi.so",
+        "dst": "/data/storage/el2/base/haps/entry/files/libcopy_napi.so",
+        "src_bytes": 35720,
+        "copy_ok": true,
+        "copy_bytes": 35720,
+        "dst_exists": true,
+        "dst_bytes": 35720,
+        "dst_mode_oct": "755",
+        "readable": true,
+        "executable": true,
+        "readback_elf_magic": true,
+        "dlopen_ok": false,
+        "dlopen_err": "Error loading shared library /data/storage/el2/base/haps/entry/files/libcopy_napi.so: No such file or directory"
+      },
+      {
+        "name": "libonnxruntime.so",
+        "src": "/data/storage/el1/bundle/libs/arm64/libonnxruntime.so",
+        "dst": "/data/storage/el2/base/haps/entry/files/libcopy_ort.so",
+        "src_bytes": 19623560,
+        "copy_ok": true,
+        "copy_bytes": 19623560,
+        "dst_exists": true,
+        "dst_bytes": 19623560,
+        "dst_mode_oct": "755",
+        "readable": true,
+        "executable": true,
+        "readback_elf_magic": true,
+        "dlopen_ok": false,
+        "dlopen_err": "Error loading shared library /data/storage/el2/base/haps/entry/files/libcopy_ort.so: No such file or directory"
+      }
+    ]
+  },
+  "ORT_CRATE": {
+    "commit_first_in_process": true,
+    "commit_ok": true,
+    "crate_C": [
+      1.0,
+      2.0,
+      3.0,
+      4.0,
+      5.0,
+      6.0
+    ],
+    "crate_C_matches_expected": true,
+    "crate_required_ort_api_version": 17,
+    "crate_session_ok": true,
+    "init_from_ok": true,
+    "ort_so": "/data/storage/el1/bundle/libs/arm64/libonnxruntime.so"
+  }
+}
