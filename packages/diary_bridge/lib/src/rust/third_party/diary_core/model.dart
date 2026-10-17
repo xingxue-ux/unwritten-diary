@@ -7,8 +7,8 @@ import '../../frb_generated.dart';
 import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NativeRecordingStatus`, `NewJob`, `RecordingFinalizeResult`, `RecordingRecovery`, `RecordingSession`, `RecordingTicket`, `SegmentManifest`, `SegmentReceipt`, `SourceItem`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`, `partial_cmp`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NativeRecordingStatus`, `NewJob`, `OrganizePlanSummary`, `RecordingFinalizeResult`, `RecordingRecovery`, `RecordingSession`, `RecordingTicket`, `SegmentManifest`, `SegmentReceipt`, `SourceItem`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`, `partial_cmp`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
 
 /// 独立保存的 AI 回应，契约第 4.3 节 `responses.get`。
@@ -295,6 +295,15 @@ enum DiaryGenerationReason {
       RustLib.instance.api.diaryCoreModelDiaryGenerationReasonFromWire(
         value: value,
       );
+
+  /// 是不是**自动整理**这一路（B4e）。
+  ///
+  /// 这一路与用户主动要一版（`manual` / `regenerate`）有三处不同：
+  /// 1. 用设置里选中的**整理模板**（写进冻结快照）拼提示词；
+  /// 2. 结果**一律进候选**，绝不成为当前版本（用户确认走 `diary.setCurrent`）；
+  /// 3. 受整理设置里的**配额上限**约束（单次/每日调用次数、材料条数与字数、失败率）。
+  Future<bool> isOrganize() => RustLib.instance.api
+      .diaryCoreModelDiaryGenerationReasonIsOrganize(that: this);
 
   Future<void> wire() =>
       RustLib.instance.api.diaryCoreModelDiaryGenerationReasonWire(that: this);
@@ -1396,6 +1405,488 @@ class MaterialCounts {
           processed == other.processed &&
           pending == other.pending &&
           failed == other.failed;
+}
+
+/// 一个「该整理」的日子，以及它为什么该整理。
+///
+/// 判据全是可判定的（见 `docs/architecture/m4-整理与自动化.md`），没有一条是
+/// 「AI 觉得该整理」。
+class OrganizePendingDay {
+  final String dayKey;
+
+  /// 该整理的理由：`first`（这一天还没有任何版本）/ `supplement`（已有版本，之后又来了新材料）。
+  final String reason;
+
+  /// 可读正文的材料条数。
+  final PlatformInt64 materials;
+
+  /// 这些材料的字符总数（Unicode 标量值）。
+  final PlatformInt64 chars;
+
+  /// 按现有材料估算的模型调用次数（1 = 一步；N+1 = 两步走）。
+  final PlatformInt64 estimatedCalls;
+
+  /// 这一天的计划触发时刻（`autoOrganizeTime` 折成 UTC）。
+  final DateTime dueAt;
+
+  /// 这一天的当前版本（没有就是空）。
+  final String? currentVersionId;
+
+  const OrganizePendingDay({
+    required this.dayKey,
+    required this.reason,
+    required this.materials,
+    required this.chars,
+    required this.estimatedCalls,
+    required this.dueAt,
+    this.currentVersionId,
+  });
+
+  @override
+  int get hashCode =>
+      dayKey.hashCode ^
+      reason.hashCode ^
+      materials.hashCode ^
+      chars.hashCode ^
+      estimatedCalls.hashCode ^
+      dueAt.hashCode ^
+      currentVersionId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizePendingDay &&
+          runtimeType == other.runtimeType &&
+          dayKey == other.dayKey &&
+          reason == other.reason &&
+          materials == other.materials &&
+          chars == other.chars &&
+          estimatedCalls == other.estimatedCalls &&
+          dueAt == other.dueAt &&
+          currentVersionId == other.currentVersionId;
+}
+
+/// 自动整理的配额与用量现状。数字都来自**真实的调用账本**，不是估算。
+class OrganizeQuota {
+  /// 最近 24 小时（滚动窗口）真的发出去的整理调用次数。
+  final PlatformInt64 callsLast24H;
+  final PlatformInt64 maxCallsPerDay;
+
+  /// 还能发几次（不会小于 0）。
+  final PlatformInt64 callsRemaining;
+
+  /// 失败率窗口里的样本数（最近 24 小时的整理调用，最多取最近 20 条）。
+  final PlatformInt64 failureSamples;
+
+  /// 窗口里的失败比例（0.0–1.0）；没有样本时为 0。
+  final double failureRate;
+  final double maxFailureRate;
+  final DateTime? lastCallAt;
+
+  const OrganizeQuota({
+    required this.callsLast24H,
+    required this.maxCallsPerDay,
+    required this.callsRemaining,
+    required this.failureSamples,
+    required this.failureRate,
+    required this.maxFailureRate,
+    this.lastCallAt,
+  });
+
+  @override
+  int get hashCode =>
+      callsLast24H.hashCode ^
+      maxCallsPerDay.hashCode ^
+      callsRemaining.hashCode ^
+      failureSamples.hashCode ^
+      failureRate.hashCode ^
+      maxFailureRate.hashCode ^
+      lastCallAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeQuota &&
+          runtimeType == other.runtimeType &&
+          callsLast24H == other.callsLast24H &&
+          maxCallsPerDay == other.maxCallsPerDay &&
+          callsRemaining == other.callsRemaining &&
+          failureSamples == other.failureSamples &&
+          failureRate == other.failureRate &&
+          maxFailureRate == other.maxFailureRate &&
+          lastCallAt == other.lastCallAt;
+}
+
+/// 最近一次自动整理的真实结果。
+class OrganizeRunInfo {
+  final String dayKey;
+
+  /// 生成行的状态：`pending`（还没有结论：在队列里、在等配置、或在退避重试）/
+  /// `ready`（产出了版本）/ `failed`（终态失败，**没有**版本）。
+  final String state;
+  final String? errorCode;
+  final String? versionId;
+
+  /// 这次真的发出去了几次调用（来自账本，不是估算）。
+  final PlatformInt64 calls;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  const OrganizeRunInfo({
+    required this.dayKey,
+    required this.state,
+    this.errorCode,
+    this.versionId,
+    required this.calls,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  @override
+  int get hashCode =>
+      dayKey.hashCode ^
+      state.hashCode ^
+      errorCode.hashCode ^
+      versionId.hashCode ^
+      calls.hashCode ^
+      createdAt.hashCode ^
+      updatedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeRunInfo &&
+          runtimeType == other.runtimeType &&
+          dayKey == other.dayKey &&
+          state == other.state &&
+          errorCode == other.errorCode &&
+          versionId == other.versionId &&
+          calls == other.calls &&
+          createdAt == other.createdAt &&
+          updatedAt == other.updatedAt;
+}
+
+/// 整理设置。默认**全关**：`enabled = false`，核心不会自动调用任何服务。
+///
+/// 这是「必须由用户显式开启」的落点：`Core::open` 建出来的资料库（含从旧版本升级上来
+/// 的）都是关的，只有显式 `update_organize_settings` 才能打开。
+class OrganizeSettings {
+  final bool enabled;
+  final String templateId;
+
+  /// 显式覆盖的参数（生效值 = 覆盖 + 模板默认值）。**只允许整数与布尔**。
+  final Map<String, String> templateParams;
+
+  /// 单次整理的材料条数上限。
+  final PlatformInt64 maxMaterials;
+
+  /// 单次整理的材料字数上限（Unicode 标量值）。
+  final PlatformInt64 maxChars;
+
+  /// 单次整理的模型调用次数上限（含两步走与格式修复）。
+  final PlatformInt64 maxCallsPerRun;
+
+  /// 最近 24 小时内自动整理的模型调用次数上限。
+  final PlatformInt64 maxCallsPerDay;
+
+  /// 失败率上限（0.0–1.0）：最近窗口内样本 ≥3 且失败比例超过它就停下。
+  final double maxFailureRate;
+
+  /// 计划触发时间 `HH:mm`（本地时间，按当天材料的 UTC 偏移折算）。**不是完成承诺**。
+  final String autoOrganizeTime;
+
+  /// 当天已有当前版本、之后又来了新材料时，是否自动补做一份候选。关掉就只手动。
+  final bool supplementOnNewMaterials;
+
+  /// 设置版本（乐观锁；每次真的改动 +1）。
+  final PlatformInt64 revision;
+  final DateTime updatedAt;
+
+  const OrganizeSettings({
+    required this.enabled,
+    required this.templateId,
+    required this.templateParams,
+    required this.maxMaterials,
+    required this.maxChars,
+    required this.maxCallsPerRun,
+    required this.maxCallsPerDay,
+    required this.maxFailureRate,
+    required this.autoOrganizeTime,
+    required this.supplementOnNewMaterials,
+    required this.revision,
+    required this.updatedAt,
+  });
+
+  @override
+  int get hashCode =>
+      enabled.hashCode ^
+      templateId.hashCode ^
+      templateParams.hashCode ^
+      maxMaterials.hashCode ^
+      maxChars.hashCode ^
+      maxCallsPerRun.hashCode ^
+      maxCallsPerDay.hashCode ^
+      maxFailureRate.hashCode ^
+      autoOrganizeTime.hashCode ^
+      supplementOnNewMaterials.hashCode ^
+      revision.hashCode ^
+      updatedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeSettings &&
+          runtimeType == other.runtimeType &&
+          enabled == other.enabled &&
+          templateId == other.templateId &&
+          templateParams == other.templateParams &&
+          maxMaterials == other.maxMaterials &&
+          maxChars == other.maxChars &&
+          maxCallsPerRun == other.maxCallsPerRun &&
+          maxCallsPerDay == other.maxCallsPerDay &&
+          maxFailureRate == other.maxFailureRate &&
+          autoOrganizeTime == other.autoOrganizeTime &&
+          supplementOnNewMaterials == other.supplementOnNewMaterials &&
+          revision == other.revision &&
+          updatedAt == other.updatedAt;
+}
+
+/// 被跳过的日子与原因（超限、材料有问题……），如实报出来。
+class OrganizeSkippedDay {
+  final String dayKey;
+
+  /// 契约第 7 节的错误码（现在只会用到 `quota_exceeded`）。
+  final String code;
+
+  /// 可执行的说明：哪一条上限、已经做了什么、下一步怎么办。
+  final String message;
+
+  const OrganizeSkippedDay({
+    required this.dayKey,
+    required this.code,
+    required this.message,
+  });
+
+  @override
+  int get hashCode => dayKey.hashCode ^ code.hashCode ^ message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeSkippedDay &&
+          runtimeType == other.runtimeType &&
+          dayKey == other.dayKey &&
+          code == other.code &&
+          message == other.message;
+}
+
+/// 自动整理的状态：开关、模板、**什么时候会跑、会跑哪些材料**、配额与最近结果。
+///
+/// 这是「开启后要能说清会跑什么、什么时候跑」的落点。
+class OrganizeStatus {
+  final OrganizeSettings settings;
+
+  /// 选中的模板（含规则与参数声明）。
+  final OrganizeTemplate template;
+
+  /// 生效参数（覆盖 + 默认值），键有序。
+  final Map<String, String> effectiveParams;
+
+  /// 现在就该跑的日子。
+  final List<OrganizePendingDay> dueDays;
+
+  /// 已经该整理、但还没到计划触发时刻的日子（`nextRunAt` 就是其中最早的）。
+  final List<OrganizePendingDay> scheduledDays;
+
+  /// 下一次计划触发时刻；没有待办时为空。
+  final DateTime? nextRunAt;
+  final OrganizeQuota quota;
+
+  /// Provider 能力闸门（没配好时给出原因与可执行的下一步）。**只读，不发请求**。
+  final String? providerCode;
+  final String? providerReason;
+  final String? providerNextStep;
+
+  /// 全局停下时的错误码与说明（例如 `quota_exceeded`：失败率过高）。
+  final String? blockedCode;
+  final String? blockedReason;
+
+  /// 被跳过的日子（单日超限等）。
+  final List<OrganizeSkippedDay> skippedDays;
+  final OrganizeRunInfo? lastRun;
+
+  /// 如实补充说明（观察窗、默认关、哪些不算待处理……）。
+  final List<String> notes;
+
+  const OrganizeStatus({
+    required this.settings,
+    required this.template,
+    required this.effectiveParams,
+    required this.dueDays,
+    required this.scheduledDays,
+    this.nextRunAt,
+    required this.quota,
+    this.providerCode,
+    this.providerReason,
+    this.providerNextStep,
+    this.blockedCode,
+    this.blockedReason,
+    required this.skippedDays,
+    this.lastRun,
+    required this.notes,
+  });
+
+  @override
+  int get hashCode =>
+      settings.hashCode ^
+      template.hashCode ^
+      effectiveParams.hashCode ^
+      dueDays.hashCode ^
+      scheduledDays.hashCode ^
+      nextRunAt.hashCode ^
+      quota.hashCode ^
+      providerCode.hashCode ^
+      providerReason.hashCode ^
+      providerNextStep.hashCode ^
+      blockedCode.hashCode ^
+      blockedReason.hashCode ^
+      skippedDays.hashCode ^
+      lastRun.hashCode ^
+      notes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeStatus &&
+          runtimeType == other.runtimeType &&
+          settings == other.settings &&
+          template == other.template &&
+          effectiveParams == other.effectiveParams &&
+          dueDays == other.dueDays &&
+          scheduledDays == other.scheduledDays &&
+          nextRunAt == other.nextRunAt &&
+          quota == other.quota &&
+          providerCode == other.providerCode &&
+          providerReason == other.providerReason &&
+          providerNextStep == other.providerNextStep &&
+          blockedCode == other.blockedCode &&
+          blockedReason == other.blockedReason &&
+          skippedDays == other.skippedDays &&
+          lastRun == other.lastRun &&
+          notes == other.notes;
+}
+
+/// 一个整理模板：核心内置规则，或将来由 #88 的声明式插件提供的规则。
+///
+/// **这一片只实现内置三类**（`source = "builtin"`）。`source` 字段就是留给 #88 的
+/// 对接点：插件模板进来时，`source = "plugin"` 并且 `plugin_id` 有值——解析、校验、
+/// 提示词拼装的路径都不变（见 `docs/architecture/m4-整理与自动化.md`「#88 的对接点」）。
+class OrganizeTemplate {
+  /// 模板 id（不透明字符串，进冻结快照）。
+  final String id;
+  final String label;
+  final String description;
+
+  /// 规则文本：**产品指令**，只在 system 消息里出现，由核心常量拼出。
+  final String rule;
+  final List<OrganizeTemplateParam> params;
+
+  /// `builtin`（核心内置）或 `plugin`（#88 的声明式插件，尚未实现）。
+  final String source;
+
+  /// 插件模板所属的插件 id；内置模板为空。
+  final String? pluginId;
+
+  const OrganizeTemplate({
+    required this.id,
+    required this.label,
+    required this.description,
+    required this.rule,
+    required this.params,
+    required this.source,
+    this.pluginId,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      label.hashCode ^
+      description.hashCode ^
+      rule.hashCode ^
+      params.hashCode ^
+      source.hashCode ^
+      pluginId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeTemplate &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          label == other.label &&
+          description == other.description &&
+          rule == other.rule &&
+          params == other.params &&
+          source == other.source &&
+          pluginId == other.pluginId;
+}
+
+/// 整理模板的一个可选参数：**只允许整数与布尔**，不接受自由文本。
+///
+/// 为什么参数不能是文本：模板规则属于**产品指令**，只在 system 消息里。如果参数能带
+/// 任意文字，调用方（或将来某个插件）就能把「忽略上面的指令」写进指令槽——那正是
+/// #64 花力气堵住的那条路（材料是数据，不是指令）。限定成整数/布尔之后，参数**没有
+/// 地方**可以承载指令文本。
+class OrganizeTemplateParam {
+  /// 参数键（wire 名，例如 `targetChars`）。
+  final String key;
+
+  /// 中文短名，设置页直接用。
+  final String label;
+
+  /// 参数类型：`integer` 或 `boolean`。
+  final String kind;
+
+  /// 整数参数的取值范围（布尔参数两者都为空）。
+  final PlatformInt64? minimum;
+  final PlatformInt64? maximum;
+
+  /// 默认值（字符串形式，`true` / `false` 或十进制整数）。
+  final String defaultValue;
+  final String description;
+
+  const OrganizeTemplateParam({
+    required this.key,
+    required this.label,
+    required this.kind,
+    this.minimum,
+    this.maximum,
+    required this.defaultValue,
+    required this.description,
+  });
+
+  @override
+  int get hashCode =>
+      key.hashCode ^
+      label.hashCode ^
+      kind.hashCode ^
+      minimum.hashCode ^
+      maximum.hashCode ^
+      defaultValue.hashCode ^
+      description.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeTemplateParam &&
+          runtimeType == other.runtimeType &&
+          key == other.key &&
+          label == other.label &&
+          kind == other.kind &&
+          minimum == other.minimum &&
+          maximum == other.maximum &&
+          defaultValue == other.defaultValue &&
+          description == other.description;
 }
 
 /// 派生内容的处理状态。取值沿用契约第 3 节「索引」行。

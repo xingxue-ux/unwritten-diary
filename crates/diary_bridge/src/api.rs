@@ -15,9 +15,9 @@ use diary_core::{
     AiResponse, Capture, CapturePage, CommitResult, Core, CoreError, DiaryDay,
     DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion, DiaryVersionPage, DomainEvent,
     DraftSaveResult, ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket,
-    IndexStatus, Job, JobRunSummary, JobState, JobStatus, Provider, ProviderCapability,
-    ProviderTestReport, ResponseTicket, SearchRequest, SearchSnapshot, SourceLocation,
-    SourceLocator, SourceRevision,
+    IndexStatus, Job, JobRunSummary, JobState, JobStatus, OrganizeSettings, OrganizeStatus,
+    OrganizeTemplate, Provider, ProviderCapability, ProviderTestReport, ResponseTicket,
+    SearchRequest, SearchSnapshot, SourceLocation, SourceLocator, SourceRevision,
 };
 use flutter_rust_bridge::frb;
 
@@ -573,6 +573,55 @@ impl BridgeSession {
             expected_revision,
             &operation_id,
         )?)
+    }
+
+    // ------------------------------------------------------------ 整理与自动化（B4e）
+
+    /// 全部可用的整理模板（现在只有三个核心内置的；声明式插件模板见 #88）。
+    ///
+    /// 模板的规则是**产品指令**（只在 system 消息里），参数只接受整数与布尔——
+    /// 两者都不接受自由文本，所以「把材料里的文字变成指令」没有入口。
+    pub fn organize_templates(&self) -> Result<Vec<OrganizeTemplate>, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.organize_templates())
+    }
+
+    /// 整理设置：开关（**默认关**）、模板与参数、各项上限与计划触发时间。
+    ///
+    /// 这是「必须由用户显式开启」的落点：新建与升级上来的资料库都是关的，
+    /// 只有 `update_organize_settings` 显式传 `enabled = true` 才会打开。
+    ///
+    /// **能力清单里不出现在 `settings.get` 名下**（那是契约里覆盖全部可编辑设置的
+    /// 方法，还包含日记时区等平台层字段，这一片没有实现）：这里是核心真实的整理
+    /// 设置对象，界面按需直接调用，不做能力名上的假装。
+    pub fn organize_settings(&self) -> Result<OrganizeSettings, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.organize_settings()?)
+    }
+
+    /// 更新整理设置（契约 `settings.update` 的整理那一段）：整份替换 + `expectedRevision`。
+    ///
+    /// 校验先行（未知模板 `not_found`；参数/上限/时间不合法 `invalid_argument`；
+    /// 过期 `revision_conflict`），**被拒的调用零改动**；值没变就是无操作
+    /// （`revision` 不 +1）。传入对象里的 `revision` / `updatedAt` 会被忽略
+    /// （它们是只读结论，与 `providers.save` 忽略 `testStatus` 同一个口径）。
+    pub fn update_organize_settings(
+        &self,
+        settings: OrganizeSettings,
+        expected_revision: i64,
+    ) -> Result<OrganizeSettings, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.update_organize_settings(&settings, expected_revision)?)
+    }
+
+    /// 整理状态：开关、模板、**什么时候会跑、会跑哪些材料**、配额用量与最近一次结果。
+    ///
+    /// **只读**：不发请求、不排任务、不改任何东西。没开启时也能看出「开启后会跑什么」。
+    /// 配额与失败率都来自真实的调用账本；超限停下时 `blockedCode` / `blockedReason`
+    /// 写清哪一条上限、已经做了什么、下一步怎么办。
+    pub fn organize_status(&self) -> Result<OrganizeStatus, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.organize_status()?)
     }
 
     /// 已经接到桥上的契约方法名。

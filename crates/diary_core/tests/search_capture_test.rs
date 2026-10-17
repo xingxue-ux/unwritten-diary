@@ -632,6 +632,8 @@ fn v6_library_migrates_and_backfills_capture_text() {
              DROP TABLE diary_days;
              DROP TABLE diary_versions;
              DROP TABLE diary_source_snapshots;
+             DROP TABLE diary_model_calls;
+             DROP TABLE organize_settings;
              UPDATE schema_migrations SET version = 6;
              PRAGMA user_version = 6;",
         )

@@ -109,6 +109,14 @@ pub enum CoreError {
     #[error("幂等冲突：operationId {operation_id} 已经用于不同的内容")]
     IdempotencyConflict { operation_id: String },
 
+    /// 整理设置的乐观锁冲突（B4e）：与 `RevisionConflict` 同一个错误码，但把
+    /// 「整理设置」写清楚——只报两个裸数字，用户不知道是哪一个对象过期了。
+    #[error(
+        "版本冲突：整理设置的 revision 期望是 {expected}，实际是 {actual}\
+         （设置在你读取之后又被改过）；请重新读取设置再试，核心不会用旧设置覆盖新的"
+    )]
+    SettingsRevisionConflict { expected: i64, actual: i64 },
+
     #[error("磁盘空间不足")]
     StorageFull,
 
@@ -151,6 +159,19 @@ pub enum CoreError {
     #[error("额度已用尽：{reason}")]
     QuotaExceeded { reason: String },
 
+    /// **整理配额停下**（B4e）：与 `QuotaExceeded` 落同一个契约错误码
+    /// （`quota_exceeded`），但时间语义不同——它不是「等用户改配置就会好」，而是
+    /// 「核心按用户自己设的上限主动停下」。
+    ///
+    /// 为什么必须分开：队列对 `QuotaExceeded` 的处置是 `waiting_configuration`，
+    /// 而配置闸门（`promote_configuration_waits`）**每一轮**都会把「在等配置」的任务
+    /// 重新拉起来——对一个配额停下的整理任务来说，那等于每一轮都偷偷再跑一次、
+    /// 每次都烧掉上限内的调用（每一步都停在同一个上限上，任务永不结束）。所以整理
+    /// 配额停下的处置是**终态**：`failed` + `requires_user_action`，等用户调高上限后
+    /// 人工重试（`jobs.retry`）或等窗口滑过去。
+    #[error("整理已到上限：{reason}")]
+    OrganizeStopped { reason: String },
+
     #[error("服务响应超时：{reason}")]
     ProviderTimeout { reason: String },
 
@@ -183,6 +204,7 @@ impl CoreError {
             Self::RevisionConflict { .. } | Self::DiaryRevisionConflict { .. } => {
                 ErrorCode::RevisionConflict
             }
+            Self::SettingsRevisionConflict { .. } => ErrorCode::RevisionConflict,
             Self::IdempotencyConflict { .. } => ErrorCode::IdempotencyConflict,
             Self::StorageFull => ErrorCode::StorageFull,
             Self::AssetMissing { .. } => ErrorCode::AssetMissing,
@@ -196,7 +218,7 @@ impl CoreError {
             Self::AuthenticationFailed { .. } => ErrorCode::AuthenticationFailed,
             Self::NetworkUnavailable { .. } => ErrorCode::NetworkUnavailable,
             Self::RateLimited { .. } => ErrorCode::RateLimited,
-            Self::QuotaExceeded { .. } => ErrorCode::QuotaExceeded,
+            Self::QuotaExceeded { .. } | Self::OrganizeStopped { .. } => ErrorCode::QuotaExceeded,
             Self::ProviderTimeout { .. } => ErrorCode::ProviderTimeout,
             Self::ModelUnavailable { .. } => ErrorCode::ModelUnavailable,
             Self::Io(err) => io_code(err),
@@ -215,6 +237,7 @@ impl CoreError {
             | Self::NetworkUnavailable { reason }
             | Self::RateLimited { reason, .. }
             | Self::QuotaExceeded { reason }
+            | Self::OrganizeStopped { reason }
             | Self::ProviderTimeout { reason }
             | Self::ModelUnavailable { reason }
             | Self::CapabilityUnsupported { reason } => reason,

@@ -1059,14 +1059,15 @@ fn empty_bodies_are_refused_and_long_bodies_are_kept_verbatim() {
     assert_eq!(merged.body, long_merge);
     assert_eq!(versions(&core, "2026-10-16").len(), 4);
 }
-// ------------------------------------------------------ schema v12 迁移（#101）
+// ------------------------------------------------------ schema 迁移（#101；合并后是 v13）
 
-/// 老库（v10 的样子：`diary_days` 没有 `revision` 列）升级到 v12：
-/// **回填的 revision 是「这一天的版本数」**——正是升级前调用方从 `getDay` 算出来的
-/// 那个数字（契约 2.5 的老口径），所以升级不会让任何在飞的 `expectedRevision` 失效。
-/// 这一次 `setCurrent` 的历史（老口径下不计数）也确实无法还原，回填不假装它算过。
+/// 老库（v10 的样子：`diary_days` 没有 `revision` 列、也没有 v11 的两张整理表）
+/// 升级到**合并后的最新版本（13）**：**回填的 revision 是「这一天的版本数」**——
+/// 正是升级前调用方从 `getDay` 算出来的那个数字（契约 2.5 的老口径），所以升级不会让
+/// 任何在飞的 `expectedRevision` 失效。这一次 `setCurrent` 的历史（老口径下不计数）
+/// 也确实无法还原，回填不假装它算过。
 #[test]
-fn v10_library_migrates_to_v12_with_revision_backfilled() {
+fn v10_library_migrates_to_latest_with_revision_backfilled() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("library.sqlite");
     let (mut core, _transport) = core_with_transport(dir.path(), vec![chat_ok("第一版。")]);
@@ -1080,11 +1081,14 @@ fn v10_library_migrates_to_v12_with_revision_backfilled() {
     assert_eq!(day_of(&core, "2026-10-16").revision, 3);
     drop(core);
 
-    // 把库退回 v10 的样子：去掉 v12 加的列，版本与当前指针都留着。
+    // 把库退回真正的 v10 样子：去掉 v12 加的列与 v11 的两张整理表，
+    // 版本与当前指针都留着。
     {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "ALTER TABLE diary_days DROP COLUMN revision;
+             DROP TABLE diary_model_calls;
+             DROP TABLE organize_settings;
              UPDATE schema_migrations SET version = 10;
              PRAGMA user_version = 10;",
         )
@@ -1099,7 +1103,24 @@ fn v10_library_migrates_to_v12_with_revision_backfilled() {
 
     let mut core = Core::open(&path).unwrap();
     assert_eq!(core.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
-    assert_eq!(diary_core::SCHEMA_VERSION, 12, "B4e 占了 11，这一片用 12");
+    assert_eq!(
+        diary_core::SCHEMA_VERSION,
+        13,
+        "11（B4e 的整理表）与 12（这一片的 revision 列）合并成 13"
+    );
+    // 两段迁移都跑了：v11 的两张表在，v12 的列在（下面用行为断言 revision）。
+    {
+        let conn = Connection::open(&path).unwrap();
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
+                 AND name IN ('organize_settings', 'diary_model_calls')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2, "v11 的两张表都补上了");
+    }
 
     let day = day_of(&core, "2026-10-16");
     assert_eq!(day.revision, 2, "回填成版本数（不是老口径之外的任何东西）");

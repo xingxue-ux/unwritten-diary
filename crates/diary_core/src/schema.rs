@@ -8,13 +8,16 @@ use rusqlite::{params, Connection};
 
 /// 本构建支持的 schema 版本。
 ///
-/// **11 留给 B4e（整理与自动化，#92）**：那一片在另一条分支上（`feat/B4e-organize`），
-/// 本分支的树里没有它。所以这里从 10 直接用到 12，两边合并后 11（B4e 的表）与
-/// 12（`diary_days.revision`）各有一段自己的迁移块，互不覆盖。
+/// 13 是两个来源合并后的结果：**11** 是 B4e（整理与自动化，#92）的段号——
+/// `organize_settings` + `diary_model_calls`；**12** 是 B4c（#101）的段号——
+/// `diary_days.revision`。两条分支各自从 10 抬号，合并后的这个构建取 **13**，
+/// 迁移里 v11 与 v12 两段都在（先建表、再加列）。
 ///
-/// 合并时的注意事项写在 `docs/architecture/m3-日记生成与版本.md` 的迁移一节：
-/// 只跑过本分支（库已经是 12、但没有 11 的表）的库，在合并后的构建里需要补跑 11。
-pub const SCHEMA_VERSION: i64 = 12;
+/// 两段的守卫都**不只看版本号，还看东西在不在**（见 `migrate`）：只跑过 B4c 分支的库
+/// `user_version` 已经是 12、但没有 v11 的两张表；只跑过 B4e 分支的库是 11、没有
+/// `revision` 列。光靠 `current < 11` / `current < 12` 会漏掉前者，所以 v11 的守卫是
+/// 「版本号小于 11 **或**表不在」，v12 是「版本号小于 12 **或**列不在」。
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -77,9 +80,31 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 在迁移里替用户把旧记录「补生成」一版：那会凭空造出用户没有确认过的正文，
         // 与「AI 正文不冒充用户手写」直接冲突。
     }
-    // 11 是 B4e（整理与自动化）的段号，不在本分支的树里：这里**故意跳号**，
-    // 不写 `if current < 11`，否则合并后会与 B4e 的 11 撞车（见 SCHEMA_VERSION 的说明）。
-    if current < 12 {
+    // ---- 11 与 12：两条分支各自抬的号，合并后这个构建是 13 --------------------
+    //
+    // 顺序固定：先 v11（建「整理设置」与「调用账本」两张表），再 v12（给 `diary_days`
+    // 加 `revision` 列）。两段都**不只看版本号，还看东西在不在**，因为两条分支的库
+    // 可能处在四种状态：10（都没有）、11（有表、没列）、12（有列、没表）、12（都有）。
+    //
+    // - 10 → 两段都跑；
+    // - 11（只跑过 B4e）→ v11 跳过（表在），v12 跑；
+    // - **12 但没有 v11 的两张表**（只跑过 B4c）→ `current < 11` 是假，光靠版本号会把
+    //   v11 整段跳过，升级后一碰整理设置就报「no such table」。所以 v11 的守卫是
+    //   「版本号小于 11 **或** `organize_settings` 不在」。V11 的建表写成
+    //   `IF NOT EXISTS`、种默认值那一步本来就是 `INSERT OR IGNORE`，所以重复跑幂等：
+    //   已有设置一个字节都不会被改（**默认关**的口径对升级路径同样成立）；
+    // - v12 同理：列不在就补，列已经在就整段跳过——**不重复回填**，否则会把已经推进过的
+    //   `revision` 按版本数改小，反而弄丢冲突保护。
+    if current < 11 || !table_exists(&tx, "organize_settings")? {
+        tx.execute_batch(V11)?;
+        // v11 只加两张全新的表（整理设置、调用账本），并**种一行默认设置**。
+        // 种下去的那一行是 `enabled = 0`：从 v10 升上来的库与刚建的新库一样，
+        // 自动整理**默认关**，核心不会自己去调用任何服务。这里没有、也不能有
+        // 「替用户开启」的逻辑——开启是用户显式做的事（`settings.update` 那一路）。
+        crate::organize::seed_default_settings(&tx, crate::support::now())
+            .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
+    }
+    if current < 12 || !column_exists(&tx, "diary_days", "revision")? {
         tx.execute_batch(V12)?;
         // **回填成「这一天的版本数」**：升级前调用方从 `diary.getDay` 能算出来的就是
         // 这个数字（`candidateVersionIds.length + (currentVersionId == null ? 0 : 1)`），
@@ -95,6 +120,32 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         params![SCHEMA_VERSION, crate::support::to_iso(crate::support::now())],
     )?;
     tx.commit()
+}
+
+/// `sqlite_master` 里有没有这张表（迁移的结构性守卫用；`name` 都是代码里的常量）。
+fn table_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        params![name],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// 表里有没有这一列（迁移的结构性守卫用）。
+///
+/// `PRAGMA table_info` 的表名不能参数化，所以用 `format!` 拼进来——**调用方只传代码里的
+/// 常量**（现在只有 `"diary_days"`），不接受外部输入，没有注入面。
+fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// 把已有记录的文字补进 v6 的两张索引表。只在迁移里用一次。
@@ -656,6 +707,64 @@ CREATE TABLE diary_generations (
 );
 CREATE INDEX idx_diary_generations_snapshot ON diary_generations(snapshot_id, created_at, id);
 CREATE INDEX idx_diary_generations_day ON diary_generations(day_key, created_at DESC, id DESC);
+"#;
+
+/// v11：自动整理的开关、模板、上限与调用账本（B4e，issue #92）。
+///
+/// 消费契约见 `docs/architecture/m4-整理与自动化.md`，别处不要另立一套解释。
+///
+/// 为什么必须动 schema（而不是塞进某张已有的表）：这三样东西都是**要跨重启活下来的
+/// 用户配置与用量事实**，而 v1–v10 里没有一张键值配置表，也没有一张「真的发出去了
+/// 几次调用」的账本。
+///
+/// - `organize_settings`：**单行**（`CHECK (id = 1)`，与 `index_meta` /
+///   `search_index_epoch` 同一个写法）。`enabled` 默认 0——**默认关**是这一条的硬要求：
+///   没有用户显式开启，核心绝不自动调用 Provider。`revision` 是乐观锁（同契约
+///   `settings.update` 的 `expectedRevision`）。`template_params` 存 JSON 对象，
+///   值只有整数与布尔（**不接受自由文本**，见 `OrganizeTemplateParam` 的文档）。
+/// - `diary_model_calls`：**每一次真的发出去的**日记模型调用一行（成功与失败都记）。
+///   配额与失败率只认这张表：估算、意图、任务条数都不算「花掉的调用」。`reason` 让
+///   自动整理（`scheduled` / `automatic`）与用户主动要一版（`manual` / `regenerate`）
+///   的用量分开算——用户自己点的生成不该吃掉自动整理的额度。
+///
+/// 两张表在迁移里都**不回填旧数据**：升级前没有这些配置与账本，替用户猜一个开关或
+/// 编几条用量记录都是错的。默认设置那一行由 `organize::seed_default_settings` 写入，
+/// 值只有一个来源（`organize.rs` 的常量），不在 SQL 里再抄一遍。
+///
+/// **建表写成 `IF NOT EXISTS`（#111 合并后改）**：合并 B4c（schema 12）之后，v11 的守卫
+/// 多了一条「表不在就补」的结构性兜底（见 `migrate`），那一条会对着「user_version 已经
+/// 是 12、但没跑过 v11」的库再执行一次这段 SQL。`IF NOT EXISTS` 保证它幂等——表已经
+/// 在的库（正常从 11 升上来的）不会被改坏，缺表的库能被补上。
+const V11: &str = r#"
+CREATE TABLE IF NOT EXISTS organize_settings (
+    id                        INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled                   INTEGER NOT NULL DEFAULT 0,
+    template_id               TEXT NOT NULL,
+    template_params           TEXT NOT NULL DEFAULT '{}',
+    max_materials             INTEGER NOT NULL,
+    max_chars                 INTEGER NOT NULL,
+    max_calls_per_run         INTEGER NOT NULL,
+    max_calls_per_day         INTEGER NOT NULL,
+    max_failure_rate          REAL NOT NULL,
+    auto_organize_time        TEXT NOT NULL,
+    supplement_on_new_materials INTEGER NOT NULL DEFAULT 1,
+    revision                  INTEGER NOT NULL DEFAULT 1,
+    updated_at                TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS diary_model_calls (
+    id          TEXT PRIMARY KEY,
+    run_id      TEXT,
+    day_key     TEXT,
+    reason      TEXT NOT NULL,
+    provider_id TEXT,
+    model       TEXT,
+    outcome     TEXT NOT NULL,
+    error_code  TEXT,
+    called_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_diary_model_calls_time ON diary_model_calls(called_at, id);
+CREATE INDEX IF NOT EXISTS idx_diary_model_calls_run ON diary_model_calls(run_id, called_at);
 "#;
 
 /// v12：`diary_days` 加一列**持久、单调递增**的 `revision`（#101）。
