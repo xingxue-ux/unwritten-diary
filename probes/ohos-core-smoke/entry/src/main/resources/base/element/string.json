@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "OHOS core smoke probe module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "OHOS core smoke probe ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Core Smoke"
+    }
+  ]
+}

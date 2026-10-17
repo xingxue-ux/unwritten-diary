@@ -1,0 +1,6 @@
+{
+  "modelVersion": "26.0.0",
+  "description": "Minimal HAP smoke probe for HarmonyOS PC (see README.md).",
+  "dependencies": {},
+  "devDependencies": {}
+}

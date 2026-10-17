@@ -115,6 +115,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MatchedBy dco_decode_box_autoadd_matched_by(dynamic raw);
 
   @protected
+  NativeRecordingStatus dco_decode_box_autoadd_native_recording_status(
+    dynamic raw,
+  );
+
+  @protected
   ProcessingStatus dco_decode_box_autoadd_processing_status(dynamic raw);
 
   @protected
@@ -137,6 +142,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchRequest dco_decode_box_autoadd_search_request(dynamic raw);
+
+  @protected
+  SegmentManifest dco_decode_box_autoadd_segment_manifest(dynamic raw);
 
   @protected
   SourceLocator dco_decode_box_autoadd_source_locator(dynamic raw);
@@ -259,6 +267,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Float64List dco_decode_list_prim_f_64_strict(dynamic raw);
 
   @protected
+  Int64List dco_decode_list_prim_i_64_strict(dynamic raw);
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
@@ -285,6 +296,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MatchedBy dco_decode_matched_by(dynamic raw);
+
+  @protected
+  NativeRecordingStatus dco_decode_native_recording_status(dynamic raw);
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
@@ -393,7 +407,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_record_provider_capability_provider_test_status(dynamic raw);
 
   @protected
+  RecordingFinalizeResult dco_decode_recording_finalize_result(dynamic raw);
+
+  @protected
+  RecordingRecovery dco_decode_recording_recovery(dynamic raw);
+
+  @protected
+  RecordingSession dco_decode_recording_session(dynamic raw);
+
+  @protected
   RecordingState dco_decode_recording_state(dynamic raw);
+
+  @protected
+  RecordingTicket dco_decode_recording_ticket(dynamic raw);
 
   @protected
   RecoverySummary dco_decode_recovery_summary(dynamic raw);
@@ -418,6 +444,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchSnapshot dco_decode_search_snapshot(dynamic raw);
+
+  @protected
+  SegmentManifest dco_decode_segment_manifest(dynamic raw);
+
+  @protected
+  SegmentReceipt dco_decode_segment_receipt(dynamic raw);
 
   @protected
   SourceKind dco_decode_source_kind(dynamic raw);
@@ -551,6 +583,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MatchedBy sse_decode_box_autoadd_matched_by(SseDeserializer deserializer);
 
   @protected
+  NativeRecordingStatus sse_decode_box_autoadd_native_recording_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ProcessingStatus sse_decode_box_autoadd_processing_status(
     SseDeserializer deserializer,
   );
@@ -581,6 +618,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchRequest sse_decode_box_autoadd_search_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SegmentManifest sse_decode_box_autoadd_segment_manifest(
     SseDeserializer deserializer,
   );
 
@@ -713,6 +755,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Float64List sse_decode_list_prim_f_64_strict(SseDeserializer deserializer);
 
   @protected
+  Int64List sse_decode_list_prim_i_64_strict(SseDeserializer deserializer);
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
@@ -743,6 +788,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MatchedBy sse_decode_matched_by(SseDeserializer deserializer);
+
+  @protected
+  NativeRecordingStatus sse_decode_native_recording_status(
+    SseDeserializer deserializer,
+  );
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
@@ -889,7 +939,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  RecordingFinalizeResult sse_decode_recording_finalize_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RecordingRecovery sse_decode_recording_recovery(SseDeserializer deserializer);
+
+  @protected
+  RecordingSession sse_decode_recording_session(SseDeserializer deserializer);
+
+  @protected
   RecordingState sse_decode_recording_state(SseDeserializer deserializer);
+
+  @protected
+  RecordingTicket sse_decode_recording_ticket(SseDeserializer deserializer);
 
   @protected
   RecoverySummary sse_decode_recovery_summary(SseDeserializer deserializer);
@@ -914,6 +978,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchSnapshot sse_decode_search_snapshot(SseDeserializer deserializer);
+
+  @protected
+  SegmentManifest sse_decode_segment_manifest(SseDeserializer deserializer);
+
+  @protected
+  SegmentReceipt sse_decode_segment_receipt(SseDeserializer deserializer);
 
   @protected
   SourceKind sse_decode_source_kind(SseDeserializer deserializer);
@@ -1084,6 +1154,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_native_recording_status(
+    NativeRecordingStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_processing_status(
     ProcessingStatus self,
     SseSerializer serializer,
@@ -1125,6 +1201,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_search_request(
     SearchRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_segment_manifest(
+    SegmentManifest self,
     SseSerializer serializer,
   );
 
@@ -1285,6 +1367,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_prim_i_64_strict(
+    Int64List self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
     SseSerializer serializer,
@@ -1328,6 +1416,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_matched_by(MatchedBy self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_native_recording_status(
+    NativeRecordingStatus self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
@@ -1516,8 +1610,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_recording_finalize_result(
+    RecordingFinalizeResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_recording_recovery(
+    RecordingRecovery self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_recording_session(
+    RecordingSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_recording_state(
     RecordingState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_recording_ticket(
+    RecordingTicket self,
     SseSerializer serializer,
   );
 
@@ -1551,6 +1669,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_search_snapshot(
     SearchSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_segment_manifest(
+    SegmentManifest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_segment_receipt(
+    SegmentReceipt self,
     SseSerializer serializer,
   );
 

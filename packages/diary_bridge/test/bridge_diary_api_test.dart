@@ -101,6 +101,50 @@ void main() {
     expect(after.pendingJobCount, greaterThanOrEqualTo(0));
   });
 
+  test('导入取消与录音恢复交接到真实核心', () async {
+    final bridge = BridgeDiaryApi(
+      coreLibraryPath: File(
+        Platform.environment['DIARY_BRIDGE_LIB'] ?? _defaultLibraryPath(),
+      ).absolute.path,
+      libraryPath: '${workDir.path}/handoff.sqlite',
+      timeZone: 'Asia/Shanghai',
+      utcOffsetMinutes: 480,
+    );
+    try {
+      final opened = await bridge.open();
+      expect(opened.coreInfo.capabilities, contains('imports.cancel'));
+      expect(opened.coreInfo.capabilities, contains('recordings.prepare'));
+      final draft = await bridge.createDraft(operationId: 'handoff-draft');
+      final import = await bridge.prepareImport(
+        captureId: draft.id,
+        displayName: 'unfinished.txt',
+        operationId: 'handoff-import',
+      );
+      expect(
+        (await bridge.importStatus(import.importId)).state,
+        ImportState.prepared,
+      );
+      await bridge.cancelImport(import.importId);
+      await expectLater(
+        bridge.importStatus(import.importId),
+        throwsA(isA<DiaryException>()),
+      );
+
+      final recording = await bridge.prepareRecording(
+        captureId: draft.id,
+        operationId: 'handoff-recording',
+      );
+      expect(recording.stagingTicket, isNotEmpty);
+      final recovery = await bridge.recoverRecording(
+        recordingId: recording.recordingId,
+      );
+      expect(recovery.recordingId, recording.recordingId);
+      expect(recovery.closedSegmentIndexes, isEmpty);
+    } finally {
+      await bridge.close();
+    }
+  });
+
   test('开库失败抛契约异常，且不留下已释放的会话', () async {
     // 回归：审查发现 `open()` 没走 `_translate`，会把原始 BridgeError 泄漏给
     // 只依赖 DiaryApi 的调用方；而且它 dispose 旧会话后没有清空引用，开库失败
@@ -135,6 +179,36 @@ void main() {
         ),
       ),
     );
+  });
+
+  test('正文修订经契约适配层保存并只返回当前正文与上一版', () async {
+    await api.open();
+    final draft = await api.createDraft(operationId: 'adapter-revise-create');
+    final saved = await api.saveDraft(
+      id: draft.id,
+      text: '散步时看见旧路灯。',
+      expectedRevision: draft.revision,
+      operationId: 'adapter-revise-draft',
+    );
+    final committed = await api.commit(
+      id: draft.id,
+      expectedRevision: saved.revision,
+      operationId: 'adapter-revise-commit',
+    );
+    final sourceId = committed.originalTextRevision!.sourceId;
+    expect(await api.previousSourceRevision(sourceId), isNull);
+    await api.extractSource(sourceId);
+
+    final revision = await api.reviseText(
+      sourceId: sourceId,
+      text: '散步时看见新路灯。',
+      expectedRevision: committed.capture.revision,
+      operationId: 'adapter-revise-text',
+    );
+    expect(revision.text, '散步时看见新路灯。');
+    expect((await api.previousSourceRevision(sourceId))?.text, '散步时看见旧路灯。');
+    expect((await api.extractedContent(sourceId))?.text, '散步时看见新路灯。');
+    expect((await api.getCapture(draft.id)).draftText, '散步时看见新路灯。');
   });
 
   test('错误码翻成契约枚举，不会变成 unknown', () async {
@@ -253,9 +327,66 @@ void main() {
     expect(snapshot.coreInfo.capabilities, contains('captures.list'));
     expect(snapshot.coreInfo.capabilities, contains('search.start'));
     expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.status')));
-    // 桥接侧现在也接了 `indexes.rebuild`（能力项进了核心的 wired_capabilities），
-    // 但适配层的 `_wiredMethods` 这一片没动，所以这里同样必须是「没有」。
+    // **语义**重建这一条接了（设置页要在换过模型之后触发「重建语义索引」）：
+    // 核心入口 → 桥接 → 适配层 → 能力项都在。
+    expect(
+      snapshot.coreInfo.capabilities,
+      contains('indexes.rebuildSemantic'),
+    );
+    // **关键词**那条照旧没接：核心与桥接都通了（能力项进了 wired_capabilities），
+    // 但适配层的 `_wiredMethods` 仍然不含它，所以这里必须是「没有」。
     expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.rebuild')));
+  });
+
+  test('到期任务入口经 DiaryApi 返回真实核心摘要', () async {
+    final snapshot = await api.snapshot();
+    expect(snapshot.coreInfo.capabilities, contains('jobs.nextWakeup'));
+    expect(snapshot.coreInfo.capabilities, contains('jobs.runDue'));
+    final before = await api.nextWakeup();
+    final result = await api.runDueJobs(budgetMs: 0, trigger: 'adapter-wake');
+    expect(result.trigger, 'adapter-wake');
+    expect(result.processed, 0);
+    expect(result.startedAt, isA<DateTime>());
+    expect(result.nextWakeup, before);
+  });
+
+  test('语义索引重建经契约接口排得上，重放拿到同一个 jobId', () async {
+    await api.open();
+    final ticket = await api.rebuildSemanticIndex(
+      reason: '适配层端到端',
+      operationId: 'adapter-semantic-1',
+    );
+    expect(ticket.jobId, isNotEmpty, reason: '拿到的是真实任务 id，不是编出来的');
+
+    // 同一个 (reason, operationId)：同一条任务。
+    final replay = await api.rebuildSemanticIndex(
+      reason: '适配层端到端',
+      operationId: 'adapter-semantic-1',
+    );
+    expect(replay.jobId, ticket.jobId);
+
+    // 换一个 operationId：语义重建总是整库，业务键让它命中活着的那一条。
+    final other = await api.rebuildSemanticIndex(
+      reason: '另一个入口',
+      operationId: 'adapter-semantic-2',
+    );
+    expect(other.jobId, ticket.jobId, reason: '重复排队不产生第二份工作');
+
+    // 同一个 operationId 换了原因：契约 1.2 的幂等冲突，如实翻成契约错误码
+    // （不是悄悄返回旧任务，也不是崩掉）。
+    await expectLater(
+      api.rebuildSemanticIndex(
+        reason: '换了原因',
+        operationId: 'adapter-semantic-1',
+      ),
+      throwsA(
+        isA<DiaryException>().having(
+          (error) => error.code,
+          'code',
+          DiaryErrorCode.idempotencyConflict,
+        ),
+      ),
+    );
   });
 }
 
