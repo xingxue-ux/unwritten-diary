@@ -22,13 +22,14 @@ name: ohos-ort
 # 长度：16 核 33 min（实测）；4 核 ubuntu-latest 约 1.5–2 h（推算，未实测）。
 #   所以 timeout-minutes 是 240，并在 gate Summary 里写明「4 核不推荐自举」。
 #
-# 结构（评审 #126 第三轮：B1/B2 + 权限收窄）：
+# 结构（评审 #126 第三/四轮：B1/B2 + 权限收窄 + 删除作用域）：
 #   ohos-ort-cache       轻量 gate：算 key（脚本 sha、NDK 维度），判定跑不跑；
 #   ohos-ort-cache-check 恢复产物缓存并用 `build-ort.sh --check-cache` **只验不编**；
-#   cache-heal           仅在缓存损坏时运行；**唯一**拥有 actions: write 的 job，只删缓存；
+#   cache-heal           仅在缓存损坏（--check-cache exit 4）时运行；**唯一**拥有
+#                        actions: write 的 job，只删当前 ref / PR base / 默认分支上的缓存；
 #   ohos-ort             真正构建/复用产物（--force-build 只在需要重建时跑）。
 #   zip 一律用 unzip/bsdtar 解（python3 -m zipfile 会丢可执行位/符号链接），解压后
-#   smoke 一次 clang/cmake 再交给构建（B1）。
+#   smoke clang 再交给构建（B1）；cmake 缺失只 warning（不是所有 CLT 都自带 cmake）。
 #
 # 文档：docs/architecture/m6-ORT-构建与缓存.md §6。
 
@@ -74,6 +75,13 @@ jobs:
     name: ohos-ort-cache
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # labeled / unlabeled 只关心 ci:ohos-ort 本身：给 PR 打/撤别的 label 不该再把
+    # 整条流水线（含 1.5–2 h 构建）跑一遍。撤掉 ci:ohos-ort 时仍会跑 gate，
+    # 留一条「已 skipped」的记录。
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+      github.event.label.name == 'ci:ohos-ort'
     permissions:
       contents: read
     outputs:
@@ -203,7 +211,8 @@ jobs:
           fi
 
   # 缓存校验：只恢复 + `--check-cache`，**不编译、不需要 NDK**。
-  # 它同时产出 cache_ok / cache_broken 两个输出，供 cache-heal 与构建 job 使用。
+  # 只产出 cache_broken（供 cache-heal 与构建 job 使用）：**只有 exit 4 才算缓存损坏**，
+  # exit 2（参数/工具缺失）是工作流/环境错误，绝不能触发删缓存（评审 #126 第四轮）。
   ohos-ort-cache-check:
     name: ohos-ort-cache-check
     needs: ohos-ort-cache
@@ -213,8 +222,9 @@ jobs:
     permissions:
       contents: read
     outputs:
-      cache_ok: ${{ steps.cache.outputs.cache-hit == 'true' && steps.verify.outcome == 'success' }}
-      cache_broken: ${{ steps.cache.outputs.cache-hit == 'true' && steps.verify.outcome == 'failure' }}
+      # 只有 verify 步骤明确写出 result=broken（即 --check-cache exit 4）才为 true。
+      # 不再用 steps.verify.outcome == 'failure'：那会把 exit 2 也当成缓存损坏。
+      cache_broken: ${{ steps.verify.outputs.result == 'broken' }}
     steps:
       - name: 检出仓库
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -233,9 +243,34 @@ jobs:
       - name: 缓存命中 → 只验缓存（--check-cache，不编译）
         id: verify
         if: steps.cache.outputs.cache-hit == 'true' && github.event.inputs.force_build != 'true'
-        # 失败 ⇒ 缓存损坏；由 cache-heal 删缓存，构建 job 重建。这里不让 job 红。
-        continue-on-error: true
-        run: tools/ohos/build-ort.sh --check-cache
+        # 退出码语义（tools/ohos/build-ort.sh）：
+        #   0 = 缓存可用；4 = 缓存损坏/不可用 ⇒ 交给 cache-heal 删；
+        #   2 = 参数/工具链错误；其他 = 意外错误 —— 这两种**不是**缓存损坏，
+        #   不输出 broken（不删缓存），并让本 job 红，先把工作流/环境修好。
+        run: |
+          set -uo pipefail
+          rc=0
+          tools/ohos/build-ort.sh --check-cache || rc=$?
+          case "$rc" in
+            0)
+              echo "result=ok" >> "$GITHUB_OUTPUT"
+              ;;
+            4)
+              echo "result=broken" >> "$GITHUB_OUTPUT"
+              echo "::warning::--check-cache exit 4：缓存损坏/不可用，交给 cache-heal 按 ref 删"
+              ;;
+            2)
+              echo "result=usage" >> "$GITHUB_OUTPUT"
+              echo "::error::--check-cache exit 2（参数/工具链错误），不是缓存损坏；不删缓存"
+              ;;
+            *)
+              echo "result=error" >> "$GITHUB_OUTPUT"
+              echo "::error::--check-cache 意外退出码 $rc，不是缓存损坏；不删缓存"
+              ;;
+          esac
+          if [[ "$rc" != "0" && "$rc" != "4" ]]; then
+            exit 1
+          fi
 
   # 唯一拥有 actions: write 的 job：只删缓存，不 checkout、不跑仓库代码（建议项 1）。
   cache-heal:
@@ -248,29 +283,118 @@ jobs:
       contents: read
       actions: write
     steps:
-      - name: 删除损坏的缓存条目（自愈第一步）
+      - name: 删除损坏的缓存条目（自愈；作用域 = 本 run 的 ref + PR base + 默认分支）
         env:
           GH_TOKEN: ${{ github.token }}
           CACHE_KEY: ${{ needs.ohos-ort-cache.outputs.cache_key }}
+          TARGET_REF: ${{ github.ref }}
+          BASE_REF: ${{ github.base_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           echo "::warning::Actions 缓存命中但产物自检失败（缓存损坏）——删除该 key 后重建，不是「没有 NDK」"
-          deleted=0
-          # 先按当前 ref 删（评审要求加 --ref）；PR 也可能命中 base 分支的缓存，下面再按 key 补删。
-          if gh cache delete "$CACHE_KEY" --ref "$GITHUB_REF" --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
-            deleted=1
+
+          repo="$GITHUB_REPOSITORY"
+          refs=()
+          add_ref() {
+            local ref=$1 existing
+            [[ -n "$ref" ]] || return 0
+            case "$ref" in
+              refs/heads/*) ;;
+              refs/pull/*/merge)
+                # 只允许本次 run 自己的 merge ref。绝不从任何列表里推导别的 PR：
+                # 其他 PR 的 ref 不可能造成这次失败，删了只会让它们下次 miss。
+                if [[ "$ref" != "${GITHUB_REF:-}" ]]; then
+                  echo "::warning::拒绝非本次 run 的 PR ref（不删除）：$ref"
+                  return 0
+                fi
+                ;;
+              *)
+                echo "::warning::忽略不认识的 ref（不删除）：$ref"
+                return 0
+                ;;
+            esac
+            for existing in "${refs[@]}"; do
+              [[ "$existing" == "$ref" ]] && return 0
+            done
+            refs+=("$ref")
+          }
+
+          # 作用域（评审 #126 第四轮 B2）：一个 PR 只可能恢复 base/默认分支与它自己的
+          # merge ref，所以只列这三个（去重）：
+          #   1. 当前 run 的 $GITHUB_REF（PR 的 refs/pull/N/merge；dispatch 的分支）；
+          #   2. PR 的 base：refs/heads/$GITHUB_BASE_REF（非 PR 为空，不列）；
+          #   3. 默认分支：refs/heads/<default_branch>。
+          # 不再 `gh cache list --key` 全仓库扫：那会把 refs/pull/82、refs/pull/84… 一起删。
+          add_ref "$TARGET_REF"
+          if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && -n "${BASE_REF:-}" ]]; then
+            add_ref "refs/heads/$BASE_REF"
           fi
-          ids="$(gh cache list --repo "$GITHUB_REPOSITORY" --key "$CACHE_KEY" --limit 100 --json id,key 2>/dev/null \
-            | python3 -c 'import json,sys; k=sys.argv[1]; print(" ".join(str(c["id"]) for c in json.load(sys.stdin) if c["key"] == k))' "$CACHE_KEY" || true)"
-          for id in $ids; do
-            if gh cache delete "$id" --repo "$GITHUB_REPOSITORY"; then
-              deleted=1
+          if [[ -n "${DEFAULT_BRANCH:-}" ]]; then
+            add_ref "refs/heads/$DEFAULT_BRANCH"
+          fi
+          if (( ${#refs[@]} == 0 )); then
+            echo "::warning::没有可删除的 ref 作用域（GITHUB_REF / default_branch 都为空），不删除任何缓存"
+            exit 0
+          fi
+          echo "本次只检查这些 ref：${refs[*]}"
+
+          deleted=0
+          found=0
+          failed=0
+          for ref in "${refs[@]}"; do
+            echo "::group::gh cache list --ref $ref（key 精确匹配 $CACHE_KEY）"
+            if ! json="$(gh cache list --repo "$repo" --ref "$ref" --key "$CACHE_KEY" --limit 100 \
+                 --json id,key,ref 2>/dev/null)"; then
+              echo "::warning::gh cache list 失败（ref=$ref）；不猜、不删"
+              echo "::endgroup::"
+              continue
             fi
+            echo "ref=$ref 列到：${json:-[]}"
+
+            # gh 的 --key 是**前缀**匹配；这里再按 key + ref 精确过滤一遍，双重保险。
+            ids="$(printf '%s' "$json" | python3 -c '
+          import json, sys
+          key, ref = sys.argv[1], sys.argv[2]
+          try:
+              items = json.load(sys.stdin)
+          except Exception:
+              items = []
+          for c in items:
+              if c.get("key") == key and c.get("ref") == ref:
+                  print(c.get("id", ""))
+          ' "$CACHE_KEY" "$ref" || true)"
+
+            if [[ -z "$ids" ]]; then
+              echo "ref=$ref 没有 key=$CACHE_KEY 的缓存"
+              echo "::endgroup::"
+              continue
+            fi
+
+            found=1
+            while IFS= read -r id; do
+              [[ -n "$id" ]] || continue
+              # 删除前把 ref + key + id 打进日志，便于审计「到底删了哪个 ref」。
+              echo "删除缓存：ref=$ref key=$CACHE_KEY id=$id"
+              if gh cache delete "$id" --repo "$repo"; then
+                deleted=1
+              else
+                failed=$((failed + 1))
+                echo "::warning::删除失败：ref=$ref key=$CACHE_KEY id=$id"
+              fi
+            done <<< "$ids"
+            echo "::endgroup::"
           done
+
+          if (( failed > 0 )); then
+            echo "::warning::有 $failed 个缓存条目删除失败（可能没有 actions:write）；请 bump vars.ORT_CACHE_REV 或手动 gh cache delete '$CACHE_KEY'"
+          fi
           if [[ "$deleted" == "1" ]]; then
-            echo "已删除缓存条目：$CACHE_KEY"
+            echo "已删除缓存条目：$CACHE_KEY（作用域见上面的 ref 日志）"
+          elif [[ "$found" == "1" ]]; then
+            echo "::warning::找到了缓存条目但一条也没删掉（可能没有 actions:write）：本次仍会重建并自检，但不会写回缓存；请 bump vars.ORT_CACHE_REV 或手动 gh cache delete '$CACHE_KEY'"
           else
-            echo "::warning::删不掉缓存条目（可能没有 actions:write，或 key 不存在）：本次仍会重建并自检，但不会写回缓存；请 bump vars.ORT_CACHE_REV 或手动 gh cache delete '$CACHE_KEY'"
+            echo "::warning::限定的 ref 里没有 key=$CACHE_KEY 的缓存（可能已被并发删除）；无破坏性操作"
           fi
 
   # 真正构建/复用 ORT 产物。**不是必需检查**，不要勾进 branch protection。
@@ -306,22 +430,42 @@ jobs:
         id: verify
         if: steps.cache.outputs.cache-hit == 'true' && github.event.inputs.force_build != 'true'
         continue-on-error: true
-        run: tools/ohos/build-ort.sh --check-cache
+        # 只把 exit 4 当成「缓存损坏」；exit 2/其他是工作流/环境错误。
+        run: |
+          set -uo pipefail
+          rc=0
+          tools/ohos/build-ort.sh --check-cache || rc=$?
+          case "$rc" in
+            0) echo "result=ok" >> "$GITHUB_OUTPUT" ;;
+            4) echo "result=broken" >> "$GITHUB_OUTPUT" ;;
+            2) echo "result=usage" >> "$GITHUB_OUTPUT"
+               echo "::error::--check-cache exit 2（参数/工具链错误），不是缓存损坏" ;;
+            *) echo "result=error" >> "$GITHUB_OUTPUT"
+               echo "::error::--check-cache 意外退出码 $rc，不是缓存损坏" ;;
+          esac
+          exit "$rc"
       - name: 判断是否需要准备 NDK / 重建
         id: need
         env:
           CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
           FORCE: ${{ github.event.inputs.force_build }}
+          VERIFY_RESULT: ${{ steps.verify.outputs.result }}
           VERIFY_OUTCOME: ${{ steps.verify.outcome }}
           CACHE_BROKEN: ${{ needs.ohos-ort-cache-check.outputs.cache_broken }}
         run: |
           set -euo pipefail
+          # exit 2/其他：不是缓存损坏，也不是「重建就能好」，直接红，避免把工作流 bug
+          # 当成坏缓存反复重建（cache-heal 已在 cache-check 那侧拒绝删）。
+          if [[ "$VERIFY_RESULT" == "usage" || "$VERIFY_RESULT" == "error" ]]; then
+            echo "::error::--check-cache 以非 0/4 退出（$VERIFY_RESULT），不重建；先修工作流/环境"
+            exit 1
+          fi
           want=false
-          if [[ "$CACHE_HIT" != "true" || "$FORCE" == "true" || "$VERIFY_OUTCOME" == "failure" || "$CACHE_BROKEN" == "true" ]]; then
+          if [[ "$CACHE_HIT" != "true" || "$FORCE" == "true" || "$VERIFY_RESULT" == "broken" || "$CACHE_BROKEN" == "true" ]]; then
             want=true
           fi
           echo "want=$want" >> "$GITHUB_OUTPUT"
-          echo "需要重建：$want（cache_hit=${CACHE_HIT:-false}, force=${FORCE:-false}, verify=${VERIFY_OUTCOME:-skipped}, broken=${CACHE_BROKEN:-false}）"
+          echo "需要重建：$want（cache_hit=${CACHE_HIT:-false}, force=${FORCE:-false}, verify=${VERIFY_RESULT:-skipped}/${VERIFY_OUTCOME:-skipped}, broken=${CACHE_BROKEN:-false}）"
       - name: 检查 runner 上是否已有 OHOS NDK
         id: ndk
         if: steps.need.outputs.want == 'true'
@@ -368,13 +512,18 @@ jobs:
 
           # 解压产物必须**真的能执行**：python3 -m zipfile 不恢复权限位/符号链接，
           # 文件存在但 CMake 调 clang 才 Permission denied（评审 #126 B1）。
+          # cmake 只 warning：不是所有 CLT 包都自带 build-tools/cmake；build-ort.sh
+          # 会优先用它，找不到就退回 PATH 上的 cmake（3.28–3.x）。
           check_clt_tree() {
             local root=$1
             local clang="$root/$clang_rel" cmake="$root/$cmake_rel"
             [[ -x "$clang" ]] || { echo "clang 不存在或不可执行：$clang"; return 1; }
             "$clang" --version >/dev/null 2>&1 || { echo "clang 跑不起来：$clang"; return 1; }
-            [[ -x "$cmake" ]] || { echo "cmake 不存在或不可执行：$cmake"; return 1; }
-            "$cmake" --version >/dev/null 2>&1 || { echo "cmake 跑不起来：$cmake"; return 1; }
+            if [[ -x "$cmake" ]] && "$cmake" --version >/dev/null 2>&1; then
+              echo "cmake 自检：$("$cmake" --version 2>/dev/null | head -1)"
+            else
+              echo "::warning::CLT 包内没有可用的 cmake（$cmake）——不一定是坏包：build-ort.sh 会退回 PATH 上的 cmake；runner 上也没有才会在 preflight 失败"
+            fi
             return 0
           }
 
@@ -421,7 +570,7 @@ jobs:
              指定 native 目录），用仓库变量 `OHOS_RUNNER` 指定它的 label（如 `self-hosted`），
              再手动 dispatch 一次。构建产物会写入 Actions 缓存，之后命中缓存只需几秒。
           2. **仓库变量**：设 `OHOS_CLT_URL` 指向 Command Line Tools（linux-x64）压缩包的
-             可下载地址，并**必须**同时设 `OHOS_CLT_SHA256`（包里的 clang/cmake 会在 runner
+             可下载地址，并**必须**同时设 `OHOS_CLT_SHA256`（包里的 clang 会在 runner
              上执行、产物还会写进缓存，不能跳过校验）。job 会自动按 magic 解压 zip / tar.gz /
              tar.xz 并找到 `*/openharmony/native`。
           3. **本地预热**：`tools/ohos/build-ort.sh --force-build`，把
@@ -487,7 +636,7 @@ jobs:
           ndk="$(find "$dest" -type d -path '*/openharmony/native' -print -quit)"
           [[ -n "$ndk" ]] || { echo "::error::压缩包里没找到 */openharmony/native"; exit 1; }
           if ! check_clt_tree "$ndk"; then
-            echo "::error::Command Line Tools 解压后 clang/cmake 不可执行（zip 丢了权限位或符号链接）"
+            echo "::error::Command Line Tools 解压后 clang 不可执行（zip 丢了权限位或符号链接）"
             echo "::error::请用 unzip / bsdtar 解压，或换用官方 linux-x64 zip；不要使用 python3 -m zipfile 的解压结果"
             exit 1
           fi

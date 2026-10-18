@@ -1,11 +1,17 @@
 # M6 ORT 构建与缓存（OHOS / arm64-v8a）
 
-> 状态（2026-10-18，分支 `feat/B8c-ort-ci`，评审 #126 **第三轮**修复后）：
+> 状态（2026-10-18，分支 `feat/B8c-ort-ci`，评审 #126 **第四轮**修复后）：
 > **缓存命中路径、前置检查、以及完整的 CMake configure 已在本机实测**；
 > **冷缓存的全量 `cmake --build`（~24 min 编译）仍没有跑过**。
 >
-> 第三轮修复（3 个确定性缺陷）：① **B1** zip 改用 `unzip`/`bsdtar` 解压（`python3 -m
-> zipfile` 不恢复可执行位/符号链接），解压后 smoke clang/cmake，`build-ort.sh` 的 preflight
+> 第四轮修复（1 个阻塞 + 6 个小问题）：**B2 自愈删除的作用域**收窄到当前 ref / PR base /
+> 默认分支，逐 ref `gh cache list --ref` + 删除前记录 `ref + key + id`，**绝不删其它
+> `refs/pull/*/merge`**（§6.5 / §9.3）；`--check-cache` 区分 exit 2（用法/工具错误，不删）
+> 与 exit 4（缓存损坏）；`cache_ok` 输出删除；`labeled/unlabeled` 只认 `ci:ohos-ort` 本身；
+> CLT 的 cmake smoke 降为 warning（不是所有 CLT 都带 cmake）；修掉重复的 `## 10` 标题。
+>
+> 第三轮（已闭合）：① **B1** zip 改用 `unzip`/`bsdtar` 解压（`python3 -m
+> zipfile` 不恢复可执行位/符号链接），解压后 smoke clang，`build-ort.sh` 的 preflight
 > 从 `-e` 改成 `-x`；② **B2** 新增 `build-ort.sh --check-cache`（只验不编），缓存 key 在
 > gate 里自算并传给 restore/delete，`cache-heal` 是唯一有 `actions: write` 的 job；
 > ③ **B3** 压缩包 magic 从 `-N4` 改成 `-N6`，xz 分支能命中。
@@ -262,8 +268,10 @@ should_build := enabled && (非 PR || 同仓库 PR && 打了 ci:ohos-ort label)
   一律不跑（`head.repo.full_name == github.repository`）。label 先建一次：
   `gh label create ci:ohos-ort --description "在 CI 上真跑 ORT 构建（1.5–2 h）"`.
 - **push main 不触发本 workflow**：main 的缓存预热靠手动 dispatch（见 §6.5）。
-- `pull_request.types` 含 `labeled` 与 `unlabeled`：打/撤 `ci:ohos-ort` 都会留一条记录
-  （撤 label 时是 skip，不会把已经开始的构建取消——构建的取消由 run 级 concurrency 管）。
+- `pull_request.types` 含 `labeled` 与 `unlabeled`，但 gate **只认 `ci:ohos-ort` 本身**
+  （`github.event.label.name == 'ci:ohos-ort'`）：打/撤 `ci:ohos-ort` 都会留一条记录；
+  给 PR 打/撤别的 label 不会把整条流水线（含 1.5–2 h 构建）再跑一遍。撤 `ci:ohos-ort`
+  时是 skip，不会取消已经开始的构建——构建的取消由 run 级 concurrency 管。
 
 逐场景推演（三种结果都不阻塞合入）：
 
@@ -303,8 +311,8 @@ should_build := enabled && (非 PR || 同仓库 PR && 打了 ci:ohos-ort label)
 | `vars.OHOS_NDK_REV` | `v1` | 自托管 NDK 的版本标识。默认路径下光看路径是常量，原地升级 NDK 时 bump 它让 key 变掉（建议项 3） |
 | `vars.ORT_CACHE_REV` | `v1` | 缓存代次；bump 它让 key 变掉，用于刷新/作废旧缓存（§6.5） |
 
-> 为什么 SHA256 是强制的：压缩包里的 clang/cmake 会在 runner 上**执行**，产物还会写进
-> Actions 缓存。只 warning 等于把「供应链校验」降级成装饰（建议项 1）。
+> 为什么 SHA256 是强制的：压缩包里的 clang（以及包内可能自带的 cmake）会在 runner 上
+> **执行**，产物还会写进 Actions 缓存。只 warning 等于把「供应链校验」降级成装饰（建议项 1）。
 > 为什么 URL 不进日志：仓库变量不是 secret，带 token 的地址会进公开日志；工作流里
 > `::add-mask::` 之后只打印 host（建议项 2）。
 
@@ -328,14 +336,27 @@ ndk_id    = sha256(vars.OHOS_CLT_SHA256 或 "视 OHOS_NDK/OHOS_NDK_REV 而定")[
 - 命中时只跑 `build-ort.sh --check-cache`（复制 + 自检，秒级，不需要 NDK）——**不编译**；
   这是 B2 的关键：普通 full 模式在坏缓存 + 有 NDK 时会直接重建并 `exit 0`，自愈永远不触发；
 - **缓存损坏自愈**（B2）：`ohos-ort-cache-check` 用 `--check-cache` 判定并输出
-  `cache_broken`；`cache-heal`（唯一 `actions: write`）先 `gh cache delete <key> --ref`
-  删当前 ref，再按 key 列出 id 补删（PR 可能命中的是 base 分支的缓存，只按 ref 删不到）；
+  `cache_broken`——**只有 exit 4（缓存不存在/不可用）才算**；exit 2（参数/工具链错误）
+  或其它退出码不是缓存损坏，`cache-heal` 不会运行（cache-check 直接红），避免误删。
+- **删除的作用域**（评审 #126 第四轮 B2）：`cache-heal`（唯一 `actions: write`）只列/删
+  三个 ref，去重后：
+  1. 当前 run 的 `$GITHUB_REF`（PR 是 `refs/pull/<N>/merge`，dispatch 是 `refs/heads/<ref>`）；
+  2. PR 的 base：`refs/heads/$GITHUB_BASE_REF`（非 PR 不列）；
+  3. 默认分支：`refs/heads/<default_branch>`。
+
+  对每个 ref 执行 `gh cache list --ref <ref> --key <key> --json id,key,ref`，客户端再按
+  `key` 与 `ref` **精确**过滤（`gh --key` 是前缀匹配），**删除前把 `ref + key + id` 打进
+  日志**，再 `gh cache delete <id>`。**不会**不带 `--ref` 全仓库列 key，也**绝不**删其它
+  `refs/pull/*/merge`：一个 PR 只可能恢复 base/默认分支和它自己的 merge ref，别的 PR 的
+  ref 不可能造成这次失败；删了只会让它们下次 miss（配了 CLT URL 白跑 1.5–2 h，没配就
+  fail-fast）。`gh cache list` 失败时**不猜、不删**；三个 ref 里都没有该 key 时只 warning。
   随后构建 job 重新 restore ⇒ miss ⇒ 重建 ⇒ post-step 把新产物写回同名 key。
   没有 `actions: write` 或删不掉时会 warning，提示 bump `ORT_CACHE_REV`；脚本侧也会把
   「缓存损坏」与「没有 NDK」分开报（`build-ort.sh` 的 `CACHE_UNUSABLE_REASON`）；
 - **CLT 下载/解压缓存**（建议项 4）：`~/ohos-clt` 按 `ohos-clt-v2-<os>-<OHOS_CLT_SHA256>`
-  缓存（v2 = 用 unzip/bsdtar 解压，避免复用旧的坏缓存）。命中后仍要 smoke clang/cmake
-  （B1），smoke 失败就删掉重解压；托管 runner 上省一次 1–2 GB 下载；
+  缓存（v2 = 用 unzip/bsdtar 解压，避免复用旧的坏缓存）。命中后仍要 smoke clang
+  （cmake 只 warning：不是所有 CLT 都自带 `build-tools/cmake`，`build-ort.sh` 会退回
+  PATH 上的 cmake；clang smoke 失败才删掉重解压）；托管 runner 上省一次 1–2 GB 下载；
 - **zip 的坑**（B1）：DevEco 的 linux-x64 CLT 多为 `.zip`。`python3 -m zipfile` 解压
   **不恢复可执行位、不建符号链接**，`llvm/bin/*`、`build-tools/cmake/bin/*` 会变成 0644，
   CMake 调 clang 才 `Permission denied`。现在一律用 `unzip`（退回 `bsdtar`），解压后
@@ -413,6 +434,8 @@ ndk_id    = sha256(vars.OHOS_CLT_SHA256 或 "视 OHOS_NDK/OHOS_NDK_REV 而定")[
    因此这些仍然**没有在 GitHub 上实跑**：
    `actions/cache` 命中后的**保存**、CLT 解压缓存命中/保存、CI 里的 NDK 下载与 zip/tar.gz
    解压分支、`cache-heal` 的 `gh cache delete`、`vars.OHOS_RUNNER` 选 runner。
+   `cache-heal` 的**作用域逻辑**（三个 ref、只删该删的）用假 `gh` + 真实 YAML 里的
+   run 块在本地跑过三种事件（§9.3），但**没有**在 runner 上真的删过一次 Actions 缓存。
    已实跑的：`skipped` 呈现、`::notice`、gate Step Summary、`needs` 输出传递、
    `ohos-ort-cache-check` 的 cache miss 路径、fail-fast 的报错与指引（见 §9.2）。
 2. **没有从零全量跑完**：为避免占用机器 33 min（本机另有一条 cargo 重线在跑），
@@ -528,8 +551,12 @@ gate 脚本 8 种输入、`cache_key` 计算（脚本 sha + ndk_id + rev）在�
     `!! NDK 不完整（见上）`，**exit 2**（修复前 `-e` 会放行，随后 CMake 才 Permission denied）；
   - `unzip -q` → **0755**；`--check-only`：`== 前置检查通过`，**exit 0**。
 - 再造一个 zip，**里面记录的就是 0644**（坏包）：`unzip` 解压后 smoke 直接报
-  `clang 不存在或不可执行 …` + `::error::Command Line Tools 解压后 clang/cmake 不可执行`，
+  `clang 不存在或不可执行 …` + `::error::Command Line Tools 解压后 clang 不可执行`，
   **exit 1**——不等到 CMake。
+- 第四轮把 cmake 从硬失败降为 warning 后补测：zip 里有可执行 clang、**没有**
+  `build-tools/cmake/bin/cmake` ⇒ 只有 `::warning::CLT 包内没有可用的 cmake …`，
+  `clang 自检：…`，**exit 0**（`build-ort.sh` 会退回 PATH 上的 cmake）；把 clang 也去掉
+  ⇒ 仍 `::error::…clang 不可执行`，**exit 1**。
 - 用 `file://` 跑完整的「准备 NDK」步骤（下载 → sha256 → unzip → smoke → 写 `NDK=`）：
   zip 路径 exit 0；再跑一次命中 `~/ohos-clt` 解压缓存：`复用 CLT 解压缓存`，exit 0。
 
@@ -551,8 +578,8 @@ $ od -An -tx1 -N6 clt.tar.xz   → fd377a585a00  → 命中 tar.xz 分支
 **其他本地检查**
 
 - `host` 打印剥离 `user:pass@`：`https://user:s3cret@example.com:8443/...` → `host=example.com:8443`；
-- `cache-heal` 的删除命令用 `gh cache delete <key> --ref`，再按 key 列 id 补删（PR 可能命中
-  base 分支缓存）；没有真实缓存可删，只做了命令/Schema 检查。
+- `cache-heal` 的 ref 作用域（当前 ref / PR base / 默认分支）用假 `gh` + 真实 run 块
+  跑过 PR、push main、dispatch 与「假 gh 无视 --ref」四组，见 §9.3；没有真实缓存可删。
 
 > 这验证的是 gate/key 逻辑、YAML/bash 语法、zip 权限与 smoke、xz 分支、`--check-cache`
 > 语义；`actions/cache` 实际命中/保存、CLT 缓存、`gh cache delete` 仍没有实跑（§8.1）。
@@ -573,7 +600,44 @@ dispatch 用的是 `gh workflow run ohos-ort.yml --ref feat/B8c-ort-ci -f run_bu
 > 缓存命中后的 `--check-cache` 成功路径、`cache-heal` 删除、CLT 缓存、冷缓存全量构建
 > 仍然**没有**在 CI 上实跑；见 §8.1。
 
-## 10 需要拍板的点
+### 9.3 评审 #126 第四轮：cache-heal 的 ref 作用域（本地，假 gh）
+
+用 PyYAML 读出 `.github/workflows/ohos-ort.yml` 里 `cache-heal` 的**真实 `run` 块**执行，
+PATH 上放一个假 `gh`（记录每次参数；数据集故意包含另一个 PR 的 `refs/pull/84/merge`、
+`refs/heads/other-branch`，以及前缀 key `...-old`）。三种事件 + 一组对抗：
+
+```console
+=== PR #82（base=main） ===
+会 list 的 ref：refs/pull/82/merge | refs/heads/main
+每条 list 都带 --ref：是
+会删的 id：101 102 204
+删除日志：
+  删除缓存：ref=refs/pull/82/merge key=ort-1.29.1-…-v1 id=101
+  删除缓存：ref=refs/heads/main key=ort-1.29.1-…-v1 id=102
+  删除缓存：ref=refs/heads/main key=ort-1.29.1-…-v1 id=204
+
+=== push main ===
+会 list 的 ref：refs/heads/main
+每条 list 都带 --ref：是
+会删的 id：102 204
+
+=== workflow_dispatch（分支 feat/B8c-ort-ci） ===
+会 list 的 ref：refs/heads/feat/B8c-ort-ci | refs/heads/main
+每条 list 都带 --ref：是
+会删的 id：103 102 204
+
+=== 对抗：假 gh 无视 --ref 返回全部 ===
+会 list 的 ref：refs/pull/82/merge | refs/heads/main
+会删的 id：101 102 204
+```
+
+`refs/pull/84/merge`（另一个 PR）从未进入 `gh cache list --ref` 的参数，id=201 从未被删除；
+`refs/heads/other-branch` 与 `...-old`（id=203）同样没有进入删除。对抗组证明：即使服务端
+忽略 `--ref`，客户端按 `key + ref` 的精确过滤仍只会删本 run / base / 默认分支的条目。
+
+**没验证的**：真实的 `gh cache list --ref` / `gh cache delete <id>` 没有在 runner 上跑过
+（仓库里没有可删的真实坏缓存）；验证的是参数、日志与作用域逻辑，不是 GitHub API 行为。
+
 ## 10 需要拍板的点
 
 1. **CI 的「绿」语义**：已按评审 #126 改成「未配置就 **skipped**，由 `ohos-ort-cache`
