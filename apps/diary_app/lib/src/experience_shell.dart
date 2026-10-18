@@ -14,10 +14,16 @@ import 'ai_provider_panel.dart';
 import 'file_import_controller.dart';
 import 'file_import_journal.dart';
 import 'core_wakeup.dart';
+import 'library_care_controller.dart';
+import 'library_care_panel.dart';
+import 'readable_export_controller.dart';
+import 'readable_export_panel.dart';
 import 'search_controller.dart';
 import 'revision_controller.dart';
 import 'revision_diff.dart';
 import 'sketch_ui.dart';
+import 'style_settings_controller.dart';
+import 'style_settings_panel.dart';
 
 /// The text, search, and source revision paths use DiaryApi. Remaining preview
 /// screens identify their local, disposable simulation state in the UI.
@@ -26,11 +32,13 @@ class ExperienceShell extends StatefulWidget {
     super.key,
     required this.api,
     required this.demoMode,
+    this.snapshot,
     this.supportsHybridUpgrade = false,
   });
 
   final DiaryApi api;
   final bool demoMode;
+  final CoreSnapshot? snapshot;
   final bool supportsHybridUpgrade;
 
   @override
@@ -47,6 +55,9 @@ class _ExperienceShellState extends State<ExperienceShell>
   bool _importsRecoveryWarning = false;
   String? _importsNotice;
   late final RevisionController _revisions;
+  late final LibraryCareController _libraryCare;
+  late final StyleSettingsController _styleSettings;
+  late final ReadableExportController _readableExport;
   late final Listenable _contentChanges;
   final _editor = TextEditingController();
   final _search = TextEditingController();
@@ -64,9 +75,6 @@ class _ExperienceShellState extends State<ExperienceShell>
   bool _adopted = false;
   bool _showOldVersions = false;
   String? _reply;
-  String _tone = '温暖克制';
-  String _length = '适中';
-  String _voice = '第一人称';
   String _searchKind = '全部';
   String _activeQuery = '';
   SearchHit? _selectedSearchHit;
@@ -97,11 +105,27 @@ class _ExperienceShellState extends State<ExperienceShell>
     );
     _fileImports = FileImportController(widget.api);
     _revisions = RevisionController(widget.api);
+    _libraryCare = LibraryCareController(
+      widget.api,
+      capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
+      captureCount: widget.snapshot?.captureCount ?? 0,
+    );
+    _styleSettings = StyleSettingsController(
+      widget.api,
+      capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
+    );
+    _readableExport = ReadableExportController(
+      widget.api,
+      capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
+    );
     _contentChanges = Listenable.merge([
       _capture,
       _coreSearch,
       _fileImports,
       _revisions,
+      _libraryCare,
+      _styleSettings,
+      _readableExport,
     ]);
     if (!widget.demoMode) {
       unawaited(_initializeImports());
@@ -156,6 +180,9 @@ class _ExperienceShellState extends State<ExperienceShell>
     _coreSearch.dispose();
     _fileImports.dispose();
     _revisions.dispose();
+    _libraryCare.dispose();
+    _styleSettings.dispose();
+    _readableExport.dispose();
     _editor.dispose();
     _search.removeListener(_onSearchValueChanged);
     _search.dispose();
@@ -318,6 +345,35 @@ class _ExperienceShellState extends State<ExperienceShell>
       _panel = panel;
       _detail = null;
     });
+    if (panel == 'storage') unawaited(_libraryCare.loadTrash());
+    if (panel == 'style') unawaited(_styleSettings.load());
+  }
+
+  Future<String?> _pickBackupTarget() async {
+    try {
+      final location = await getSaveLocation(
+        suggestedName:
+            '不写日记-${DateTime.now().toIso8601String().substring(0, 10)}.uwbackup',
+      );
+      return location?.path;
+    } on Object {
+      if (mounted) _toast('无法打开保存位置，请检查系统文件权限。');
+      return null;
+    }
+  }
+
+  Future<String?> _pickBackupPackage() async {
+    try {
+      final file = await openFile(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: '不写日记备份', extensions: ['uwbackup', 'zip']),
+        ],
+      );
+      return file?.path;
+    } on Object {
+      if (mounted) _toast('无法读取备份文件，请检查系统文件权限。');
+      return null;
+    }
   }
 
   void _openDetail(String detail) {
@@ -349,6 +405,37 @@ class _ExperienceShellState extends State<ExperienceShell>
     _panel = null;
     _detail = null;
   });
+
+  Future<void> _confirmTrash(Capture capture) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('移入回收站？'),
+        content: const Text('记录会离开时间线，之后仍可从“存储与回收站”恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('移入回收站'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final moved = await _libraryCare.trashCapture(capture);
+    if (!mounted) return;
+    if (moved) {
+      await _capture.refresh();
+      if (!mounted) return;
+      _back();
+      _toast('记录已移入回收站');
+    } else {
+      _toast(_libraryCare.message ?? '记录没有移入回收站。');
+    }
+  }
 
   void _toast(String message) => ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
@@ -1523,14 +1610,21 @@ class _ExperienceShellState extends State<ExperienceShell>
   );
 
   Widget _profilePage(bool desktop) {
-    if (!widget.demoMode) {
-      return Column(
-        key: const ValueKey('profile'),
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _title('我的小天地', '你的记录安静地留在这台设备上。'),
-          const SizedBox(height: 23),
-          _notice('当前资料保存在本机。请勿把卸载应用当作清理缓存；备份恢复功能正在接入。'),
+    return Column(
+      key: const ValueKey('profile'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _title(
+          '我的小天地',
+          widget.demoMode ? '预览资料与整理方式，慢慢布置自己的空间。' : '你的记录安静地留在这台设备上。',
+        ),
+        const SizedBox(height: 23),
+        _notice(
+          widget.demoMode
+              ? '这是单设备演示资料库，没有账号与自动同步。'
+              : '当前资料保存在本机。备份、导出和回收站只在核心能力就绪时执行。',
+        ),
+        if (!widget.demoMode) ...[
           const SizedBox(height: 18),
           SketchFrame(
             padding: const EdgeInsets.all(20),
@@ -1544,15 +1638,6 @@ class _ExperienceShellState extends State<ExperienceShell>
             ),
           ),
         ],
-      );
-    }
-    return Column(
-      key: const ValueKey('profile'),
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _title('我的小天地', '预览资料与整理方式，慢慢布置自己的空间。'),
-        const SizedBox(height: 23),
-        _notice('这是单设备演示资料库，没有账号与自动同步。'),
         const SizedBox(height: 18),
         _section('创作与整理', [
           ('风格偏好', '篇幅、语气与叙述方式', 'style', Icons.tune),
@@ -1564,6 +1649,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         _section('资料与应用', [
           ('插件', '查看权限与启停', 'plugins', Icons.extension_outlined),
           ('备份与恢复', '完整备份和阅读导出', 'backup', Icons.backup_outlined),
+          ('阅读导出', '按日期生成便于阅读的副本', 'export', Icons.article_outlined),
           ('存储与回收站', '原件、缓存、索引的边界', 'storage', Icons.folder_outlined),
           ('封面与加载动画', '回看小纸团', 'cover', Icons.pets_outlined),
         ]),
@@ -1640,12 +1726,17 @@ class _ExperienceShellState extends State<ExperienceShell>
       'edit' => _editPanel(),
       'response' => _responsePanel(),
       'tasks' => _tasksPanel(),
-      'style' => _stylePanel(),
+      'style' => StyleSettingsPanel(controller: _styleSettings),
       'model' => _modelPanel(),
       'schedule' => _schedulePanel(),
       'plugins' => _pluginsPanel(),
-      'backup' => _backupPanel(),
-      'storage' => _storagePanel(),
+      'backup' => BackupRestorePanel(
+        controller: _libraryCare,
+        pickBackupTarget: _pickBackupTarget,
+        pickBackupPackage: _pickBackupPackage,
+      ),
+      'export' => ReadableExportPanel(controller: _readableExport),
+      'storage' => StorageTrashPanel(controller: _libraryCare),
       'recording' => _recordingPanel(),
       'loading' => _loadingPanel(),
       _ => _coverPanel(),
@@ -1868,71 +1959,6 @@ class _ExperienceShellState extends State<ExperienceShell>
     ],
   );
 
-  Widget _stylePanel() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _title('风格偏好', '让文字更像你，又不替你编造。'),
-      const SizedBox(height: 20),
-      _notice('偏好设置仅供预览，暂不保存到核心，也不会影响整理结果；整理功能尚未接入。'),
-      const SizedBox(height: 18),
-      _choiceGroup(
-        '篇幅',
-        ['简短', '适中', '舒展'],
-        _length,
-        (value) => setState(() => _length = value),
-      ),
-      const SizedBox(height: 17),
-      _choiceGroup(
-        '语气',
-        ['更克制', '温暖克制', '更亲近'],
-        _tone,
-        (value) => setState(() => _tone = value),
-      ),
-      const SizedBox(height: 17),
-      _choiceGroup(
-        '叙述',
-        ['第一人称', '旁观叙述'],
-        _voice,
-        (value) => setState(() => _voice = value),
-      ),
-      const SizedBox(height: 19),
-      _notice('示例：普通的一天，也有值得留下的光。', icon: Icons.format_quote),
-    ],
-  );
-
-  Widget _choiceGroup(
-    String title,
-    List<String> choices,
-    String current,
-    ValueChanged<String> onChange,
-  ) => SketchFrame(
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: const TextStyle(
-            color: SketchColors.ink,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final choice in choices)
-              ChoiceChip(
-                label: Text(choice),
-                selected: current == choice,
-                onSelected: (_) => onChange(choice),
-              ),
-          ],
-        ),
-      ],
-    ),
-  );
-
   Widget _modelPanel() =>
       widget.demoMode ? _modelDemoPanel() : AiProviderPanel(api: widget.api);
 
@@ -2046,67 +2072,6 @@ class _ExperienceShellState extends State<ExperienceShell>
               value: _pluginEnabled,
               onChanged: (value) => setState(() => _pluginEnabled = value),
             ),
-          ],
-        ),
-      ),
-    ],
-  );
-
-  Widget _backupPanel() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _title('备份与恢复', '完整备份和阅读导出，是两件不同的事。'),
-      const SizedBox(height: 20),
-      _notice('这里仅展示用户流程，不生成可恢复备份。'),
-      const SizedBox(height: 18),
-      _resultTile(
-        '创建完整备份',
-        '示例 · 包含原始材料、日记版本与配置',
-        '正式版将展示目标位置、空间需求与加密选项。',
-        () => _toast('完整备份需要真实本地核心；演示没有生成文件。'),
-      ),
-      _resultTile(
-        '导出阅读文档',
-        '示例 · 方便阅读与分享',
-        '阅读文档不能用于完整恢复。',
-        () => _toast('阅读导出尚未接入；演示没有生成文件。'),
-      ),
-      _resultTile(
-        '恢复备份',
-        '示例 · 先检查，再预览',
-        '默认恢复到新资料库，避免覆盖当前资料。',
-        () => _toast('恢复需要真实备份；当前资料未发生变化。'),
-      ),
-    ],
-  );
-
-  Widget _storagePanel() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _title('存储与回收站', '先看清影响，再清理。'),
-      const SizedBox(height: 20),
-      _notice('占用数字需由核心实际测量；演示不显示虚构容量。'),
-      const SizedBox(height: 18),
-      SketchFrame(
-        child: Column(
-          children: [
-            for (final (name, detail) in <(String, String)>[
-              ('原始材料', '清理缓存不会删除原件'),
-              ('缓存', '可重建的临时内容'),
-              ('索引', '可重建的搜索数据'),
-              ('备份', '由用户选择保存位置'),
-              ('回收站', '永久清理前需预览影响'),
-            ]) ...[
-              ListTile(
-                title: Text(name),
-                subtitle: Text(detail),
-                trailing: const Text(
-                  '待接入',
-                  style: TextStyle(color: SketchColors.muted),
-                ),
-              ),
-              const Divider(color: SketchColors.line),
-            ],
           ],
         ),
       ),
@@ -2304,6 +2269,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         title: '收好的记录',
         subtitle: _dateLabel(capture.occurredAt.toLocal()),
         diaryDayKey: _dayKey(capture.occurredAt.toLocal()),
+        capture: capture,
       );
     }
     final title = switch (detail) {
@@ -2389,6 +2355,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     required String subtitle,
     String? fallback,
     String? diaryDayKey,
+    Capture? capture,
   }) {
     final revisions = _revisions;
     final current = revisions.currentText;
@@ -2559,6 +2526,17 @@ class _ExperienceShellState extends State<ExperienceShell>
         ],
         if (revisions.error != null && _editingRevision)
           _notice('保存失败：${revisions.error}', icon: Icons.error_outline),
+        if (capture != null && _libraryCare.canTrash) ...[
+          const SizedBox(height: 22),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: SketchAction(
+              label: '移入回收站',
+              icon: Icons.delete_outline,
+              onPressed: () => _confirmTrash(capture),
+            ),
+          ),
+        ],
       ],
     );
   }
