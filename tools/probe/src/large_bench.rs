@@ -36,8 +36,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use diary_core::{
-    config_from_env, load_embedder, text_hash_vector, Core, Embedder, EmbeddingConfig, EmbedOptions,
-    EnvEmbedding, SearchFilters, SearchMode, SearchRequest, VectorStorage,
+    config_from_env, load_embedder, set_query_profiling, take_query_profile, text_hash_vector, Core,
+    Embedder, EmbeddingConfig, EmbedOptions, EnvEmbedding, SearchFilters, SearchMode, SearchRequest,
+    SemanticQueryProfile, VectorStorage,
 };
 use rusqlite::{params, Connection};
 
@@ -106,6 +107,12 @@ pub(crate) struct Options {
     /// `false` = 量测时把 `synchronous` 调成 OFF（排除每块一次 fsync）。
     /// 产品默认是 FULL，两种口径分开报。
     pub(crate) synchronous_full: bool,
+    /// 打开语义查询路径的分段计时，热态查询逐条收集后报中位数。
+    pub(crate) profile: bool,
+    /// 量测时给这条连接设的 SQLite `mmap_size`（MiB）；`None` = 不动。
+    pub(crate) mmap_mib: Option<i64>,
+    /// 覆盖快速路径的候选块数上限；`None` = 产品默认。
+    pub(crate) scan_depth: Option<usize>,
 }
 
 impl Options {
@@ -115,6 +122,9 @@ impl Options {
         let mut queries = 40_usize;
         let mut synchronous_full = true;
         let mut vectors = VectorMode::Model;
+        let mut profile = false;
+        let mut mmap_mib: Option<i64> = None;
+        let mut scan_depth: Option<usize> = None;
         let mut index = 0;
         while index < args.len() {
             match args[index].as_str() {
@@ -158,6 +168,28 @@ impl Options {
                         .context("--queries 必须是正整数")?;
                     index += 2;
                 }
+                "--profile" => {
+                    profile = true;
+                    index += 1;
+                }
+                "--scan-depth" => {
+                    scan_depth = Some(
+                        args.get(index + 1)
+                            .context("--scan-depth 后面要跟候选块数")?
+                            .parse()
+                            .context("--scan-depth 必须是正整数")?,
+                    );
+                    index += 2;
+                }
+                "--mmap-mib" => {
+                    mmap_mib = Some(
+                        args.get(index + 1)
+                            .context("--mmap-mib 后面要跟 MiB 数（0 = 关）")?
+                            .parse()
+                            .context("--mmap-mib 必须是整数")?,
+                    );
+                    index += 2;
+                }
                 // 位置参数（块数）已经由调用方读走，跳过。
                 value if value.parse::<usize>().is_ok() => index += 1,
                 value if value.starts_with("--") => bail!("不认识的参数：{value}"),
@@ -177,6 +209,9 @@ impl Options {
             queries: queries.max(30),
             synchronous_full,
             vectors,
+            profile,
+            mmap_mib,
+            scan_depth,
         })
     }
 }
@@ -364,6 +399,14 @@ fn run_query(blocks: usize, options: &Options) -> Result<()> {
 
     let mut core = Core::open(&db_path)?;
     core.set_vector_storage_for_test(options.storage);
+    if let Some(depth) = options.scan_depth {
+        core.set_semantic_scan_depth_for_test(depth);
+        println!("[db] 快速路径候选上限 = {depth} 块（仅量测）");
+    }
+    if let Some(mib) = options.mmap_mib {
+        core.set_mmap_size_for_test(mib * 1024 * 1024)?;
+        println!("[db] mmap_size = {mib} MiB");
+    }
 
     let load_start = Instant::now();
     let embedder =
@@ -394,6 +437,10 @@ fn run_query(blocks: usize, options: &Options) -> Result<()> {
     let mut cold_ms = None;
     let mut self_hits = 0_usize;
     let mut hit_counts: Vec<usize> = Vec::with_capacity(options.queries);
+    if options.profile {
+        set_query_profiling(true);
+    }
+    let mut profiles: Vec<SemanticQueryProfile> = Vec::with_capacity(options.queries);
 
     for (position, &index) in query_indices.iter().enumerate() {
         let query = query_text(index);
@@ -422,6 +469,13 @@ fn run_query(blocks: usize, options: &Options) -> Result<()> {
             cold_ms = Some(elapsed_ms);
         } else if position > 3 {
             latencies.push(elapsed_ms);
+        }
+        if options.profile {
+            if let Some(profile) = take_query_profile() {
+                if position > 3 {
+                    profiles.push(profile);
+                }
+            }
         }
     }
 
@@ -457,7 +511,83 @@ fn run_query(blocks: usize, options: &Options) -> Result<()> {
         hit_counts.iter().min().copied().unwrap_or(0),
         hit_counts.iter().max().copied().unwrap_or(0)
     );
+    if options.profile {
+        print_profile(&profiles, summary.p50);
+    }
     Ok(())
+}
+
+/// 分段计时的中位数表。「1.5 秒花在哪」的答案就长这样。
+///
+/// 各段取的是**每条查询各自的分段值**再取中位数，所以九段相加不必等于墙钟中位数
+/// （不同查询的各段最大值不在同一条上）；最后一行的「会话/装配余量」把差额补齐。
+fn print_profile(profiles: &[SemanticQueryProfile], wall_p50_ms: f64) {
+    if profiles.is_empty() {
+        println!("[profile] 没有收集到分段计时（--profile 只对热态查询生效）");
+        return;
+    }
+    let median_ms = |pick: fn(&SemanticQueryProfile) -> u64| -> f64 {
+        let mut values: Vec<u64> = profiles.iter().map(pick).collect();
+        values.sort_unstable();
+        let middle = values.len() / 2;
+        let ns = if values.len() % 2 == 0 {
+            (values[middle - 1] + values[middle]) / 2
+        } else {
+            values[middle]
+        };
+        ns as f64 / 1_000_000.0
+    };
+    let mut rows: Vec<u64> = profiles.iter().map(|profile| profile.rows).collect();
+    rows.sort_unstable();
+    let rows = rows[rows.len() / 2];
+    let total_ms = median_ms(|profile| profile.total_ns);
+    let share = |ms: f64| if wall_p50_ms > 0.0 { ms / wall_p50_ms * 100.0 } else { 0.0 };
+    println!(
+        "[profile] 分段耗时（热态 {} 次查询的中位数 · 每次扫过 {} 行 · 墙钟 P50 {:.2} ms）",
+        profiles.len(),
+        rows,
+        wall_p50_ms
+    );
+    println!("  {:<22} {:>10} {:>9}", "段", "ms", "占墙钟");
+    println!("  {}", "-".repeat(43));
+    let stages: [(&str, fn(&SemanticQueryProfile) -> u64); 9] = [
+        ("取行·SQLite 步进", |p| p.step_ns),
+        ("取行·取 13 列（含 BLOB）", |p| p.fetch_ns),
+        ("反序列化 → Vec<f32>", |p| p.decode_ns),
+        ("余弦 / 点积", |p| p.cosine_ns),
+        ("拼候选（含字符串移动）", |p| p.assemble_ns),
+        ("排序", |p| p.sort_ns),
+        ("折叠", |p| p.fold_ns),
+        ("查询嵌入", |p| p.embed_ns),
+        ("SQL 准备", |p| p.prepare_ns),
+    ];
+    for (label, pick) in stages {
+        let ms = median_ms(pick);
+        println!("  {label:<22} {ms:>10.2} {:>8.1}%", share(ms));
+    }
+    let fast_scan_ms = median_ms(|profile| profile.fast_scan_ns);
+    let fast_meta_ms = median_ms(|profile| profile.fast_meta_ns);
+    let fast_used = profiles.iter().filter(|profile| profile.fast_path).count();
+    if fast_used > 0 {
+        println!("  {:<22} {:>10.2} {:>8.1}%", "快速路径·单表向量扫描", fast_scan_ms, share(fast_scan_ms));
+        println!("  {:<22} {:>10.2} {:>8.1}%", "快速路径·top-K 元数据", fast_meta_ms, share(fast_meta_ms));
+        let query_ms = median_ms(|profile| profile.fast_meta_query_ns);
+        let build_ms = median_ms(|profile| profile.fast_meta_build_ns);
+        println!("  {:<22} {:>10.2} {:>8.1}%", "  · 其中 SQLite 步进", query_ms, share(query_ms));
+        println!("  {:<22} {:>10.2} {:>8.1}%", "  · 其中取列+拼候选", build_ms, share(build_ms));
+    }
+    println!("  {:<22} {:>10.2} {:>8.1}%", "候选路径合计", total_ms, share(total_ms));
+    let coverage_ms = median_ms(|profile| profile.coverage_ns);
+    let materialize_ms = median_ms(|profile| profile.materialize_ns);
+    println!("  {:<22} {:>10.2} {:>8.1}%", "语义覆盖状态计数", coverage_ms, share(coverage_ms));
+    println!("  {:<22} {:>10.2} {:>8.1}%", "首屏结果装配", materialize_ms, share(materialize_ms));
+    println!(
+        "  （快速路径命中 {fast_used}/{} 次查询；未命中时走逐行 join 的精确路径）",
+        profiles.len()
+    );
+    let accounted = total_ms + coverage_ms + materialize_ms;
+    let rest = wall_p50_ms - accounted;
+    println!("  {:<22} {:>10.2} {:>8.1}%", "会话/结果装配余量", rest, share(rest));
 }
 
 /// 查询集：确定性地在库内均匀取 `count` 个块（乘一个与块数互素的步长）。

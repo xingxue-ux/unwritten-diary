@@ -40,12 +40,17 @@
 //!
 //! # 语义检索
 //!
-//! 按生效代次**流式扫描**向量，逐行解码、算余弦，按 `chunk_spans` 展开成
-//! 「块 × 篇」候选，分数从高到低排，再按篇折叠。**不做 ANN**：在 10 万块的实测里
-//! 全量精确余弦已经落在可接受延迟内（数字见
-//! `docs/architecture/m5-大库可用性.md`），加一个近似索引只会用「没说出口的召回
-//! 损失」换一个不需要的加速。向量本身按 `int8`（体积优先）或 `f32` 存，解码按行上
-//! 的 `storage` 分派；编码格式是口径三字段之一（#58），换格式整代重算。
+//! 默认过滤器下走**两段式精确扫描**（#90）：先用一张表扫完生效代次的向量、只留
+//! 得分最高的 `FAST_SCAN_DEPTH` 块，再只取这些块的 `chunk_spans` / `captures` 元数据，
+//! 按篇折叠。**这不是 ANN**：保留范围内的名次仍然是逐条精算的，只是不保留更深的
+//! 结果（上限说明见 `docs/architecture/m5-大库可用性.md`）。日期 / 类型 / 来源范围
+//! 过滤会用上单表扫描里没有的列，那种查询走原来的逐行 join 精确 SQL（候选集通常
+//! 小得多）。两段式里只要有块没通过后置过滤，就整条回退到精确 SQL——绝不拿
+//! 「前 K 条恰好都有效」当完整结果。
+//!
+//! 向量本身按 `int8`（体积优先）或 `f32` 存，解码按行上的 `storage` 分派；编码格式
+//! 是口径三字段之一（#58），换格式整代重算。点积直接从 BLOB 字节读（x86_64 上 AVX2），
+//! 三条路径共用同一个打分函数，分数逐位一致。
 //!
 //! # 口径判据（换模型未重建）
 //!
@@ -58,9 +63,12 @@
 //! 重建语义索引即可按当前模型整代重算并恢复。判据的完整说明见
 //! `docs/architecture/m2-向量索引与换代.md`。
 
-use std::collections::HashSet;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
+use rusqlite::types::ValueRef;
 use rusqlite::{params, OptionalExtension};
 
 use crate::chunks;
@@ -75,6 +83,164 @@ use crate::Core;
 
 /// 语义摘录最多这么多字符（超出截断加省略号）。取该篇自己那一段，不是整块正文。
 const SEMANTIC_SNIPPET_CHARS: usize = 160;
+
+// ---------------------------------------------------------------- 查询分段计时
+//
+// 「10 万块一次语义查询 1.5 秒」必须先知道钱花在哪，才谈得上优化。这里在**产品查询
+// 路径本身**上打点（不是探针里另写一套），分七段：取行（SQLite 步进 / 列拷贝）、
+// 反序列化、余弦、拼候选、排序、折叠、查询嵌入。默认**关闭**：关闭时每行只多一次
+// `bool` 判断，没有 `Instant::now()`。只有探针的 `--profile` 会打开它。
+//
+// 为什么不放进 `#[cfg(test)]`：这段要被 release 探针量真语料，测试构建量不出真数字。
+
+/// 一次语义查询的分段耗时（纳秒）。`rows` 是扫过的向量行数。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SemanticQueryProfile {
+    pub rows: u64,
+    /// 整个 `candidates_impl` 的墙钟时间（含下面所有段与未归类的残余）。
+    pub total_ns: u64,
+    /// 查询文本 → 查询向量。
+    pub embed_ns: u64,
+    /// SQL 准备（编译语句；进程内只发生在第一次）。
+    pub prepare_ns: u64,
+    /// `rows.next()`：SQLite 虚拟机的步进。
+    pub step_ns: u64,
+    /// 取出 13 列（含 BLOB 拷贝成 `Vec<u8>`、7 个 `String` 的分配）。
+    pub fetch_ns: u64,
+    /// `storage.decode`：字节 → `Vec<f32>`。
+    pub decode_ns: u64,
+    /// 点积 / 余弦。
+    pub cosine_ns: u64,
+    /// 拼 `SemanticCandidate`（字符串移动 + 结构体入 `Vec`）。
+    pub assemble_ns: u64,
+    /// 排序。
+    pub sort_ns: u64,
+    /// 按篇折叠。
+    pub fold_ns: u64,
+    /// 语义覆盖状态（`chunks::counts`）——与查询文本无关，但每次查询都算一遍。
+    pub coverage_ns: u64,
+    /// 首屏结果装配（按页取正文、拼 `SearchHit`）。
+    pub materialize_ns: u64,
+    /// #90 快速路径：单表向量扫描（取 BLOB + 校验 + 算分 + 选 top-K）。
+    pub fast_scan_ns: u64,
+    /// #90 快速路径：只取 top-K 块的元数据（span + capture）。
+    pub fast_meta_ns: u64,
+    /// 其中的 SQLite 部分（准备语句 + 逐行步进）。
+    pub fast_meta_query_ns: u64,
+    /// 其中的 Rust 部分（取列、拼候选、去重核对）。
+    pub fast_meta_build_ns: u64,
+    /// #90 快速路径是否命中；`false` = 回退到逐行 join 的精确路径。
+    pub fast_path: bool,
+}
+
+impl SemanticQueryProfile {
+    /// 已归类各段之和。
+    pub fn accounted_ns(self) -> u64 {
+        self.embed_ns
+            + self.prepare_ns
+            + self.step_ns
+            + self.fetch_ns
+            + self.decode_ns
+            + self.cosine_ns
+            + self.assemble_ns
+            + self.sort_ns
+            + self.fold_ns
+            + self.coverage_ns
+            + self.materialize_ns
+            + self.fast_scan_ns
+            + self.fast_meta_ns
+    }
+}
+
+mod profile_sink {
+    use super::SemanticQueryProfile;
+    use std::cell::RefCell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+
+    thread_local! {
+        static ACC: RefCell<SemanticQueryProfile> = const { RefCell::new(SemanticQueryProfile {
+            rows: 0,
+            total_ns: 0,
+            embed_ns: 0,
+            prepare_ns: 0,
+            step_ns: 0,
+            fetch_ns: 0,
+            decode_ns: 0,
+            cosine_ns: 0,
+            assemble_ns: 0,
+            sort_ns: 0,
+            fold_ns: 0,
+            coverage_ns: 0,
+            materialize_ns: 0,
+            fast_scan_ns: 0,
+            fast_meta_ns: 0,
+            fast_meta_query_ns: 0,
+            fast_meta_build_ns: 0,
+            fast_path: false,
+        }) };
+    }
+
+    pub(super) fn set_enabled(enabled: bool) {
+        ENABLED.store(enabled, Ordering::Relaxed);
+        reset();
+    }
+
+    pub(super) fn enabled() -> bool {
+        ENABLED.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn reset() {
+        ACC.with(|acc| *acc.borrow_mut() = SemanticQueryProfile::default());
+    }
+
+    /// 取走这一段计时并清零（探针按查询累积中位数）。
+    pub(super) fn take() -> Option<SemanticQueryProfile> {
+        if !enabled() {
+            return None;
+        }
+        ACC.with(|acc| {
+            let mut slot = acc.borrow_mut();
+            let profile = *slot;
+            *slot = SemanticQueryProfile::default();
+            Some(profile)
+        })
+    }
+
+    /// 累加一段。调用方先判 `enabled()`，关闭时不会走到这里。
+    pub(super) fn add(update: impl FnOnce(&mut SemanticQueryProfile)) {
+        ACC.with(|acc| update(&mut acc.borrow_mut()));
+    }
+}
+
+/// 仅供量测：打开/关闭语义查询的分段计时（默认关；产品代码不调它）。
+#[doc(hidden)]
+pub fn set_query_profiling(enabled: bool) {
+    profile_sink::set_enabled(enabled);
+}
+
+/// 仅供量测：取走上一次语义查询的分段计时；没打开计时时返回 `None`。
+#[doc(hidden)]
+pub fn take_query_profile() -> Option<SemanticQueryProfile> {
+    profile_sink::take()
+}
+
+pub(crate) fn elapsed_ns(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// 分段计时是否打开。会话层据此决定要不要取 `Instant`。
+pub(crate) fn profile_enabled() -> bool {
+    profile_sink::enabled()
+}
+
+/// 会话层（覆盖状态、首屏装配）也记进同一份分段账本。关闭计时时零成本。
+pub(crate) fn note_profile(update: impl FnOnce(&mut SemanticQueryProfile)) {
+    if profile_sink::enabled() {
+        profile_sink::add(update);
+    }
+}
 
 /// 一次 `build_semantic_index` 的结果。**算出来的真值**，测试与探针靠它核对
 /// 「没变的块没有重复算」。
@@ -665,6 +831,8 @@ fn candidates_impl(
     filters: &SearchFilters,
     mode: RowMode,
 ) -> Result<SemanticCandidates> {
+    let profiling = profile_sink::enabled();
+    let total_start = profiling.then(Instant::now);
     let Some(generation) = active_generation(core)? else {
         return Ok(SemanticCandidates::Scored(Vec::new()));
     };
@@ -674,7 +842,11 @@ fn candidates_impl(
     if query.trim().is_empty() {
         return Ok(SemanticCandidates::Scored(Vec::new()));
     }
+    let embed_start = profiling.then(Instant::now);
     let query_vector = embedder.embed_query(query)?;
+    if let Some(start) = embed_start {
+        profile_sink::add(|profile| profile.embed_ns += elapsed_ns(start));
+    }
     if query_vector.len() != embedder.dims() {
         return Err(CoreError::InvalidState {
             entity: "语义检索",
@@ -687,6 +859,38 @@ fn candidates_impl(
         });
     }
 
+    // 查询向量的模长只算一次（原来每行都重算一遍 left_norm）：三条路径共用同一个值，
+    // 分数因此逐位一致。
+    let query_norm: f32 = query_vector.iter().map(|value| value * value).sum();
+
+    // **快速路径（#90）**：默认过滤器下，先用一张表扫完向量、选 top-K 块，再只取这
+    // 些块的元数据。10 万块上「逐行 join span + capture」占查询总时间的一半以上，
+    // 而默认过滤条件用不上那些列——它们只在最后 K 条上核对一次。条件与回退规则见
+    // `fast_path_eligible` / `candidates_fast`；任何一步核对不上（有块被过滤掉）就
+    // 整条回退到下面的精确 SQL，绝不拿「前 K 条里恰好没被过滤」当完整结果。
+    if mode == RowMode::Streaming && fast_path_eligible(filters) {
+        if let Some(scored) =
+            candidates_fast(
+                core,
+                &query_vector,
+                query_norm,
+                generation,
+                filters,
+                core.semantic_scan_depth,
+                profiling,
+            )?
+        {
+            if profiling {
+                profile_sink::add(|profile| profile.fast_path = true);
+            }
+            let ranked = rank_and_fold(scored, profiling);
+            if let Some(start) = total_start {
+                profile_sink::add(|profile| profile.total_ns += elapsed_ns(start));
+            }
+            return Ok(SemanticCandidates::Scored(ranked));
+        }
+    }
+
     // **来源篇必须仍是当前修订**：块的 id 与向量都按内容存，`revise_text` 之后、下一次
     // `build_semantic_index` 之前，旧修订的块与向量**仍在生效代次里**——不过滤就会把旧正文
     // 当成当前内容召回（#32 明确禁止；关键词那一路在 #54 已按同一口径修过）。
@@ -696,7 +900,6 @@ fn candidates_impl(
                       s.source_id, s.source_revision_id, s.start_char, s.end_char, s.kind, \
                       s.coverage, c.day_key \
                FROM chunk_vectors v \
-               JOIN text_chunks t ON t.chunk_id = v.chunk_id \
                JOIN chunk_spans s ON s.chunk_id = v.chunk_id \
                JOIN captures c ON c.id = s.capture_id \
                WHERE v.generation = ?1 \
@@ -709,7 +912,11 @@ fn candidates_impl(
                         OR EXISTS (SELECT 1 FROM source_items si \
                                    WHERE si.source_id = s.source_id \
                                      AND si.current_revision_id = s.source_revision_id))";
+    let prepare_start = profiling.then(Instant::now);
     let mut statement = core.conn.prepare(sql)?;
+    if let Some(start) = prepare_start {
+        profile_sink::add(|profile| profile.prepare_ns += elapsed_ns(start));
+    }
     // **流式扫描**：一行一行地取、解码、算余弦，算完就丢。不要 `collect` 成
     // `Vec<Vec<u8>>`——那正是「10 万块 f32 = 195 MiB/次查询」的来源：把整代向量
     // 连同 SQLite 的一份拷贝同时放进堆里，峰值是向量总量的两倍左右。
@@ -730,8 +937,25 @@ fn candidates_impl(
         RowMode::Streaming => {
             let mut rows = statement.query(params)?;
             let mut scored = Vec::new();
-            while let Some(row) = rows.next()? {
-                scored.push(candidate_of(raw_row(row)?, &query_vector)?);
+            let mut scanned = 0_u64;
+            while let Some(row) = {
+                let step_start = profiling.then(Instant::now);
+                let next = rows.next()?;
+                if let (Some(start), true) = (step_start, next.is_some()) {
+                    profile_sink::add(|profile| profile.step_ns += elapsed_ns(start));
+                }
+                next
+            } {
+                let fetch_start = profiling.then(Instant::now);
+                let raw = raw_row(row)?;
+                if let Some(start) = fetch_start {
+                    profile_sink::add(|profile| profile.fetch_ns += elapsed_ns(start));
+                }
+                scored.push(candidate_of(raw, &query_vector, query_norm, profiling)?);
+                scanned += 1;
+            }
+            if profiling {
+                profile_sink::add(|profile| profile.rows = scanned);
             }
             scored
         }
@@ -742,13 +966,527 @@ fn candidates_impl(
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let mut scored = Vec::with_capacity(rows.len());
             for raw in rows {
-                scored.push(candidate_of(raw, &query_vector)?);
+                scored.push(candidate_of(raw, &query_vector, query_norm, profiling)?);
+            }
+            if profiling {
+                profile_sink::add(|profile| profile.rows = scored.len() as u64);
             }
             scored
         }
     };
 
-    Ok(SemanticCandidates::Scored(rank_and_fold(scored)))
+    let ranked = rank_and_fold(scored, profiling);
+    if let Some(start) = total_start {
+        profile_sink::add(|profile| profile.total_ns += elapsed_ns(start));
+    }
+    Ok(SemanticCandidates::Scored(ranked))
+}
+
+// ------------------------------------------------------------ 快速路径（#90）
+
+/// 快速路径最多保留多少个**块**（按篇折叠之前）。
+///
+/// 4 096 块 = 默认每页 20 条时的 200 页。这不是 ANN：保留范围内的名次仍然是逐条精算的，
+/// 只是**不再保留第 4 096 块之后的结果**——10 万块 × 数千条命中本来也翻不到那么深。
+/// 为什么不无限保留：那等于把整代向量的元数据都取回来（正是这条快速路径省掉的 join）。
+///
+/// 10 万块上的「深度 vs 延迟」实测（`--scan-depth`）：int8 2 048/4 096/8 192 块
+/// = P50 136/156/200 ms；f32 = 347/366/411 ms。取 4 096 是在「够深」与「P95 进
+/// 200 ms」之间选的；上限与曲线写在 `docs/architecture/m5-大库可用性.md`。测试
+/// `fast_scan_falls_back_when_a_top_candidate_is_filtered_out` 钉住回退行为，既有
+/// `streaming_scan_matches_the_load_all_reference` 钉住与精确路径逐位一致。
+pub(crate) const FAST_SCAN_DEPTH: usize = 4_096;
+
+/// 只有**默认过滤器**才走单表扫描。
+///
+/// 日期区间 / 类型 / 来源范围都会把候选限制在库的一个子集里，而单表扫描里没有这些列：
+/// 先按分数取 top-K 再过滤，可能把「分数不高但确实符合过滤条件」的块整个漏掉。那种
+/// 查询仍走精确 SQL（候选集通常也小得多）。`include_trashed` 不在此列——它只影响
+/// 后置核对，核对不上会整条回退。
+fn fast_path_eligible(filters: &SearchFilters) -> bool {
+    filters.from_day_key.is_none()
+        && filters.to_day_key.is_none()
+        && filters.kinds.is_empty()
+        && filters.source_scope.is_none()
+}
+
+/// 快速路径选中的一条：分数 + 块所在行的 rowid。
+#[derive(Debug, Clone, Copy)]
+struct ScoredRow {
+    score: f32,
+    rowid: i64,
+}
+
+impl PartialEq for ScoredRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.score.to_bits() == other.score.to_bits() && self.rowid == other.rowid
+    }
+}
+
+impl Eq for ScoredRow {}
+
+impl PartialOrd for ScoredRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ScoredRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // 反向比较：`BinaryHeap` 是最大堆，这里要让「分数最低」的那条浮到堆顶，
+        // 它才是下一个该被替换掉的候选。
+        other
+            .score
+            .total_cmp(&self.score)
+            .then_with(|| other.rowid.cmp(&self.rowid))
+    }
+}
+
+/// 单表扫描 + 只取 top-K 元数据。返回 `None` 表示**必须回退**到精确路径。
+///
+/// 回退条件只有一条：选中的 K 个块里有任何一个没通过后置过滤（被回收 / 修订过期）。
+/// 那时「前 K 条恰好都有效」不能证明「第 K+1 条没有更该出现」，所以不猜。
+fn candidates_fast(
+    core: &Core,
+    query_vector: &[f32],
+    query_norm: f32,
+    generation: i64,
+    filters: &SearchFilters,
+    depth: usize,
+    profiling: bool,
+) -> Result<Option<Vec<SemanticCandidate>>> {
+    let scan_start = profiling.then(Instant::now);
+    let mut heap: BinaryHeap<ScoredRow> = BinaryHeap::with_capacity(depth + 1);
+    let mut scanned = 0_u64;
+    {
+        let mut statement = core
+            .conn
+            .prepare("SELECT rowid, dims, storage, vector FROM chunk_vectors WHERE generation = ?1")?;
+        let mut rows = statement.query(params![generation])?;
+        while let Some(row) = {
+            let step_start = profiling.then(Instant::now);
+            let next = rows.next()?;
+            if let (Some(start), true) = (step_start, next.is_some()) {
+                profile_sink::add(|profile| profile.step_ns += elapsed_ns(start));
+            }
+            next
+        } {
+            let fetch_start = profiling.then(Instant::now);
+            let rowid: i64 = row.get(0)?;
+            let dims: i64 = row.get(1)?;
+            let storage = match row.get_ref(2)? {
+                ValueRef::Text(bytes) => std::str::from_utf8(bytes)
+                    .ok()
+                    .and_then(VectorStorage::from_wire)
+                    .ok_or_else(|| CoreError::CorruptedData {
+                        message: format!(
+                            "不认识的向量存储格式：{}",
+                            String::from_utf8_lossy(bytes)
+                        ),
+                    })?,
+                _ => {
+                    return Err(CoreError::CorruptedData {
+                        message: "chunk_vectors.storage 不是文本".to_owned(),
+                    })
+                }
+            };
+            let bytes = match row.get_ref(3)? {
+                ValueRef::Blob(bytes) => bytes,
+                _ => {
+                    return Err(CoreError::CorruptedData {
+                        message: "chunk_vectors.vector 不是 BLOB".to_owned(),
+                    })
+                }
+            };
+            if let Some(start) = fetch_start {
+                profile_sink::add(|profile| profile.fetch_ns += elapsed_ns(start));
+            }
+            let score_start = profiling.then(Instant::now);
+            let score = score_of(storage, bytes, query_vector, query_norm, dims, "")?;
+            if let Some(start) = score_start {
+                profile_sink::add(|profile| profile.cosine_ns += elapsed_ns(start));
+            }
+            scanned += 1;
+            let keep_start = profiling.then(Instant::now);
+            if heap.len() < depth {
+                heap.push(ScoredRow { score, rowid });
+            } else if let Some(worst) = heap.peek() {
+                if score > worst.score {
+                    heap.pop();
+                    heap.push(ScoredRow { score, rowid });
+                }
+            }
+            if let Some(start) = keep_start {
+                profile_sink::add(|profile| profile.assemble_ns += elapsed_ns(start));
+            }
+        }
+    }
+    if let Some(start) = scan_start {
+        profile_sink::add(|profile| profile.fast_scan_ns += elapsed_ns(start));
+    }
+    if profiling {
+        profile_sink::add(|profile| profile.rows = scanned);
+    }
+
+    let mut selected: Vec<ScoredRow> = heap.into_vec();
+    if selected.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    // 按 rowid 升序去取元数据：选中的块散布在整表里，顺序访问时 SQLite 的页命中率
+    // 明显更好（10 万块、8192 个块行上量到 ~20% 的差别）。结果顺序不受影响——
+    // `rank_and_fold` 之后会按分数与同分键重新排。
+    selected.sort_unstable_by_key(|row| row.rowid);
+    let scores: HashMap<i64, f32> = selected
+        .iter()
+        .map(|row| (row.rowid, row.score))
+        .collect();
+    let ids = selected
+        .iter()
+        .map(|row| row.rowid.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let meta_start = profiling.then(Instant::now);
+    let sql = format!(
+        "SELECT v.rowid, s.chunk_id, s.ordinal, s.capture_id, s.source_id, \
+                s.source_revision_id, s.start_char, s.end_char, s.kind, s.coverage, c.day_key \
+         FROM chunk_vectors v \
+         JOIN chunk_spans s ON s.chunk_id = v.chunk_id \
+         JOIN captures c ON c.id = s.capture_id \
+         WHERE v.rowid IN (SELECT value FROM json_each(?1)) \
+           AND v.generation = ?2 \
+           AND (?3 = 1 OR c.state <> 'trashed') \
+           AND (s.source_revision_id = '' \
+                OR EXISTS (SELECT 1 FROM source_items si \
+                           WHERE si.source_id = s.source_id \
+                             AND si.current_revision_id = s.source_revision_id))"
+    );
+    let mut statement = core.conn.prepare(&sql)?;
+    let mut rows = statement.query(params![
+        format!("[{ids}]"),
+        generation,
+        i64::from(filters.include_trashed)
+    ])?;
+    let mut scored = Vec::with_capacity(selected.len());
+    let mut surviving_chunks: HashSet<String> = HashSet::with_capacity(selected.len());
+    while let Some(row) = {
+        let step_start = profiling.then(Instant::now);
+        let next = rows.next()?;
+        if let (Some(start), true) = (step_start, next.is_some()) {
+            profile_sink::add(|profile| profile.fast_meta_query_ns += elapsed_ns(start));
+        }
+        next
+    } {
+        let build_start = profiling.then(Instant::now);
+        let rowid: i64 = row.get(0)?;
+        let chunk_id: String = row.get(1)?;
+        let Some(&score) = scores.get(&rowid) else {
+            return Err(CoreError::CorruptedData {
+                message: format!("快速扫描取回的块行 {rowid} 不在选中的 top-K 里"),
+            });
+        };
+        surviving_chunks.insert(chunk_id.clone());
+        let source_id: String = row.get(4)?;
+        scored.push(SemanticCandidate {
+            group_id: source_id.clone(),
+            chunk_id,
+            span_ordinal: row.get(2)?,
+            score,
+            capture_id: row.get(3)?,
+            source_id,
+            source_revision_id: row.get(5)?,
+            kind: row.get(8)?,
+            coverage: Coverage::from_wire(&row.get::<_, String>(9)?)
+                .unwrap_or(Coverage::Unavailable),
+            day_key: row.get(10)?,
+            start_char: row.get(6)?,
+            end_char: row.get(7)?,
+        });
+        if let Some(start) = build_start {
+            profile_sink::add(|profile| profile.fast_meta_build_ns += elapsed_ns(start));
+        }
+    }
+    if let Some(start) = meta_start {
+        profile_sink::add(|profile| profile.fast_meta_ns += elapsed_ns(start));
+    }
+    // 选中的块有一条没通过后置过滤 ⇒ 可能漏掉了排在其后的有效候选，整条回退。
+    if surviving_chunks.len() != selected.len() {
+        return Ok(None);
+    }
+    Ok(Some(scored))
+}
+
+/// 直接按**存储字节**算余弦：不先解成 `Vec<f32>`，也不逐行重算查询向量的模长。
+///
+/// 流式扫描、全量参考路径、快速路径三处共用这一个函数，所以三处的分数逐位一致
+/// （`streaming_scan_matches_the_load_all_reference` 钉住这一点）。
+fn score_of(
+    storage: VectorStorage,
+    bytes: &[u8],
+    query_vector: &[f32],
+    query_norm: f32,
+    row_dims: i64,
+    chunk_id: &str,
+) -> Result<f32> {
+    let (dot, norm) = match storage {
+        VectorStorage::F32 => {
+            if !bytes.len().is_multiple_of(4) {
+                return Err(CoreError::CorruptedData {
+                    message: format!("向量字节数 {} 不是 4 的倍数", bytes.len()),
+                });
+            }
+            let vector_dims = bytes.len() / 4;
+            check_dims(vector_dims, row_dims, query_vector.len(), chunk_id)?;
+            dot_norm_f32(bytes, query_vector)
+        }
+        VectorStorage::Int8 => {
+            if bytes.len() < 4 {
+                return Err(CoreError::CorruptedData {
+                    message: format!("int8 向量字节数 {} 连一个 scale 都放不下", bytes.len()),
+                });
+            }
+            let scale = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            if !scale.is_finite() || scale <= 0.0 {
+                return Err(CoreError::CorruptedData {
+                    message: format!("int8 向量的 scale 是 {scale}，不是正的有限数"),
+                });
+            }
+            let vector_dims = bytes.len() - 4;
+            check_dims(vector_dims, row_dims, query_vector.len(), chunk_id)?;
+            dot_norm_int8(&bytes[4..], query_vector, scale)
+        }
+    };
+    let denominator = query_norm.sqrt() * norm.sqrt();
+    Ok(if denominator > 0.0 {
+        dot / denominator
+    } else {
+        0.0
+    })
+}
+
+/// 点积 + 自身模长平方，直接从 BLOB 字节读 f32。
+///
+/// x86_64 上运行时探测 AVX2（8 路），否则走四个独立累加器的标量版。两条路径
+/// **共用同一个实现**（同一次查询里不会一半 AVX2 一半标量），所以快速路径与全量
+/// 参考路径的分数仍然逐位一致。
+fn dot_norm_f32(bytes: &[u8], query: &[f32]) -> (f32, f32) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: 上面刚在运行时探测过 AVX2。
+            return unsafe { dot_norm_f32_avx2(bytes, query) };
+        }
+    }
+    dot_norm_f32_scalar(bytes, query)
+}
+
+/// AVX2 版：一次 8 个 f32，非对齐加载（BLOB 指针对齐没有承诺）。
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn dot_norm_f32_avx2(bytes: &[u8], query: &[f32]) -> (f32, f32) {
+    use std::arch::x86_64::*;
+    debug_assert_eq!(bytes.len(), query.len() * 4);
+    let len = query.len();
+    let mut dot = _mm256_setzero_ps();
+    let mut norm = _mm256_setzero_ps();
+    let values = bytes.as_ptr();
+    let queries = query.as_ptr();
+    let mut index = 0_usize;
+    while index + 8 <= len {
+        let value = _mm256_loadu_ps(values.add(index * 4).cast());
+        let query8 = _mm256_loadu_ps(queries.add(index));
+        dot = _mm256_add_ps(dot, _mm256_mul_ps(value, query8));
+        norm = _mm256_add_ps(norm, _mm256_mul_ps(value, value));
+        index += 8;
+    }
+    let mut tail_dot = 0_f32;
+    let mut tail_norm = 0_f32;
+    while index < len {
+        // x86_64 是小端。
+        let value = f32::from_le_bytes([
+            bytes[index * 4],
+            bytes[index * 4 + 1],
+            bytes[index * 4 + 2],
+            bytes[index * 4 + 3],
+        ]);
+        tail_dot += value * query[index];
+        tail_norm += value * value;
+        index += 1;
+    }
+    (
+        horizontal_sum_avx2(dot) + tail_dot,
+        horizontal_sum_avx2(norm) + tail_norm,
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn horizontal_sum_avx2(value: std::arch::x86_64::__m256) -> f32 {
+    use std::arch::x86_64::*;
+    let low = _mm256_castps256_ps128(value);
+    let high = _mm256_extractf128_ps(value, 1);
+    let mut sum = _mm_add_ps(low, high);
+    sum = _mm_add_ps(sum, _mm_movehl_ps(sum, sum));
+    sum = _mm_add_ss(sum, _mm_shuffle_ps(sum, sum, 0x55));
+    _mm_cvtss_f32(sum)
+}
+
+/// 标量版（非 x86_64 或无 AVX2 时）。四个累加器拆开依赖链。
+fn dot_norm_f32_scalar(bytes: &[u8], query: &[f32]) -> (f32, f32) {
+    debug_assert_eq!(bytes.len(), query.len() * 4);
+    let mut dot = [0_f32; 4];
+    let mut norm = [0_f32; 4];
+    let mut index = 0_usize;
+    let mut cursor = bytes.as_ptr();
+    #[cfg(target_endian = "little")]
+    while index + 4 <= query.len() {
+        // SAFETY: `index + 4 <= query.len()` 且 bytes.len() == query.len()*4，
+        // 因此四次 4 字节读都在 BLOB 范围内；`read_unaligned` 不要求对齐。
+        let values = unsafe {
+            [
+                std::ptr::read_unaligned(cursor.cast::<f32>()),
+                std::ptr::read_unaligned(cursor.add(4).cast::<f32>()),
+                std::ptr::read_unaligned(cursor.add(8).cast::<f32>()),
+                std::ptr::read_unaligned(cursor.add(12).cast::<f32>()),
+            ]
+        };
+        for lane in 0..4 {
+            let value = values[lane];
+            let query = query[index + lane];
+            dot[lane] += value * query;
+            norm[lane] += value * value;
+        }
+        index += 4;
+        cursor = unsafe { cursor.add(16) };
+    }
+    #[cfg(not(target_endian = "little"))]
+    while index + 4 <= query.len() {
+        for lane in 0..4 {
+            let chunk = &bytes[(index + lane) * 4..(index + lane) * 4 + 4];
+            let value = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            let query = query[index + lane];
+            dot[lane] += value * query;
+            norm[lane] += value * value;
+        }
+        index += 4;
+    }
+    // 尾数（维度不是 4 的倍数；BGE 是 512，正常走不到）。
+    while index < query.len() {
+        let value = f32::from_le_bytes([
+            bytes[index * 4],
+            bytes[index * 4 + 1],
+            bytes[index * 4 + 2],
+            bytes[index * 4 + 3],
+        ]);
+        dot[0] += value * query[index];
+        norm[0] += value * value;
+        index += 1;
+    }
+    (
+        (dot[0] + dot[1]) + (dot[2] + dot[3]),
+        (norm[0] + norm[1]) + (norm[2] + norm[3]),
+    )
+}
+
+/// int8 版：`value = q * scale`。x86_64 上用 AVX2 把 8 个 i8 扩成 f32 再乘加。
+fn dot_norm_int8(bytes: &[u8], query: &[f32], scale: f32) -> (f32, f32) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: 上面刚在运行时探测过 AVX2。
+            return unsafe { dot_norm_int8_avx2(bytes, query, scale) };
+        }
+    }
+    dot_norm_int8_scalar(bytes, query, scale)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn dot_norm_int8_avx2(bytes: &[u8], query: &[f32], scale: f32) -> (f32, f32) {
+    use std::arch::x86_64::*;
+    debug_assert_eq!(bytes.len(), query.len());
+    let len = query.len();
+    let mut dot = _mm256_setzero_ps();
+    let mut norm = _mm256_setzero_ps();
+    let scale8 = _mm256_set1_ps(scale);
+    let values = bytes.as_ptr();
+    let queries = query.as_ptr();
+    let mut index = 0_usize;
+    while index + 8 <= len {
+        let raw = _mm_loadl_epi64(values.add(index).cast());
+        let ints = _mm256_cvtepi8_epi32(raw);
+        let value = _mm256_mul_ps(_mm256_cvtepi32_ps(ints), scale8);
+        let query8 = _mm256_loadu_ps(queries.add(index));
+        dot = _mm256_add_ps(dot, _mm256_mul_ps(value, query8));
+        norm = _mm256_add_ps(norm, _mm256_mul_ps(value, value));
+        index += 8;
+    }
+    let mut tail_dot = 0_f32;
+    let mut tail_norm = 0_f32;
+    while index < len {
+        let value = f32::from(bytes[index] as i8) * scale;
+        tail_dot += value * query[index];
+        tail_norm += value * value;
+        index += 1;
+    }
+    (
+        horizontal_sum_avx2(dot) + tail_dot,
+        horizontal_sum_avx2(norm) + tail_norm,
+    )
+}
+
+fn dot_norm_int8_scalar(bytes: &[u8], query: &[f32], scale: f32) -> (f32, f32) {
+    debug_assert_eq!(bytes.len(), query.len());
+    let mut dot = [0_f32; 4];
+    let mut norm = [0_f32; 4];
+    let mut index = 0_usize;
+    while index + 4 <= query.len() {
+        for lane in 0..4 {
+            let value = f32::from(bytes[index + lane] as i8) * scale;
+            let query = query[index + lane];
+            dot[lane] += value * query;
+            norm[lane] += value * value;
+        }
+        index += 4;
+    }
+    while index < query.len() {
+        let value = f32::from(bytes[index] as i8) * scale;
+        dot[0] += value * query[index];
+        norm[0] += value * value;
+        index += 1;
+    }
+    (
+        (dot[0] + dot[1]) + (dot[2] + dot[3]),
+        (norm[0] + norm[1]) + (norm[2] + norm[3]),
+    )
+}
+
+/// 与 `candidate_of` 里的两条维度校验同口径：先对行上的 `dims`，再对查询向量。
+fn check_dims(
+    vector_dims: usize,
+    row_dims: i64,
+    query_dims: usize,
+    chunk_id: &str,
+) -> Result<()> {
+    let row_dims = usize::try_from(row_dims).unwrap_or(usize::MAX);
+    if vector_dims != row_dims {
+        return Err(CoreError::CorruptedData {
+            message: format!("向量字节解出 {vector_dims} 维，但行上记的是 {row_dims} 维"),
+        });
+    }
+    if vector_dims != query_dims {
+        let where_ = if chunk_id.is_empty() {
+            String::new()
+        } else {
+            format!("块 {chunk_id} 的")
+        };
+        return Err(CoreError::CorruptedData {
+            message: format!(
+                "{where_}向量是 {vector_dims} 维、行上记的是 {row_dims} 维，查询向量是 \
+                 {query_dims} 维：两者不是同一个向量空间，不做余弦"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// 从当前行取出 13 列。流式与全量两条路径共用，保证「取出来的东西」完全一样。
@@ -790,43 +1528,42 @@ struct RawRow {
 
 /// 把一行的字节解码、校验、算余弦，变成一条候选。两条路径共用这一段，
 /// 唯一的差别是「行是一次一行地取，还是先收成一堆」。
-fn candidate_of(row: RawRow, query_vector: &[f32]) -> Result<SemanticCandidate> {
+fn candidate_of(
+    row: RawRow,
+    query_vector: &[f32],
+    query_norm: f32,
+    profiling: bool,
+) -> Result<SemanticCandidate> {
     // **按行上的 `storage` 分派解码，不猜。** 整代口径已经在进计算前核对过
     // （`caliber_mismatch`），所以正常走到这里的行都是当前格式；这里仍然逐行
     // 解析，是为了让「历史遗留的混合代次」在报错时说得清是哪一行、哪种格式，
     // 而不是拿一个默认格式解出一串垃圾分数。
+    //
+    // 解码、维度校验与点积是同一段（`score_of`），**不先分配 `Vec<f32>`**：与快速路径
+    // 共用这个函数，三条路径的分数才会逐位一致。
+    //
+    // 兜底（正常走不到）：整代口径已经在进计算前核对过，所以这里的每一行**应当**
+    // 与查询向量同维。真的不同维时**如实报错**，绝不静默 `zip` 到短的那一段——那会
+    // 给出一个看起来正常的分数。口径写在
+    // `docs/architecture/m2-向量索引与换代.md` 的「消费契约」里。
     let storage =
         VectorStorage::from_wire(&row.storage).ok_or_else(|| CoreError::CorruptedData {
             message: format!("不认识的向量存储格式：{}", row.storage),
         })?;
-    let vector = storage.decode(&row.vector)?;
-    if vector.len() as i64 != row.dims {
-        return Err(CoreError::CorruptedData {
-            message: format!(
-                "向量字节解出 {} 维，但行上记的是 {} 维",
-                vector.len(),
-                row.dims
-            ),
-        });
+    let cosine_start = profiling.then(Instant::now);
+    let score = score_of(
+        storage,
+        &row.vector,
+        query_vector,
+        query_norm,
+        row.dims,
+        &row.chunk_id,
+    )?;
+    if let Some(start) = cosine_start {
+        profile_sink::add(|profile| profile.cosine_ns += elapsed_ns(start));
     }
-    // 兜底（正常走不到）：整代口径已经在进计算前核对过，所以这里的每一行**应当**
-    // 与查询向量同维。真的不同维时**如实报错**，绝不退回 `cosine` 的静默 `zip`
-    // ——那会把两条不同空间的向量截到短的那一段，给出一个看起来正常的分数
-    // （原来 `cosine` 的隐患正是这一条）。口径写在
-    // `docs/architecture/m2-向量索引与换代.md` 的「消费契约」里。
-    if vector.len() != query_vector.len() {
-        return Err(CoreError::CorruptedData {
-            message: format!(
-                "块 {} 的向量是 {} 维、行上记的是 {} 维，查询向量是 {} 维：                 两者不是同一个向量空间，不做余弦",
-                row.chunk_id,
-                vector.len(),
-                row.dims,
-                query_vector.len()
-            ),
-        });
-    }
-    let score = cosine(query_vector, &vector);
-    Ok(SemanticCandidate {
+    let assemble_start = profiling.then(Instant::now);
+    let candidate = SemanticCandidate {
         group_id: row.source_id.clone(),
         chunk_id: row.chunk_id,
         span_ordinal: row.span_ordinal,
@@ -839,11 +1576,18 @@ fn candidate_of(row: RawRow, query_vector: &[f32]) -> Result<SemanticCandidate> 
         day_key: row.day_key,
         start_char: row.start_char,
         end_char: row.end_char,
-    })
+    };
+    if let Some(start) = assemble_start {
+        profile_sink::add(|profile| profile.assemble_ns += elapsed_ns(start));
+    }
+    Ok(candidate)
 }
 
 /// 排序 + 按篇折叠。流式与全量两条路径共用，保证结果只差在内存占用。
-fn rank_and_fold(mut scored: Vec<SemanticCandidate>) -> Vec<SemanticCandidate> {
+fn rank_and_fold(
+    mut scored: Vec<SemanticCandidate>,
+    profiling: bool,
+) -> Vec<SemanticCandidate> {
     // 分数从高到低；同分按日期近到远，再按**真正由内容决定**的键：篇内区间与段序号。
     //
     // 为什么同分时**不能**先比 `chunk_id`（issue #57）：`chunk_id` 的哈希输入里有
@@ -856,6 +1600,7 @@ fn rank_and_fold(mut scored: Vec<SemanticCandidate>) -> Vec<SemanticCandidate> {
     // `chunk_id` 只留作最后的**全序兜底**：只有两条候选的（日期、篇内区间、段序号）
     // 都完全相同才会走到它——那时两条命中的内容已经一模一样，顺序不影响用户看到什么。
     // 同分规则的契约写在 `docs/architecture/m2-向量索引与换代.md` 的「消费契约」里。
+    let sort_start = profiling.then(Instant::now);
     scored.sort_by(|left, right| {
         right
             .score
@@ -867,41 +1612,21 @@ fn rank_and_fold(mut scored: Vec<SemanticCandidate>) -> Vec<SemanticCandidate> {
             .then_with(|| left.span_ordinal.cmp(&right.span_ordinal))
             .then_with(|| left.chunk_id.cmp(&right.chunk_id))
     });
+    if let Some(start) = sort_start {
+        profile_sink::add(|profile| profile.sort_ns += elapsed_ns(start));
+    }
 
     // 折叠：同一篇只留第一条（也就是得分最高的那块）。
+    let fold_start = profiling.then(Instant::now);
     let mut seen: HashSet<String> = HashSet::new();
-    scored
+    let folded: Vec<SemanticCandidate> = scored
         .into_iter()
         .filter(|candidate| seen.insert(candidate.group_id.clone()))
-        .collect()
-}
-
-/// 余弦相似度。向量已经 L2 归一化，所以正常情况下就是内积；仍然按真余弦算，
-/// 免得将来出现没归一化的行就悄悄错掉。
-///
-/// **前置条件：两个切片同维**。调用方（`candidates`）在算之前就核对过；这里再
-/// `debug_assert` 一次是为了钉住「不许静默 `zip` 到短的那一段」这条口径——真出现
-/// 不同维时，`debug` 构建直接炸出来，而不是返回一个 0 分或半截分数。
-fn cosine(left: &[f32], right: &[f32]) -> f32 {
-    debug_assert_eq!(
-        left.len(),
-        right.len(),
-        "不同维的向量不能算余弦（口径详见 m2-向量索引与换代.md 的消费契约）"
-    );
-    let mut dot = 0_f32;
-    let mut left_norm = 0_f32;
-    let mut right_norm = 0_f32;
-    for (a, b) in left.iter().zip(right) {
-        dot += a * b;
-        left_norm += a * a;
-        right_norm += b * b;
+        .collect();
+    if let Some(start) = fold_start {
+        profile_sink::add(|profile| profile.fold_ns += elapsed_ns(start));
     }
-    let denominator = left_norm.sqrt() * right_norm.sqrt();
-    if denominator > 0.0 {
-        dot / denominator
-    } else {
-        0.0
-    }
+    folded
 }
 
 /// 融合/量测用：这一篇的**证据正文**的稳定哈希（与 `materialize` 取摘录用的是同一段

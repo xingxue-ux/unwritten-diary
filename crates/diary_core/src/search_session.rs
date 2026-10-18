@@ -45,6 +45,7 @@
 //! `semantic::caliber_mismatch`；重建语义索引即可按当前模型整代重算并恢复。
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use crate::embedding::Embedder;
 use crate::error::{CoreError, Result};
@@ -249,7 +250,13 @@ pub(crate) fn start(
         index_coverage,
         warnings,
     };
+    let materialize_start = semantic::profile_enabled().then(Instant::now);
     let snapshot = materialize(core, &state, &state.last_page)?;
+    if let Some(start) = materialize_start {
+        semantic::note_profile(|profile| {
+            profile.materialize_ns += semantic::elapsed_ns(start);
+        });
+    }
     core.search_sessions_mut().insert(session_id, state);
     Ok(snapshot)
 }
@@ -885,16 +892,23 @@ fn weakest_coverage(left: Coverage, right: Coverage) -> Coverage {
 /// 语义那一路的覆盖程度：没有生效代次或没有块是 `unavailable`，生效代次没覆盖
 /// 完范围内的块是 `partial`，否则 `complete`。
 fn semantic_coverage(core: &Core, filters: &SearchFilters) -> Result<Coverage> {
-    let scope = filters.source_scope.as_deref();
-    let counts = crate::chunks::counts(core, scope)?;
-    if semantic::active_generation(core)?.is_none() || counts.total == 0 {
-        return Ok(Coverage::Unavailable);
+    let start = semantic::profile_enabled().then(Instant::now);
+    let result = (|| -> Result<Coverage> {
+        let scope = filters.source_scope.as_deref();
+        let counts = crate::chunks::counts(core, scope)?;
+        if semantic::active_generation(core)?.is_none() || counts.total == 0 {
+            return Ok(Coverage::Unavailable);
+        }
+        Ok(if counts.embedded == counts.total {
+            Coverage::Complete
+        } else {
+            Coverage::Partial
+        })
+    })();
+    if let Some(start) = start {
+        semantic::note_profile(|profile| profile.coverage_ns += semantic::elapsed_ns(start));
     }
-    Ok(if counts.embedded == counts.total {
-        Coverage::Complete
-    } else {
-        Coverage::Partial
-    })
+    result
 }
 
 pub(crate) fn next_page(

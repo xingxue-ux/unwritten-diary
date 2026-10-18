@@ -132,6 +132,8 @@ pub use embedding::{
 pub use schema::SCHEMA_VERSION;
 pub use search::TOKENIZER_VERSION;
 pub use semantic::SemanticBuildReport;
+#[doc(hidden)]
+pub use semantic::{set_query_profiling, take_query_profile, SemanticQueryProfile};
 pub use search_session::{HYBRID_FUSION_VERSION, HYBRID_SEMANTIC_MIN_SCORE};
 
 use std::collections::HashMap;
@@ -174,6 +176,9 @@ pub struct Core {
     /// 新写入向量的存储编码。默认 `DEFAULT_VECTOR_STORAGE`；量测与测试可以临时改它
     /// （见 `set_vector_storage_for_test`）。它是口径三字段之一，换格式 = 整代重算。
     vector_storage: embedding::VectorStorage,
+    /// 快速路径保留的候选块数上限（#90）。默认 `FAST_SCAN_DEPTH`；量测与测试可以
+    /// 临时改它来扫「深度 vs 延迟」曲线（见 `set_semantic_scan_depth_for_test`）。
+    semantic_scan_depth: usize,
 /// 密钥托管。默认实现是资料库目录下权限受限的独立文件；测试与内存库用内存实现。
     /// **明文只在这一层**，`providers` 表里只有引用（见 `provider::secret`）。
     secrets: Box<dyn provider::secret::SecretStore>,
@@ -292,6 +297,7 @@ impl Core {
             semantic: semantic::SemanticRuntime::from_env(),
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
             vector_storage: embedding::DEFAULT_VECTOR_STORAGE,
+            semantic_scan_depth: semantic::FAST_SCAN_DEPTH,
             secrets,
             transport,
             asr_engine: std::sync::Arc::new(transcription::sherpa::SherpaOnnxEngine),
@@ -339,6 +345,18 @@ impl Core {
         Ok(())
     }
 
+    /// 仅供量测：设 SQLite 的 `mmap_size`（0 = 关，产品默认沿用 SQLite 的默认值）。
+    ///
+    /// 大库语义查询要顺序读整代向量（10 万块 f32 = 195 MiB）。不开 mmap 时 SQLite 把页
+    /// 先拷进自己的 2 MiB 页缓存，等于每次查询多一遍 195 MiB 的内存拷贝；`mmap_size`
+    /// 让 BLOB 直接指进映射文件。量测用它回答「这一项值不值得进产品默认」。
+    /// 它只影响这一条连接；产品代码不调它。
+    #[doc(hidden)]
+    pub fn set_mmap_size_for_test(&self, bytes: i64) -> Result<()> {
+        self.conn.pragma_update(None, "mmap_size", bytes)?;
+        Ok(())
+    }
+
     /// 仅供量测/测试：改混合检索的语义证据门槛。
     ///
     /// 阈值扫描必须走**同一条产品路径**（`start_search(mode = hybrid)` + 真融合），
@@ -366,6 +384,15 @@ impl Core {
     /// 当前配置的向量存储格式（状态查询与量测用）。
     pub fn vector_storage(&self) -> VectorStorage {
         self.vector_storage
+    }
+
+    /// 仅供量测/测试：改快速路径保留的候选块数上限（#90），用来扫「深度 vs 延迟」。
+    ///
+    /// 产品默认是可审计的 `FAST_SCAN_DEPTH`（8192）。这个上限**不是 ANN**：保留范围内
+    /// 的名次仍是逐条精算的，只影响「最多能翻到多深」。产品代码不调它。
+    #[doc(hidden)]
+    pub fn set_semantic_scan_depth_for_test(&mut self, depth: usize) {
+        self.semantic_scan_depth = depth.max(1);
     }
 
     // ------------------------------------------------------------ 记录路径

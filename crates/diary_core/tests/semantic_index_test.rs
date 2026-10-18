@@ -3072,6 +3072,59 @@ fn streaming_scan_matches_the_load_all_reference() {
     }
 }
 
+/// 快速路径的**回退红线**：top-K 里有被回收的块时，不能只交回「剩下的几条」——
+/// 那可能漏掉排在它后面的有效候选。这里两篇同分、其一被回收，断言流式路径（快速
+/// 路径发现过滤掉一条 ⇒ 整条回退到精确 SQL）与全量参考路径给出同一批结果。
+#[test]
+fn fast_scan_falls_back_when_a_top_candidate_is_filtered_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![("妈妈", unit(0)), ("桂花", unit(0))],
+    ));
+    let trashed = write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    let kept = write_capture(&mut core, at(2026, 9, 21), "桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    // 回收 A：它仍在生效代次的 top-K 里（两张同分），后置过滤会把它去掉。
+    let conn = open(&dir.path().join("library.sqlite"));
+    conn.execute(
+        "UPDATE captures SET state = 'trashed' WHERE id = ?1",
+        params![trashed],
+    )
+    .unwrap();
+    drop(conn);
+
+    for (filters, expected) in [
+        (SearchFilters::default(), vec![kept.clone()]),
+        (
+            SearchFilters {
+                include_trashed: true,
+                ..Default::default()
+            },
+            vec![kept.clone(), trashed.clone()],
+        ),
+    ] {
+        let streaming = core.semantic_ranking("妈妈", &filters).unwrap();
+        let exhaustive = core
+            .semantic_ranking_load_all_for_test("妈妈", &filters)
+            .unwrap();
+        assert_eq!(
+            streaming.len(),
+            exhaustive.len(),
+            "快速路径与精确路径的候选数必须一样：{streaming:?} vs {exhaustive:?}"
+        );
+        for (left, right) in streaming.iter().zip(&exhaustive) {
+            assert_eq!(left.0, right.0, "篇标识与顺序必须一致");
+            assert_eq!(left.1.to_bits(), right.1.to_bits(), "分数必须逐位一致");
+        }
+        let ids: Vec<&str> = streaming.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, expected, "过滤口径必须与精确路径一致");
+    }
+}
+
 /// int8 检索的结果与 f32 **同一批篇、同一顺序**（量化误差没有改变这一组用例的排序）。
 ///
 /// 这不是「所有语料上召回不变」的证明——那件事由探针的 36 条质量集与 2000 块语料
