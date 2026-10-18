@@ -11,10 +11,23 @@ The bundle intentionally contains **metadata only**:
 
 It never selects user text columns (capture drafts, source text, extracted text,
 diary bodies, chunk text, asset names) and never copies blob bytes. The log path
-is parsed as JSON; unknown fields, free-form messages, malformed lines and
-non-code error strings are dropped. A canary test in
-``test_no_user_content.py`` asserts that known body strings cannot appear in the
-archive.
+is parsed as JSON; unknown fields, free-form messages and malformed lines are
+dropped.
+
+Privacy is enforced by **exact allowlists**, never by “looks like a machine
+code” shape checks:
+
+* `error` / `jobs.error_code` survive only when the value is in the explicit
+  whitelist built from `crates/diary_core/src/error.rs` (`ErrorCode::wire()`)
+  plus the job-only codes in `crates/diary_core/src/jobs.rs`. Everything else
+  becomes `<redacted>` — including short alphanumerics such as `password123`.
+* The library file name is fixed to `<hidden>`; only an allowlisted extension
+  survives. The log path is reduced to `{present, extension}`. No user-chosen
+  file or directory name is exported.
+
+A canary test in ``test_no_user_content.py`` plants body strings, short
+sensitive words and Chinese file names, then searches every byte of the archive
+for them.
 
 Usage::
 
@@ -42,9 +55,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-TOOL_VERSION = "diagnostics-1"
+TOOL_VERSION = "diagnostics-2"
 FORMAT = "unwritten-diary-diagnostics"
-FORMAT_VERSION = 1
+# v2: exact error-code whitelist; user file names hidden (extension only);
+# log source reduced to {present, extension}.
+FORMAT_VERSION = 2
 EXPECTED_SCHEMA = 13
 EXPECTED_TOKENIZER = "jieba-0.11-gram1-v1"
 EXPECTED_CHUNKER = "chunker-1-packday-line400-overlap48"
@@ -79,9 +94,130 @@ LOG_ALLOWED_KEYS = {
     "nextWakeup",
 }
 LOG_TIMESTAMP_KEYS = {"observedAt", "nextWakeup"}
-LOG_CODE_RE = re.compile(r"^[a-z0-9_.:-]{1,120}$")
-LOG_TOKEN_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?$")
+
+# Exact machine-code whitelist. This is intentionally a membership test, not a
+# regex: a regex only proves that a string *looks* like a code, so any short
+# lowercase alphanumeric secret (`password123`, `secret42`, `mytoken1`, ...)
+# would pass. Unknown values are redacted.
+#
+# Source of truth: `crates/diary_core/src/error.rs` — `ErrorCode::wire()`
+# (contract §7). Keep this table in sync with the Rust enum; the test
+# `test_error_code_whitelist_matches_error_rs` parses that file and fails on
+# drift, so adding a code cannot silently desynchronise diagnostics.
+ERROR_CODE_WHITELIST = frozenset(
+    {
+        "not_found",
+        "invalid_state",
+        "invalid_argument",
+        "revision_conflict",
+        "idempotency_conflict",
+        "storage_full",
+        "asset_missing",
+        "permission_denied",
+        "integrity_failed",
+        "unsupported_format",
+        "search_expired",
+        "cursor_expired",
+        "provider_not_configured",
+        "authentication_failed",
+        "network_unavailable",
+        "rate_limited",
+        "quota_exceeded",
+        "provider_timeout",
+        "model_unavailable",
+        "corrupted_backup",
+        "incompatible_backup",
+    }
+)
+
+# Codes written to `jobs.error_code` that are not contract `ErrorCode` values.
+# Source: `crates/diary_core/src/jobs.rs` — ERROR_NO_TARGET,
+# ERROR_DEPENDENCY_UNMET, WAITING_EXTRACT, WAITING_TRANSCRIBE, WAITING_MODEL,
+# plus the literals `no_handler` / `interrupted`. The drift test asserts every
+# entry still appears in that file.
+JOB_ONLY_ERROR_CODES = frozenset(
+    {
+        "no_handler",
+        "interrupted",
+        "no_target",
+        "dependency_extract_unmet",
+        "waiting_extract",
+        "waiting_transcribe",
+        "waiting_model",
+    }
+)
+
+# Machine codes emitted only by the Flutter wakeup logger
+# (`apps/diary_app/lib/src/core_wakeup.dart`). Dart runtime type names are not
+# machine codes and stay redacted.
+LOG_ONLY_ERROR_CODES = frozenset({"installed_core_missing_job_capabilities"})
+
+JOB_ERROR_CODES = ERROR_CODE_WHITELIST | JOB_ONLY_ERROR_CODES
+LOG_ERROR_CODES = JOB_ERROR_CODES | LOG_ONLY_ERROR_CODES
+
+# `trigger` is a closed vocabulary in `core_wakeup.dart`. Treat it as a
+# whitelist too, so a future free-form value cannot leak into the archive.
+LOG_TRIGGERS = frozenset({"startup", "foreground-schedule", "wake"})
+
+# Extensions that may be reported. An extension describes a container/format,
+# not a user-chosen name. Anything not listed becomes `<unknown>`: otherwise a
+# suffix like `report.password123` would smuggle the secret through.
+SAFE_EXTENSIONS = frozenset(
+    {
+        # libraries and backups
+        "sqlite",
+        "sqlite3",
+        "db",
+        "db3",
+        "diarybak",
+        # structured logs
+        "jsonl",
+        "json",
+        "log",
+        # common text/document formats
+        "txt",
+        "md",
+        "markdown",
+        "pdf",
+        "doc",
+        "docx",
+        "odt",
+        "epub",
+        "rtf",
+        # images
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "gif",
+        "heic",
+        "bmp",
+        # audio
+        "m4a",
+        "mp3",
+        "wav",
+        "aac",
+        "flac",
+        "ogg",
+        "opus",
+        # archives
+        "zip",
+        "7z",
+    }
+)
+
+
+def safe_extension(name: str) -> str:
+    """Return an allowlisted lower-case extension, never the file name.
+
+    The suffix itself is checked against ``SAFE_EXTENSIONS`` so that an
+    attacker-chosen suffix cannot carry a secret. No suffix -> ``<none>``.
+    """
+    suffix = Path(name).suffix.lower().lstrip(".")
+    if not suffix:
+        return "<none>"
+    return suffix if suffix in SAFE_EXTENSIONS else "<unknown>"
 
 
 def utc_now() -> str:
@@ -97,9 +233,12 @@ def file_sha256(path: Path) -> str:
 
 
 def safe_error(exc: BaseException, library: Path) -> str:
-    """Keep SQLite errors useful without echoing a user's full path."""
+    """Keep SQLite errors useful without echoing a user's path or file name."""
     text = str(exc)
-    return text.replace(str(library), "<library>").replace(str(library.parent), "<library-dir>")[:300]
+    for needle in (str(library), str(library.parent), library.name):
+        if needle and needle not in {"/", "."}:
+            text = text.replace(needle, "<library>")
+    return text[:300]
 
 
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -177,14 +316,16 @@ def sanitize_log_entry(raw: Any) -> tuple[dict[str, Any] | None, int]:
             else:
                 redacted += 1
         elif key == "trigger":
-            if LOG_TOKEN_RE.match(value):
+            # Closed vocabulary from the app's wakeup logger.
+            if value in LOG_TRIGGERS:
                 out[key] = value
             else:
                 redacted += 1
         elif key == "error":
-            # Only machine error codes survive. Free-form error text can embed
-            # user text, paths or provider responses.
-            if LOG_CODE_RE.match(value):
+            # Only exact machine codes survive. Free-form error text can embed
+            # user text, paths or provider responses; a shape check is not
+            # enough because `password123` is also short lowercase alphanumeric.
+            if value in LOG_ERROR_CODES:
                 out[key] = value
             else:
                 out[key] = "<redacted>"
@@ -197,7 +338,7 @@ def sanitize_log_entry(raw: Any) -> tuple[dict[str, Any] | None, int]:
 def read_logs(path: Path | None, limit: int) -> dict[str, Any]:
     if path is None or not path.is_file():
         return {
-            "source": None,
+            "source": {"present": False, "extension": None},
             "limit": limit,
             "linesRead": 0,
             "malformedLines": 0,
@@ -224,7 +365,9 @@ def read_logs(path: Path | None, limit: int) -> dict[str, Any]:
             elif entry:
                 entries.append(entry)
     return {
-        "source": path.name,
+        # Only "is there a log file" and its safe extension survive. The path
+        # and file name are user-chosen and never exported.
+        "source": {"present": True, "extension": safe_extension(path.name)},
         "limit": limit,
         "linesRead": lines,
         "malformedLines": malformed,
@@ -415,7 +558,10 @@ def collect_library(conn: sqlite3.Connection, path: Path, expected_schema: int) 
     wal = Path(str(path) + "-wal")
     shm = Path(str(path) + "-shm")
     return {
-        "fileName": path.name,
+        # Never echo the user's library file name. The extension is enough to
+        # tell "was this a .sqlite / .diarybak" apart, and it is allowlisted.
+        "fileName": "<hidden>",
+        "extension": safe_extension(path.name),
         "sizeBytes": stat.st_size,
         "walBytes": wal.stat().st_size if wal.is_file() else 0,
         "shmBytes": shm.stat().st_size if shm.is_file() else 0,
@@ -443,9 +589,10 @@ def grouped_error_codes(conn: sqlite3.Connection) -> dict[str, int] | None:
     out: dict[str, int] = {}
     for code, count in rows:
         code = str(code)
-        # error_code is supposed to be a machine code. Do not let arbitrary
-        # text (or a bug that stores user text there) leak into diagnostics.
-        if code == "<none>" or LOG_CODE_RE.match(code):
+        # `error_code` is supposed to be a machine code, but a bug (or a
+        # future feature) could store arbitrary text there. Only exact
+        # whitelisted codes survive; everything else is grouped as redacted.
+        if code == "<none>" or code in JOB_ERROR_CODES:
             out[code] = int(count)
         else:
             out["<redacted>"] = out.get("<redacted>", 0) + int(count)
@@ -531,16 +678,32 @@ def build_diagnostics(library: Path, logs: Path | None, limit: int, expected_sch
         "toolVersion": TOOL_VERSION,
         "containsUserContent": False,
         "privacy": {
-            "method": "read-only aggregate SQL + structured-log allowlist",
+            "method": "read-only aggregate SQL + explicit value allowlists",
             "excludedColumns": EXCLUDED_COLUMNS,
             "logAllowedKeys": sorted(LOG_ALLOWED_KEYS),
+            "logTriggers": sorted(LOG_TRIGGERS),
+            "errorCodeWhitelist": sorted(LOG_ERROR_CODES),
+            "errorCodeWhitelistSource": (
+                "crates/diary_core/src/error.rs ErrorCode::wire() + "
+                "crates/diary_core/src/jobs.rs + apps/diary_app/lib/src/core_wakeup.dart"
+            ),
+            "namePolicy": [
+                "library fileName is fixed to <hidden>",
+                "only an allowlisted extension is exported (else <none>/<unknown>)",
+                "log source is reduced to {present, extension}; path and name are dropped",
+            ],
             "logRules": [
                 "non-JSON lines are counted and dropped",
                 "unknown keys and free-form values are dropped",
-                "error is kept only when it matches a machine-code pattern",
-                "no paths, blob bytes, capture/source/diary/chunk text are selected",
+                "error is kept only when it is in the exact machine-code whitelist",
+                "trigger is kept only when it is in the closed trigger vocabulary",
+                "unknown values become <redacted>; a shape match is never enough",
+                "no paths, file names, blob bytes, capture/source/diary/chunk text are selected",
             ],
-            "verification": "tools/diagnostics/test_no_user_content.py plants canaries and asserts absence",
+            "verification": (
+                "tools/diagnostics/test_no_user_content.py plants body, short-word and "
+                "Chinese-file-name canaries and asserts every archive byte is clean"
+            ),
         },
         "app": {
             "version": app_version,
@@ -558,7 +721,10 @@ README_TEXT = """不写日记 · 诊断包
 =================
 
 本包只含元数据：版本、库统计、索引覆盖、结构化日志白名单字段。
-不含日记正文、草稿、转述、原件内容、文件名、日志原文或数据库文件。
+不含日记正文、草稿、转述、原件内容、文件名、路径、日志原文或数据库文件。
+
+错误码只保留白名单内的机器码，未知值一律脱敏为 <redacted>。
+库文件名固定为 <hidden>，日志来源只保留 {present, extension}。
 
 字段与排除项见 diagnostics.json 的 privacy 段。
 生成工具：tools/diagnostics/export_diagnostics.py

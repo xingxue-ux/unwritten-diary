@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Canary test: prove the diagnostic bundle cannot contain user text.
+"""Canary test: prove the diagnostic bundle cannot contain user text or names.
 
 The fixture puts distinctive strings into every user-owned column, a blob file,
-and the log file. The exporter is then run through its real CLI; every byte of
-the resulting archive is searched for those canaries. This is deliberately
-stronger than checking a field allowlist in code: it validates the produced
-artifact.
+short lowercase-alphanumeric secrets into `jobs.error_code` / the log `error`
+field, and Chinese characters + a short secret into the library and log file
+names. The exporter is then run through its real CLI; every byte of the
+resulting archive (entry names *and* contents) is searched for those canaries.
+
+This is deliberately stronger than checking a field allowlist in code: it
+validates the produced artifact. It also parses the Rust sources to prove the
+error-code whitelist has not drifted from `ErrorCode::wire()`.
 
 Run directly or via the exporter's ``--self-test``. All scratch files live under
 the repository's ignored ``build/`` directory (never /tmp).
@@ -13,7 +17,9 @@ the repository's ignored ``build/`` directory (never /tmp).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -26,6 +32,10 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).resolve().with_name("export_diagnostics.py")
+ERROR_RS = ROOT / "crates" / "diary_core" / "src" / "error.rs"
+JOBS_RS = ROOT / "crates" / "diary_core" / "src" / "jobs.rs"
+CORE_WAKEUP_DART = ROOT / "apps" / "diary_app" / "lib" / "src" / "core_wakeup.dart"
+
 CANARIES = [
     "CANARY_DRAFT_7f3a9c",
     "CANARY_SOURCE_2b8d1e",
@@ -36,6 +46,15 @@ CANARIES = [
     "CANARY_BLOB_3a9c6e",
     "CANARY_JOB_6b1d8f",
 ]
+
+# Short lowercase alphanumerics are exactly the shape a "looks like a machine
+# code" regex accepts. They must still be redacted.
+SHORT_SECRETS = ["password123", "secret42", "mytoken1"]
+
+CHINESE_NAME = "体检报告"
+LIBRARY_FILENAME = f"{CHINESE_NAME}-{SHORT_SECRETS[0]}.sqlite"
+LOG_FILENAME = f"{CHINESE_NAME}-{SHORT_SECRETS[1]}.jsonl"
+
 BANNED_KEYS = {
     "body",
     "draftText",
@@ -48,9 +67,12 @@ BANNED_KEYS = {
     "rawLine",
 }
 
+# `ErrorCode::wire()` arms only: `Self::Variant => "wire_value",`.
+WIRE_ARM_RE = re.compile(r'Self::\w+ => "([a-z0-9_]+)"')
+
 
 def build_fixture(base: Path) -> tuple[Path, Path, Path]:
-    library = base / "library.sqlite"
+    library = base / LIBRARY_FILENAME
     conn = sqlite3.connect(library)
     conn.executescript(
         """
@@ -117,9 +139,17 @@ def build_fixture(base: Path) -> tuple[Path, Path, Path]:
     )
     conn.execute("INSERT INTO index_meta VALUES(1, 1, NULL)")
     conn.execute("INSERT INTO blobs VALUES('sha_1','blobs/sha_1',11)")
-    conn.execute("INSERT INTO assets VALUES('asset_1','sha_1',?,11)", (CANARIES[4],))
+    conn.execute(
+        "INSERT INTO assets VALUES('asset_1','sha_1',?,11)",
+        (f"{CHINESE_NAME}-{SHORT_SECRETS[2]}-{CANARIES[4]}.pdf",),
+    )
+    # job_1 / job_5 use real machine codes; the others are short secrets or a
+    # free-form canary and must all collapse into <redacted>.
     conn.execute("INSERT INTO jobs VALUES('job_1','queued','no_handler')")
     conn.execute("INSERT INTO jobs VALUES('job_2','failed',?)", (CANARIES[7],))
+    conn.execute("INSERT INTO jobs VALUES('job_3','failed',?)", (SHORT_SECRETS[0],))
+    conn.execute("INSERT INTO jobs VALUES('job_4','failed',?)", (SHORT_SECRETS[1],))
+    conn.execute("INSERT INTO jobs VALUES('job_5','failed','invalid_argument')")
     conn.execute("INSERT INTO import_sessions VALUES('imp_1','prepared')")
     conn.execute("INSERT INTO recording_sessions VALUES('rec_1','recording')")
     conn.execute("INSERT INTO domain_events VALUES(7)")
@@ -132,7 +162,7 @@ def build_fixture(base: Path) -> tuple[Path, Path, Path]:
     blob.mkdir()
     (blob / "sha_1").write_text(CANARIES[6], encoding="utf-8")
 
-    logs = base / "wakeup-diagnostics.jsonl"
+    logs = base / LOG_FILENAME
     logs.write_text(
         "\n".join(
             [
@@ -144,7 +174,9 @@ def build_fixture(base: Path) -> tuple[Path, Path, Path]:
                         "succeeded": 1,
                         "failed": 1,
                         "dueBacklog": 0,
-                        "error": "no_handler",  # machine code survives
+                        # A real code must survive; otherwise the bundle would
+                        # lose the diagnostic signal the reviewer asked for.
+                        "error": "invalid_argument",
                         "body": CANARIES[5],  # unknown key dropped
                         "message": CANARIES[5],  # free-form dropped
                     },
@@ -154,7 +186,24 @@ def build_fixture(base: Path) -> tuple[Path, Path, Path]:
                     {
                         "observedAt": "2026-10-18T08:01:00Z",
                         "trigger": "wake",
-                        "error": CANARIES[5],  # free-form error becomes <redacted>
+                        "error": SHORT_SECRETS[2],  # short secret -> <redacted>
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "observedAt": "2026-10-18T08:02:00Z",
+                        "trigger": "wake",
+                        "error": CANARIES[5],  # free-form -> <redacted>
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "observedAt": "2026-10-18T08:03:00Z",
+                        # Unknown trigger (even one shaped like a code) is
+                        # dropped by the closed trigger vocabulary.
+                        "trigger": SHORT_SECRETS[0],
                     },
                     ensure_ascii=False,
                 ),
@@ -186,6 +235,16 @@ def walk_keys(value: Any):
             yield from walk_keys(child)
 
 
+def parse_error_rs_wire_codes() -> set[str]:
+    text = ERROR_RS.read_text(encoding="utf-8")
+    body = re.search(
+        r"pub fn wire\(self\) -> &'static str \{(.*?)\n    \}", text, re.DOTALL
+    )
+    if body is None:
+        raise AssertionError("could not find ErrorCode::wire() in error.rs")
+    return set(WIRE_ARM_RE.findall(body.group(1)))
+
+
 class DiagnosticsPrivacyTest(unittest.TestCase):
     def setUp(self) -> None:
         scratch = ROOT / "build"
@@ -197,13 +256,15 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.base, ignore_errors=True)
 
-    def run_export(self, out: Path) -> subprocess.CompletedProcess[str]:
+    def run_export(
+        self, out: Path, library: Path | None = None
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
                 sys.executable,
                 str(SCRIPT),
                 "--library",
-                str(self.library),
+                str(library or self.library),
                 "--logs",
                 str(self.logs),
                 "--out",
@@ -216,12 +277,23 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
             check=False,
         )
 
-    def test_archive_contains_no_canary(self) -> None:
+    def assert_no_user_names_or_secrets(self, raw: bytes) -> None:
+        for canary in CANARIES + SHORT_SECRETS + [CHINESE_NAME, LIBRARY_FILENAME, LOG_FILENAME]:
+            self.assertNotIn(canary.encode("utf-8"), raw, f"leaked: {canary}")
+        # A leaked absolute path would expose the user's directory name even if
+        # the file name itself were hidden.
+        self.assertNotIn(self.base.name.encode("utf-8"), raw, "leaked: base directory name")
+
+    # ---------------------------------------------------------------- artifact
+
+    def test_archive_contains_no_user_names_or_short_secrets(self) -> None:
         result = self.run_export(self.out)
         self.assertEqual(result.returncode, 0, result.stderr)
         raw = all_archive_bytes(self.out)
-        for canary in CANARIES:
-            self.assertNotIn(canary.encode(), raw, f"canary leaked: {canary}")
+        self.assert_no_user_names_or_secrets(raw)
+        # The useful part must still be there: a real machine code.
+        self.assertIn(b"invalid_argument", raw)
+        self.assertIn(b"no_handler", raw)
 
     def test_metadata_and_privacy_contract(self) -> None:
         result = self.run_export(self.out)
@@ -233,16 +305,26 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
             manifest = json.loads(archive.read("manifest.json"))
         self.assertFalse(data["containsUserContent"])
         self.assertFalse(manifest["containsUserContent"])
-        self.assertEqual(manifest["diagnosticsSha256"], __import__("hashlib").sha256(
+        self.assertEqual(manifest["diagnosticsSha256"], hashlib.sha256(
             json.dumps(data, ensure_ascii=False, indent=2, sort_keys=False).encode("utf-8")
         ).hexdigest())
-        self.assertEqual(data["formatVersion"], 1)
+        self.assertEqual(data["formatVersion"], 2)
         self.assertEqual(data["library"]["schemaVersion"], 13)
         self.assertTrue(data["library"]["schemaMatches"])
+
+        # User-chosen names never appear; only a safe extension does.
+        self.assertEqual(data["library"]["fileName"], "<hidden>")
+        self.assertEqual(data["library"]["extension"], "sqlite")
+        self.assertEqual(data["logs"]["source"], {"present": True, "extension": "jsonl"})
+
         self.assertEqual(data["counts"]["captures"]["total"], 2)
         self.assertEqual(data["counts"]["captures"]["byState"]["committed"], 1)
-        self.assertEqual(data["counts"]["jobs"]["byErrorCode"].get("<redacted>"), 1)
-        self.assertEqual(data["counts"]["jobs"]["byErrorCode"].get("no_handler"), 1)
+        by_error = data["counts"]["jobs"]["byErrorCode"]
+        self.assertEqual(by_error.get("<redacted>"), 3)
+        self.assertEqual(by_error.get("no_handler"), 1)
+        self.assertEqual(by_error.get("invalid_argument"), 1)
+        self.assertNotIn(SHORT_SECRETS[0], json.dumps(data, ensure_ascii=False))
+        self.assertNotIn(SHORT_SECRETS[1], json.dumps(data, ensure_ascii=False))
         self.assertEqual(data["index"]["semantic"]["totalChunks"], 1)
         self.assertEqual(data["index"]["semantic"]["embeddedChunks"], 1)
         self.assertTrue(data["index"]["semantic"]["ready"])
@@ -252,7 +334,7 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
         self.assertFalse(keys & BANNED_KEYS, f"banned keys leaked: {keys & BANNED_KEYS}")
 
         entries = data["logs"]["entries"]
-        self.assertEqual(len(entries), 2)
+        self.assertEqual(len(entries), 4)
         for entry in entries:
             self.assertTrue(set(entry).issubset(
                 {
@@ -261,19 +343,108 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
                     "waitingDependency", "dependencyFailed", "nextWakeup",
                 }
             ))
+        self.assertEqual(entries[0]["error"], "invalid_argument")
         self.assertEqual(entries[1]["error"], "<redacted>")
+        self.assertEqual(entries[2]["error"], "<redacted>")
+        self.assertNotIn("trigger", entries[3])
         self.assertGreaterEqual(data["logs"]["malformedLines"], 1)
-        self.assertGreaterEqual(data["logs"]["redactedValues"], 2)
+        self.assertGreaterEqual(data["logs"]["redactedValues"], 5)
+
+        # The bundle documents its own exact whitelist and name policy.
+        privacy = data["privacy"]
+        self.assertIn("invalid_argument", privacy["errorCodeWhitelist"])
+        self.assertIn("storage_full", privacy["errorCodeWhitelist"])
+        self.assertNotIn("password123", privacy["errorCodeWhitelist"])
+        self.assertTrue(privacy["namePolicy"])
+        self.assertTrue(any("whitelist" in rule for rule in privacy["logRules"]))
 
     def test_json_output_is_also_metadata_only(self) -> None:
         out = self.base / "diagnostics.json"
         result = self.run_export(out)
         self.assertEqual(result.returncode, 0, result.stderr)
         raw = out.read_bytes()
-        for canary in CANARIES:
-            self.assertNotIn(canary.encode(), raw, f"canary leaked: {canary}")
+        self.assert_no_user_names_or_secrets(raw)
         data = json.loads(raw)
         self.assertFalse(data["containsUserContent"])
+        self.assertEqual(data["library"]["fileName"], "<hidden>")
+
+    # ------------------------------------------------------------- whitelist
+
+    def test_error_code_whitelist_matches_error_rs(self) -> None:
+        from export_diagnostics import ERROR_CODE_WHITELIST
+
+        rust_codes = parse_error_rs_wire_codes()
+        self.assertTrue(rust_codes, "parsed no wire codes from error.rs")
+        self.assertEqual(
+            sorted(ERROR_CODE_WHITELIST),
+            sorted(rust_codes),
+            "diagnostics whitelist drifted from crates/diary_core/src/error.rs",
+        )
+
+    def test_job_only_whitelist_is_sourced_from_jobs_rs(self) -> None:
+        from export_diagnostics import ERROR_CODE_WHITELIST, JOB_ONLY_ERROR_CODES
+
+        jobs_text = JOBS_RS.read_text(encoding="utf-8")
+        for code in sorted(JOB_ONLY_ERROR_CODES):
+            # Most are Rust string literals; `interrupted` only appears inside
+            # SQL string literals in this file.
+            self.assertTrue(
+                f'"{code}"' in jobs_text or f"'{code}'" in jobs_text,
+                f"{code} is no longer present in jobs.rs",
+            )
+        self.assertFalse(
+            JOB_ONLY_ERROR_CODES & ERROR_CODE_WHITELIST,
+            "contract codes must not be duplicated into the job-only set",
+        )
+
+    def test_log_codes_and_triggers_are_sourced_from_the_app(self) -> None:
+        from export_diagnostics import LOG_ONLY_ERROR_CODES, LOG_TRIGGERS
+
+        dart = CORE_WAKEUP_DART.read_text(encoding="utf-8")
+        for code in sorted(LOG_ONLY_ERROR_CODES):
+            self.assertTrue(f"'{code}'" in dart, f"{code} is no longer in core_wakeup.dart")
+        for trigger in sorted(LOG_TRIGGERS):
+            self.assertTrue(
+                f"'{trigger}'" in dart, f"trigger {trigger} is no longer in core_wakeup.dart"
+            )
+
+    def test_unknown_short_code_is_redacted_by_function(self) -> None:
+        from export_diagnostics import sanitize_log_entry
+
+        for secret in SHORT_SECRETS + ["abc"]:
+            entry, dropped = sanitize_log_entry({"error": secret})
+            self.assertEqual(entry, {"error": "<redacted>"})
+            self.assertEqual(dropped, 1)
+        entry, dropped = sanitize_log_entry({"error": "storage_full"})
+        self.assertEqual(entry, {"error": "storage_full"})
+        self.assertEqual(dropped, 0)
+
+    def test_extension_never_carries_the_name(self) -> None:
+        from export_diagnostics import safe_extension
+
+        self.assertEqual(safe_extension(f"{CHINESE_NAME}.pdf"), "pdf")
+        self.assertEqual(safe_extension("backup.DIARYBAK"), "diarybak")
+        self.assertEqual(safe_extension("report.password123"), "<unknown>")
+        self.assertEqual(safe_extension("password123"), "<none>")
+
+    def test_unknown_suffix_is_not_echoed_end_to_end(self) -> None:
+        # A path like `...-mytoken1.numbers` must not smuggle the secret through
+        # the extension: the suffix is not allowlisted, so only "<unknown>"
+        # may be reported.
+        tricky = self.base / f"{CHINESE_NAME}-{SHORT_SECRETS[2]}.numbers"
+        shutil.copy2(self.library, tricky)
+        out = self.base / "tricky.zip"
+        result = self.run_export(out, library=tricky)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        raw = all_archive_bytes(out)
+        for needle in (CHINESE_NAME, SHORT_SECRETS[2], "numbers", tricky.name):
+            self.assertNotIn(needle.encode("utf-8"), raw, f"leaked: {needle}")
+        with zipfile.ZipFile(out) as archive:
+            data = json.loads(archive.read("diagnostics.json"))
+        self.assertEqual(data["library"]["fileName"], "<hidden>")
+        self.assertEqual(data["library"]["extension"], "<unknown>")
+
+    # --------------------------------------------------------------- failures
 
     def test_missing_library_fails_cleanly(self) -> None:
         result = subprocess.run(
