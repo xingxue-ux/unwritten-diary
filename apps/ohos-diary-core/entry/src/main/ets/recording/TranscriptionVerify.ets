@@ -5,6 +5,8 @@
 //   asr_setup   建沙箱模型目录（0777，便于 hdc 推模型）、保存本机引擎的 provider 配置
 //   asr_test    对该 provider 跑连接测试（会真的加载模型并转写 0.05 秒静音，不联网）
 //   asr_jobs    在 worker 里跑一轮 jobs.runDue，打印耗时/内存/摘要/队列
+//   asr_warm    先跑一次连接测试（把 228 MiB 模型加载进本进程），再跑一轮 jobs.runDue
+//               ⇒ 量「热态」转写耗时（不含模型加载）
 //   asr_search  以 `--ps query=<词>` 跑 search.start，打印命中（验证转写文本可检索）
 //   asr_remove  删掉本探针保存的 provider 行（连接测试失败后重新配置用）
 //
@@ -80,6 +82,8 @@ export class TranscriptionVerify {
         TranscriptionVerify.testProvider(filesDir);
       } else if (mode === 'asr_jobs') {
         await TranscriptionVerify.runJobs(filesDir);
+      } else if (mode === 'asr_warm') {
+        await TranscriptionVerify.testThenJobs(filesDir);
       } else if (mode === 'asr_search') {
         TranscriptionVerify.search(filesDir, query);
       } else if (mode === 'asr_remove') {
@@ -188,6 +192,23 @@ export class TranscriptionVerify {
     } finally {
       core.close();
     }
+  }
+
+  /**
+   * 冷/热两次量测：先连接测试（把模型加载进本进程的引擎缓存），再跑 jobs.runDue。
+   *
+   * 两段在**同一个进程**里：Rust 侧的识别器缓存是进程级的，所以第二段拿到的是
+   * 已经加载好的模型；两段耗时之差就是「模型加载 + 建 ORT session」的成本。
+   * 任务由 taskpool 的另一个线程跑，但同一个进程 ⇒ 缓存仍命中。
+   */
+  static async testThenJobs(filesDir: string): Promise<void> {
+    const t0 = Date.now();
+    TranscriptionVerify.testProvider(filesDir);
+    const testMs = Date.now() - t0;
+    hilog.info(DOMAIN, TAG, '%{public}s WARM testMs=%{public}d phase=load_model_and_probe',
+      MARK, testMs);
+    await TranscriptionVerify.runJobs(filesDir);
+    hilog.info(DOMAIN, TAG, '%{public}s WARM totalMs=%{public}d', MARK, Date.now() - t0);
   }
 
   /** 删配置行（连接测试失败、要改模型目录时用）。 */

@@ -37,6 +37,7 @@ const MARK: string = 'DIARY_SMOKE';
  *   --ps verify_mode asr_setup     建 0777 模型目录 + 保存本机引擎 provider 配置
  *   --ps verify_mode asr_test      连接测试（真加载模型，不联网）
  *   --ps verify_mode asr_jobs      跑一轮 jobs.runDue（worker 里，量耗时/内存）
+ *   --ps verify_mode asr_warm      先加载模型，再跑一轮 jobs.runDue（量热态耗时）
  *   --ps verify_mode asr_search --ps query=<词>   关键词检索
  *   --ps verify_mode asr_remove    删除本探针的 provider 配置
  *   --ps verify_mode asr_download  经 hdc rport 从宿主机下载模型/词表到沙箱
