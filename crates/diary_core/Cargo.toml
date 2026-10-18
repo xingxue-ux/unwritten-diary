@@ -29,6 +29,15 @@ ureq.workspace = true
 # 「CI 里能编过」就成了空话（CI 不跑它，只跑注入 stub 的换代逻辑）。
 ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "std"] }
 tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
+# 插件代码沙箱（#88，B6）：纯 Rust 的 WebAssembly 解释器。
+#
+# 选 `wasmi` 而不是 `wasmtime`：wasmi 不依赖 Cranelift/JIT、不带原生库，交叉编译到
+# Android/Windows 与别的依赖一样只有 Rust 代码；许可证 MIT/Apache-2.0；默认特性里
+# 的 `wat` 与 `memory64` 对产品路径没有用，这里关掉，只保留 `std`/`validate`/
+# `auto-dispatch`。指令预算用 fuel，线性内存上限用 `StoreLimits`，详见
+# `docs/architecture/m4-插件SDK与宿主.md`。
+wasmi = { version = "2.0.0", default-features = false, features = ["std", "validate", "auto-dispatch"] }
+
 # 本地转写引擎（#91）：**运行时**加载 sherpa-onnx 的 C API 动态库。
 #
 # 与 `ort` 的 `load-dynamic` 同一个理由：构建期不链接、不下载任何原生二进制，
@@ -51,3 +60,5 @@ zip.workspace = true
 encoding_rs.workspace = true
 # B7 的备份测试要**手工伪造**损坏 / 越界 / 不兼容的备份包：读清单、改字段、重写 zip。
 serde_json.workspace = true
+# #88 的插件测试要现场把 WAT 编成 Wasm（产品路径不需要 wat）。
+wat = "1.259"

@@ -1,0 +1,31 @@
+{
+  "activationEvents": [
+    "export.start"
+  ],
+  "apiRange": ">=1.0 <2.0",
+  "author": "不写日记",
+  "description": "在 wasmi 沙箱里读取用户选定的日记版本，生成一份 Markdown；没有文件系统与网络权限。",
+  "entryFile": "main.wasm",
+  "entryKind": "wasm",
+  "id": "example.export-diary-markdown",
+  "license": "MIT",
+  "manifestVersion": 1,
+  "name": "选定日记导出 Markdown",
+  "packageHashes": {
+    "README.md": "34ae8e0b33b384bc03a9a483a165ccdba541d6145cc2946466a63f7aeb0d1266",
+    "main.wasm": "81d6cfbde7fcfbd877d8c148980477953162a6d9b4c65a8ac57bb020e905ded7",
+    "main.wat": "bb792c071db5bad19f5ec5b7f4611740295587a959451e466a1b94835a2d7caa"
+  },
+  "permissions": [
+    "read_selected_material",
+    "create_export_artifact"
+  ],
+  "settingsSchema": {},
+  "supportedPlatforms": [
+    "windows",
+    "android",
+    "linux",
+    "macos"
+  ],
+  "version": "1.0.0"
+}

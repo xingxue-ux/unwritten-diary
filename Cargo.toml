@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/diary_bridge", "crates/diary_core", "tools/probe"]
+members = ["crates/diary_bridge", "crates/diary_core", "tools/probe", "tools/plugin-pack"]
 
 [workspace.package]
 version = "0.1.0"

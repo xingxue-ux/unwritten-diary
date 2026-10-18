@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "templates": [
+    {
+      "id": "style.daily-note",
+      "kind": "style",
+      "label": "日常风格",
+      "description": "把用户确认过的风格偏好整理成一段可直接放进生成上下文的说明；不会改写历史日记。",
+      "format": "style_instruction",
+      "body": "写作偏好（用户确认）：\n- 篇幅：{{lengthPreference}}\n- 叙述人称：{{person}}\n- 语气：{{tone}}\n- 情绪温度：{{emotionalTemperature}}\n- 修辞程度：{{rhetoricLevel}}\n- 参考示例：{{examples}}\n- 禁用表达：{{bannedExpressions}}"
+    }
+  ]
+}

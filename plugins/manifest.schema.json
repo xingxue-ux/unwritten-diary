@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unwritten-diary.local/schemas/plugin-manifest-v1.json",
+  "title": "不写日记 · 插件清单 v1",
+  "type": "object",
+  "required": [
+    "manifestVersion", "id", "name", "version", "author", "license",
+    "apiRange", "supportedPlatforms", "entryKind", "entryFile",
+    "activationEvents", "permissions", "packageHashes"
+  ],
+  "properties": {
+    "manifestVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "author": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "license": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "apiRange": { "type": "string", "minLength": 1 },
+    "supportedPlatforms": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "enum": ["windows", "linux", "macos", "android", "ios"] }
+    },
+    "entryKind": { "enum": ["wasm", "declarative"] },
+    "entryFile": { "type": "string", "pattern": "^(?!/)(?!.*\\.\\.)(?!.*\\\\)[^:]+$" },
+    "activationEvents": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "pattern": "^(command:[a-z0-9][a-z0-9._-]{0,63}|materials_pending:[a-z0-9][a-z0-9._-]{0,63}|export\\.start|organize\\.template\\.select)$"
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "pattern": "^(read_selected_material|read_date_range|create_derived_content|create_export_artifact|invoke_provider:[a-z0-9][a-z0-9._-]{1,63})$"
+      }
+    },
+    "settingsSchema": { "type": "object" },
+    "packageHashes": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string", "pattern": "^(sha256:)?[0-9a-f]{64}$" }
+    },
+    "description": { "type": "string", "maxLength": 500 },
+    "homepage": { "type": "string", "maxLength": 200 }
+  },
+  "additionalProperties": true
+}
