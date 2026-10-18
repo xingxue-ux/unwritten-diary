@@ -65,15 +65,33 @@ export function parseErrorBody(text: string): ErrorBody | null {
     return null;
   }
   try {
-    const body = JSON.parse(trimmed) as ErrorBody;
-    if (body !== null && body !== undefined && typeof body.code === 'string'
-      && typeof body.message === 'string') {
-      return body;
+    // 两种形状都接受：
+    // 1) `diary_last_error()` 的文档形状：{code,message,retryable}；
+    // 2) 真机实际返回的完整失败信封：{apiVersion,ok:false,error:{code,message,retryable}}。
+    //    C ABI 的 `record_last_error` 用的是 `error_envelope()`，与文档不一致；这里两种都解析，
+    //    免得 open 的权限/损坏库错误被降级成 native_unavailable。
+    const parsed = JSON.parse(trimmed) as ParsedErrorLike;
+    if (parsed !== null && parsed !== undefined) {
+      if (typeof parsed.code === 'string' && typeof parsed.message === 'string') {
+        return { code: parsed.code, message: parsed.message, retryable: parsed.retryable };
+      }
+      if (parsed.error !== undefined && parsed.error !== null
+        && typeof parsed.error.code === 'string' && typeof parsed.error.message === 'string') {
+        return parsed.error;
+      }
     }
   } catch (e) {
     return null;
   }
   return null;
+}
+
+/** `parseErrorBody` 的入参：兼容错误体与完整失败信封两种 JSON。 */
+interface ParsedErrorLike {
+  code?: string;
+  message?: string;
+  retryable?: boolean;
+  error?: ErrorBody;
 }
 
 /**
@@ -123,7 +141,17 @@ export class DiaryError extends Error {
     const thrown = raw as ThrownLike;
     const message: string = thrown.message !== undefined ? thrown.message : '原生层调用失败';
     const nativeCode: string = thrown.code !== undefined ? thrown.code : '';
-    const nested = parseErrorBody(message);
+    // NAPI shim 对 open 失败把 `diary_last_error()` 的 JSON 原文放在 message 里，但前面
+    // 带了一段 `ERR_DIARY_OPEN: `（native code）。真机实测：只按「message 以 { 开头」解析
+    // 会把这条路径漏掉，open 的权限/损坏库错误全被降级成 native_unavailable。
+    // 这里在首次出现 `: {` 的位置再试一次，保留核心给出的真实 code。
+    let nested = parseErrorBody(message);
+    if (nested === null) {
+      const marker = message.indexOf(': {');
+      if (marker >= 0) {
+        nested = parseErrorBody(message.substring(marker + 2));
+      }
+    }
     if (nested !== null) {
       return new DiaryError(nested.code, nested.message, nested.retryable === true);
     }
