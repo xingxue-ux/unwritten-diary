@@ -17,6 +17,8 @@
 # 环境变量：
 #   SKIP_NATIVE=1   跳过原生产物重建（复用 entry/libs/arm64-v8a/ 里已有的 .so）
 #   SKIP_OHPM=1     跳过 ohpm install
+#   SKIP_ASR_LIBS=1 跳过转写引擎库的检查（**基线/冒烟包**，这种 HAP 不能转写；
+#                   缺库时的任务状态由 #134 的 P0 核心修复保证，不在本 PR）
 #   BUILD_MODE      debug（默认）/ release
 #   OHOS_BUNDLE_NAME / OHOS_VERSION_CODE / OHOS_VERSION_NAME   临时覆盖（构建后还原）
 set -euo pipefail
@@ -43,6 +45,22 @@ for so in libdiary_capi.so libdiary_napi.so libc++_shared.so; do
   [[ -f "$HERE/entry/libs/arm64-v8a/$so" ]] \
     || { echo "缺少 entry/libs/arm64-v8a/$so（先跑 scripts/build-native.sh）" >&2; exit 1; }
 done
+
+# ── 0a. 转写引擎库（sherpa + ORT）：默认必须有
+#
+# 为什么不再是「有就带上、没有也照建」：缺引擎的 HAP 曾经能通过 readiness
+# （OHOS 的「按库名加载」被当成正常），转写任务跑起来才在 load_library() 失败，
+# 而且按时间语义是**终态** failed。核心侧的 P0 修复（readiness 真的探测一次 +
+# load_library 错误码归位）在 #134，本 PR 不重复改核心；构建这边要把
+# 「没跑 stage-sherpa」变成**构建期错误**，而不是装到设备上才发现。
+#
+# `stage-sherpa.sh --check` 会断言：两个文件在、aarch64、sherpa 的 NEEDED 有
+# libonnxruntime.so、符号版本是 OrtGetApiBase@VERS_1.16.3，且 sha256 与钉死值一致。
+if [[ -z "${SKIP_ASR_LIBS:-}" ]]; then
+  "$HERE/scripts/stage-sherpa.sh" --check
+else
+  echo "[build-hap] SKIP_ASR_LIBS=1：跳过转写引擎库检查（这个 HAP 不能转写）"
+fi
 
 # ── 0b. ohpm install（依赖是本地 file: 目录，不需要联网）
 if [[ -z "${SKIP_OHPM:-}" ]]; then

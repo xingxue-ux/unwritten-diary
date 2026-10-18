@@ -41,6 +41,8 @@ const MARK: string = 'DIARY_SMOKE';
  *   --ps verify_mode asr_search --ps query=<词>   关键词检索
  *   --ps verify_mode asr_remove    删除本探针的 provider 配置
  *   --ps verify_mode asr_download  经 hdc rport 从宿主机下载模型/词表到沙箱
+ *       可加 --ps base=http://127.0.0.1:8001 指向另一个宿主端口（默认 8000）；
+ *       验证「Content-Length / sha256 不对时保留旧文件并报错」时用它避免挤占 8000。
  *
  * 不带参数时就是原来的同步 Smoke（用于量主线程阻塞）。
  */
@@ -48,6 +50,13 @@ export default class EntryAbility extends UIAbility {
   private mode: string = 'smoke';
   /** `asr_search` 的检索词；其它模式忽略。 */
   private query: string = '';
+  /**
+   * `asr_download` / `asr_record_play` 的模型服务基址。
+   *
+   * 默认走 `hdc rport` 的 8000；验证下载完整性时可以指到另一个端口（宿主机起
+   * 不同的 HTTP 服务，故意返回错的 Content-Length / sha256），不影响默认路径。
+   */
+  private baseUrl: string = 'http://127.0.0.1:8000';
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     const params = want.parameters;
@@ -60,6 +69,10 @@ export default class EntryAbility extends UIAbility {
       if (typeof query === 'string') {
         this.query = query;
       }
+      const base = params['base'];
+      if (typeof base === 'string' && base.length > 0) {
+        this.baseUrl = base;
+      }
     }
     hilog.info(DOMAIN, TAG, '%{public}s onCreate mode=%{public}s pid=%{public}d',
       MARK, this.mode, process.pid);
@@ -68,7 +81,7 @@ export default class EntryAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     const filesDir = this.context.filesDir;
     if (this.mode.startsWith('asr_')) {
-      TranscriptionVerify.run(this.mode, this.context, filesDir, this.query).catch((err: Object) => {
+      TranscriptionVerify.run(this.mode, this.context, filesDir, this.query, this.baseUrl).catch((err: Object) => {
         hilog.error(DOMAIN, TAG, '%{public}s ASR_VERIFY failed %{public}s',
           MARK, JSON.stringify(err));
       });

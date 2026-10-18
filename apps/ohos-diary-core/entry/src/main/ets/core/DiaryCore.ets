@@ -33,6 +33,9 @@ import {
   LibraryInfo,
   NativeRecordingStatusParams,
   PrepareRecordingParams,
+  ProviderConfig,
+  ProviderIdParams,
+  ProviderTestReport,
   RebuildIndexParams,
   RecoverRecordingParams,
   RecordingFinalizeResult,
@@ -42,9 +45,11 @@ import {
   RegisterSegmentParams,
   RunDueParams,
   SaveDraftParams,
+  SaveProviderParams,
   SearchParams,
   SearchSnapshot,
   SegmentReceipt,
+  TestProviderParams,
 } from './Models';
 
 /** 默认资料库文件名；与 Flutter 侧 `apps/diary_app/lib/src/app_services.dart` 用的是同一个。 */
@@ -242,6 +247,32 @@ export class DiaryCore {
   /** `jobs.status`：队列计数、到期积压、最近错误。 */
   jobsStatus(): JobStatus {
     return this.invokeData('jobs.status', null) as JobStatus;
+  }
+
+  // ---------------------------------------------------------------- 本机服务配置
+
+  /**
+   * `providers.save`：保存一条服务配置（本机引擎的 `model` 是模型目录）。
+   *
+   * `test_status` 由核心维护：保存后它回到 `untested`，不能由调用方写成「已验证」。
+   */
+  saveProvider(params: SaveProviderParams): ProviderConfig {
+    return this.invokeData('providers.save', params) as ProviderConfig;
+  }
+
+  /** `providers.list`：配置行（不包含核心自带的本机引擎内建行）。 */
+  listProviders(): ProviderConfig[] {
+    return this.invokeData('providers.list', null) as ProviderConfig[];
+  }
+
+  /** `providers.test`：对一条配置跑连接测试；本机引擎会真的加载模型并转写静音。 */
+  testProvider(params: TestProviderParams): ProviderTestReport {
+    return this.invokeData('providers.test', params) as ProviderTestReport;
+  }
+
+  /** `providers.remove`：只删配置行，不删任何日记/派生内容（核心返回 `null`）。 */
+  removeProvider(params: ProviderIdParams): void {
+    this.rawCall('providers.remove', params);
   }
 
   // ---------------------------------------------------------------- 逃生口

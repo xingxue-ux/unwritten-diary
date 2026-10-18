@@ -19,7 +19,7 @@
 // 900 字符分片。
 
 import { common } from '@kit.AbilityKit';
-import { fileIo as fs } from '@kit.CoreFileKit';
+import { fileIo as fs, hash } from '@kit.CoreFileKit';
 import fileIO from '@ohos.fileio';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { http } from '@kit.NetworkKit';
@@ -66,15 +66,53 @@ interface ProviderIdParams {
   provider_id: string;
 }
 
+/**
+ * 下载一个文件时期望的**完整性**信息。数字与 sha256 的唯一事实来源是
+ * `models/manifest/sense-voice-small-int8-2024-07-17.json` 的 `files` 数组
+ * （`path` / `bytes` / `sha256`）；改模型必须同时改这里。
+ */
+interface ExpectedFile {
+  bytes: number;
+  sha256: string;
+}
+
+/**
+ * SenseVoice-Small int8（2024-07-17）的两份随包文件。
+ *
+ * 为什么验证探针也要校验：模型是 228 MiB 的下载，网络中断、代理错误页、
+ * 半截文件都会「看起来成功」。不校验就写进模型目录，下一次转写会在引擎里
+ * 才失败，而且**旧模型已经被截断**。这里要求 2xx + Content-Length 等于清单 +
+ * 收完 sha256 等于清单，通过后才原子 rename 到目标路径。
+ */
+const EXPECTED_MODEL_INT8: ExpectedFile = {
+  bytes: 239233841,
+  sha256: 'c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51',
+};
+
+const EXPECTED_TOKENS: ExpectedFile = {
+  bytes: 315894,
+  sha256: 'f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc',
+};
+
+/** 下载最多试几次（只对网络/HTTP/校验失败重试；每次都从 `.part` 重新收）。 */
+const DOWNLOAD_ATTEMPTS: number = 3;
+
+/** 一次下载尝试的结果。 */
+interface DownloadAttemptResult {
+  ok: boolean;
+  error: string;
+}
+
 export class TranscriptionVerify {
   static async run(
     mode: string,
     context: common.UIAbilityContext,
     filesDir: string,
     query: string,
+    baseUrl: string,
   ): Promise<void> {
-    hilog.info(DOMAIN, TAG, '%{public}s MODE mode=%{public}s query=%{public}s filesDir=%{public}s',
-      MARK, mode, query, filesDir);
+    hilog.info(DOMAIN, TAG, '%{public}s MODE mode=%{public}s query=%{public}s filesDir=%{public}s base=%{public}s',
+      MARK, mode, query, filesDir, baseUrl);
     try {
       if (mode === 'asr_setup') {
         TranscriptionVerify.setup(filesDir);
@@ -89,9 +127,9 @@ export class TranscriptionVerify {
       } else if (mode === 'asr_remove') {
         TranscriptionVerify.removeProvider(filesDir);
       } else if (mode === 'asr_download') {
-        await TranscriptionVerify.downloadModels(filesDir);
+        await TranscriptionVerify.downloadModels(filesDir, baseUrl);
       } else if (mode === 'asr_record_play') {
-        await TranscriptionVerify.recordWithPlayback(context, filesDir);
+        await TranscriptionVerify.recordWithPlayback(context, filesDir, baseUrl);
       } else {
         hilog.error(DOMAIN, TAG, '%{public}s UNKNOWN_MODE mode=%{public}s', MARK, mode);
       }
@@ -257,33 +295,95 @@ export class TranscriptionVerify {
    * 127.0.0.1:8000，由**应用自己**流式写进沙箱：不经过 shell，也不把 239 MB
    * 打进 HAP。这是验证期的传输通道，不是产品行为。
    */
-  static async downloadModels(filesDir: string): Promise<void> {
+  static async downloadModels(filesDir: string, baseUrl: string): Promise<void> {
     const dir = `${filesDir}/asr/sense-voice`;
     ensureDir(dir);
     fileIO.chmodSync(dir, 0o777);
-    await TranscriptionVerify.downloadOne('http://127.0.0.1:8000/model.int8.onnx', `${dir}/model.int8.onnx`);
-    await TranscriptionVerify.downloadOne('http://127.0.0.1:8000/tokens.txt', `${dir}/tokens.txt`);
-    try {
-      hilog.info(DOMAIN, TAG, '%{public}s MODEL size=%{public}d tokens=%{public}d',
-        MARK, fs.statSync(`${dir}/model.int8.onnx`).size, fs.statSync(`${dir}/tokens.txt`).size);
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, '%{public}s MODEL stat failed %{public}s', MARK, describeError(e as Object));
-    }
+    await TranscriptionVerify.downloadOne(`${baseUrl}/model.int8.onnx`,
+      `${dir}/model.int8.onnx`, EXPECTED_MODEL_INT8);
+    await TranscriptionVerify.downloadOne(`${baseUrl}/tokens.txt`,
+      `${dir}/tokens.txt`, EXPECTED_TOKENS);
+    const modelBytes = fs.statSync(`${dir}/model.int8.onnx`).size;
+    const tokenBytes = fs.statSync(`${dir}/tokens.txt`).size;
+    hilog.info(DOMAIN, TAG, '%{public}s MODEL_DOWNLOAD_OK modelBytes=%{public}d tokensBytes=%{public}d',
+      MARK, modelBytes, tokenBytes);
   }
 
-  /** 流式下载一个文件：边收边写，避免把 239 MB 全装进内存。 */
-  private static async downloadOne(url: string, dest: string): Promise<void> {
+  /**
+   * 下载一个文件：**先写 `<dest>.part`，校验通过才原子 rename 到 `dest`**。
+   *
+   * 旧实现直接 `openSync(dest, CREATE|READ_WRITE|TRUNC)`：请求还没发就把旧文件清空，
+   * 失败也只留一条 `hilog.info`，于是「网络抖动一次」=「模型没了」。
+   *
+   * 现在的顺序：
+   * 1. 只碰 `<dest>.part`（旧 `dest` 一个字节都不动）；
+   * 2. 要求 HTTP 2xx；要求响应 `Content-Length` 与 manifest 的 `bytes` 一致；
+   * 3. 收完再要求实收字节数一致、sha256 与 manifest 一致；
+   * 4. 全部通过才 `renameSync(part, dest)`（同目录 rename，原子替换）。
+   *
+   * 任一步失败：删掉 `.part`、**保留旧 `dest`**、重试（最多 `DOWNLOAD_ATTEMPTS` 次），
+   * 最终仍失败就把错误**抛到 mode 级**（`aa start` 侧能看到 `DIARY_ASR FAILED`）。
+   */
+  private static async downloadOne(
+    url: string,
+    dest: string,
+    expected: ExpectedFile | null,
+  ): Promise<void> {
+    const started = Date.now();
+    let lastError = '';
+    for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
+      const result = await TranscriptionVerify.downloadAttempt(url, dest, expected, attempt);
+      if (result.ok) {
+        hilog.info(DOMAIN, TAG, '%{public}s DOWNLOAD_OK url=%{public}s dest=%{public}s attempt=%{public}d elapsedMs=%{public}d',
+          MARK, url, dest, attempt, Date.now() - started);
+        return;
+      }
+      lastError = result.error;
+      hilog.error(DOMAIN, TAG,
+        '%{public}s DOWNLOAD_ATTEMPT_FAILED url=%{public}s attempt=%{public}d/%{public}d error=%{public}s',
+        MARK, url, attempt, DOWNLOAD_ATTEMPTS, lastError);
+      if (attempt < DOWNLOAD_ATTEMPTS) {
+        await sleep(1000 * attempt);
+      }
+    }
+    throw new Error(`下载 ${url} 失败（${DOWNLOAD_ATTEMPTS} 次；原文件保持不变）：${lastError}`);
+  }
+
+  /** 一次下载尝试：写 `.part` → 校验 → rename。失败时只清理 `.part`。 */
+  private static async downloadAttempt(
+    url: string,
+    dest: string,
+    expected: ExpectedFile | null,
+    attempt: number,
+  ): Promise<DownloadAttemptResult> {
+    const part = `${dest}.part`;
+    removeIfExists(part);
     const request = http.createHttp();
-    const file = fs.openSync(dest, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+    const file = fs.openSync(part, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
     let bytes = 0;
+    let contentLength = -1;
     const onData = (chunk: ArrayBuffer): void => {
       fs.writeSync(file.fd, chunk);
       bytes += chunk.byteLength;
     };
+    // 流式响应没有 `HttpResponse.headers`：头从 `headersReceive` 事件拿。不假设键名
+    // 大小写（不同版本/网关会变），用 JSON 文本做一次大小写不敏感匹配。
+    const onHeaders = (headers: Object): void => {
+      try {
+        const text = JSON.stringify(headers);
+        const found = text.match(/"content-length"\s*:\s*"?([0-9]+)"?/i);
+        if (found !== null) {
+          contentLength = Number.parseInt(found[1], 10);
+        }
+      } catch (e) {
+        // 没有头就当没有 Content-Length；下面按「缺长度」失败，不猜。
+      }
+    };
     request.on('dataReceive', onData);
-    const started = Date.now();
+    request.on('headersReceive', onHeaders);
     let status = -1;
     let failure = '';
+    const started = Date.now();
     try {
       status = await request.requestInStream(url, {
         method: http.RequestMethod.GET,
@@ -294,13 +394,67 @@ export class TranscriptionVerify {
       failure = describeError(e as Object);
     } finally {
       request.off('dataReceive', onData);
+      request.off('headersReceive', onHeaders);
       request.destroy();
       fs.closeSync(file);
     }
     const elapsed = Date.now() - started;
-    hilog.info(DOMAIN, TAG, '%{public}s DOWNLOAD url=%{public}s status=%{public}d bytes=%{public}d elapsedMs=%{public}d mbPerSec=%{public}s error=%{public}s',
-      MARK, url, status, bytes, elapsed,
-      elapsed > 0 ? (bytes / 1048576 / (elapsed / 1000)).toFixed(2) : '0', failure);
+    const mbPerSec = elapsed > 0 ? (bytes / 1048576 / (elapsed / 1000)).toFixed(2) : '0';
+    hilog.info(DOMAIN, TAG,
+      '%{public}s DOWNLOAD url=%{public}s attempt=%{public}d status=%{public}d bytes=%{public}d contentLength=%{public}d elapsedMs=%{public}d mbPerSec=%{public}s error=%{public}s',
+      MARK, url, attempt, status, bytes, contentLength, elapsed, mbPerSec, failure);
+
+    const fail = (why: string): DownloadAttemptResult => {
+      removeIfExists(part);
+      hilog.error(DOMAIN, TAG,
+        '%{public}s DOWNLOAD_VERIFY_FAILED url=%{public}s bytes=%{public}d contentLength=%{public}d expectedBytes=%{public}d reason=%{public}s',
+        MARK, url, bytes, contentLength, expected === null ? -1 : expected.bytes, why);
+      return { ok: false, error: why };
+    };
+
+    if (failure.length > 0) {
+      return fail(`请求失败：${failure}`);
+    }
+    if (status < 200 || status >= 300) {
+      return fail(`HTTP ${status}（只接受 2xx）`);
+    }
+    if (expected !== null) {
+      if (contentLength < 0) {
+        return fail('响应没有 Content-Length，无法按 manifest 校验');
+      }
+      if (contentLength !== expected.bytes) {
+        return fail(`Content-Length=${contentLength} 与 manifest 的 ${expected.bytes} 不一致`);
+      }
+      if (bytes !== expected.bytes) {
+        return fail(`实收 ${bytes} 字节与 manifest 的 ${expected.bytes} 不一致`);
+      }
+      let actual = '';
+      try {
+        actual = (await hash.hash(part, 'sha256')).toLowerCase();
+      } catch (e) {
+        return fail(`计算 sha256 失败：${describeError(e as Object)}`);
+      }
+      if (actual !== expected.sha256) {
+        return fail(`sha256=${actual} 与 manifest 的 ${expected.sha256} 不一致`);
+      }
+      try {
+        fs.renameSync(part, dest);
+      } catch (e) {
+        return fail(`校验通过但原子 rename 失败：${describeError(e as Object)}`);
+      }
+      hilog.info(DOMAIN, TAG, '%{public}s DOWNLOAD_VERIFIED url=%{public}s bytes=%{public}d sha256=%{public}s',
+        MARK, url, bytes, actual);
+    } else {
+      if (bytes <= 0) {
+        return fail('收到 0 字节');
+      }
+      try {
+        fs.renameSync(part, dest);
+      } catch (e) {
+        return fail(`原子 rename 失败：${describeError(e as Object)}`);
+      }
+    }
+    return { ok: true, error: '' };
   }
 
   // ---------------------------------------------------------------- 声学回放
@@ -318,12 +472,14 @@ export class TranscriptionVerify {
   static async recordWithPlayback(
     context: common.UIAbilityContext,
     filesDir: string,
+    baseUrl: string,
   ): Promise<void> {
     const dir = `${filesDir}/asr/sense-voice`;
     ensureDir(dir);
     const wavPath = `${dir}/zh.wav`;
     if (!fs.accessSync(wavPath) || fs.statSync(wavPath).size < 1000) {
-      await TranscriptionVerify.downloadOne('http://127.0.0.1:8000/zh.wav', wavPath);
+      // zh.wav 是验证素材、不随产品分发，manifest 里没有它：只要求 2xx + 非空。
+      await TranscriptionVerify.downloadOne(`${baseUrl}/zh.wav`, wavPath, null);
     }
     const pcm = readWavPcm(wavPath);
     // 播的是什么：幅度也打出来，才能和「麦克风收到多少」对上。播放音量受系统媒体
@@ -473,6 +629,17 @@ function ensureDir(path: string): void {
     return;
   }
   fs.mkdirSync(path, true);
+}
+
+/** 删文件；不存在不算错（清理 `.part` 用）。 */
+function removeIfExists(path: string): void {
+  try {
+    if (fs.accessSync(path)) {
+      fs.unlinkSync(path);
+    }
+  } catch (e) {
+    // 删不掉也继续：下一次 open(CREATE|TRUNC) 会覆盖它，旧目标文件仍不受影响。
+  }
 }
 
 function logJson(label: string, value: Object | null): void {

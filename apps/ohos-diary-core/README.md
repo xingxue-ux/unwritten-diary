@@ -48,10 +48,17 @@ cd apps/ohos-diary-core
 #    内存小的机器请限制并行、用独立 target 目录：
 CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR="$HOME/dt-ohos-napi" ./scripts/build-native.sh
 
-# 2. HAP：ohpm install（本地 file: 依赖，离线）+ hvigorw assembleHap（约 14 秒）
+# 2. 转写引擎库（默认必需）：sherpa + ORT 进 entry/libs/arm64-v8a/，
+#    并校验 sha256、NEEDED、OrtGetApiBase@VERS_1.16.3（换库会在这里红）
+./scripts/stage-sherpa.sh
+
+# 3. HAP：ohpm install（本地 file: 依赖，离线）+ hvigorw assembleHap（约 14 秒）
+#    build-hap 默认调用 stage-sherpa.sh --check：缺库/版本不对直接构建失败。
+#    只构建「不含转写」的基线/冒烟包时显式跳过：
+#      SKIP_ASR_LIBS=1 ./scripts/build-hap.sh
 ./scripts/build-hap.sh
 
-# 3. 装到设备（签名 HAP；unsigned 装不上）
+# 4. 装到设备（签名 HAP；unsigned 装不上）
 hdc install -r entry/build/default/outputs/default/entry-default-signed.hap
 hdc shell "hilog -x -T DiaryCore" | grep DiaryCore
 ```
@@ -251,7 +258,32 @@ finalize `state=saved`、`logical_duration_ms=4980`、blob 159,404 B 是合法�
   **`OrtGetApiBase@VERS_1.16.3`**，自编 ORT 只导出 `@@VERS_1.29.1`；OHOS 的
   musl-ldso 按版本哈希（`use_vna_hash=1`）解析，版本串不一致就是「符号找不到」。
   ORT 的 C API 表本身是稳定的（只要 `GetApi(16)` 还在），**卡的是符号版本串**。
-  ⇒ 要用 1.29.1，必须**用 1.29.1 重编 sherpa-onnx**，不能只换 `.so`。
+  ⇒ **不能只把 `libonnxruntime.so` 换成 1.29.1**。
+  
+  但「因此只有重编 sherpa 一条路」**不成立**：`ort::init_from` 接受任意路径，自编
+  1.29.1 的 SONAME 是 **`libonnxruntime.so.1`**，与 sherpa 的 `NEEDED`
+  **`libonnxruntime.so`** 并不同名。**#134（`feat/ohos-hap-config-20261018`，
+  commit `6c45491`）已经按这条思路在真机上验通**：sherpa 继续用 1.16.3 的
+  `libonnxruntime.so`，语义索引用 `libonnxruntime-diary-1.29.1.so`（SONAME
+  `libonnxruntime.so.1`）显式 `init_from`，同一 HAP 里转写与语义检索可以同时跑。
+  **本 PR 不包含这条改动，也不再排除它**；本 PR 只证明「把同一个文件名直接换成
+  1.29.1」会失败。
+
+### 引擎库怎么进 HAP、构建期怎么防「缺库的包」
+
+`stage-sherpa.sh` 把两个 `.so` 从 `$HOME/dev/caches/asr-ohos/...` 放进
+`entry/libs/arm64-v8a/`：
+
+- 来源 sha256 钉死（sherpa `75b38a52…`、ORT `f9fd9080…`）；换来源要 `--force` 并更新脚本；
+- **覆盖前**读目标 `libonnxruntime.so` 的 `OrtGetApiBase` 符号版本，与来源不同就**拒绝
+  覆盖**（除非 `--force`）——防止把别人放的自编 1.29.1 静默冲掉；
+- 复制后断言：AArch64、sherpa 的 `NEEDED` 有 `libonnxruntime.so`、两边符号版本都是
+  `OrtGetApiBase@VERS_1.16.3`。
+
+`build-hap.sh` 默认调用 `stage-sherpa.sh --check` 做同一组断言；**缺库 / 版本不对在构建期
+就红**，不会装到设备上才发现。确实要构建不含转写的基线包时用 `SKIP_ASR_LIBS=1`（这种包
+**不能转写**；缺引擎时任务为什么应停在 `waiting_configuration` 而不是终态 `failed`，是
+**#134 的 P0 核心修复**，本 PR 不含内核改动，别拿这种包当 P0 证据）。
 
 ### 模型怎么进沙箱（`hdc file send` 不通，走 rport）
 
@@ -316,6 +348,14 @@ DIARY_ASR jobs.report {"open_ms":4,"run_ms":3580,...,"processed":1,"succeeded":1
 | 派生文本（原文） | **「开饭时间早上9点至下午。」** |
 | 检索 | `search.start query=开饭` → `hits=2 elapsedMs=2`；`query=下午` → `hits=4`；命中项 `matched_by=["keyword"]`，locator 是音频 `[0, 4980) ms` |
 
+> **范围口径（别把这张表读大）**：本 PR 的真机结果证明的是**关键词检索**
+> （`matched_by=["keyword"]`），默认 HAP 只带 sherpa 的 ORT 1.16.3（产品 `ort` crate
+> 要求 ORT ≥ 1.17，`crates/diary_core/Cargo.toml:30`）。**语义检索已经由 #134
+> （`feat/ohos-hap-config-20261018`，commit `6c45491`）用双 ORT 打包方案真机验通**：
+> 查询「母亲体检的结果怎么样」→ `hits=26`、`matchedBy=["semantic"]`，同一查询关键词
+> 模式 `hits=0`。要语义检索请按 #134 的打包方式（多带一份
+> `libonnxruntime-diary-1.29.1.so`），不要把默认 HAP 读成「检索全通」。
+
 同一段音频四次录音的识别结果（说明可复现 + 偏差来自声学，不是链路）：
 
 | 录音 | 采集 RMS / 峰值 | 派生文本 |
@@ -336,7 +376,9 @@ DIARY_ASR jobs.report {"open_ms":4,"run_ms":3580,...,"processed":1,"succeeded":1
 - **长音频**（>60 s）与多段拼接的转写耗时/内存；本机只有 5 s 一条的完整数字；
 - **release / 混淆构建**带 sherpa 的包（这轮只装 debug）；
 - **低内存机型**：592 MB PSS 增量在 31 GB 的 HAD-W32 上没问题，4–8 GB 手机未测；
-- **用 ORT 1.29.1 重编 sherpa**（只证明了「直接换 .so 不行」）；
+- **双 ORT 并存 / 语义索引**：本 PR 不验，**#134 已在产品身份真机验通**（sherpa 1.16.3
+  + 自编 1.29.1，不同文件名；语义查询 `hits=26`）。本 PR 只证明了「把
+  `libonnxruntime.so` 直接换成 1.29.1 会符号版本不匹配」；
 - 电源键/锁屏路径（本轮按要求全程没碰）。
 
 ## 真机验证结果（2026-10-18）

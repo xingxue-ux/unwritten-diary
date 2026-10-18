@@ -8,19 +8,21 @@
     "release": "v1.13.8",
     "codeLicense": "Apache-2.0",
     "codeLicenseEvidence": "仓库 API 元数据 license.spdx_id = \"Apache-2.0\"；LICENSE 为 Apache License 2.0 全文：https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/master/LICENSE",
-    "bundledOnnxRuntimeVersion": "1.28.2",
-    "bundledOnnxRuntimeEvidence": "预编译产物内 onnxruntime.dll / libonnxruntime.so 里的版本字符串；release 资产名里的 onnxruntime1.28.2（CUDA 变体）",
+    "bundledOnnxRuntimeVersion": "1.16.3",
+    "bundledOnnxRuntimeVersionScope": "**OHOS arm64-v8a 随 HAP 实际使用的那一份**（sherpa-onnx v1.13.8 的 ohos-arm64 release 自带）。Windows/Android 的预编译产物是 1.28.2，见 prebuiltArtifacts.<platform>.onnxRuntimeVersion；两者的版本结论不能互相套用。",
+    "bundledOnnxRuntimeEvidence": "OHOS：llvm-readelf --dyn-syms libonnxruntime.so → OrtGetApiBase@@VERS_1.16.3，strings 里 1.16.3；apps/ohos-diary-core/scripts/stage-sherpa.sh --check 每次构建都断言。Windows/Android：预编译产物内 onnxruntime.dll / libonnxruntime.so 的版本字符串 1.28.2。",
     "cApiAbi": "钉死 v1.13.8 的 c-api.h：结构体偏移量与总大小在 crates/diary_core/src/transcription/sherpa.rs 的 abi_layout_matches_the_pinned_header 测试里逐项断言",
     "platformsVerified": {
       "linux-x64": "实测：下载产物 + 真语音转写通过（见 docs/architecture/m3-转写链.md）",
       "windows-x64": "只核实了预编译产物（下载、解开、列内容、读版本字符串），未真机运行",
       "android-arm64-v8a": "只核实了预编译产物（同上），未真机运行",
-      "ohos-arm64-v8a": "有预编译产物（5.4 MiB），本片未展开核对、未验证"
+      "ohos-arm64-v8a": "实测（2026-10-18，PR #130）：HAD-W32 / API 23 / arm64-v8a，产品身份 com.lingxing.unwrittendiary；sherpa 1.13.8 + ORT 1.16.3 加载、转写、关键词检索全通。默认 HAP 只到关键词检索（matched_by=[\"keyword\"]）；语义索引要用 ORT ≥ 1.17，技术路已由 PR #134（feat/ohos-hap-config-20261018，双 ORT：sherpa 1.16.3 + 自编 1.29.1）真机验通，默认 HAP 不含 1.29.1。"
     },
     "prebuiltArtifacts": {
       "windows-x64": {
         "asset": "sherpa-onnx-v1.13.8-win-x64-shared-MT-Release.tar.bz2",
         "bytes": 24805859,
+        "onnxRuntimeVersion": "1.28.2",
         "runtimeFiles": {
           "lib/sherpa-onnx-c-api.dll": 4605952,
           "lib/onnxruntime.dll": 17799168,
@@ -30,10 +32,35 @@
       "android-arm64-v8a": {
         "asset": "sherpa-onnx-v1.13.8-android.tar.bz2",
         "bytes": 46093321,
+        "onnxRuntimeVersion": "1.28.2",
         "runtimeFiles": {
           "jniLibs/arm64-v8a/libsherpa-onnx-c-api.so": 4465168,
           "jniLibs/arm64-v8a/libonnxruntime.so": 22249560
         }
+      },
+      "ohos-arm64-v8a": {
+        "asset": "sherpa-onnx-v1.13.8-ohos-arm64-v8a.tar.bz2",
+        "bytes": 5662478,
+        "onnxRuntimeVersion": "1.16.3",
+        "symbolVersion": "OrtGetApiBase@VERS_1.16.3",
+        "runtimeFiles": {
+          "lib/libsherpa-onnx-c-api.so": {
+            "bytes": 3750328,
+            "sha256": "75b38a525e7178bee052ec99a77175a934daa71ab6983deabbe948a96ae84221"
+          },
+          "lib/libonnxruntime.so": {
+            "bytes": 12930856,
+            "sha256": "f9fd9080a10f2b93323d597225fbaa63d06f93b384bdfdd7285db9a9115fcc2b"
+          }
+        },
+        "needed": [
+          "libonnxruntime.so",
+          "libc++_shared.so",
+          "libc.so",
+          "libhilog_ndk.z.so",
+          "librawfile.z.so"
+        ],
+        "note": "放进 HAP 的 entry/libs/arm64-v8a/；stage-sherpa.sh --check 断言 sha256、NEEDED 与 OrtGetApiBase 符号版本。"
       }
     }
   },

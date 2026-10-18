@@ -406,3 +406,45 @@ export interface FinalizeRecordingParams {
 export interface RecoverRecordingParams {
   recording_id?: string | null;
 }
+
+/**
+ * `providers.save` 的配置。本机引擎（`adapter_id = sherpa_onnx`）的 `model` 是
+ * **模型目录**，`endpoint` 必须为空；`test_status` 由核心维护，调用方写什么都会被忽略。
+ */
+export interface ProviderConfig {
+  id: string;
+  label: string;
+  adapter_id: string;
+  endpoint: string | null;
+  model: string | null;
+  capabilities: string[];
+  credential_ref: string | null;
+  enabled: boolean;
+  test_status: string;
+}
+
+/** `providers.save` 的参数（`secret` 只用于远端服务；本机引擎传 null）。 */
+export interface SaveProviderParams {
+  config: ProviderConfig;
+  secret: string | null;
+}
+
+/** `providers.test` 的参数：`scope` 是用户显式授权的测试范围。 */
+export interface TestProviderParams {
+  provider_id: string;
+  scope: string[];
+}
+
+/** `providers.remove` 的参数。 */
+export interface ProviderIdParams {
+  provider_id: string;
+}
+
+/** `providers.test` 的报告：`actual_call_made` 是数出来的真实调用次数。 */
+export interface ProviderTestReport {
+  provider_id: string;
+  actual_call_made: boolean;
+  message: string;
+  /** 能力 → `ok` / `failed` 的逐项结论（JSON 对象，键是能力名）。 */
+  results: Object;
+}

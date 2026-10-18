@@ -104,8 +104,14 @@ def dts_exports() -> list[str]:
 
 
 def arkts_calls() -> list[str]:
+    """DiaryCore.ets 里真的调了哪些方法。
+
+    类型化包装走 `invokeData('...')`；返回 `null` 的（`providers.remove`）走
+    `rawCall('...')`——两者都是「ArkTS 侧接了这个方法」，都要算，否则会把
+    「故意没有返回值的 write 方法」误判成没接。
+    """
     text = read(DIARY_CORE_ETS)
-    return sorted(set(re.findall(r"invokeData\('([\w.]+)'", text)))
+    return sorted(set(re.findall(r"(?:invokeData|rawCall)\('([\w.]+)'", text)))
 
 
 def arkts_error_codes() -> list[str]:
