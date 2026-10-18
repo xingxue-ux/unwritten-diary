@@ -1146,8 +1146,7 @@ fn candidates_fast(
         .collect::<Vec<_>>()
         .join(",");
     let meta_start = profiling.then(Instant::now);
-    let sql = format!(
-        "SELECT v.rowid, s.chunk_id, s.ordinal, s.capture_id, s.source_id, \
+    let sql = "SELECT v.rowid, s.chunk_id, s.ordinal, s.capture_id, s.source_id, \
                 s.source_revision_id, s.start_char, s.end_char, s.kind, s.coverage, c.day_key \
          FROM chunk_vectors v \
          JOIN chunk_spans s ON s.chunk_id = v.chunk_id \
@@ -1158,9 +1157,8 @@ fn candidates_fast(
            AND (s.source_revision_id = '' \
                 OR EXISTS (SELECT 1 FROM source_items si \
                            WHERE si.source_id = s.source_id \
-                             AND si.current_revision_id = s.source_revision_id))"
-    );
-    let mut statement = core.conn.prepare(&sql)?;
+                             AND si.current_revision_id = s.source_revision_id))";
+    let mut statement = core.conn.prepare(sql)?;
     let mut rows = statement.query(params![
         format!("[{ids}]"),
         generation,

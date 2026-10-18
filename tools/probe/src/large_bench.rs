@@ -226,7 +226,7 @@ fn dir_suffix(args: &[String]) -> String {
 
 fn number_arg(args: &[String], position: usize) -> Result<usize> {
     args.get(position)
-        .with_context(|| format!("缺少块数参数（用法：large-bench <build|query> <块数>）"))?
+        .context("缺少块数参数（用法：large-bench <build|query> <块数>）")?
         .parse()
         .context("块数必须是正整数")
 }
@@ -530,7 +530,7 @@ fn print_profile(profiles: &[SemanticQueryProfile], wall_p50_ms: f64) {
         let mut values: Vec<u64> = profiles.iter().map(pick).collect();
         values.sort_unstable();
         let middle = values.len() / 2;
-        let ns = if values.len() % 2 == 0 {
+        let ns = if values.len().is_multiple_of(2) {
             (values[middle - 1] + values[middle]) / 2
         } else {
             values[middle]
@@ -550,7 +550,8 @@ fn print_profile(profiles: &[SemanticQueryProfile], wall_p50_ms: f64) {
     );
     println!("  {:<22} {:>10} {:>9}", "段", "ms", "占墙钟");
     println!("  {}", "-".repeat(43));
-    let stages: [(&str, fn(&SemanticQueryProfile) -> u64); 9] = [
+    type StagePicker = fn(&SemanticQueryProfile) -> u64;
+    let stages: [(&str, StagePicker); 9] = [
         ("取行·SQLite 步进", |p| p.step_ns),
         ("取行·取 13 列（含 BLOB）", |p| p.fetch_ns),
         ("反序列化 → Vec<f32>", |p| p.decode_ns),
@@ -595,7 +596,7 @@ fn query_indices(blocks: usize, count: usize) -> Vec<usize> {
     if blocks == 0 {
         return Vec::new();
     }
-    let step = 7919_usize.max(1);
+    let step = 7919_usize;
     (0..count).map(|k| (k.wrapping_mul(step) + 13) % blocks).collect()
 }
 
@@ -617,7 +618,7 @@ fn piece_text(index: usize) -> String {
         let word = WORDS[(rng.next() as usize) % WORDS.len()];
         length += word.chars().count();
         text.push_str(word);
-        if rng.next() % 9 == 0 {
+        if rng.next().is_multiple_of(9) {
             length += 1;
             text.push('，');
         }
@@ -754,7 +755,7 @@ fn rss_kb(field: &str) -> u64 {
     };
     for line in status.lines() {
         if let Some(rest) = line.strip_prefix(field) {
-            if let Some(value) = rest.trim_start_matches(':').trim().split_whitespace().next() {
+            if let Some(value) = rest.trim_start_matches(':').split_whitespace().next() {
                 return value.parse().unwrap_or(0);
             }
         }
