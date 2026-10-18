@@ -657,10 +657,14 @@ impl VectorStorage {
 
 /// 新写入的向量默认用哪种格式。
 ///
-/// **f32 仍是默认**：只有在大语料上复验过 int8 的召回之后才会改它（见
-/// `docs/architecture/m5-大库可用性.md` 的实测数字与结论）；在拿到那些数字之前，
-/// 把「36 条小语料上验过」当成「可以当默认」是拿用户的结果做实验。
-pub const DEFAULT_VECTOR_STORAGE: VectorStorage = VectorStorage::F32;
+/// **int8 是默认**（#90 的拍板决定）：36 条质量集上 R@1/R@10/MRR 与 f32 逐项相同、
+/// 0/32 名次变化；2000 块自查询 MRR 0.835 → 0.833（-0.002，只有相邻互换）。
+/// 代价是体积 1/4（100k 块 195.3 → 49.2 MiB）、100k 热查询约 2× 快（380 → 156 ms），
+/// 构建多一遍量化编码（约 +15%）。依据与数字见 `docs/architecture/m5-大库可用性.md`。
+///
+/// 换默认只发生这一次「发布前」：`storage` 是口径三字段之一，已有库在下一次
+/// `build_semantic_index` 时会**整代重算**（不是原地重编码）。
+pub const DEFAULT_VECTOR_STORAGE: VectorStorage = VectorStorage::Int8;
 
 /// 时间戳工具转发：写向量行时与库里其它时间用同一种格式。
 pub(crate) fn now_iso() -> String {
