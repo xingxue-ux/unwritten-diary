@@ -441,6 +441,10 @@ $ # 抽出所有 step.run 交给 bash -n：36 个 run 块，0 失败
 | `pull_request` | 有 | `true` | `true` | 摘要：「ohos-ort 将运行」 |
 | `workflow_dispatch` | 空 | `unknown` | `true` | 摘要：「ohos-ort 将运行」 |
 
+`ORT_FORCE_BUILD=1` 的「跳过缓存」也做了一个**不触发构建**的验证（同一个本机缓存目录，
+故意给不存在的 NDK）：不设时缓存命中、0.8 s、exit 0；设了之后跳过缓存、前置检查立即
+exit 2（0.02 s，没有进入编译）。
+
 > 这验证的是 gate 脚本的分支逻辑与输出文案；`needs` 传递、GitHub 页面上的 skipped 呈现、
 > `actions/cache` 命中/保存、`vars.OHOS_RUNNER` 选 runner 都**没有实跑**（§8.1）。
 
