@@ -27,6 +27,8 @@ const MARK: string = 'DIARY_SMOKE';
  *   --ps verify_mode record_bg     录 8 秒（配合 Home 键验证后台仍能录）
  *   --ps verify_mode record_hold   一直录（配合 aa force-stop 验证下次启动 recover）
  *   --ps verify_mode record_crash  录 6 秒后 process.abort()（真·进程崩溃）
+ *   --ps verify_mode record_crash_tail  录 3.5 秒（第 3 段未封闭）后 process.abort()，
+ *                                  恢复时应只有 3.0 秒已登记、尾巴如实报告
  *   --ps verify_mode recover       只查「上次没走完的录音」
  *   --ps verify_mode recover_finalize  查询并把恢复出来的会话最终化
  *
@@ -51,6 +53,7 @@ export default class EntryAbility extends UIAbility {
     const filesDir = this.context.filesDir;
     if (this.mode === 'record' || this.mode === 'record_bg' ||
       this.mode === 'record_hold' || this.mode === 'record_crash' ||
+      this.mode === 'record_crash_tail' ||
       this.mode === 'recover' || this.mode === 'recover_finalize') {
       RecordingVerify.run(this.mode, this.context, filesDir).catch((err: Object) => {
         hilog.error(DOMAIN, TAG, '%{public}s RECORDING_VERIFY failed %{public}s',

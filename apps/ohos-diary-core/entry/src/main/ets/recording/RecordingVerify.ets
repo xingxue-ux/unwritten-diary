@@ -4,6 +4,7 @@
 //   aa start -a EntryAbility -b <bundle> -m entry --ps verify_mode record       # 5 秒
 //   aa start -a EntryAbility -b <bundle> -m entry --ps verify_mode record_bg    # 8 秒（配合 Home 键）
 //   aa start -a EntryAbility -b <bundle> -m entry --ps verify_mode record_hold  # 一直录，等外部 kill
+//   aa start -a EntryAbility -b <bundle> -m entry --ps verify_mode record_crash_tail # 3.5 秒后崩溃（尾段未登记）
 //   aa start -a EntryAbility -b <bundle> -m entry --ps verify_mode recover      # 只查恢复
 //
 // 日志 tag 是 `DiaryRec`，机器可读前缀 `DIARY_REC`；长 JSON 按 900 字符分片，
@@ -15,7 +16,7 @@ import { settings } from '@kit.BasicServicesKit';
 import { process } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DiaryCore } from '../core/DiaryCore';
-import { RecordingFinalizeResult } from '../core/Models';
+import { RecordingFinalizeResult, RecordingRecovery } from '../core/Models';
 import { ensureMicrophonePermission } from './MicPermission';
 import { RecorderOptions, VoiceRecorder, describeError, nowUptimeMs } from './VoiceRecorder';
 
@@ -32,6 +33,10 @@ function durationFor(mode: string): number {
   if (mode === 'record_crash') {
     return 6000;
   }
+  if (mode === 'record_crash_tail') {
+    // 1.5 秒一段 ⇒ 3.5 秒时只有第 0/1 段（共 3.0 秒）登记成功，序号 2 那段还开着。
+    return 3500;
+  }
   if (mode === 'record_hold') {
     return 0;
   }
@@ -42,6 +47,27 @@ export class RecordingVerify {
   /** hold 模式要一直持有，否则函数返回后 core 会被 close。 */
   private static heldCore: DiaryCore | null = null;
   private static heldRecorder: VoiceRecorder | null = null;
+  /** 最近一次 `recover` 的结果：页面/调用方要能显示「可能丢失的尾巴」。 */
+  private static lastRecovery: RecordingRecovery | null = null;
+
+  /**
+   * 上次恢复的「已保存 / 可能丢失」摘要（给界面直接显示，不隐瞒尾巴）。
+   *
+   * 可用时长只有 `persisted_ms`（已登记片段之和）；`received_ms - persisted_ms`
+   * 是崩溃时还没登记、已经丢掉的尾巴（`received_ms` 只是最后一次上报值，故说「约」）。
+   */
+  static recoveryHint(): string {
+    const item = RecordingVerify.lastRecovery;
+    if (item === null || item.recording_id === null) {
+      return '没有未收尾的录音';
+    }
+    const seconds = (ms: number): string => (ms / 1000).toFixed(1);
+    const tail = Math.max(0, item.received_ms - item.persisted_ms);
+    if (tail > 0) {
+      return `上次录音：已保存 ${seconds(item.persisted_ms)} 秒；崩溃前还有约 ${seconds(tail)} 秒未保存（不完整）`;
+    }
+    return `上次录音：已保存 ${seconds(item.persisted_ms)} 秒，没有可见的未登记尾巴`;
+  }
 
   static async run(mode: string, context: common.UIAbilityContext, filesDir: string): Promise<void> {
     hilog.info(DOMAIN, TAG, '%{public}s VERIFY mode=%{public}s pid=%{public}d filesDir=%{public}s',
@@ -52,7 +78,15 @@ export class RecordingVerify {
     try {
       // 每次启动都先看「上次有没有没走完的录音」——这就是产品启动时该做的事。
       const recovery = core.recoverRecording({});
+      RecordingVerify.lastRecovery = recovery;
       logJson('recover.before', recovery);
+      if (recovery.recording_id !== null) {
+        // 「已收到」与「已登记」的差必须显式打出来：它就是可能丢掉的尾巴。
+        hilog.info(DOMAIN, TAG, '%{public}s RECOVER recording=%{public}s state=%{public}s receivedMs=%{public}d persistedMs=%{public}d unregisteredTailMs=%{public}d segments=%{public}d',
+          MARK, recovery.recording_id, recovery.state, recovery.received_ms,
+          recovery.persisted_ms, Math.max(0, recovery.received_ms - recovery.persisted_ms),
+          recovery.closed_segment_indexes.length);
+      }
 
       if (mode === 'recover') {
         const info = core.coreInfo();
@@ -80,6 +114,10 @@ export class RecordingVerify {
             end_reason: 'recovered_on_startup',
           });
           logJson('recover.finalize', result);
+          // 恢复出的音频时长必须等于「已登记片段之和」，不是「已收到」。
+          hilog.info(DOMAIN, TAG, '%{public}s RECOVER_FINALIZE audioMs=%{public}d receivedMs=%{public}d persistedMs=%{public}d unregisteredTailMs=%{public}d segments=%{public}d',
+            MARK, result.logical_duration_ms, item.received_ms, item.persisted_ms,
+            Math.max(0, item.received_ms - item.persisted_ms), result.segment_count);
           finalized++;
         }
         hilog.info(DOMAIN, TAG, '%{public}s RECOVER_FINALIZE count=%{public}d', MARK, finalized);
@@ -96,7 +134,8 @@ export class RecordingVerify {
       }
 
       const options = new RecorderOptions();
-      options.segmentMs = 2000;
+      // 崩溃尾段用例用 1.5 秒一段：3.5 秒时正好只剩最后 0.5 秒没封闭。
+      options.segmentMs = mode === 'record_crash_tail' ? 1500 : 2000;
       options.endReason = mode === 'record_bg' ? 'background_stop' : 'verify_stop';
       const recorder = new VoiceRecorder(core, context, options);
 
@@ -122,6 +161,20 @@ export class RecordingVerify {
         await sleep(durationFor(mode));
         hilog.warn(DOMAIN, TAG, '%{public}s CRASH pid=%{public}d recording=%{public}s segments=%{public}d',
           MARK, process.pid, recorder.recordingId(), recorder.segmentCount());
+        process.abort();
+        return;
+      }
+
+      if (mode === 'record_crash_tail') {
+        // 录音**中途**崩溃、尾段没登记：3.5 秒（1.5 秒一段）时第 0/1 段登记成功
+        // （共 3.0 秒），第 2 段还开着；进程在这里死掉，那 0.5 秒永远丢了。
+        await sleep(durationFor(mode));
+        // 崩溃前补一次进度上报：让核心里的「收到量」在崩溃瞬间是准确值。
+        // 不补的话它落后一拍，尾巴会被「上报滞后」掩盖，看不出这个 bug。
+        recorder.flushProgress('before_crash');
+        hilog.warn(DOMAIN, TAG, '%{public}s CRASH_TAIL pid=%{public}d recording=%{public}s receivedMs=%{public}d persistedMs=%{public}d unregisteredTailMs=%{public}d segments=%{public}d',
+          MARK, process.pid, recorder.recordingId(), recorder.receivedMs(),
+          recorder.persistedMs(), recorder.unregisteredTailMs(), recorder.segmentCount());
         process.abort();
         return;
       }

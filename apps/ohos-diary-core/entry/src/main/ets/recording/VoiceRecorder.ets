@@ -17,6 +17,17 @@
 //
 // 同步阻塞：`registerSegment`/`updateState`/`finalize` 都是同步核心调用（SQLite）。
 // 片段封闭时登记一次（毫秒级），不在每个 `readData` 回调里做；进度一秒一次。
+//
+// **两个时长必须分开**（PR #127 评审抓到的语义 bug）：
+//
+//   receivedMs   = 采集器**实际收到**的 PCM 总时长（只增，含还没封闭的尾巴）
+//   persistedMs  = **已成功 registerSegment** 的片段时长之和（真正落盘的音频）
+//
+// `recordings.updateState` 的第二个参数是核心的 `persisted_through_ms`（落库列
+// `durable_through_ms`），恢复时核心用它判断「音频到哪了」。所以那里**只能**用
+// `persistedMs`；用 `receivedMs` 会把两次登记之间（最多一个片段）还在内存/未封闭
+// 文件里的尾巴谎报成「已持久化」——进程崩溃后用户看到 3.5 秒、实际只有 3 秒，
+// 而且没有任何提示。`receivedMs - persistedMs` 就是「可能丢失的尾巴」，要如实暴露。
 
 import { audio } from '@kit.AudioKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
@@ -69,7 +80,10 @@ export class VoiceRecorder {
 
   private segmentIndex: number = 0;
   private lastRegistered: number = -1;
+  /** 采集器实际收到的 PCM 字节数（只增；换算成 `receivedMs`）。 */
   private totalPcmBytes: number = 0;
+  /** 已成功登记的片段时长之和（只有它算「已持久化」）。 */
+  private persistedPcmMs: number = 0;
   private phase: string = 'idle';
   private errorText: string = '';
   /** 采集器被系统中断（锁屏/来电/抢占）时置位；停止时写进 end_reason，不假装没发生。 */
@@ -102,9 +116,23 @@ export class VoiceRecorder {
     return this.lastRegistered + 1;
   }
 
-  /** 已经落盘的音频时长（按 PCM 字节算，不是墙上时间）。 */
-  elapsedMs(): number {
+  /**
+   * 采集器**实际收到**的 PCM 总时长（只增；按字节算，不按墙上时间）。
+   *
+   * 含还没封闭、没登记的尾巴，所以**不能**当 `persisted_through_ms` 上报。
+   */
+  receivedMs(): number {
     return pcmBytesToMs(this.totalPcmBytes);
+  }
+
+  /** **已成功登记**片段时长之和：真正落盘、`finalize` 能拼出来的那部分音频。 */
+  persistedMs(): number {
+    return this.persistedPcmMs;
+  }
+
+  /** `receivedMs - persistedMs`：还没登记、进程崩溃就会丢的尾巴（下界为 0）。 */
+  unregisteredTailMs(): number {
+    return Math.max(0, this.receivedMs() - this.persistedMs());
   }
 
   taskResult(): ContinuousTaskResult {
@@ -257,11 +285,20 @@ export class VoiceRecorder {
     await this.stopCapturer();
 
     // 2. 封闭最后一段；没有 PCM 的尾巴直接删掉，不登记空片段。
+    //    只有登记**成功**才把它算进 persistedMs；失败就保持旧值，并写进 message，
+    //    让核心的 `error_message` 与恢复日志都能看见「最后一段没登记」。
+    let tailMessage = '';
     if (this.writer !== null) {
       const file = this.writer.finish();
       this.writer = null;
       if (file.pcmBytes > 0) {
-        this.register(file);
+        try {
+          this.register(file);
+        } catch (e) {
+          tailMessage = `最后一段（序号 ${file.index}，${file.durationMs} ms）登记失败：${describeError(e as Object)}`;
+          hilog.error(DOMAIN, TAG, '%{public}s SEG tail register failed %{public}s',
+            MARK, tailMessage);
+        }
       } else {
         hilog.info(DOMAIN, TAG, '%{public}s SEG drop index=%{public}d reason=empty bytes=%{public}d',
           MARK, file.index, file.byteSize);
@@ -274,7 +311,11 @@ export class VoiceRecorder {
     }
 
     // 3. 先上报 stopping（核心不虚构麦克风状态），再最终化。
-    this.reportState('stopping', this.elapsedMs(), this.elapsedMs(), '');
+    //    第二个参数**只用 persistedMs**：尾段登记失败时它还是旧值，绝不虚报「已持久化」。
+    this.reportState('stopping', this.receivedMs(), this.persistedMs(), tailMessage);
+    hilog.info(DOMAIN, TAG, '%{public}s STOP_PROGRESS receivedMs=%{public}d persistedMs=%{public}d unregisteredTailMs=%{public}d equal=%{public}s',
+      MARK, this.receivedMs(), this.persistedMs(), this.unregisteredTailMs(),
+      this.receivedMs() === this.persistedMs() ? 'true' : 'false');
 
     if (this.lastRegistered < 0) {
       await this.releaseHold();
@@ -295,8 +336,9 @@ export class VoiceRecorder {
       this.phase = result.state;
       hilog.info(DOMAIN, TAG, '%{public}s FINALIZE %{public}s',
         MARK, JSON.stringify(result));
-      hilog.info(DOMAIN, TAG, '%{public}s STOP recording=%{public}s segments=%{public}d pcmMs=%{public}d stopLatencyMs=%{public}d',
-        MARK, ticket.recording_id, result.segment_count, this.elapsedMs(),
+      hilog.info(DOMAIN, TAG, '%{public}s STOP recording=%{public}s segments=%{public}d receivedMs=%{public}d persistedMs=%{public}d audioMs=%{public}d stopLatencyMs=%{public}d',
+        MARK, ticket.recording_id, result.segment_count, this.receivedMs(),
+        this.persistedMs(), result.logical_duration_ms,
         nowUptimeMs() - this.stopRequestedMs);
       return result;
     } catch (e) {
@@ -346,10 +388,13 @@ export class VoiceRecorder {
         this.rotateSegment();
       }
 
-      // 进度一秒一次，写进核心的 durable_through_ms（恢复时判断缺口用）。
+      // 进度一秒一次：`elapsed_ms` 用收到的量，`durable_through_ms` 只用已登记的片段。
       if (now - this.lastProgressUptimeMs >= 1000) {
         this.lastProgressUptimeMs = now;
-        this.reportState('recording', this.elapsedMs(), this.elapsedMs(), '');
+        this.reportState('recording', this.receivedMs(), this.persistedMs(), '');
+        hilog.info(DOMAIN, TAG, '%{public}s PROGRESS receivedMs=%{public}d persistedMs=%{public}d unregisteredTailMs=%{public}d segments=%{public}d',
+          MARK, this.receivedMs(), this.persistedMs(), this.unregisteredTailMs(),
+          this.segmentCount());
       }
     } catch (e) {
       this.fail('readData', e as Object);
@@ -401,12 +446,32 @@ export class VoiceRecorder {
       segment: manifest,
     });
     this.lastRegistered = file.index;
-    hilog.info(DOMAIN, TAG, '%{public}s SEG index=%{public}d file=%{public}s bytes=%{public}d pcmMs=%{public}d sha256=%{public}s durable=%{public}s',
+    // **只有登记成功**才把这段的时长算进「已持久化」（抛错时走不到这里）。
+    this.persistedPcmMs += file.durationMs;
+    hilog.info(DOMAIN, TAG, '%{public}s SEG index=%{public}d file=%{public}s bytes=%{public}d pcmMs=%{public}d persistedMs=%{public}d sha256=%{public}s durable=%{public}s',
       MARK, file.index, file.fileName, file.byteSize, file.durationMs,
-      file.sha256.substring(0, 16), receipt.durable ? 'true' : 'false');
+      this.persistedPcmMs, file.sha256.substring(0, 16),
+      receipt.durable ? 'true' : 'false');
   }
 
-  private reportState(state: string, elapsedMs: number, persistedMs: number, message: string): void {
+  /**
+   * 立刻上报一次进度（不等一秒的节拍）。
+   *
+   * 崩溃用例在 `process.abort()` 前调用它：让核心里的「收到量」在崩溃瞬间是**准确值**，
+   * 这样恢复时 `received - persisted` 是真实丢掉的尾巴，而不是「上一拍到现在」的时间差。
+   */
+  flushProgress(label: string): void {
+    if (this.phase !== 'recording') {
+      return;
+    }
+    this.lastProgressUptimeMs = nowUptimeMs();
+    this.reportState('recording', this.receivedMs(), this.persistedMs(), '');
+    hilog.info(DOMAIN, TAG, '%{public}s FLUSH_PROGRESS label=%{public}s receivedMs=%{public}d persistedMs=%{public}d unregisteredTailMs=%{public}d segments=%{public}d',
+      MARK, label, this.receivedMs(), this.persistedMs(), this.unregisteredTailMs(),
+      this.segmentCount());
+  }
+
+  private reportState(state: string, receivedMs: number, persistedMs: number, message: string): void {
     const ticket = this.ticket;
     if (ticket === null) {
       return;
@@ -415,7 +480,7 @@ export class VoiceRecorder {
       recording_id: ticket.recording_id,
       state: state,
       wall_clock: new Date().toISOString(),
-      elapsed_ms: elapsedMs,
+      elapsed_ms: receivedMs,
       persisted_through_ms: persistedMs,
       input_device_changed: false,
       message: message.length > 0 ? message : null,

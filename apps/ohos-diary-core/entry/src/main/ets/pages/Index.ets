@@ -21,6 +21,8 @@ struct Index {
   @State message: string = 'Diary Core · 录音平台能力';
   @State status: string = '未开始';
   @State busy: boolean = false;
+  /** 恢复摘要：已保存 vs 可能丢失的尾巴，直接显示在页面上，不藏在日志里。 */
+  @State recovery: string = '';
 
   private runMode(mode: string, label: string): void {
     if (this.busy) {
@@ -33,6 +35,10 @@ struct Index {
       .then(() => {
         this.busy = false;
         this.status = `${label}结束，结果见 hilog（tag DiaryRec）`;
+        if (mode === 'recover') {
+          // 恢复结果必须把「已保存多少 / 可能丢多少」摆在页面上，不能只写日志。
+          this.recovery = RecordingVerify.recoveryHint();
+        }
       })
       .catch((err: Object) => {
         this.busy = false;
@@ -59,6 +65,10 @@ struct Index {
         .onClick(() => {
           this.runMode('recover', '查询恢复');
         })
+      Text(this.recovery)
+        .fontSize(14)
+        .fontColor('#B45309')
+        .margin({ top: 4 })
       Text('日志：hdc shell "hilog -x -T DiaryRec" | grep DIARY_REC')
         .fontSize(12)
         .margin({ top: 12 })

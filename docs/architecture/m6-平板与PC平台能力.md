@@ -36,7 +36,7 @@ Power，设备进入锁屏且 hdc 无法解锁，只能请用户本人解锁。*
 | 2 | 最终化产出的 blob 是**合法单头 PCM WAV**：`RIFF/WAVE`、format=1、1 声道、16000 Hz、16 bit；`data` 长度字段是流式占位 `0xFFFFFFFF` | **实测**（读 blob 前 44 字节） |
 | 3 | **按 Home 退到后台仍能继续录**：8 秒用例在后台完成 4 个片段并 finalize，`logical_duration_ms=8000` | **实测** |
 | 4 | **锁屏（Power 键）后采集被系统强制停止**：8 秒用例只录到 3.1 秒（2 段 99,244 B），亮屏后也没有恢复；长时任务本身申请成功 | **实测失败**（见 §7.3） |
-| 5 | 进程崩溃（`process.abort()`，不走 `onDestroy`）后重启：`recordings.recover` 返回 `state=recoverable`、`closed_segment_indexes=[0,1,2]`、notes 写明「尾巴时长无法确定」；随后 finalize 成 6 秒完整音频 | **实测** |
+| 5 | 进程崩溃（`process.abort()`，不走 `onDestroy`）后重启：`recover` 的 `closed_segment_indexes` 只含已登记片段，`persisted_ms` = 已登记之和，`received_ms` = 采集器最后上报的收到量；**录 3.5 秒、尾段未登记的用例只恢复出 3.0 秒**，notes 与界面都如实提示「约 0.5 秒未保存」 | **实测**（§7.7） |
 | 6 | 权限被拒时如实返回：`authResults=[-1]`，日志 `PERM DENIED`，**没有**创建草稿/票据、没有开始录音 | **实测** |
 | 7 | C ABI 原本**没有** `recordings.*`（PR #117 只接了 9 条），本片补了 5 条（prepare / registerSegment / updateState / finalize / recover）；`cargo check -p diary_capi --all-targets` 通过 | 实测（编译） |
 | 8 | 转写链**没有跑通**：每次 finalize 都排了转写任务（`transcription_queued=true`），但设备上没有 ASR 引擎/模型，任务停在 `waiting_configuration` | **未验**（如实） |
@@ -57,7 +57,8 @@ entry/src/main/ets/recording/
 ├── MicPermission.ets     checkAccessTokenSync + requestPermissionsFromUser
 ├── ContinuousTask.ets    backgroundTaskManager.startBackgroundRunning(AUDIO_RECORDING)
 ├── VoiceRecorder.ets     一次录音的状态机：prepare → capturer → 每段 register → finalize
-└── RecordingVerify.ets   真机探针（record / record_bg / record_hold / record_crash / recover…）
+└── RecordingVerify.ets   真机探针（record / record_bg / record_hold / record_crash /
+                          record_crash_tail / recover…）
 ```
 
 一次录音的调用顺序：
@@ -67,13 +68,14 @@ createDraft（拿 capture_id）
   → recordings.prepare（拿 recording_id / asset_id / staging_ticket）
   → ContinuousTask.start(AUDIO_RECORDING)          // 失败不阻断前台录音，结果如实暴露
   → AudioCapturer(create → on('readData') → start)
-  → recordings.updateState(recording, 0/0)
-  → 每个 readData：写 PCM；每 2 秒封段 → recordings.registerSegment
-  → 每秒一次 recordings.updateState(recording, elapsed/persisted)
+  → recordings.updateState(recording, received=0, persisted=0)
+  → 每个 readData：写 PCM；每 2 秒封段 → recordings.registerSegment（成功才累加 persisted）
+  → 每秒一次 recordings.updateState(recording, received, persisted)
 停止：
   → capturer.stop/release
-  → 封闭最后一段（没有 PCM 的空尾巴直接删掉）
-  → recordings.updateState(stopping)
+  → 封闭最后一段（没有 PCM 的空尾巴直接删掉）并 registerSegment
+      └ 登记失败：persisted 保持旧值，失败原因写进 updateState 的 message
+  → recordings.updateState(stopping, received, persisted)   // 第二个参数只用 persisted
   → recordings.finalize(last_segment_index, end_reason)
   → ContinuousTask.stop
 ```
@@ -86,7 +88,8 @@ createDraft（拿 capture_id）
   不写完后重新读文件（`@ohos.file.hash` 只有异步接口，录音回调里没有等待点）。
   核心登记时仍会**自己重算**，平台层给的哈希只是线索（与核心口径一致）。
 - **时长按 PCM 字节算**（`bytes × 1000 / 32000`），不按墙上时间：卡顿或停顿不会把片段
-  报长。`elapsed_ms` / `persisted_through_ms` 也用这个值。
+  报长。但「按字节算」只解决**怎么算**，不解决**算谁的**：`elapsed_ms` 只能是采集器
+  收到的量，`persisted_through_ms` 只能是已登记片段的和——见 §6.1，这两个量不能混用。
 - **失败不把会话标成 `error`**：采集出错时会话保持 `recording`，已封闭片段照常登记；
   进程真死之后，下次打开资料库时核心把它标成 `recoverable`（`recordings.recover` 才找得到）。
   如果标成 `error`，`latest_open_session` 反而看不见它。
@@ -261,11 +264,55 @@ PR #117 的 C ABI 只接了 9 条方法，**没有 `recordings.*`**；这一片�
 
 ## 6 恢复（进程被杀之后）
 
-- 每次启动（产品路径与探针都走）先 `recordings.recover({})`，结果写 `DIARY_REC JSON[recover.before]`；
+### 6.1 两个时长：`received` 与 `persisted`（PR #127 评审修复）
+
+录音期间有两个**不同**的量，混用会静默丢音频：
+
+| 量 | 来源 | 落库列 | 含义 |
+|---|---|---|---|
+| `receivedMs` | 采集器回调累加的 PCM 字节数 | `recording_sessions.elapsed_ms` | **实际收到**的音频时长（只增，含还没封闭的尾巴） |
+| `persistedMs` | **登记成功**的片段 `duration_ms` 累加 | `recording_sessions.durable_through_ms` | **真正落盘**、`finalize` 能拼出来的音频时长 |
+
+- `recordings.updateState(recording_id, elapsed_ms, persisted_through_ms, message)`：`elapsed_ms`
+  用**收到的量**，`persisted_through_ms` **只能是 `persistedMs`**（核心把它写进
+  `durable_through_ms`，恢复时据此判断「音频到哪了」）。这里曾把 `receivedMs` 同时传给
+  两个参数——见下。
+- **为什么只能用后者**：片段每 2 秒（产品可配）封闭并 `registerSegment` 一次。两次登记之间
+  （最多一个片段）收到的 PCM 还在内存/未封闭文件里，进程一崩就没了。把「已收到」当
+  「已持久化」上报，核心会以为音频已经到了那个时长；而 `finalize` 只能拼已登记片段，
+  结果是**用户看到 3.5 秒、拿到 3.0 秒，而且没有任何提示**。
+- **停止顺序**：先停采集器 → 封闭最后一段并 `registerSegment` **成功** → 再
+  `updateState(stopping, receivedMs, persistedMs)`。最后一段登记失败时 `persistedMs`
+  保持旧值、失败原因写进 `message`（核心存进 `error_message`），**不虚报**。
+- **恢复语义对齐**：`recordings.recover` 现在同时返回两个量——`persisted_ms`（已登记片段
+  时长之和，也就是按已封闭序号 `finalize` 后能得到的音频长度）与 `received_ms`（采集器
+  最后一次上报的收到量）。`received_ms` 是上报时刻的值，**只是下界**；两者之差
+  `received_ms - persisted_ms` 就是「可能丢失的尾巴」，由 core 写进 `notes`：
+
+```text
+已登记片段共 3000 ms，采集器最后一次上报收到 3500 ms：有 500 ms 没有对应的已登记片段，
+可能是未封闭的尾巴，已在崩溃时丢失（收到量只是最后一次上报值，实际可能更多）
+```
+
+**界面应该怎么展示**（写下来供 F1 的 UI 拍板，不替产品决定；本片探针页 `pages/Index.ets`
+已经按第 2 条把「已保存 / 可能丢失」摘要显示在页面上，不再只写日志）：
+
+1. **不要**用 `received_ms` 当「这段录音有多长」。可播放/可转写的长度只有 `persisted_ms`；
+2. 有尾巴时**显式提示**，不要静默截断。建议文案：「已保存 3.0 秒音频；崩溃前还有约
+   0.5 秒未保存（不完整）」——`unregistered_tail_ms = received_ms - persisted_ms`；
+3. 恢复后**先展示已保存的时长与「可能丢失」的提示**，再让用户决定是否保存为日记；
+   不要自动把「缺尾巴的音频」当成完整一段（§10 拍板项 4）；
+4. 提示里**不要**报一个精确的丢失时长：`received_ms` 可能落后最多约 1 秒
+   （`updateState` 一秒一次），所以只能给「至少/约」。
+
+### 6.2 恢复的字段与调用
+
+- 每次启动（产品路径与探针都走）先 `recordings.recover({})`，结果写
+  `DIARY_REC JSON[recover.before]`，并另打一行 `DIARY_REC RECOVER …` 把两个量摊开；
 - 核心 `Core::open` 的 `recover_on_open` 会把上次没走完的会话标成 `recoverable`（有已封闭片段）
   或 `interrupted`（一个都没有）；
 - `recover` **不会**假设最后一段完好：`closed_segment_indexes` 是真实已登记序号，
-  notes 明确写「最后一段之后可能还有没封闭的尾巴，时长无法确定」；
+  `persisted_ms` 只累加这些片段，notes 写清缺口与「可能丢失的尾巴」；
 - 探针 `recover_finalize` 按已封闭序号调 `recordings.finalize`，证明恢复出来的会话仍能救。
 
 真机崩溃用例（`process.abort()`，不走 `onDestroy`）：
@@ -284,6 +331,9 @@ DIARY_REC JSON[recover.finalize] {"asset_id":"asset_01a14e77b25874a88f7b94f7a4c7
 DIARY_REC RECOVER_FINALIZE count=1
 ```
 
+> 上面这组是修复**前**的日志（`recover` 没有 `persisted_ms`/`received_ms`）。修复后的
+> 3.5 秒「尾段未登记」用例与正常停止的对照见 §7.7。
+
 ## 7 真机验证（2026-10-18）
 
 ### 7.1 环境与身份
@@ -294,7 +344,8 @@ DIARY_REC RECOVER_FINALIZE count=1
 | 系统 | OpenHarmony-6.1.0.115；产品软件版本 `HAD-W24 6.1.0.117(SP68C00E100R13P3)`；API 23 |
 | hdc target | `3QC0124C20001776` |
 | 安装身份 | **产品名** `com.lingxing.unwrittendiary`，debug 签名（DevEco 自动签名 Profile） |
-| HAP | debug signed `13,244,956 B`，sha256 `a97f807a7668fe5b076e68c8f66f3203febd057ce68326dbe59fc930f79d9956` |
+| HAP（§7.2–§7.6 那几次） | debug signed `13,244,956 B`，sha256 `a97f807a7668fe5b076e68c8f66f3203febd057ce68326dbe59fc930f79d9956` |
+| HAP（§7.7 最终构建） | debug signed `13,279,492 B`，sha256 `6c400dcbd59513ee8be904e70ccc0b2b129093ac3df24bd29c0d3f75f2479639`（含两个时长分开 + 探针页摘要） |
 | 安装 | `msg:install bundle successfully.`（`hdc install -r` 的 rc 不可信，按 stdout 判定） |
 | 窗口形态 | 2in1 窗口化（窗口不是全屏；`uitest dumpLayout` 的 root 是 `ContainerModal`） |
 
@@ -344,6 +395,9 @@ DIARY_REC TRANSCRIBE queued=true waitingConfiguration=1 succeeded=0 failed=0
 
 多次 5 秒运行的稳定性：片段结构一致（64,044 / 64,000 / 31,360–32,000），
 `logical_duration_ms` 4,980–5,000，首包 36.4–40.0 ms，CPU 4.98%–5.37%。
+
+> 这组是修复**前**的日志（`STOP … pcmMs=` 是旧口径，两个参数都传收到量）。
+> 修复后用新口径复跑的 5 秒对照见 §7.7。
 
 ### 7.3 后台与锁屏
 
@@ -451,22 +505,103 @@ DIARY_REC STAGING remaining=0 names=
   **没有证明「跨过 30 秒超时仍不熄屏」**；后者需要一次 >30 秒的常亮录音（本次未做，避免
   在用户设备上制造熄屏/锁屏风险）。
 
+### 7.7 PR #127 评审修复的真机复验：收到的量 vs 已登记的量
+
+用最终构建（sha256 `6c400dc…`，见 §7.1）复验两个场景，全程**不按 Power、不改息屏设置**。
+
+**崩溃：录 3.5 秒，第 3 段（索引 2）还开着就 `process.abort()`**（`verify_mode=record_crash_tail`，
+1.5 秒一段）：
+
+```text
+DIARY_REC START recording=rec_01a14eed735474e0834fa8f92960cebd … segmentMs=1500 bgTask=ok
+DIARY_REC SEG index=0 file=segment-000000.wav bytes=48044 pcmMs=1500 persistedMs=1500 sha256=298d5be1fcebdfc0 durable=true
+DIARY_REC SEG index=1 file=segment-000001.pcm bytes=48000 pcmMs=1500 persistedMs=3000 sha256=a7c9e4e6ddba0c51 durable=true
+DIARY_REC FLUSH_PROGRESS label=before_crash receivedMs=3500 persistedMs=3000 unregisteredTailMs=500 segments=2
+DIARY_REC CRASH_TAIL pid=34179 recording=rec_01a14eed735474e0834fa8f92960cebd receivedMs=3500 persistedMs=3000 unregisteredTailMs=500 segments=2
+```
+
+- 索引 0/1 两段登记成功（共 3.0 秒），索引 2 那段在崩溃时**还没封闭、没登记**（0.5 秒只在未封闭文件里）；
+- `FLUSH_PROGRESS` 是崩溃前强行补的一拍上报：让核心里的「收到量」在崩溃瞬间是准确值
+  （否则它会落后最多约 1 秒，看起来像「没有尾巴」，掩盖这个 bug）。
+
+**重启后 `recover`**：
+
+```text
+DIARY_REC JSON[recover.before] {"closed_segment_indexes":[0,1],"gap_ms":0,
+  "notes":["已登记片段共 3000 ms，采集器最后一次上报收到 3500 ms：有 500 ms 没有对应的已登记片段，可能是未封闭的尾巴，已在崩溃时丢失（收到量只是最后一次上报值，实际可能更多）"],
+  "persisted_ms":3000,"received_ms":3500,
+  "recording_id":"rec_01a14eed735474e0834fa8f92960cebd","state":"recoverable"}
+DIARY_REC RECOVER recording=rec_01a14eed735474e0834fa8f92960cebd state=recoverable receivedMs=3500 persistedMs=3000 unregisteredTailMs=500 segments=2
+```
+
+- `closed_segment_indexes=[0,1]` **只含已登记片段**，没有把还开着的索引 2 算进去；
+- `persisted_ms=3000`（不是 3500），`received_ms=3500`，差 500 ms 就是可能丢掉的尾巴；
+- notes 不是「尾巴未知」这种模糊话，而是把两个量摆出来、并说明收到量只是下界。
+
+**界面（探针页 `pages/Index.ets`，点「查看上次未收尾的录音」）**：
+
+```text
+'查询恢复结束，结果见 hilog（tag DiaryRec）'
+'上次录音：已保存 3.0 秒；崩溃前还有约 0.5 秒未保存（不完整）'
+```
+
+页面直接显示差，不再只把人打发去看日志；截图在 `/mnt/e/ohos/evidence/screen-review127-recover.png`。
+
+**按已登记序号 finalize**：
+
+```text
+DIARY_REC JSON[recover.finalize] {"asset_id":"asset_01a14eed735474e0834fa8fa61c20bc4",
+  "logical_duration_ms":3000,"recording_id":"rec_01a14eed735474e0834fa8f92960cebd",
+  "segment_count":2,"state":"saved","transcription_queued":true}
+DIARY_REC RECOVER_FINALIZE audioMs=3000 receivedMs=3500 persistedMs=3000 unregisteredTailMs=500 segments=2
+```
+
+新 blob `96,044 B = 44 + 3×32,000` ⇒ **拿到的音频确实只有 3.0 秒，不是 3.5 秒**，
+且恢复结果与用户看到的一致（§10 拍板项 4 仍待产品决定「缺尾巴的音频要不要自动存」）。
+
+**正常停止（5 秒）**：
+
+```text
+DIARY_REC START … segmentMs=2000 bgTask=ok
+DIARY_REC SEG index=0 … pcmMs=2000 persistedMs=2000 durable=true
+DIARY_REC SEG index=1 … pcmMs=2000 persistedMs=4000 durable=true
+DIARY_REC SEG index=2 … pcmMs=1000 persistedMs=5000 durable=true
+DIARY_REC STOP_PROGRESS receivedMs=5000 persistedMs=5000 unregisteredTailMs=0 equal=true
+DIARY_REC FINALIZE {"logical_duration_ms":5000,"segment_count":3,"state":"saved",…}
+DIARY_REC MEASURE wallMs=5169 cpuMs=291 cpuPercent=5.63 captureLatencyMs=36.426093
+```
+
+- 停止顺序：`capturer.stop/release` → 最后一段（索引 2）`finish()` + `registerSegment` **成功**（`persistedMs` 5000）
+  → `updateState(stopping, receivedMs=5000, persistedMs=5000)` → `finalize`；
+- **`receivedMs == persistedMs`（`equal=true`）**，`logical_duration_ms=5000`，blob `160,044 B = 44 + 5×32,000`。
+
+**测试代码**（随 HEAD 提交）：
+
+- `crates/diary_core/tests/recording_job_test.rs::a_crash_before_the_tail_is_registered_does_not_claim_it_is_persisted`
+  —— 断言 `closed_segment_indexes=[0]`、`persisted_ms=2000`（不是 3500）、`received_ms=3500`、notes 含 1500 ms、finalize 2000；
+- `::a_normal_stop_reports_received_equal_to_persisted` —— 正常停止 `received == persisted == 5000`；
+- `crates/diary_capi/src/tests.rs` 同步断言 JSON 的 `persisted_ms=1000` / `received_ms=1500` 与最终化时长 1000。
+
+**没验到的**：最后一段 `registerSegment` **失败**的路径没在真机人为制造（代码里已 catch、`persistedMs`
+保持旧值并把原因写进 `message`，但没有真机故障注入）；`received_ms` 的「上报滞后」在真实崩溃里
+只能当**下界**——这次是崩溃前补了一次 `flushProgress` 才拿到准确值。
+
 ## 8 设备现在的状态
 
 验证结束后：
 
 - 应用 **保留安装**：`com.lingxing.unwrittendiary`，versionCode `1000000` / `1.0.0`，
   debug 签名，`reqPermissionStates=[0,0]`（MICROPHONE 与 KEEP_BACKGROUND_RUNNING 都已授权）；
-- 应用 **已 force-stop**（`pidof` 空），没有在录音、没有残留长时任务；
-- **设备已由用户解锁**（2026-10-18 19:23 之后），屏幕正常；之后没有再做任何电源键/息屏操作；
-- 数据：4 条 capture、4 个 blob（159,404 / 99,244 / 256,044 / **256,044 B**）、4 条
-  `waiting_configuration` 转写任务；`recordings.recover` 返回 `open_recordings=0`；
-- 应用已 force-stop，没有在录音、没有残留长时任务/常亮标志；
+- 应用 **已 force-stop**（`pidof` 空），没有在录音、没有残留长时任务/常亮标志；
+- **设备已由用户解锁**（2026-10-18 19:23 之后），屏幕正常；本轮只做「装包/启动/录音/
+  `process.abort()`/重启/读日志」，**没有按 Power、没有 `power-shell suspend`、没有改息屏设置**；
+- 数据：`capture_count=10`、9 个 blob（96044×3 / 99244 / 159404 / 160044×2 / 256044×2 B）、
+  `recordings.recover` 返回 `open_recordings=0`（没有未收尾会话）；
 - 中间做过一次「卸载 → 重装」来重置权限（拒绝用例），**更早的验证数据已被清掉**；
   上面的日志/文件大小是清理前抓的，证据在 `/mnt/e/ohos/evidence/`（本机临时目录，不进仓库）；
-- 最终 HAP `a97f807a7668fe5b076e68c8f66f3203febd057ce68326dbe59fc930f79d9956`
-  （含 `interrupted` 标记 + `ScreenKeepOn` + Ability 销毁清理）**已安装并真机跑过 8 秒录音**
-  （§7.6），不再有「最终构建没跑过」的缺口。
+- 最终 HAP `6c400dcbd59513ee8be904e70ccc0b2b129093ac3df24bd29c0d3f75f2479639`
+  （含 `interrupted` 标记 + `ScreenKeepOn` + 两个时长分开 + 探针页恢复摘要）
+  **已安装并真机跑过** §7.7 的崩溃恢复与正常停止用例，不再有「最终构建没跑过」的缺口。
 
 ## 9 没有做到的（如实）
 
@@ -486,6 +621,8 @@ DIARY_REC STAGING remaining=0 names=
 - **TaskPool 异步化没做**：`registerSegment` / `updateState` / `finalize` 都在主线程/采集回调
   上同步跑；5 秒用例 CPU 5%、没观察到爆音，但长录音/大库上需要 worker；
 - **压力/异常没做**：没测 1 小时长录音、磁盘满、录音中撤销权限、低电量、热插拔麦克风；
+- **最后一段登记失败没做故障注入**：`stop()` 里已 catch 并把 `persistedMs` 保持旧值、原因写进
+  `message`，但没在真机人为制造 `registerSegment` 失败（§7.7 末尾也写了这一点）；
 - **只测了一台设备**：HAD-W32（2in1）；手机/平板/模拟器没测；
 - **`kill -9` 没做成**：设备 shell 是 `uid=2000(shell)`，`kill -9` 应用进程报
   `Operation not permitted`；改用应用内 `process.abort()` 做真崩溃，用 `aa force-stop`
@@ -530,12 +667,18 @@ hdc shell "hilog -x -T DiaryRec" | grep DIARY_REC
 hdc shell "uitest uiInput keyEvent Home"
 
 # 崩溃恢复
-hdc shell "aa start … --ps verify_mode record_crash"     # 6 秒后 process.abort()
-hdc shell "aa start … --ps verify_mode recover"          # 看 closed_segment_indexes / notes
-hdc shell "aa start … --ps verify_mode recover_finalize" # 救回来
+hdc shell "aa start … --ps verify_mode record_crash"      # 6 秒后 process.abort()
+hdc shell "aa start … --ps verify_mode record_crash_tail" # 3.5 秒（1.5 s/段）后崩溃，尾段未登记
+hdc shell "aa start … --ps verify_mode recover"           # 看 closed_segment_indexes / persisted_ms / received_ms / notes
+hdc shell "aa start … --ps verify_mode recover_finalize"  # 救回来（时长 = 已登记片段之和）
 
-# 静态检查
+# 页面上的恢复摘要（不藏在日志里）：点「查看上次未收尾的录音」
+hdc shell aa start -a EntryAbility -b com.lingxing.unwrittendiary -m entry
+hdc shell "uitest dumpLayout -p /data/local/tmp/layout.json"
+
+# 静态/回归检查
 cargo check -p diary_capi --all-targets
+cargo test -p diary_core --test recording_job_test
 python3 tools/check_arkts_capi_contract.py
 python3 tools/check_docs.py
 ```

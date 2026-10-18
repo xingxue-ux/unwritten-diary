@@ -335,7 +335,9 @@ export interface RecordingSession {
   /** `idle` / `preparing` / `recording` / `paused` / `stopping` / `saved` /
    *  `interrupted` / `recoverable` / `error`。 */
   state: string;
+  /** 最后一次上报的「已收到」时长（`received_ms` 的同源值）。 */
   elapsed_ms: number;
+  /** 最后一次上报的「已登记」时长；与 `elapsed_ms` 的差就是可能丢掉的尾巴。 */
   durable_through_ms: number;
   segment_count: number;
   last_error: string | null;
@@ -351,11 +353,17 @@ export interface RecordingFinalizeResult {
   logical_duration_ms: number;
 }
 
-/** `recordings.recover` 的结果：缺口与「尾巴未知」都在 notes 里如实写。 */
+/** `recordings.recover` 的结果：缺口、已登记/已收到的时长与「尾巴未知」都在 notes 里如实写。 */
 export interface RecordingRecovery {
   recording_id: string | null;
   state: string;
+  /** 真实已登记的片段序号（没登记成功的尾巴不在里面）。 */
   closed_segment_indexes: number[];
+  /** **已登记**片段时长之和：真正落盘、`finalize` 能拼出来的音频长度。 */
+  persisted_ms: number;
+  /** 采集器**最后一次上报**的「已收到 PCM 总时长」；可能落后，是实际收到量的下界。 */
+  received_ms: number;
+  /** 已知缺口的总时长（按平均段长估算）；没有缺口信息时为 0，并在 notes 里说明。 */
   gap_ms: number;
   notes: string[];
 }
@@ -379,7 +387,9 @@ export interface NativeRecordingStatusParams {
   state: string;
   /** RFC 3339 的墙上时间。 */
   wall_clock: string;
+  /** 采集器**实际收到**的 PCM 总时长（只增，含还没封闭的尾巴）。 */
   elapsed_ms: number;
+  /** **已成功登记**片段时长之和；只能用它当 `durable_through_ms`，不能用 `elapsed_ms`。 */
   persisted_through_ms: number;
   input_device_changed: boolean;
   message?: string | null;
