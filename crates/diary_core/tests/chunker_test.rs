@@ -299,3 +299,79 @@ fn chunker_version_is_frozen() {
     // 让索引状态里的 chunkerVersion 能识别出「库里的是旧块」。
     assert_eq!(CHUNKER_VERSION, "chunker-1-packday-line400-overlap48");
 }
+/// #109 的实测门禁：400 字符文本 × **真分词器**的 token 上界。
+///
+/// 分块器按字符切（`MAX_CHUNK_CHARS = 400`），而模型最多吃 512 token。两者的关系
+/// 不能只写在注释里：这里用真分词器把三类最容易「字符→token 比 >1」的文本
+/// （中文 / emoji / 生僻字）各造 400 字符，直接断言产出的块连同 `[CLS]` / `[SEP]`
+/// **不超过 480 token**（chunker 侧的余量口径见
+/// `docs/architecture/m2-质量集与分块.md`）。
+///
+/// 没配 `DIARY_MODEL_DIR`（CI 就是这种）时**跳过**：真分词器不随仓库分发。手工跑：
+///
+/// ```bash
+/// DIARY_MODEL_DIR="$PWD/models/bge-small-zh-v1.5-ours" \
+///   cargo test -p diary_core --test chunker_test -- --nocapture \
+///   four_hundred_char_texts
+/// ```
+#[test]
+fn four_hundred_char_texts_stay_below_the_token_window() {
+    let Some(dir) = std::env::var_os("DIARY_MODEL_DIR") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(dir).join("tokenizer.json");
+    if !path.is_file() {
+        return;
+    }
+    let tokenizer = tokenizers::Tokenizer::from_file(&path).expect("读取真实分词器");
+
+    let samples = [
+        (
+            "中文",
+            "妈妈打电话来说她最近身体不太好，我有点担心。第二天我请了半天假陪她去医院复查，"
+                .repeat(20),
+        ),
+        (
+            "英文",
+            "Today I called my mother and she said she was not feeling well. \
+             I decided to take the afternoon off and visit her. "
+                .repeat(10),
+        ),
+        ("emoji 密集", "😀".repeat(400)),
+        ("生僻字", "龘爨齉靐麤鱻爩灪籱龖厵纞虋".repeat(40)),
+        (
+            "古典中文",
+            "子曰學而時習之不亦說乎有朋自遠方來不亦樂乎人不知而不慍不亦君子乎".repeat(20),
+        ),
+    ];
+
+    for (label, text) in samples {
+        let text: String = text.chars().take(400).collect();
+        assert_eq!(text.chars().count(), 400, "{label}：样本必须是 400 字符");
+        let chunks = chunks_for(&text);
+        assert_eq!(chunks.len(), 1, "{label}：400 字符恰好是一块");
+        let mut worst_body = 0;
+        for chunk in &chunks {
+            let body = tokenizer
+                .encode(chunk.text.as_str(), false)
+                .expect("编码")
+                .get_ids()
+                .len();
+            let total = tokenizer
+                .encode(chunk.text.as_str(), true)
+                .expect("编码")
+                .get_ids()
+                .len();
+            worst_body = worst_body.max(body);
+            assert!(
+                total <= 480,
+                "{label}：块连同特殊 token 是 {total}，超过 480 的守卫线——\
+                 必须按 token 重切并 bump CHUNKER_VERSION（见 #109 的第 ② 条）"
+            );
+        }
+        eprintln!(
+            "{label}：400 字符 → 正文 {worst_body} token（含 [CLS]/[SEP] {} token，守卫线 480）",
+            worst_body + 2
+        );
+    }
+}
