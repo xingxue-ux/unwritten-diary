@@ -18,7 +18,8 @@ use diary_core::{
     CoreError, DiaryDay, DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion,
     DiaryVersionPage, DomainEvent, DraftSaveResult, ExtractedContent, ImportManifest, ImportOrigin,
     ImportStatus, ImportTicket, IndexStatus, Job, JobRunSummary, JobState, JobStatus,
-    NativeRecordingStatus, OrganizeSettings, OrganizeStatus, OrganizeTemplate, Provider,
+    NativeRecordingStatus, OrganizeSettings, OrganizeStatus, OrganizeTemplate, PluginInspection,
+    PluginInstallation, PluginInvocation, PluginRunResult, PluginTemplate, Provider,
     ProviderCapability, ProviderTestReport, RecordingFinalizeResult, RecordingRecovery,
     RecordingSession, RecordingTicket, ResponseTicket, RestoreReport, SearchRequest,
     SearchSnapshot, SegmentManifest, SegmentReceipt, SourceLocation, SourceLocator, SourceRevision,
@@ -789,6 +790,81 @@ impl BridgeSession {
         Ok(core.organize_status()?)
     }
 
+    // ------------------------------------------------------------ 插件（B6，#88）
+    //
+    // 安装流程与契约 `plugins.inspectPackage` / `install` 对齐：先检查（不执行包内容），
+    // 展示权限后把用户勾选的 `grants` 原样传进来；缺一项就拒绝并说清缺什么。
+    // 这里**不放业务规则**，只做参数转发与错误码映射。
+
+    /// 检查插件包（目录或 zip）。不执行任何包内容。
+    pub fn inspect_plugin_package(
+        &self,
+        package_path: String,
+        platform: String,
+    ) -> Result<PluginInspection, BridgeError> {
+        let core = self.lock()?;
+        let platform = if platform.trim().is_empty() {
+            diary_core::plugin::host_platform().to_owned()
+        } else {
+            platform
+        };
+        Ok(core.inspect_plugin_package(package_path, &platform)?)
+    }
+
+    /// 安装/升级插件。`grants` 是用户在这次安装里显式勾选的权限。
+    pub fn install_plugin(
+        &self,
+        package_path: String,
+        platform: String,
+        grants: Vec<String>,
+    ) -> Result<PluginInstallation, BridgeError> {
+        let mut core = self.lock()?;
+        let platform = if platform.trim().is_empty() {
+            diary_core::plugin::host_platform().to_owned()
+        } else {
+            platform
+        };
+        Ok(core.install_plugin(package_path, &platform, &grants)?)
+    }
+
+    /// 启用/停用。停用后新的调用被拒，历史日记与导出物保留。
+    pub fn set_plugin_enabled(
+        &self,
+        plugin_id: String,
+        enabled: bool,
+    ) -> Result<PluginInstallation, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.set_plugin_enabled(&plugin_id, enabled)?)
+    }
+
+    /// 卸载。`remove_private_state` 对齐契约的「可选择的私有缓存」；执行文件总会清理。
+    pub fn uninstall_plugin(
+        &self,
+        plugin_id: String,
+        remove_private_state: bool,
+    ) -> Result<(), BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.uninstall_plugin(&plugin_id, remove_private_state)?)
+    }
+
+    /// 已安装插件。只读缓存清单，不读、不执行插件入口。
+    pub fn list_plugins(&self) -> Result<Vec<PluginInstallation>, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.list_plugins()?)
+    }
+
+    /// 声明式模板缓存（可按插件过滤）。启动/列表路径不会碰插件文件。
+    pub fn plugin_templates(&self, plugin_id: Option<String>) -> Result<Vec<PluginTemplate>, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.plugin_templates(plugin_id.as_deref())?)
+    }
+
+    /// 运行插件（`plugins.invoke`）。激活点、权限、预算与隔离都由核心收口。
+    pub fn run_plugin(&self, invocation: PluginInvocation) -> Result<PluginRunResult, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.run_plugin(&invocation)?)
+    }
+
     /// 已经接到桥上的契约方法名。
     pub fn capabilities(&self) -> Vec<String> {
         wired_capabilities()
@@ -883,6 +959,16 @@ fn wired_capabilities() -> Vec<String> {
         "backups.create",
         "backups.inspect",
         "backups.restore",
+        // B6（#88）：契约里的 plugins.* 六条真的接上了；外加 `plugins.templates`
+        // 是列表缓存模板的加性方法（契约的 `plugins.list` 只返回安装状态）。
+        "plugins.inspectPackage",
+        "plugins.install",
+        "plugins.enable",
+        "plugins.disable",
+        "plugins.uninstall",
+        "plugins.list",
+        "plugins.invoke",
+        "plugins.templates",
     ]
     .iter()
     .map(|name| (*name).to_owned())

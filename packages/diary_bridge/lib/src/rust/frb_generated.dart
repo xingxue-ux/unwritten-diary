@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1848837679;
+  int get rustContentHash => 2004330603;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -191,6 +191,19 @@ abstract class RustLibApi extends BaseApi {
     required String packagePath,
   });
 
+  Future<PluginInspection> crateApiBridgeSessionInspectPluginPackage({
+    required BridgeSession that,
+    required String packagePath,
+    required String platform,
+  });
+
+  Future<PluginInstallation> crateApiBridgeSessionInstallPlugin({
+    required BridgeSession that,
+    required String packagePath,
+    required String platform,
+    required List<String> grants,
+  });
+
   Future<JobStatus> crateApiBridgeSessionJobStatus({
     required BridgeSession that,
   });
@@ -213,6 +226,10 @@ abstract class RustLibApi extends BaseApi {
     required BridgeSession that,
     List<JobState>? states,
     required int limit,
+  });
+
+  Future<List<PluginInstallation>> crateApiBridgeSessionListPlugins({
+    required BridgeSession that,
   });
 
   Future<List<Provider>> crateApiBridgeSessionListProviders({
@@ -252,6 +269,11 @@ abstract class RustLibApi extends BaseApi {
 
   Future<List<OrganizeTemplate>> crateApiBridgeSessionOrganizeTemplates({
     required BridgeSession that,
+  });
+
+  Future<List<PluginTemplate>> crateApiBridgeSessionPluginTemplates({
+    required BridgeSession that,
+    String? pluginId,
   });
 
   Future<ImportTicket> crateApiBridgeSessionPrepareImport({
@@ -332,6 +354,11 @@ abstract class RustLibApi extends BaseApi {
     required String trigger,
   });
 
+  Future<PluginRunResult> crateApiBridgeSessionRunPlugin({
+    required BridgeSession that,
+    required PluginInvocation invocation,
+  });
+
   Future<DiaryVersion> crateApiBridgeSessionSaveDiaryEdit({
     required BridgeSession that,
     required String baseVersionId,
@@ -372,6 +399,12 @@ abstract class RustLibApi extends BaseApi {
     required PlatformInt64 expectedRevision,
   });
 
+  Future<PluginInstallation> crateApiBridgeSessionSetPluginEnabled({
+    required BridgeSession that,
+    required String pluginId,
+    required bool enabled,
+  });
+
   Future<SearchSnapshot> crateApiBridgeSessionStartSearch({
     required BridgeSession that,
     required SearchRequest request,
@@ -382,6 +415,12 @@ abstract class RustLibApi extends BaseApi {
     required BridgeSession that,
     required String providerId,
     required List<ProviderCapability> scope,
+  });
+
+  Future<void> crateApiBridgeSessionUninstallPlugin({
+    required BridgeSession that,
+    required String pluginId,
+    required bool removePrivateState,
   });
 
   Future<OrganizeSettings> crateApiBridgeSessionUpdateOrganizeSettings({
@@ -485,6 +524,14 @@ abstract class RustLibApi extends BaseApi {
   Future<void> diaryCoreModelMatchedByWire({required MatchedBy that});
 
   Future<MaterialCounts> diaryCoreModelMaterialCountsDefault();
+
+  Future<PluginEntryKind?> diaryCoreModelPluginEntryKindFromWire({
+    required String value,
+  });
+
+  Future<void> diaryCoreModelPluginEntryKindWire({
+    required PluginEntryKind that,
+  });
 
   Future<ProcessingStatus?> diaryCoreModelProcessingStatusFromWire({
     required String value,
@@ -1388,6 +1435,88 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<PluginInspection> crateApiBridgeSessionInspectPluginPackage({
+    required BridgeSession that,
+    required String packagePath,
+    required String platform,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+            that,
+            serializer,
+          );
+          sse_encode_String(packagePath, serializer);
+          sse_encode_String(platform, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 22,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_plugin_inspection,
+          decodeErrorData: sse_decode_bridge_error,
+        ),
+        constMeta: kCrateApiBridgeSessionInspectPluginPackageConstMeta,
+        argValues: [that, packagePath, platform],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBridgeSessionInspectPluginPackageConstMeta =>
+      const TaskConstMeta(
+        debugName: "BridgeSession_inspect_plugin_package",
+        argNames: ["that", "packagePath", "platform"],
+      );
+
+  @override
+  Future<PluginInstallation> crateApiBridgeSessionInstallPlugin({
+    required BridgeSession that,
+    required String packagePath,
+    required String platform,
+    required List<String> grants,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+            that,
+            serializer,
+          );
+          sse_encode_String(packagePath, serializer);
+          sse_encode_String(platform, serializer);
+          sse_encode_list_String(grants, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 23,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_plugin_installation,
+          decodeErrorData: sse_decode_bridge_error,
+        ),
+        constMeta: kCrateApiBridgeSessionInstallPluginConstMeta,
+        argValues: [that, packagePath, platform, grants],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBridgeSessionInstallPluginConstMeta =>
+      const TaskConstMeta(
+        debugName: "BridgeSession_install_plugin",
+        argNames: ["that", "packagePath", "platform", "grants"],
+      );
+
+  @override
   Future<JobStatus> crateApiBridgeSessionJobStatus({
     required BridgeSession that,
   }) {
@@ -1402,7 +1531,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 24,
             port: port_,
           );
         },
@@ -1444,7 +1573,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 25,
             port: port_,
           );
         },
@@ -1486,7 +1615,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 26,
             port: port_,
           );
         },
@@ -1526,7 +1655,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 27,
             port: port_,
           );
         },
@@ -1548,6 +1677,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<List<PluginInstallation>> crateApiBridgeSessionListPlugins({
+    required BridgeSession that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 28,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_plugin_installation,
+          decodeErrorData: sse_decode_bridge_error,
+        ),
+        constMeta: kCrateApiBridgeSessionListPluginsConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBridgeSessionListPluginsConstMeta =>
+      const TaskConstMeta(
+        debugName: "BridgeSession_list_plugins",
+        argNames: ["that"],
+      );
+
+  @override
   Future<List<Provider>> crateApiBridgeSessionListProviders({
     required BridgeSession that,
   }) {
@@ -1562,7 +1727,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 29,
             port: port_,
           );
         },
@@ -1602,7 +1767,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 30,
             port: port_,
           );
         },
@@ -1648,7 +1813,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1698,7 +1863,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 32,
             port: port_,
           );
         },
@@ -1731,7 +1896,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 33,
             port: port_,
           );
         },
@@ -1767,7 +1932,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 34,
             port: port_,
           );
         },
@@ -1803,7 +1968,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 35,
             port: port_,
           );
         },
@@ -1839,7 +2004,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 36,
             port: port_,
           );
         },
@@ -1858,6 +2023,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "BridgeSession_organize_templates",
         argNames: ["that"],
+      );
+
+  @override
+  Future<List<PluginTemplate>> crateApiBridgeSessionPluginTemplates({
+    required BridgeSession that,
+    String? pluginId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+            that,
+            serializer,
+          );
+          sse_encode_opt_String(pluginId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 37,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_plugin_template,
+          decodeErrorData: sse_decode_bridge_error,
+        ),
+        constMeta: kCrateApiBridgeSessionPluginTemplatesConstMeta,
+        argValues: [that, pluginId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBridgeSessionPluginTemplatesConstMeta =>
+      const TaskConstMeta(
+        debugName: "BridgeSession_plugin_templates",
+        argNames: ["that", "pluginId"],
       );
 
   @override
@@ -1887,7 +2090,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 38,
             port: port_,
           );
         },
@@ -1943,7 +2146,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 39,
             port: port_,
           );
         },
@@ -1981,7 +2184,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 40,
             port: port_,
           );
         },
@@ -2023,7 +2226,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 41,
             port: port_,
           );
         },
@@ -2063,7 +2266,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 42,
             port: port_,
           );
         },
@@ -2101,7 +2304,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 43,
             port: port_,
           );
         },
@@ -2143,7 +2346,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 44,
             port: port_,
           );
         },
@@ -2181,7 +2384,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 45,
             port: port_,
           );
         },
@@ -2223,7 +2426,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 46,
             port: port_,
           );
         },
@@ -2263,7 +2466,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 47,
             port: port_,
           );
         },
@@ -2307,7 +2510,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 48,
             port: port_,
           );
         },
@@ -2353,7 +2556,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 49,
             port: port_,
           );
         },
@@ -2372,6 +2575,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "BridgeSession_run_due_jobs",
         argNames: ["that", "budgetMs", "trigger"],
+      );
+
+  @override
+  Future<PluginRunResult> crateApiBridgeSessionRunPlugin({
+    required BridgeSession that,
+    required PluginInvocation invocation,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+            that,
+            serializer,
+          );
+          sse_encode_box_autoadd_plugin_invocation(invocation, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 50,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_plugin_run_result,
+          decodeErrorData: sse_decode_bridge_error,
+        ),
+        constMeta: kCrateApiBridgeSessionRunPluginConstMeta,
+        argValues: [that, invocation],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBridgeSessionRunPluginConstMeta =>
+      const TaskConstMeta(
+        debugName: "BridgeSession_run_plugin",
+        argNames: ["that", "invocation"],
       );
 
   @override
@@ -2397,7 +2638,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 46,
+            funcId: 51,
             port: port_,
           );
         },
@@ -2447,7 +2688,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 52,
             port: port_,
           );
         },
@@ -2493,7 +2734,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 53,
             port: port_,
           );
         },
@@ -2533,7 +2774,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 49,
+            funcId: 54,
             port: port_,
           );
         },
@@ -2571,7 +2812,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 55,
             port: port_,
           );
         },
@@ -2613,7 +2854,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 51,
+            funcId: 56,
             port: port_,
           );
         },
@@ -2635,6 +2876,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<PluginInstallation> crateApiBridgeSessionSetPluginEnabled({
+    required BridgeSession that,
+    required String pluginId,
+    required bool enabled,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+            that,
+            serializer,
+          );
+          sse_encode_String(pluginId, serializer);
+          sse_encode_bool(enabled, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 57,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_plugin_installation,
+          decodeErrorData: sse_decode_bridge_error,
+        ),
+        constMeta: kCrateApiBridgeSessionSetPluginEnabledConstMeta,
+        argValues: [that, pluginId, enabled],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBridgeSessionSetPluginEnabledConstMeta =>
+      const TaskConstMeta(
+        debugName: "BridgeSession_set_plugin_enabled",
+        argNames: ["that", "pluginId", "enabled"],
+      );
+
+  @override
   Future<SearchSnapshot> crateApiBridgeSessionStartSearch({
     required BridgeSession that,
     required SearchRequest request,
@@ -2653,7 +2934,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 52,
+            funcId: 58,
             port: port_,
           );
         },
@@ -2693,7 +2974,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 53,
+            funcId: 59,
             port: port_,
           );
         },
@@ -2715,6 +2996,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiBridgeSessionUninstallPlugin({
+    required BridgeSession that,
+    required String pluginId,
+    required bool removePrivateState,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeSession(
+            that,
+            serializer,
+          );
+          sse_encode_String(pluginId, serializer);
+          sse_encode_bool(removePrivateState, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 60,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_bridge_error,
+        ),
+        constMeta: kCrateApiBridgeSessionUninstallPluginConstMeta,
+        argValues: [that, pluginId, removePrivateState],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBridgeSessionUninstallPluginConstMeta =>
+      const TaskConstMeta(
+        debugName: "BridgeSession_uninstall_plugin",
+        argNames: ["that", "pluginId", "removePrivateState"],
+      );
+
+  @override
   Future<OrganizeSettings> crateApiBridgeSessionUpdateOrganizeSettings({
     required BridgeSession that,
     required OrganizeSettings settings,
@@ -2733,7 +3054,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 54,
+            funcId: 61,
             port: port_,
           );
         },
@@ -2771,7 +3092,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 55,
+            funcId: 62,
             port: port_,
           );
         },
@@ -2809,7 +3130,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 56,
+            funcId: 63,
             port: port_,
           );
         },
@@ -2842,7 +3163,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 57,
+            funcId: 64,
             port: port_,
           );
         },
@@ -2875,7 +3196,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 58,
+            funcId: 65,
             port: port_,
           );
         },
@@ -2908,7 +3229,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 59,
+            funcId: 66,
             port: port_,
           );
         },
@@ -2939,7 +3260,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 60,
+            funcId: 67,
             port: port_,
           );
         },
@@ -2969,7 +3290,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 61,
+            funcId: 68,
             port: port_,
           );
         },
@@ -3000,7 +3321,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 62,
+            funcId: 69,
             port: port_,
           );
         },
@@ -3028,7 +3349,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 63,
+            funcId: 70,
             port: port_,
           );
         },
@@ -3056,7 +3377,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 64,
+            funcId: 71,
             port: port_,
           );
         },
@@ -3086,7 +3407,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 65,
+            funcId: 72,
             port: port_,
           );
         },
@@ -3119,7 +3440,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 66,
+            funcId: 73,
             port: port_,
           );
         },
@@ -3152,7 +3473,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 67,
+            funcId: 74,
             port: port_,
           );
         },
@@ -3185,7 +3506,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 68,
+            funcId: 75,
             port: port_,
           );
         },
@@ -3218,7 +3539,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 69,
+            funcId: 76,
             port: port_,
           );
         },
@@ -3251,7 +3572,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 70,
+            funcId: 77,
             port: port_,
           );
         },
@@ -3282,7 +3603,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 71,
+            funcId: 78,
             port: port_,
           );
         },
@@ -3313,7 +3634,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 72,
+            funcId: 79,
             port: port_,
           );
         },
@@ -3343,7 +3664,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 73,
+            funcId: 80,
             port: port_,
           );
         },
@@ -3374,7 +3695,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 74,
+            funcId: 81,
             port: port_,
           );
         },
@@ -3404,7 +3725,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 75,
+            funcId: 82,
             port: port_,
           );
         },
@@ -3437,7 +3758,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 76,
+            funcId: 83,
             port: port_,
           );
         },
@@ -3468,7 +3789,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 77,
+            funcId: 84,
             port: port_,
           );
         },
@@ -3498,7 +3819,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 78,
+            funcId: 85,
             port: port_,
           );
         },
@@ -3526,7 +3847,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 79,
+            funcId: 86,
             port: port_,
           );
         },
@@ -3557,7 +3878,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 80,
+            funcId: 87,
             port: port_,
           );
         },
@@ -3588,7 +3909,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 81,
+            funcId: 88,
             port: port_,
           );
         },
@@ -3618,7 +3939,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 82,
+            funcId: 89,
             port: port_,
           );
         },
@@ -3649,7 +3970,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 83,
+            funcId: 90,
             port: port_,
           );
         },
@@ -3677,7 +3998,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 84,
+            funcId: 91,
             port: port_,
           );
         },
@@ -3708,7 +4029,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 85,
+            funcId: 92,
             port: port_,
           );
         },
@@ -3735,7 +4056,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 86,
+            funcId: 93,
             port: port_,
           );
         },
@@ -3754,6 +4075,72 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "material_counts_default", argNames: []);
 
   @override
+  Future<PluginEntryKind?> diaryCoreModelPluginEntryKindFromWire({
+    required String value,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(value, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 94,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_plugin_entry_kind,
+          decodeErrorData: null,
+        ),
+        constMeta: kDiaryCoreModelPluginEntryKindFromWireConstMeta,
+        argValues: [value],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kDiaryCoreModelPluginEntryKindFromWireConstMeta =>
+      const TaskConstMeta(
+        debugName: "plugin_entry_kind_from_wire",
+        argNames: ["value"],
+      );
+
+  @override
+  Future<void> diaryCoreModelPluginEntryKindWire({
+    required PluginEntryKind that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_plugin_entry_kind(that, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 95,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kDiaryCoreModelPluginEntryKindWireConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kDiaryCoreModelPluginEntryKindWireConstMeta =>
+      const TaskConstMeta(
+        debugName: "plugin_entry_kind_wire",
+        argNames: ["that"],
+      );
+
+  @override
   Future<ProcessingStatus?> diaryCoreModelProcessingStatusFromWire({
     required String value,
   }) {
@@ -3765,7 +4152,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 87,
+            funcId: 96,
             port: port_,
           );
         },
@@ -3798,7 +4185,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 88,
+            funcId: 97,
             port: port_,
           );
         },
@@ -3828,7 +4215,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 89,
+            funcId: 98,
             port: port_,
           );
         },
@@ -3861,7 +4248,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 90,
+            funcId: 99,
             port: port_,
           );
         },
@@ -3894,7 +4281,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 91,
+            funcId: 100,
             port: port_,
           );
         },
@@ -3927,7 +4314,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 92,
+            funcId: 101,
             port: port_,
           );
         },
@@ -3960,7 +4347,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 93,
+            funcId: 102,
             port: port_,
           );
         },
@@ -3993,7 +4380,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 94,
+            funcId: 103,
             port: port_,
           );
         },
@@ -4026,7 +4413,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 95,
+            funcId: 104,
             port: port_,
           );
         },
@@ -4059,7 +4446,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 96,
+            funcId: 105,
             port: port_,
           );
         },
@@ -4089,7 +4476,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 97,
+            funcId: 106,
             port: port_,
           );
         },
@@ -4119,7 +4506,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 98,
+            funcId: 107,
             port: port_,
           );
         },
@@ -4150,7 +4537,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 99,
+            funcId: 108,
             port: port_,
           );
         },
@@ -4180,7 +4567,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 100,
+            funcId: 109,
             port: port_,
           );
         },
@@ -4211,7 +4598,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 101,
+            funcId: 110,
             port: port_,
           );
         },
@@ -4239,7 +4626,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 102,
+            funcId: 111,
             port: port_,
           );
         },
@@ -4270,7 +4657,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 103,
+            funcId: 112,
             port: port_,
           );
         },
@@ -4304,7 +4691,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 104,
+            funcId: 113,
             port: port_,
           );
         },
@@ -4341,7 +4728,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 105,
+            funcId: 114,
             port: port_,
           );
         },
@@ -4661,6 +5048,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   OrganizeSettings dco_decode_box_autoadd_organize_settings(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_organize_settings(raw);
+  }
+
+  @protected
+  PluginEntryKind dco_decode_box_autoadd_plugin_entry_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_plugin_entry_kind(raw);
+  }
+
+  @protected
+  PluginInvocation dco_decode_box_autoadd_plugin_invocation(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_plugin_invocation(raw);
+  }
+
+  @protected
+  PluginStyleProfile dco_decode_box_autoadd_plugin_style_profile(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_plugin_style_profile(raw);
   }
 
   @protected
@@ -5285,6 +5690,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<PluginArtifact> dco_decode_list_plugin_artifact(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_plugin_artifact).toList();
+  }
+
+  @protected
+  List<PluginDerivedContent> dco_decode_list_plugin_derived_content(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_plugin_derived_content)
+        .toList();
+  }
+
+  @protected
+  List<PluginInstallation> dco_decode_list_plugin_installation(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_plugin_installation).toList();
+  }
+
+  @protected
+  List<PluginPermission> dco_decode_list_plugin_permission(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_plugin_permission).toList();
+  }
+
+  @protected
+  List<PluginSourceRef> dco_decode_list_plugin_source_ref(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_plugin_source_ref).toList();
+  }
+
+  @protected
+  List<PluginTemplate> dco_decode_list_plugin_template(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_plugin_template).toList();
+  }
+
+  @protected
   Float64List dco_decode_list_prim_f_64_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as Float64List;
@@ -5521,6 +5966,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  PluginEntryKind? dco_decode_opt_box_autoadd_plugin_entry_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_plugin_entry_kind(raw);
+  }
+
+  @protected
+  PluginStyleProfile? dco_decode_opt_box_autoadd_plugin_style_profile(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_plugin_style_profile(raw);
+  }
+
+  @protected
   ProcessingStatus? dco_decode_opt_box_autoadd_processing_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_processing_status(raw);
@@ -5740,6 +6201,223 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       maximum: dco_decode_opt_box_autoadd_i_64(arr[4]),
       defaultValue: dco_decode_String(arr[5]),
       description: dco_decode_String(arr[6]),
+    );
+  }
+
+  @protected
+  PluginArtifact dco_decode_plugin_artifact(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return PluginArtifact(
+      fileName: dco_decode_String(arr[0]),
+      mediaType: dco_decode_String(arr[1]),
+      byteSize: dco_decode_i_64(arr[2]),
+      sha256: dco_decode_String(arr[3]),
+      path: dco_decode_opt_String(arr[4]),
+      content: dco_decode_opt_String(arr[5]),
+    );
+  }
+
+  @protected
+  PluginDerivedContent dco_decode_plugin_derived_content(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return PluginDerivedContent(
+      kind: dco_decode_String(arr[0]),
+      text: dco_decode_String(arr[1]),
+      sourceRefs: dco_decode_list_plugin_source_ref(arr[2]),
+    );
+  }
+
+  @protected
+  PluginEntryKind dco_decode_plugin_entry_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return PluginEntryKind.values[raw as int];
+  }
+
+  @protected
+  PluginInspection dco_decode_plugin_inspection(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    return PluginInspection(
+      packagePath: dco_decode_String(arr[0]),
+      packageKind: dco_decode_String(arr[1]),
+      packageHash: dco_decode_String(arr[2]),
+      manifest: dco_decode_plugin_manifest(arr[3]),
+      templates: dco_decode_list_plugin_template(arr[4]),
+      permissions: dco_decode_list_plugin_permission(arr[5]),
+      missingPermissions: dco_decode_list_String(arr[6]),
+      compatible: dco_decode_bool(arr[7]),
+      issues: dco_decode_list_String(arr[8]),
+      installedVersion: dco_decode_opt_String(arr[9]),
+      isUpgrade: dco_decode_bool(arr[10]),
+    );
+  }
+
+  @protected
+  PluginInstallation dco_decode_plugin_installation(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 17)
+      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
+    return PluginInstallation(
+      pluginId: dco_decode_String(arr[0]),
+      name: dco_decode_String(arr[1]),
+      version: dco_decode_String(arr[2]),
+      manifestVersion: dco_decode_i_64(arr[3]),
+      entryKind: dco_decode_plugin_entry_kind(arr[4]),
+      apiRange: dco_decode_String(arr[5]),
+      enabled: dco_decode_bool(arr[6]),
+      permissions: dco_decode_list_String(arr[7]),
+      requestedPermissions: dco_decode_list_String(arr[8]),
+      supportedPlatforms: dco_decode_list_String(arr[9]),
+      activationEvents: dco_decode_list_String(arr[10]),
+      templates: dco_decode_list_plugin_template(arr[11]),
+      packageHash: dco_decode_String(arr[12]),
+      installedAt: dco_decode_Chrono_Utc(arr[13]),
+      updatedAt: dco_decode_Chrono_Utc(arr[14]),
+      lastRunAt: dco_decode_opt_box_autoadd_Chrono_Utc(arr[15]),
+      lastError: dco_decode_opt_String(arr[16]),
+    );
+  }
+
+  @protected
+  PluginInvocation dco_decode_plugin_invocation(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    return PluginInvocation(
+      pluginId: dco_decode_String(arr[0]),
+      activation: dco_decode_String(arr[1]),
+      templateId: dco_decode_opt_String(arr[2]),
+      selectedVersionIds: dco_decode_list_String(arr[3]),
+      selectedCaptureIds: dco_decode_list_String(arr[4]),
+      fromDayKey: dco_decode_opt_String(arr[5]),
+      toDayKey: dco_decode_opt_String(arr[6]),
+      styleProfile: dco_decode_opt_box_autoadd_plugin_style_profile(arr[7]),
+      format: dco_decode_opt_String(arr[8]),
+      inputText: dco_decode_opt_String(arr[9]),
+    );
+  }
+
+  @protected
+  PluginManifest dco_decode_plugin_manifest(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    return PluginManifest(
+      manifestVersion: dco_decode_i_64(arr[0]),
+      id: dco_decode_String(arr[1]),
+      name: dco_decode_String(arr[2]),
+      version: dco_decode_String(arr[3]),
+      author: dco_decode_String(arr[4]),
+      license: dco_decode_String(arr[5]),
+      apiRange: dco_decode_String(arr[6]),
+      supportedPlatforms: dco_decode_list_String(arr[7]),
+      entryKind: dco_decode_plugin_entry_kind(arr[8]),
+      entryFile: dco_decode_String(arr[9]),
+      activationEvents: dco_decode_list_String(arr[10]),
+      permissions: dco_decode_list_String(arr[11]),
+      settingsSchemaJson: dco_decode_opt_String(arr[12]),
+      packageHashes: dco_decode_Map_String_String_None(arr[13]),
+      description: dco_decode_opt_String(arr[14]),
+      homepage: dco_decode_opt_String(arr[15]),
+    );
+  }
+
+  @protected
+  PluginPermission dco_decode_plugin_permission(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return PluginPermission(
+      id: dco_decode_String(arr[0]),
+      label: dco_decode_String(arr[1]),
+      description: dco_decode_String(arr[2]),
+      risk: dco_decode_String(arr[3]),
+    );
+  }
+
+  @protected
+  PluginRunResult dco_decode_plugin_run_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
+    return PluginRunResult(
+      runId: dco_decode_String(arr[0]),
+      pluginId: dco_decode_String(arr[1]),
+      activation: dco_decode_String(arr[2]),
+      status: dco_decode_String(arr[3]),
+      output: dco_decode_opt_String(arr[4]),
+      artifacts: dco_decode_list_plugin_artifact(arr[5]),
+      derivedContents: dco_decode_list_plugin_derived_content(arr[6]),
+      logs: dco_decode_list_String(arr[7]),
+      warnings: dco_decode_list_String(arr[8]),
+      errorCode: dco_decode_opt_String(arr[9]),
+      errorMessage: dco_decode_opt_String(arr[10]),
+      durationMs: dco_decode_i_64(arr[11]),
+      instructionsUsed: dco_decode_opt_box_autoadd_i_64(arr[12]),
+    );
+  }
+
+  @protected
+  PluginSourceRef dco_decode_plugin_source_ref(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return PluginSourceRef(
+      sourceId: dco_decode_String(arr[0]),
+      sourceRevisionId: dco_decode_opt_String(arr[1]),
+      locatorJson: dco_decode_opt_String(arr[2]),
+    );
+  }
+
+  @protected
+  PluginStyleProfile dco_decode_plugin_style_profile(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    return PluginStyleProfile(
+      id: dco_decode_String(arr[0]),
+      label: dco_decode_String(arr[1]),
+      revision: dco_decode_i_64(arr[2]),
+      updatedAt: dco_decode_Chrono_Utc(arr[3]),
+      lengthPreference: dco_decode_opt_String(arr[4]),
+      person: dco_decode_opt_String(arr[5]),
+      tone: dco_decode_opt_String(arr[6]),
+      emotionalTemperature: dco_decode_opt_String(arr[7]),
+      rhetoricLevel: dco_decode_opt_String(arr[8]),
+      examples: dco_decode_list_String(arr[9]),
+      bannedExpressions: dco_decode_list_String(arr[10]),
+    );
+  }
+
+  @protected
+  PluginTemplate dco_decode_plugin_template(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    return PluginTemplate(
+      pluginId: dco_decode_String(arr[0]),
+      id: dco_decode_String(arr[1]),
+      kind: dco_decode_String(arr[2]),
+      label: dco_decode_String(arr[3]),
+      description: dco_decode_String(arr[4]),
+      format: dco_decode_String(arr[5]),
+      body: dco_decode_String(arr[6]),
     );
   }
 
@@ -6531,6 +7209,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_organize_settings(deserializer));
+  }
+
+  @protected
+  PluginEntryKind sse_decode_box_autoadd_plugin_entry_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_plugin_entry_kind(deserializer));
+  }
+
+  @protected
+  PluginInvocation sse_decode_box_autoadd_plugin_invocation(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_plugin_invocation(deserializer));
+  }
+
+  @protected
+  PluginStyleProfile sse_decode_box_autoadd_plugin_style_profile(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_plugin_style_profile(deserializer));
   }
 
   @protected
@@ -7362,6 +8064,90 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<PluginArtifact> sse_decode_list_plugin_artifact(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <PluginArtifact>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_plugin_artifact(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<PluginDerivedContent> sse_decode_list_plugin_derived_content(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <PluginDerivedContent>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_plugin_derived_content(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<PluginInstallation> sse_decode_list_plugin_installation(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <PluginInstallation>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_plugin_installation(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<PluginPermission> sse_decode_list_plugin_permission(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <PluginPermission>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_plugin_permission(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<PluginSourceRef> sse_decode_list_plugin_source_ref(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <PluginSourceRef>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_plugin_source_ref(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<PluginTemplate> sse_decode_list_plugin_template(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <PluginTemplate>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_plugin_template(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   Float64List sse_decode_list_prim_f_64_strict(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
@@ -7783,6 +8569,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  PluginEntryKind? sse_decode_opt_box_autoadd_plugin_entry_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_plugin_entry_kind(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  PluginStyleProfile? sse_decode_opt_box_autoadd_plugin_style_profile(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_plugin_style_profile(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   ProcessingStatus? sse_decode_opt_box_autoadd_processing_status(
     SseDeserializer deserializer,
   ) {
@@ -8123,6 +8935,302 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       maximum: var_maximum,
       defaultValue: var_defaultValue,
       description: var_description,
+    );
+  }
+
+  @protected
+  PluginArtifact sse_decode_plugin_artifact(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_fileName = sse_decode_String(deserializer);
+    var var_mediaType = sse_decode_String(deserializer);
+    var var_byteSize = sse_decode_i_64(deserializer);
+    var var_sha256 = sse_decode_String(deserializer);
+    var var_path = sse_decode_opt_String(deserializer);
+    var var_content = sse_decode_opt_String(deserializer);
+    return PluginArtifact(
+      fileName: var_fileName,
+      mediaType: var_mediaType,
+      byteSize: var_byteSize,
+      sha256: var_sha256,
+      path: var_path,
+      content: var_content,
+    );
+  }
+
+  @protected
+  PluginDerivedContent sse_decode_plugin_derived_content(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_kind = sse_decode_String(deserializer);
+    var var_text = sse_decode_String(deserializer);
+    var var_sourceRefs = sse_decode_list_plugin_source_ref(deserializer);
+    return PluginDerivedContent(
+      kind: var_kind,
+      text: var_text,
+      sourceRefs: var_sourceRefs,
+    );
+  }
+
+  @protected
+  PluginEntryKind sse_decode_plugin_entry_kind(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return PluginEntryKind.values[inner];
+  }
+
+  @protected
+  PluginInspection sse_decode_plugin_inspection(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_packagePath = sse_decode_String(deserializer);
+    var var_packageKind = sse_decode_String(deserializer);
+    var var_packageHash = sse_decode_String(deserializer);
+    var var_manifest = sse_decode_plugin_manifest(deserializer);
+    var var_templates = sse_decode_list_plugin_template(deserializer);
+    var var_permissions = sse_decode_list_plugin_permission(deserializer);
+    var var_missingPermissions = sse_decode_list_String(deserializer);
+    var var_compatible = sse_decode_bool(deserializer);
+    var var_issues = sse_decode_list_String(deserializer);
+    var var_installedVersion = sse_decode_opt_String(deserializer);
+    var var_isUpgrade = sse_decode_bool(deserializer);
+    return PluginInspection(
+      packagePath: var_packagePath,
+      packageKind: var_packageKind,
+      packageHash: var_packageHash,
+      manifest: var_manifest,
+      templates: var_templates,
+      permissions: var_permissions,
+      missingPermissions: var_missingPermissions,
+      compatible: var_compatible,
+      issues: var_issues,
+      installedVersion: var_installedVersion,
+      isUpgrade: var_isUpgrade,
+    );
+  }
+
+  @protected
+  PluginInstallation sse_decode_plugin_installation(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_pluginId = sse_decode_String(deserializer);
+    var var_name = sse_decode_String(deserializer);
+    var var_version = sse_decode_String(deserializer);
+    var var_manifestVersion = sse_decode_i_64(deserializer);
+    var var_entryKind = sse_decode_plugin_entry_kind(deserializer);
+    var var_apiRange = sse_decode_String(deserializer);
+    var var_enabled = sse_decode_bool(deserializer);
+    var var_permissions = sse_decode_list_String(deserializer);
+    var var_requestedPermissions = sse_decode_list_String(deserializer);
+    var var_supportedPlatforms = sse_decode_list_String(deserializer);
+    var var_activationEvents = sse_decode_list_String(deserializer);
+    var var_templates = sse_decode_list_plugin_template(deserializer);
+    var var_packageHash = sse_decode_String(deserializer);
+    var var_installedAt = sse_decode_Chrono_Utc(deserializer);
+    var var_updatedAt = sse_decode_Chrono_Utc(deserializer);
+    var var_lastRunAt = sse_decode_opt_box_autoadd_Chrono_Utc(deserializer);
+    var var_lastError = sse_decode_opt_String(deserializer);
+    return PluginInstallation(
+      pluginId: var_pluginId,
+      name: var_name,
+      version: var_version,
+      manifestVersion: var_manifestVersion,
+      entryKind: var_entryKind,
+      apiRange: var_apiRange,
+      enabled: var_enabled,
+      permissions: var_permissions,
+      requestedPermissions: var_requestedPermissions,
+      supportedPlatforms: var_supportedPlatforms,
+      activationEvents: var_activationEvents,
+      templates: var_templates,
+      packageHash: var_packageHash,
+      installedAt: var_installedAt,
+      updatedAt: var_updatedAt,
+      lastRunAt: var_lastRunAt,
+      lastError: var_lastError,
+    );
+  }
+
+  @protected
+  PluginInvocation sse_decode_plugin_invocation(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_pluginId = sse_decode_String(deserializer);
+    var var_activation = sse_decode_String(deserializer);
+    var var_templateId = sse_decode_opt_String(deserializer);
+    var var_selectedVersionIds = sse_decode_list_String(deserializer);
+    var var_selectedCaptureIds = sse_decode_list_String(deserializer);
+    var var_fromDayKey = sse_decode_opt_String(deserializer);
+    var var_toDayKey = sse_decode_opt_String(deserializer);
+    var var_styleProfile = sse_decode_opt_box_autoadd_plugin_style_profile(
+      deserializer,
+    );
+    var var_format = sse_decode_opt_String(deserializer);
+    var var_inputText = sse_decode_opt_String(deserializer);
+    return PluginInvocation(
+      pluginId: var_pluginId,
+      activation: var_activation,
+      templateId: var_templateId,
+      selectedVersionIds: var_selectedVersionIds,
+      selectedCaptureIds: var_selectedCaptureIds,
+      fromDayKey: var_fromDayKey,
+      toDayKey: var_toDayKey,
+      styleProfile: var_styleProfile,
+      format: var_format,
+      inputText: var_inputText,
+    );
+  }
+
+  @protected
+  PluginManifest sse_decode_plugin_manifest(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_manifestVersion = sse_decode_i_64(deserializer);
+    var var_id = sse_decode_String(deserializer);
+    var var_name = sse_decode_String(deserializer);
+    var var_version = sse_decode_String(deserializer);
+    var var_author = sse_decode_String(deserializer);
+    var var_license = sse_decode_String(deserializer);
+    var var_apiRange = sse_decode_String(deserializer);
+    var var_supportedPlatforms = sse_decode_list_String(deserializer);
+    var var_entryKind = sse_decode_plugin_entry_kind(deserializer);
+    var var_entryFile = sse_decode_String(deserializer);
+    var var_activationEvents = sse_decode_list_String(deserializer);
+    var var_permissions = sse_decode_list_String(deserializer);
+    var var_settingsSchemaJson = sse_decode_opt_String(deserializer);
+    var var_packageHashes = sse_decode_Map_String_String_None(deserializer);
+    var var_description = sse_decode_opt_String(deserializer);
+    var var_homepage = sse_decode_opt_String(deserializer);
+    return PluginManifest(
+      manifestVersion: var_manifestVersion,
+      id: var_id,
+      name: var_name,
+      version: var_version,
+      author: var_author,
+      license: var_license,
+      apiRange: var_apiRange,
+      supportedPlatforms: var_supportedPlatforms,
+      entryKind: var_entryKind,
+      entryFile: var_entryFile,
+      activationEvents: var_activationEvents,
+      permissions: var_permissions,
+      settingsSchemaJson: var_settingsSchemaJson,
+      packageHashes: var_packageHashes,
+      description: var_description,
+      homepage: var_homepage,
+    );
+  }
+
+  @protected
+  PluginPermission sse_decode_plugin_permission(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_String(deserializer);
+    var var_label = sse_decode_String(deserializer);
+    var var_description = sse_decode_String(deserializer);
+    var var_risk = sse_decode_String(deserializer);
+    return PluginPermission(
+      id: var_id,
+      label: var_label,
+      description: var_description,
+      risk: var_risk,
+    );
+  }
+
+  @protected
+  PluginRunResult sse_decode_plugin_run_result(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_runId = sse_decode_String(deserializer);
+    var var_pluginId = sse_decode_String(deserializer);
+    var var_activation = sse_decode_String(deserializer);
+    var var_status = sse_decode_String(deserializer);
+    var var_output = sse_decode_opt_String(deserializer);
+    var var_artifacts = sse_decode_list_plugin_artifact(deserializer);
+    var var_derivedContents = sse_decode_list_plugin_derived_content(
+      deserializer,
+    );
+    var var_logs = sse_decode_list_String(deserializer);
+    var var_warnings = sse_decode_list_String(deserializer);
+    var var_errorCode = sse_decode_opt_String(deserializer);
+    var var_errorMessage = sse_decode_opt_String(deserializer);
+    var var_durationMs = sse_decode_i_64(deserializer);
+    var var_instructionsUsed = sse_decode_opt_box_autoadd_i_64(deserializer);
+    return PluginRunResult(
+      runId: var_runId,
+      pluginId: var_pluginId,
+      activation: var_activation,
+      status: var_status,
+      output: var_output,
+      artifacts: var_artifacts,
+      derivedContents: var_derivedContents,
+      logs: var_logs,
+      warnings: var_warnings,
+      errorCode: var_errorCode,
+      errorMessage: var_errorMessage,
+      durationMs: var_durationMs,
+      instructionsUsed: var_instructionsUsed,
+    );
+  }
+
+  @protected
+  PluginSourceRef sse_decode_plugin_source_ref(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_sourceId = sse_decode_String(deserializer);
+    var var_sourceRevisionId = sse_decode_opt_String(deserializer);
+    var var_locatorJson = sse_decode_opt_String(deserializer);
+    return PluginSourceRef(
+      sourceId: var_sourceId,
+      sourceRevisionId: var_sourceRevisionId,
+      locatorJson: var_locatorJson,
+    );
+  }
+
+  @protected
+  PluginStyleProfile sse_decode_plugin_style_profile(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_String(deserializer);
+    var var_label = sse_decode_String(deserializer);
+    var var_revision = sse_decode_i_64(deserializer);
+    var var_updatedAt = sse_decode_Chrono_Utc(deserializer);
+    var var_lengthPreference = sse_decode_opt_String(deserializer);
+    var var_person = sse_decode_opt_String(deserializer);
+    var var_tone = sse_decode_opt_String(deserializer);
+    var var_emotionalTemperature = sse_decode_opt_String(deserializer);
+    var var_rhetoricLevel = sse_decode_opt_String(deserializer);
+    var var_examples = sse_decode_list_String(deserializer);
+    var var_bannedExpressions = sse_decode_list_String(deserializer);
+    return PluginStyleProfile(
+      id: var_id,
+      label: var_label,
+      revision: var_revision,
+      updatedAt: var_updatedAt,
+      lengthPreference: var_lengthPreference,
+      person: var_person,
+      tone: var_tone,
+      emotionalTemperature: var_emotionalTemperature,
+      rhetoricLevel: var_rhetoricLevel,
+      examples: var_examples,
+      bannedExpressions: var_bannedExpressions,
+    );
+  }
+
+  @protected
+  PluginTemplate sse_decode_plugin_template(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_pluginId = sse_decode_String(deserializer);
+    var var_id = sse_decode_String(deserializer);
+    var var_kind = sse_decode_String(deserializer);
+    var var_label = sse_decode_String(deserializer);
+    var var_description = sse_decode_String(deserializer);
+    var var_format = sse_decode_String(deserializer);
+    var var_body = sse_decode_String(deserializer);
+    return PluginTemplate(
+      pluginId: var_pluginId,
+      id: var_id,
+      kind: var_kind,
+      label: var_label,
+      description: var_description,
+      format: var_format,
+      body: var_body,
     );
   }
 
@@ -8991,6 +10099,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_plugin_entry_kind(
+    PluginEntryKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_plugin_entry_kind(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_plugin_invocation(
+    PluginInvocation self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_plugin_invocation(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_plugin_style_profile(
+    PluginStyleProfile self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_plugin_style_profile(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_processing_status(
     ProcessingStatus self,
     SseSerializer serializer,
@@ -9634,6 +10769,78 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_plugin_artifact(
+    List<PluginArtifact> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_plugin_artifact(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_plugin_derived_content(
+    List<PluginDerivedContent> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_plugin_derived_content(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_plugin_installation(
+    List<PluginInstallation> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_plugin_installation(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_plugin_permission(
+    List<PluginPermission> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_plugin_permission(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_plugin_source_ref(
+    List<PluginSourceRef> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_plugin_source_ref(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_plugin_template(
+    List<PluginTemplate> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_plugin_template(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_prim_f_64_strict(
     Float64List self,
     SseSerializer serializer,
@@ -10043,6 +11250,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_plugin_entry_kind(
+    PluginEntryKind? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_plugin_entry_kind(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_plugin_style_profile(
+    PluginStyleProfile? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_plugin_style_profile(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_processing_status(
     ProcessingStatus? self,
     SseSerializer serializer,
@@ -10319,6 +11552,207 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_box_autoadd_i_64(self.maximum, serializer);
     sse_encode_String(self.defaultValue, serializer);
     sse_encode_String(self.description, serializer);
+  }
+
+  @protected
+  void sse_encode_plugin_artifact(
+    PluginArtifact self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.fileName, serializer);
+    sse_encode_String(self.mediaType, serializer);
+    sse_encode_i_64(self.byteSize, serializer);
+    sse_encode_String(self.sha256, serializer);
+    sse_encode_opt_String(self.path, serializer);
+    sse_encode_opt_String(self.content, serializer);
+  }
+
+  @protected
+  void sse_encode_plugin_derived_content(
+    PluginDerivedContent self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.kind, serializer);
+    sse_encode_String(self.text, serializer);
+    sse_encode_list_plugin_source_ref(self.sourceRefs, serializer);
+  }
+
+  @protected
+  void sse_encode_plugin_entry_kind(
+    PluginEntryKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_plugin_inspection(
+    PluginInspection self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.packagePath, serializer);
+    sse_encode_String(self.packageKind, serializer);
+    sse_encode_String(self.packageHash, serializer);
+    sse_encode_plugin_manifest(self.manifest, serializer);
+    sse_encode_list_plugin_template(self.templates, serializer);
+    sse_encode_list_plugin_permission(self.permissions, serializer);
+    sse_encode_list_String(self.missingPermissions, serializer);
+    sse_encode_bool(self.compatible, serializer);
+    sse_encode_list_String(self.issues, serializer);
+    sse_encode_opt_String(self.installedVersion, serializer);
+    sse_encode_bool(self.isUpgrade, serializer);
+  }
+
+  @protected
+  void sse_encode_plugin_installation(
+    PluginInstallation self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.pluginId, serializer);
+    sse_encode_String(self.name, serializer);
+    sse_encode_String(self.version, serializer);
+    sse_encode_i_64(self.manifestVersion, serializer);
+    sse_encode_plugin_entry_kind(self.entryKind, serializer);
+    sse_encode_String(self.apiRange, serializer);
+    sse_encode_bool(self.enabled, serializer);
+    sse_encode_list_String(self.permissions, serializer);
+    sse_encode_list_String(self.requestedPermissions, serializer);
+    sse_encode_list_String(self.supportedPlatforms, serializer);
+    sse_encode_list_String(self.activationEvents, serializer);
+    sse_encode_list_plugin_template(self.templates, serializer);
+    sse_encode_String(self.packageHash, serializer);
+    sse_encode_Chrono_Utc(self.installedAt, serializer);
+    sse_encode_Chrono_Utc(self.updatedAt, serializer);
+    sse_encode_opt_box_autoadd_Chrono_Utc(self.lastRunAt, serializer);
+    sse_encode_opt_String(self.lastError, serializer);
+  }
+
+  @protected
+  void sse_encode_plugin_invocation(
+    PluginInvocation self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.pluginId, serializer);
+    sse_encode_String(self.activation, serializer);
+    sse_encode_opt_String(self.templateId, serializer);
+    sse_encode_list_String(self.selectedVersionIds, serializer);
+    sse_encode_list_String(self.selectedCaptureIds, serializer);
+    sse_encode_opt_String(self.fromDayKey, serializer);
+    sse_encode_opt_String(self.toDayKey, serializer);
+    sse_encode_opt_box_autoadd_plugin_style_profile(
+      self.styleProfile,
+      serializer,
+    );
+    sse_encode_opt_String(self.format, serializer);
+    sse_encode_opt_String(self.inputText, serializer);
+  }
+
+  @protected
+  void sse_encode_plugin_manifest(
+    PluginManifest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_64(self.manifestVersion, serializer);
+    sse_encode_String(self.id, serializer);
+    sse_encode_String(self.name, serializer);
+    sse_encode_String(self.version, serializer);
+    sse_encode_String(self.author, serializer);
+    sse_encode_String(self.license, serializer);
+    sse_encode_String(self.apiRange, serializer);
+    sse_encode_list_String(self.supportedPlatforms, serializer);
+    sse_encode_plugin_entry_kind(self.entryKind, serializer);
+    sse_encode_String(self.entryFile, serializer);
+    sse_encode_list_String(self.activationEvents, serializer);
+    sse_encode_list_String(self.permissions, serializer);
+    sse_encode_opt_String(self.settingsSchemaJson, serializer);
+    sse_encode_Map_String_String_None(self.packageHashes, serializer);
+    sse_encode_opt_String(self.description, serializer);
+    sse_encode_opt_String(self.homepage, serializer);
+  }
+
+  @protected
+  void sse_encode_plugin_permission(
+    PluginPermission self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.id, serializer);
+    sse_encode_String(self.label, serializer);
+    sse_encode_String(self.description, serializer);
+    sse_encode_String(self.risk, serializer);
+  }
+
+  @protected
+  void sse_encode_plugin_run_result(
+    PluginRunResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.runId, serializer);
+    sse_encode_String(self.pluginId, serializer);
+    sse_encode_String(self.activation, serializer);
+    sse_encode_String(self.status, serializer);
+    sse_encode_opt_String(self.output, serializer);
+    sse_encode_list_plugin_artifact(self.artifacts, serializer);
+    sse_encode_list_plugin_derived_content(self.derivedContents, serializer);
+    sse_encode_list_String(self.logs, serializer);
+    sse_encode_list_String(self.warnings, serializer);
+    sse_encode_opt_String(self.errorCode, serializer);
+    sse_encode_opt_String(self.errorMessage, serializer);
+    sse_encode_i_64(self.durationMs, serializer);
+    sse_encode_opt_box_autoadd_i_64(self.instructionsUsed, serializer);
+  }
+
+  @protected
+  void sse_encode_plugin_source_ref(
+    PluginSourceRef self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.sourceId, serializer);
+    sse_encode_opt_String(self.sourceRevisionId, serializer);
+    sse_encode_opt_String(self.locatorJson, serializer);
+  }
+
+  @protected
+  void sse_encode_plugin_style_profile(
+    PluginStyleProfile self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.id, serializer);
+    sse_encode_String(self.label, serializer);
+    sse_encode_i_64(self.revision, serializer);
+    sse_encode_Chrono_Utc(self.updatedAt, serializer);
+    sse_encode_opt_String(self.lengthPreference, serializer);
+    sse_encode_opt_String(self.person, serializer);
+    sse_encode_opt_String(self.tone, serializer);
+    sse_encode_opt_String(self.emotionalTemperature, serializer);
+    sse_encode_opt_String(self.rhetoricLevel, serializer);
+    sse_encode_list_String(self.examples, serializer);
+    sse_encode_list_String(self.bannedExpressions, serializer);
+  }
+
+  @protected
+  void sse_encode_plugin_template(
+    PluginTemplate self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.pluginId, serializer);
+    sse_encode_String(self.id, serializer);
+    sse_encode_String(self.kind, serializer);
+    sse_encode_String(self.label, serializer);
+    sse_encode_String(self.description, serializer);
+    sse_encode_String(self.format, serializer);
+    sse_encode_String(self.body, serializer);
   }
 
   @protected
@@ -10890,6 +12324,28 @@ class BridgeSessionImpl extends RustOpaque implements BridgeSession {
         packagePath: packagePath,
       );
 
+  /// 检查插件包（目录或 zip）。不执行任何包内容。
+  Future<PluginInspection> inspectPluginPackage({
+    required String packagePath,
+    required String platform,
+  }) => RustLib.instance.api.crateApiBridgeSessionInspectPluginPackage(
+    that: this,
+    packagePath: packagePath,
+    platform: platform,
+  );
+
+  /// 安装/升级插件。`grants` 是用户在这次安装里显式勾选的权限。
+  Future<PluginInstallation> installPlugin({
+    required String packagePath,
+    required String platform,
+    required List<String> grants,
+  }) => RustLib.instance.api.crateApiBridgeSessionInstallPlugin(
+    that: this,
+    packagePath: packagePath,
+    platform: platform,
+    grants: grants,
+  );
+
   /// 任务面板状态：各状态计数、到期积压、下次唤醒与最近错误。
   ///
   /// 最近错误只有 kind + 错误码 + 时间（外加不透明的任务 ID），**没有用户内容**。
@@ -10927,6 +12383,10 @@ class BridgeSessionImpl extends RustOpaque implements BridgeSession {
         states: states,
         limit: limit,
       );
+
+  /// 已安装插件。只读缓存清单，不读、不执行插件入口。
+  Future<List<PluginInstallation>> listPlugins() =>
+      RustLib.instance.api.crateApiBridgeSessionListPlugins(that: this);
 
   /// 列出脱敏后的服务配置，契约 `providers.list`。
   ///
@@ -10992,6 +12452,12 @@ class BridgeSessionImpl extends RustOpaque implements BridgeSession {
   /// 两者都不接受自由文本，所以「把材料里的文字变成指令」没有入口。
   Future<List<OrganizeTemplate>> organizeTemplates() =>
       RustLib.instance.api.crateApiBridgeSessionOrganizeTemplates(that: this);
+
+  /// 声明式模板缓存（可按插件过滤）。启动/列表路径不会碰插件文件。
+  Future<List<PluginTemplate>> pluginTemplates({String? pluginId}) => RustLib
+      .instance
+      .api
+      .crateApiBridgeSessionPluginTemplates(that: this, pluginId: pluginId);
 
   /// 申请导入暂存位置。平台层只能往票据指向的文件里写。
   Future<ImportTicket> prepareImport({
@@ -11167,6 +12633,13 @@ class BridgeSessionImpl extends RustOpaque implements BridgeSession {
     trigger: trigger,
   );
 
+  /// 运行插件（`plugins.invoke`）。激活点、权限、预算与隔离都由核心收口。
+  Future<PluginRunResult> runPlugin({required PluginInvocation invocation}) =>
+      RustLib.instance.api.crateApiBridgeSessionRunPlugin(
+        that: this,
+        invocation: invocation,
+      );
+
   /// 保存人工编辑：新写一条 `user_edit` 版本并让它成为当前，契约 `diary.saveEdit`。
   ///
   /// **不原地改基版**（基版一个字节都不动），旧当前版退成候选。`expectedRevision`
@@ -11245,6 +12718,16 @@ class BridgeSessionImpl extends RustOpaque implements BridgeSession {
     expectedRevision: expectedRevision,
   );
 
+  /// 启用/停用。停用后新的调用被拒，历史日记与导出物保留。
+  Future<PluginInstallation> setPluginEnabled({
+    required String pluginId,
+    required bool enabled,
+  }) => RustLib.instance.api.crateApiBridgeSessionSetPluginEnabled(
+    that: this,
+    pluginId: pluginId,
+    enabled: enabled,
+  );
+
   /// 发起一次检索，契约第 4.4 节 `search.start`。
   Future<SearchSnapshot> startSearch({
     required SearchRequest request,
@@ -11268,6 +12751,16 @@ class BridgeSessionImpl extends RustOpaque implements BridgeSession {
     that: this,
     providerId: providerId,
     scope: scope,
+  );
+
+  /// 卸载。`remove_private_state` 对齐契约的「可选择的私有缓存」；执行文件总会清理。
+  Future<void> uninstallPlugin({
+    required String pluginId,
+    required bool removePrivateState,
+  }) => RustLib.instance.api.crateApiBridgeSessionUninstallPlugin(
+    that: this,
+    pluginId: pluginId,
+    removePrivateState: removePrivateState,
   );
 
   /// 更新整理设置（契约 `settings.update` 的整理那一段）：整份替换 + `expectedRevision`。

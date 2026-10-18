@@ -5,6 +5,7 @@ members = [
     "crates/diary_capi",
     "crates/diary_core",
     "tools/probe",
+    "tools/plugin-pack",
 ]
 
 [workspace.package]
