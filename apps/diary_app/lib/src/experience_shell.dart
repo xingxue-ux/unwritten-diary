@@ -14,6 +14,8 @@ import 'file_import_journal.dart';
 import 'core_wakeup.dart';
 import 'library_care_controller.dart';
 import 'library_care_panel.dart';
+import 'readable_export_controller.dart';
+import 'readable_export_panel.dart';
 import 'search_controller.dart';
 import 'revision_controller.dart';
 import 'revision_diff.dart';
@@ -53,6 +55,7 @@ class _ExperienceShellState extends State<ExperienceShell>
   late final RevisionController _revisions;
   late final LibraryCareController _libraryCare;
   late final StyleSettingsController _styleSettings;
+  late final ReadableExportController _readableExport;
   late final Listenable _contentChanges;
   final _editor = TextEditingController();
   final _search = TextEditingController();
@@ -108,6 +111,10 @@ class _ExperienceShellState extends State<ExperienceShell>
       widget.api,
       capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
     );
+    _readableExport = ReadableExportController(
+      widget.api,
+      capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
+    );
     _contentChanges = Listenable.merge([
       _capture,
       _coreSearch,
@@ -115,6 +122,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       _revisions,
       _libraryCare,
       _styleSettings,
+      _readableExport,
     ]);
     if (!widget.demoMode) {
       unawaited(_initializeImports());
@@ -171,6 +179,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     _revisions.dispose();
     _libraryCare.dispose();
     _styleSettings.dispose();
+    _readableExport.dispose();
     _editor.dispose();
     _search.removeListener(_onSearchValueChanged);
     _search.dispose();
@@ -1629,6 +1638,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         _section('资料与应用', [
           ('插件', '查看权限与启停', 'plugins', Icons.extension_outlined),
           ('备份与恢复', '完整备份和阅读导出', 'backup', Icons.backup_outlined),
+          ('阅读导出', '按日期生成便于阅读的副本', 'export', Icons.article_outlined),
           ('存储与回收站', '原件、缓存、索引的边界', 'storage', Icons.folder_outlined),
           ('封面与加载动画', '回看小纸团', 'cover', Icons.pets_outlined),
         ]),
@@ -1714,6 +1724,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         pickBackupTarget: _pickBackupTarget,
         pickBackupPackage: _pickBackupPackage,
       ),
+      'export' => ReadableExportPanel(controller: _readableExport),
       'storage' => StorageTrashPanel(controller: _libraryCare),
       'recording' => _recordingPanel(),
       'loading' => _loadingPanel(),
