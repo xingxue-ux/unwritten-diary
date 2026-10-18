@@ -681,7 +681,7 @@ pub(crate) fn candidates(
     let (kinds, scope) = crate::search_session::filters_to_params(filters)?;
     let sql = "SELECT v.vector, v.dims, v.storage, s.chunk_id, s.ordinal, s.capture_id, \
                       s.source_id, s.source_revision_id, s.start_char, s.end_char, s.kind, \
-                      s.coverage, c.day_key, t.text \
+                      s.coverage, c.day_key \
                FROM chunk_vectors v \
                JOIN text_chunks t ON t.chunk_id = v.chunk_id \
                JOIN chunk_spans s ON s.chunk_id = v.chunk_id \
@@ -722,7 +722,6 @@ pub(crate) fn candidates(
                     row.get::<_, String>(10)?,
                     row.get::<_, String>(11)?,
                     row.get::<_, String>(12)?,
-                    row.get::<_, String>(13)?,
                 ))
             },
         )?
@@ -768,7 +767,8 @@ pub(crate) fn candidates(
             group_id: row.6.clone(),
             chunk_id: row.3,
             span_ordinal: row.4,
-            content_key: crate::support::content_hash(&row.13),
+            // 只在「前五道键完全相同」的并列组里查块正文再算；见 `resolve_ties`。
+            content_key: String::new(),
             score,
             capture_id: row.5,
             source_id: row.6,
@@ -800,7 +800,8 @@ pub(crate) fn candidates(
     //
     // 同分规则的契约写在 `docs/architecture/m2-向量索引与换代.md` 的「消费契约」里，
     // 「排序并列必须全序」写在 `docs/architecture/m2-检索会话.md`。
-    scored.sort_by(rank_order);
+    scored.sort_by(position_order);
+    resolve_ties(core, &mut scored)?;
 
     // 折叠：同一篇只留第一条（也就是排序最靠前的那一块）。
     //
@@ -814,15 +815,13 @@ pub(crate) fn candidates(
     Ok(SemanticCandidates::Scored(folded))
 }
 
-/// 语义候选的全序：`score DESC → day_key DESC → start_char → end_char →
-/// span_ordinal → content_key → chunk_id`。
+/// 语义候选的**前五道**排序键：`score DESC → day_key DESC → start_char →
+/// end_char → span_ordinal`。全部由分数与内容位置决定，跨库稳定。
 ///
-/// `span_ordinal` / `content_key` / `chunk_id` 这三道的顺序是刻意分开的：
-/// 段序号是内容决定的定位，`content_key` 是内容决定的正文哈希，`chunk_id` 只是
-/// 「同一个库内再兜底」——它不是内容的函数（哈希输入含篇标识 UUID），所以只允许在
-/// 正文也完全相同时生效。
-/// 判据与来历见 `docs/architecture/m2-向量索引与换代.md` 消费契约第 6 条。
-fn rank_order(left: &SemanticCandidate, right: &SemanticCandidate) -> std::cmp::Ordering {
+/// 它们之后才轮到 `content_key` 与 `chunk_id`（见 `rank_order`）。这样分两段是为了
+/// 性能：`content_key` 要读块正文、算 sha256，10 万块全算一遍不值得；只对前五道键
+/// **完全相同**的并列组才去取正文（见 `resolve_ties`）。
+fn position_order(left: &SemanticCandidate, right: &SemanticCandidate) -> std::cmp::Ordering {
     right
         .score
         .partial_cmp(&left.score)
@@ -831,8 +830,73 @@ fn rank_order(left: &SemanticCandidate, right: &SemanticCandidate) -> std::cmp::
         .then_with(|| left.start_char.cmp(&right.start_char))
         .then_with(|| left.end_char.cmp(&right.end_char))
         .then_with(|| left.span_ordinal.cmp(&right.span_ordinal))
+}
+
+/// 语义候选的全序：`score DESC → day_key DESC → start_char → end_char →
+/// span_ordinal → content_key → chunk_id`。
+///
+/// `span_ordinal` / `content_key` / `chunk_id` 这三道的顺序是刻意分开的：
+/// 段序号是内容决定的定位，`content_key` 是内容决定的正文哈希，`chunk_id` 只是
+/// 「同一个库内再兜底」——它不是内容的函数（哈希输入含篇标识 UUID），所以只允许在
+/// 正文也完全相同时生效。判据与来历见
+/// `docs/architecture/m2-向量索引与换代.md` 消费契约第 6 条。
+fn rank_order(left: &SemanticCandidate, right: &SemanticCandidate) -> std::cmp::Ordering {
+    position_order(left, right)
         .then_with(|| left.content_key.cmp(&right.content_key))
         .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+}
+
+/// 给「前五道键完全相同」的并列组补上 `content_key`，再在组内按 `rank_order` 排。
+///
+/// 只有并列组才去读块正文：绝大多数候选在 `position_order` 上已经分出了先后，不值得
+/// 为它们各读一遍正文。并列组通常很小（同一位置的两块），所以这条路径既稳又便宜。
+fn resolve_ties(core: &Core, scored: &mut [SemanticCandidate]) -> Result<()> {
+    let mut start = 0;
+    while start < scored.len() {
+        let mut end = start + 1;
+        while end < scored.len()
+            && position_order(&scored[start], &scored[end]) == std::cmp::Ordering::Equal
+        {
+            end += 1;
+        }
+        if end - start > 1 {
+            let mut chunk_ids: Vec<&str> = scored[start..end]
+                .iter()
+                .map(|candidate| candidate.chunk_id.as_str())
+                .collect();
+            chunk_ids.sort_unstable();
+            chunk_ids.dedup();
+            let placeholders = crate::search::placeholders(chunk_ids.len());
+            let sql = format!(
+                "SELECT chunk_id, text FROM text_chunks WHERE chunk_id IN ({placeholders})"
+            );
+            let mut statement = core.conn.prepare(&sql)?;
+            let rows = statement.query_map(
+                rusqlite::params_from_iter(chunk_ids),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
+            let mut texts: std::collections::HashMap<String, String> =
+                std::collections::HashMap::with_capacity(end - start);
+            for row in rows {
+                let (chunk_id, text) = row?;
+                texts.insert(chunk_id, text);
+            }
+            for candidate in &mut scored[start..end] {
+                let text = texts.get(&candidate.chunk_id).ok_or_else(|| {
+                    CoreError::CorruptedData {
+                        message: format!(
+                            "候选块的正文不见了：chunk_id = {}（块表与向量表不一致）",
+                            candidate.chunk_id
+                        ),
+                    }
+                })?;
+                candidate.content_key = crate::support::content_hash(text);
+            }
+            scored[start..end].sort_by(rank_order);
+        }
+        start = end;
+    }
+    Ok(())
 }
 
 /// 余弦相似度。向量已经 L2 归一化，所以正常情况下就是内积；仍然按真余弦算，
