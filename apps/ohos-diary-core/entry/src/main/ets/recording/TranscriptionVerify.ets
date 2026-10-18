@@ -20,10 +20,13 @@ import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import fileIO from '@ohos.fileio';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { http } from '@kit.NetworkKit';
+import { audio } from '@kit.AudioKit';
 import { taskpool } from '@kit.ArkTS';
 import { DiaryCore } from '../core/DiaryCore';
 import { SearchParams, SearchSnapshot } from '../core/Models';
 import { AsrJobsReport, runAsrJobs } from './AsrWorker';
+import { RecordingVerify } from './RecordingVerify';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryAsr';
@@ -81,6 +84,10 @@ export class TranscriptionVerify {
         TranscriptionVerify.search(filesDir, query);
       } else if (mode === 'asr_remove') {
         TranscriptionVerify.removeProvider(filesDir);
+      } else if (mode === 'asr_download') {
+        await TranscriptionVerify.downloadModels(filesDir);
+      } else if (mode === 'asr_record_play') {
+        await TranscriptionVerify.recordWithPlayback(context, filesDir);
       } else {
         hilog.error(DOMAIN, TAG, '%{public}s UNKNOWN_MODE mode=%{public}s', MARK, mode);
       }
@@ -102,8 +109,8 @@ export class TranscriptionVerify {
   static setup(filesDir: string): void {
     const base = `${filesDir}/asr`;
     const modelDir = `${base}/sense-voice`;
-    fs.mkdirSync(base, true);
-    fs.mkdirSync(modelDir, true);
+    ensureDir(base);
+    ensureDir(modelDir);
     fileIO.chmodSync(base, 0o777);
     fileIO.chmodSync(modelDir, 0o777);
 
@@ -217,6 +224,127 @@ export class TranscriptionVerify {
       report.private_after_kb - report.private_before_kb, report.error);
   }
 
+  // ---------------------------------------------------------------- 模型传输
+
+  /**
+   * 从本机 HTTP 服务把模型与词表下到沙箱。
+   *
+   * 为什么不是 `hdc file send`：应用沙箱目录是 `drwxrwx--- <app uid>`，而且即使
+   * 把子目录改成 0777，shell 的 SELinux 域仍不允许写应用数据（实测 `touch` 与
+   * `hdc file send` 都是 EACCES）。`/data/local/tmp` 应用进程又看不到（ENOENT）。
+   * 所以走 `hdc rport tcp:8000 tcp:8000` 把宿主机的 HTTP 服务映射到设备
+   * 127.0.0.1:8000，由**应用自己**流式写进沙箱：不经过 shell，也不把 239 MB
+   * 打进 HAP。这是验证期的传输通道，不是产品行为。
+   */
+  static async downloadModels(filesDir: string): Promise<void> {
+    const dir = `${filesDir}/asr/sense-voice`;
+    ensureDir(dir);
+    fileIO.chmodSync(dir, 0o777);
+    await TranscriptionVerify.downloadOne('http://127.0.0.1:8000/model.int8.onnx', `${dir}/model.int8.onnx`);
+    await TranscriptionVerify.downloadOne('http://127.0.0.1:8000/tokens.txt', `${dir}/tokens.txt`);
+    try {
+      hilog.info(DOMAIN, TAG, '%{public}s MODEL size=%{public}d tokens=%{public}d',
+        MARK, fs.statSync(`${dir}/model.int8.onnx`).size, fs.statSync(`${dir}/tokens.txt`).size);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, '%{public}s MODEL stat failed %{public}s', MARK, describeError(e as Object));
+    }
+  }
+
+  /** 流式下载一个文件：边收边写，避免把 239 MB 全装进内存。 */
+  private static async downloadOne(url: string, dest: string): Promise<void> {
+    const request = http.createHttp();
+    const file = fs.openSync(dest, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+    let bytes = 0;
+    const onData = (chunk: ArrayBuffer): void => {
+      fs.writeSync(file.fd, chunk);
+      bytes += chunk.byteLength;
+    };
+    request.on('dataReceive', onData);
+    const started = Date.now();
+    let status = -1;
+    let failure = '';
+    try {
+      status = await request.requestInStream(url, {
+        method: http.RequestMethod.GET,
+        connectTimeout: 60000,
+        readTimeout: 600000,
+      });
+    } catch (e) {
+      failure = describeError(e as Object);
+    } finally {
+      request.off('dataReceive', onData);
+      request.destroy();
+      fs.closeSync(file);
+    }
+    const elapsed = Date.now() - started;
+    hilog.info(DOMAIN, TAG, '%{public}s DOWNLOAD url=%{public}s status=%{public}d bytes=%{public}d elapsedMs=%{public}d mbPerSec=%{public}s error=%{public}s',
+      MARK, url, status, bytes, elapsed,
+      elapsed > 0 ? (bytes / 1048576 / (elapsed / 1000)).toFixed(2) : '0', failure);
+  }
+
+  // ---------------------------------------------------------------- 声学回放
+
+  /**
+   * 用设备扬声器播一段中文语音，同时录 5 秒。
+   *
+   * 为什么不用宿主扬声器：实测宿主播放时设备麦克风只收到 ~100–200 RMS 的环境声，
+   * 转写结果是「。」（没识别出文字）。设备自己的扬声器离麦克风足够近，且
+   * `SOURCE_TYPE_MIC` 不做回声消除，能量能进采集链路。
+   *
+   * 播放走 `AudioRenderer` 的 `writeData` 回调（PCM 循环写），录音走现有的
+   * `RecordingVerify.run('record')`：两条链路互不依赖，录完照常 finalize + 转写。
+   */
+  static async recordWithPlayback(
+    context: common.UIAbilityContext,
+    filesDir: string,
+  ): Promise<void> {
+    const dir = `${filesDir}/asr/sense-voice`;
+    ensureDir(dir);
+    const wavPath = `${dir}/zh.wav`;
+    if (!fs.accessSync(wavPath) || fs.statSync(wavPath).size < 1000) {
+      await TranscriptionVerify.downloadOne('http://127.0.0.1:8000/zh.wav', wavPath);
+    }
+    const pcm = readWavPcm(wavPath);
+    hilog.info(DOMAIN, TAG, '%{public}s PLAY wav=%{public}s pcmBytes=%{public}d',
+      MARK, wavPath, pcm.length);
+
+    const renderer = await audio.createAudioRenderer({
+      streamInfo: {
+        samplingRate: audio.AudioSamplingRate.SAMPLE_RATE_16000,
+        channels: audio.AudioChannel.CHANNEL_1,
+        sampleFormat: audio.AudioSampleFormat.SAMPLE_FORMAT_S16LE,
+        encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW,
+      },
+      rendererInfo: {
+        usage: audio.StreamUsage.STREAM_USAGE_MUSIC,
+        rendererFlags: 0,
+      },
+    });
+    let offset = 0;
+    const onWrite = (data: ArrayBuffer): audio.AudioDataCallbackResult => {
+      const out = new Uint8Array(data);
+      for (let i = 0; i < out.length; i++) {
+        out[i] = pcm[offset];
+        offset = (offset + 1) % pcm.length;
+      }
+      return audio.AudioDataCallbackResult.VALID;
+    };
+    renderer.on('writeData', onWrite);
+    await renderer.setVolume(1.0);
+    await renderer.start();
+    hilog.info(DOMAIN, TAG, '%{public}s PLAY started renderer=%{public}d', MARK, renderer.state);
+    await sleep(400);
+
+    try {
+      await RecordingVerify.run('record', context, filesDir);
+    } finally {
+      renderer.off('writeData', onWrite);
+      await renderer.stop();
+      await renderer.release();
+      hilog.info(DOMAIN, TAG, '%{public}s PLAY stopped', MARK);
+    }
+  }
+
   // ---------------------------------------------------------------- 检索
 
   static search(filesDir: string, query: string): void {
@@ -255,6 +383,45 @@ export class TranscriptionVerify {
       return `statFailed:${describeError(e as Object)}`;
     }
   }
+}
+
+/** 读 WAV 的 PCM 数据段（跳过 RIFF 头；找不到 `data` 就按 44 字节头处理）。 */
+function readWavPcm(path: string): Uint8Array {
+  const size = fs.statSync(path).size;
+  const buffer = new ArrayBuffer(size);
+  const file = fs.openSync(path, fs.OpenMode.READ_ONLY);
+  try {
+    fs.readSync(file.fd, buffer);
+  } finally {
+    fs.closeSync(file);
+  }
+  const bytes = new Uint8Array(buffer);
+  let pos = 12;
+  while (pos + 8 <= bytes.length) {
+    const id = String.fromCharCode(bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]);
+    const size = bytes[pos + 4] | (bytes[pos + 5] << 8) | (bytes[pos + 6] << 16) | (bytes[pos + 7] << 24);
+    if (id === 'data') {
+      const start = pos + 8;
+      const end = Math.min(start + size, bytes.length);
+      return bytes.slice(start, end);
+    }
+    pos += 8 + size + (size % 2);
+  }
+  return bytes.slice(44);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(() => resolve(), ms);
+  });
+}
+
+/** 建目录；已存在时不算错（`mkdirSync(.., true)` 在已存在时也会抛 File exists）。 */
+function ensureDir(path: string): void {
+  if (fs.accessSync(path)) {
+    return;
+  }
+  fs.mkdirSync(path, true);
 }
 
 function logJson(label: string, value: Object | null): void {

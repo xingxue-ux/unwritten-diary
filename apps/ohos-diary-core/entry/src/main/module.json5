@@ -25,6 +25,9 @@
       },
       {
         "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
+      },
+      {
+        "name": "ohos.permission.INTERNET"
       }
     ],
     "abilities": [
