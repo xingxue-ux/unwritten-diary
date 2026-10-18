@@ -64,9 +64,13 @@ struct PieceRow {
 }
 
 /// 库里块的计数。`total` 是范围内的块数，`embedded` 是其中有生效代次向量的块数。
+///
+/// `fast` 记录这次计数有没有走快路径（没有无 span 的块、没有过期 span）。量测要
+/// 如实报告「混合状态下有多少查询退回了精确计数」，所以把路径本身报出来。
 pub(crate) struct ChunkCounts {
     pub total: i64,
     pub embedded: i64,
+    pub fast: bool,
 }
 
 /// 一篇来源篇的查询结果（`collect_pieces` 内部用）。
@@ -667,7 +671,11 @@ pub(crate) fn counts(core: &Core, source_scope: Option<&[String]>) -> Result<Chu
                 .query_row(&sql, params_from_iter(values), |row| row.get(0))?
         }
     };
-    Ok(ChunkCounts { total, embedded })
+    Ok(ChunkCounts {
+        total,
+        embedded,
+        fast: false,
+    })
 }
 
 /// `counts` 的快路径：先花三条小查询确认「全库没有异常块」，再直接数表。
@@ -707,7 +715,11 @@ fn counts_fast_checked(core: &Core) -> Result<Option<ChunkCounts>> {
             |row| row.get(0),
         )?,
     };
-    Ok(Some(ChunkCounts { total, embedded }))
+    Ok(Some(ChunkCounts {
+        total,
+        embedded,
+        fast: true,
+    }))
 }
 
 #[cfg(test)]

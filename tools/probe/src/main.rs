@@ -38,8 +38,8 @@ use anyhow::Result;
 
 fn usage() -> &'static str {
     "用法：\n  diary_probe short-word-search [片段数，默认 20000]\n  diary_probe quality-set（读 tests/quality/search_quality_set.json，可用 DIARY_QUALITY_SET 覆盖）
-  diary_probe semantic-quality（真模型：语义召回 + pooling×前缀四组 + f32/int8，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）
-  diary_probe hybrid-quality（真模型：三类对照 + 阈值扫描 + matchedBy 分布，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）
+  diary_probe semantic-quality [--storage f32|int8]（真模型：语义召回 + pooling×前缀四组 + f32/int8，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）
+  diary_probe hybrid-quality [--storage f32|int8]（真模型：三类对照 + 阈值扫描 + matchedBy 分布，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）
   diary_probe ai-quality [--replay|--live] [--generation-only] [--json 文件] [--quality-dir 目录]（AI 质量集：生成特征 + 防提示注入 + 转写 CER。默认 --replay，不联网；--live 要 DIARY_AI_ENDPOINT/DIARY_AI_MODEL）
   diary_probe ai-quality-set（与 ai-quality 同义，风格对齐 quality-set / semantic-quality / hybrid-quality）
   diary_probe large-bench build <块数> [--storage f32|int8] [--dir 目录]（真模型：建合成语料 + 语义索引，报构建时间/内存/体积）
@@ -84,13 +84,13 @@ fn main() -> Result<()> {
         }
         "semantic-quality" => {
             #[cfg(feature = "search")]
-            semantic_quality::run()?;
+            semantic_quality::run(&args[1..])?;
             #[cfg(not(feature = "search"))]
             anyhow::bail!("这个构建没有启用 search feature（尝试 cargo run -p diary_probe --features search）");
         }
         "hybrid-quality" => {
             #[cfg(feature = "search")]
-            hybrid_quality::run()?;
+            hybrid_quality::run(&args[1..])?;
             #[cfg(not(feature = "search"))]
             anyhow::bail!("这个构建没有启用 search feature（尝试 cargo run -p diary_probe --features search）");
         }

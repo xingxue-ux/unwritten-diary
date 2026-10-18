@@ -710,7 +710,7 @@ fn switching_models_mid_build_discards_the_half_built_generation() {
             params![
                 chunk_id,
                 A_VERSION,
-                VectorStorage::Int8.encode(&vec![0.0_f32; 512])
+                VectorStorage::Int8.encode(&vec![0.0_f32; 512]).unwrap()
             ],
         )
         .unwrap();
@@ -1299,7 +1299,7 @@ fn a_dims_mismatch_is_blocked_before_any_cosine() {
         let conn = open(&path);
         conn.execute(
             "UPDATE chunk_vectors SET dims = 384, vector = ?1 WHERE chunk_id = ?2",
-            params![VectorStorage::Int8.encode(&unit_in(384, 0)), chunk_id],
+            params![VectorStorage::Int8.encode(&unit_in(384, 0)).unwrap(), chunk_id],
         )
         .unwrap();
     }
@@ -1341,7 +1341,7 @@ fn a_dims_mismatch_is_blocked_before_any_cosine() {
         let conn = open(&path);
         conn.execute(
             "UPDATE chunk_vectors SET dims = 512, vector = ?1 WHERE chunk_id = ?2",
-            params![VectorStorage::Int8.encode(&[0.0_f32; 8]), chunk_id],
+            params![VectorStorage::Int8.encode(&[0.0_f32; 8]).unwrap(), chunk_id],
         )
         .unwrap();
     }
@@ -3146,6 +3146,54 @@ fn retired_revision_is_not_returned_by_semantic_search_before_rebuild() {
 }
 
 // ------------------------------------------------------------ int8 存储与流式扫描（#90）
+
+/// 阻塞 1 的回归（评审 #128）：**从磁盘 reopen 一个存量 f32 库**。
+///
+/// 换默认存储之后，旧库只有一种 `model_version`，覆盖也完整——旧状态逻辑会报
+/// `semantic_index_ready = true`、`reasons` 为空，而检索路径把整代判成
+/// `ForeignSpace`（纯语义空、混合退化）。这条测试不注入嵌入器就查状态，同时证明
+/// storage 检查**不依赖加载模型**。
+#[test]
+fn reopening_an_f32_library_reports_not_ready_with_a_storage_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    let built = core.build_semantic_index(None).unwrap();
+    assert_eq!(built.embedded_chunks, 2, "前提：旧库的覆盖是完整的");
+    drop(core);
+
+    // 不 set_embedder：状态检查只用库里的列与当前默认口径。
+    let reopened = Core::open(&path).unwrap();
+    let status = reopened.index_status(None).unwrap();
+    assert_eq!(
+        status.embedded_chunks, status.total_chunks,
+        "数据没坏：块都有 f32 向量"
+    );
+    assert_eq!(
+        status.model_version.as_deref(),
+        Some("stub-embedder@000000000000"),
+        "只有一种模型版本——旧逻辑正是因此看不出问题"
+    );
+    assert!(
+        !status.semantic_index_ready,
+        "f32 生效代次在 int8 口径下不能报就绪：{:?}",
+        status.reasons
+    );
+    let reason = status
+        .reasons
+        .iter()
+        .find(|reason| reason.contains("存储格式从 f32 变为 int8"))
+        .unwrap_or_else(|| panic!("reasons 要写明存储格式变化：{:?}", status.reasons));
+    assert!(
+        reason.contains("需要重建"),
+        "原因里要给出可执行的下一步：{reason}"
+    );
+}
 
 /// 换存储格式 = 换口径：必须**整代重算**，不能把 f32 向量原地当 int8 用。
 ///

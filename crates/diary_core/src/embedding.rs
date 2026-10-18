@@ -774,8 +774,23 @@ impl VectorStorage {
     }
 
     /// 编码成 `chunk_vectors.vector` 的字节。
-    pub fn encode(self, vector: &[f32]) -> Vec<u8> {
-        match self {
+    ///
+    /// **先校验有限性**：NaN 会被 `as i8` 静默变成 0（等于把这一维抹掉），Inf 会让
+    /// int8 的 scale 变成非有限值——写进去以后每次查询都在 `score_of` 报
+    /// `CorruptedData`，而用户只看到「搜不出来」。在写入口就拒绝，坏向量一条都进不了库。
+    pub fn encode(self, vector: &[f32]) -> Result<Vec<u8>> {
+        if let Some((index, value)) = vector
+            .iter()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            return Err(CoreError::CorruptedData {
+                message: format!(
+                    "向量第 {index} 维不是有限数（{value}），拒绝编码：NaN/Inf 会污染 scale 与排序"
+                ),
+            });
+        }
+        Ok(match self {
             Self::F32 => vector_bytes(vector),
             Self::Int8 => {
                 // 全零向量（理论上模型不会给）没有可用的 scale：写 1.0，解出来仍是全零。
@@ -789,7 +804,7 @@ impl VectorStorage {
                 }
                 bytes
             }
-        }
+        })
     }
 
     /// 从 `chunk_vectors.vector` 的字节解码。
@@ -875,7 +890,7 @@ mod tests {
     fn int8_round_trip_error_is_bounded_by_half_a_step() {
         // 一条真实的 BGE 形状向量：L2 归一化、分量有正有负。
         let vector = text_hash_vector("妈妈打电话来。", EXPECTED_DIMS);
-        let bytes = VectorStorage::Int8.encode(&vector);
+        let bytes = VectorStorage::Int8.encode(&vector).unwrap();
         assert_eq!(
             bytes.len(),
             VectorStorage::Int8.bytes_per_vector(EXPECTED_DIMS),
@@ -927,6 +942,10 @@ mod tests {
             VectorStorage::Int8.decode(&f32::NAN.to_le_bytes()).is_err(),
             "scale = NaN 要报错"
         );
+        assert!(
+            VectorStorage::Int8.decode(&f32::INFINITY.to_le_bytes()).is_err(),
+            "scale = Inf 要报错（Inf × i8 会得到 Inf/NaN 向量）"
+        );
         assert_eq!(
             VectorStorage::from_wire("i8"),
             None,
@@ -939,12 +958,30 @@ mod tests {
     }
 
     #[test]
+    fn encoding_rejects_non_finite_components() {
+        // Inf 会让 int8 的 scale 变成非有限值；NaN 会被 `as i8` 静默压成 0。
+        // 两种存储都必须在写入口拒绝，坏向量一条都不能进库。
+        for storage in [VectorStorage::F32, VectorStorage::Int8] {
+            for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let error = storage.encode(&[0.5, value, -0.25]).unwrap_err();
+                let CoreError::CorruptedData { message } = error else {
+                    panic!("非有限分量应当报 CorruptedData，实际是 {error:?}");
+                };
+                assert!(
+                    message.contains("不是有限数"),
+                    "错误要说清哪一维不是有限数：{message}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn int8_encoding_is_deterministic() {
         // 确定性：同一条向量编码两次必须逐字节相同（否则重建索引会无谓地换代）。
         let vector = text_hash_vector("路边的桂花开了。", EXPECTED_DIMS);
         assert_eq!(
-            VectorStorage::Int8.encode(&vector),
-            VectorStorage::Int8.encode(&vector)
+            VectorStorage::Int8.encode(&vector).unwrap(),
+            VectorStorage::Int8.encode(&vector).unwrap()
         );
     }
 

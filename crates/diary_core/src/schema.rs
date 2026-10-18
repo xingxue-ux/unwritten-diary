@@ -515,8 +515,10 @@ CREATE TABLE search_capture_grams (
 ///   上报时，摘录要用该篇自己那一段，而不是整块拼接文本（整块里混着别的篇）。
 ///   不做 JSON 而是单独一张表：`sourceScope` 过滤要能走索引。
 /// - `chunk_vectors`：向量按**代次**分开存。换代时先写新代次，切过去之后再清理旧的，
-///   所以「正在构建的那一代」和「正在服务的这一代」可以同时存在。`storage` 现在只有
-///   `f32`，留着 `i8` 给后面的量化。
+///   所以「正在构建的那一代」和「正在服务的这一代」可以同时存在。`storage` 记这一行
+///   的编码格式，当前有 `f32` 与 `int8`（产品默认 int8，见
+///   `embedding::DEFAULT_VECTOR_STORAGE`）；解码按行上的 `storage` 选，不认识的格式
+///   如实报错，不猜。
 /// - `index_meta`：单行元数据。`active_generation` 是正在服务检索的代次，
 ///   `building_generation` 是正在算的那一代；两个都为 NULL 表示还没有任何一代向量。
 ///

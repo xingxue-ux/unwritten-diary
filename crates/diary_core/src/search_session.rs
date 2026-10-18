@@ -912,6 +912,7 @@ fn semantic_coverage(core: &Core, filters: &SearchFilters) -> Result<Coverage> {
     let result = (|| -> Result<Coverage> {
         let scope = filters.source_scope.as_deref();
         let counts = crate::chunks::counts(core, scope)?;
+        semantic::note_profile(|profile| profile.coverage_fast = counts.fast);
         if semantic::active_generation(core)?.is_none() || counts.total == 0 {
             return Ok(Coverage::Unavailable);
         }

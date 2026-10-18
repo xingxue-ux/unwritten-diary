@@ -20,16 +20,29 @@
 //! ```bash
 //! DIARY_MODEL_DIR="$HOME/dev/caches/bge-small-zh-v1.5-ours" \
 //! DIARY_ORT_DYLIB="$HOME/dev/caches/host-ort/libonnxruntime.so" \
-//! cargo run --release -p diary_probe -- large-bench build 10000 --storage f32 --dir "$HOME/big90-scratch/bench-10k-f32"
+//! cargo run --release -p diary_probe -- large-bench build 10000 --storage int8 --dir "$HOME/big90-scratch/bench-10k-int8"
 //! # 然后另起一个进程量查询（两个阶段分开，查询内存才不会混进构建的峰值）：
 //! DIARY_MODEL_DIR=... DIARY_ORT_DYLIB=... \
-//! cargo run --release -p diary_probe -- large-bench query 10000 --storage f32 --dir "$HOME/big90-scratch/bench-10k-f32"
+//! cargo run --release -p diary_probe -- large-bench query 10000 --storage int8 --dir "$HOME/big90-scratch/bench-10k-int8"
 //!
-//! # 可选：--profile 打「1.5 秒花在哪」的分段计时；--scan-depth 改快速路径的候选
-//! # 上限（默认见 semantic::FAST_SCAN_DEPTH）；--mmap-mib 试 SQLite mmap（默认关）。
-//! # 这三个都只影响量测，不是产品配置。
+//! # 10 万块用确定性哈希向量灌库（构建时间不作数），查询阶段默认真模型：
+//! cargo run --release -p diary_probe -- large-bench build 100000 --storage int8 \
+//!   --vectors hash --dir "$HOME/big90-scratch/bench-100k-int8-hash"
 //! cargo run --release -p diary_probe -- large-bench query 100000 --storage int8 \
 //!   --dir "$HOME/big90-scratch/bench-100k-int8-hash" --queries 40 --profile
+//!
+//! # 混合状态基准（干净库的副本 + `--mixed-count N` 篇回收站与 N 篇旧修订）：
+//! #   --query-vectors hash 让查询与文档同一套哈希，top-1 稳定命中被注入的块，
+//! #   从而稳定触发 candidate 快速路径回退；报告回退率与回退后 P50/P95。
+//! #   稀疏（默认 8 + 8）能看出回退率不是 100%；`--mixed-count 2000` 是 2%+2% 的
+//! #   最坏情况。
+//! cargo run --release -p diary_probe -- large-bench query 100000 --storage int8 \
+//!   --vectors hash --query-vectors hash --mixed --mixed-count 8 \
+//!   --dir "$HOME/big90-scratch/bench-100k-int8-hash" --queries 40
+//!
+//! # 可选：--profile 打分段计时；--scan-depth 改快速路径候选上限（默认 4096）；
+//! # --mmap-mib 试 SQLite mmap（默认关）；--sync full|off 只在 build 阶段用。
+//! # 这些都只影响量测，不是产品配置。
 //! ```
 
 use std::collections::BTreeMap;
@@ -65,7 +78,10 @@ const WORDS: [&str; 48] = [
 
 pub fn run(args: &[String]) -> Result<()> {
     let Some(command) = args.first().map(String::as_str) else {
-        bail!("用法：large-bench <build|query|recall-quality> <块数> [--storage f32|int8] [--dir DIR] [--queries N] [--profile] [--scan-depth N] [--mmap-mib N]");
+        bail!("用法：large-bench <build|query|recall-quality|recall-large> <块数> \
+               [--storage f32|int8] [--vectors model|hash] [--query-vectors model|hash] \
+               [--sync full|off] [--dir DIR] [--queries N] [--profile] [--scan-depth N] \
+               [--mmap-mib N] [--mixed] [--mixed-count N]");
     };
     match command {
         "build" => {
@@ -97,8 +113,10 @@ pub fn run(args: &[String]) -> Result<()> {
 
 /// 量测参数。`storage` 与 `dir` 两个阶段必须一致：query 阶段打开的就是 build 阶段
 /// 写出来的那个库，格式不一致会走口径判据（ForeignSpace）而不是给出错误答案。
-/// 文档向量怎么来。`Model` 是真实模型（构建时间的真值）；`Hash` 是确定性哈希向量，
-/// 只用于**快速把 10 万条向量灌进库**量查询延迟/内存（查询阶段仍用真模型算查询向量）。
+/// 文档/查询向量怎么来。`Model` 是真实模型（构建时间与质量的真值）；`Hash` 是
+/// 确定性哈希向量，只用于**快速把 10 万条向量灌进库**量查询延迟/内存。查询阶段默认
+/// 仍用真模型（`--query-vectors` 默认 model）；混合状态基准用 `--query-vectors hash`，
+/// 让查询与文档同一套哈希、top-1 稳定命中被注入的块。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VectorMode {
     Model,
@@ -110,6 +128,16 @@ pub(crate) struct Options {
     pub(crate) dir: PathBuf,
     pub(crate) queries: usize,
     pub(crate) vectors: VectorMode,
+    /// 查询向量怎么来。默认真模型；`--query-vectors hash` 用于**混合状态回退基准**：
+    /// 只有文档与查询用同一套确定性哈希，才能保证「被查的那一块」稳定进入 top-K，
+    /// 从而稳定触发「top-K 命中被回收/旧修订的块 → 整条回退」。
+    pub(crate) query_vectors: VectorMode,
+    /// 混合状态基准：在干净库的副本里注入回收站与旧修订，报告两条回退路径的命中率
+    /// 与回退后的延迟。不改原库（副本 + marker），可重复跑。
+    pub(crate) mixed: bool,
+    /// `--mixed` 注入多少篇回收站、多少篇旧修订（各这么多）。稀疏（如 8）能看出
+    /// 「回退率不是 100%」；稠密（如 2000，2%）是「top-K 里几乎必然混入」的最坏情况。
+    pub(crate) mixed_count: usize,
     /// `false` = 量测时把 `synchronous` 调成 OFF（排除每块一次 fsync）。
     /// 产品默认是 FULL，两种口径分开报。
     pub(crate) synchronous_full: bool,
@@ -123,11 +151,16 @@ pub(crate) struct Options {
 
 impl Options {
     fn parse(args: &[String]) -> Result<Self> {
-        let mut storage = VectorStorage::F32;
+        // 默认跟产品一致（int8）；要量 f32 就显式 `--storage f32`。探针的默认值
+        // 不能与产品相反，否则「不传参数」量到的不是线上会走的那条路。
+        let mut storage = diary_core::DEFAULT_VECTOR_STORAGE;
         let mut dir: Option<PathBuf> = None;
         let mut queries = 40_usize;
         let mut synchronous_full = true;
         let mut vectors = VectorMode::Model;
+        let mut query_vectors = VectorMode::Model;
+        let mut mixed = false;
+        let mut mixed_count = 8_usize;
         let mut profile = false;
         let mut mmap_mib: Option<i64> = None;
         let mut scan_depth: Option<usize> = None;
@@ -155,6 +188,29 @@ impl Options {
                         "hash" => VectorMode::Hash,
                         other => bail!("--vectors 只认 model / hash，拿到 {other}"),
                     };
+                    index += 2;
+                }
+                "--query-vectors" => {
+                    let value = args
+                        .get(index + 1)
+                        .context("--query-vectors 后面要跟 model 或 hash")?;
+                    query_vectors = match value.as_str() {
+                        "model" => VectorMode::Model,
+                        "hash" => VectorMode::Hash,
+                        other => bail!("--query-vectors 只认 model / hash，拿到 {other}"),
+                    };
+                    index += 2;
+                }
+                "--mixed" => {
+                    mixed = true;
+                    index += 1;
+                }
+                "--mixed-count" => {
+                    mixed_count = args
+                        .get(index + 1)
+                        .context("--mixed-count 后面要跟注入篇数")?
+                        .parse()
+                        .context("--mixed-count 必须是正整数")?;
                     index += 2;
                 }
                 "--sync" => {
@@ -215,6 +271,9 @@ impl Options {
             queries: queries.max(30),
             synchronous_full,
             vectors,
+            query_vectors,
+            mixed,
+            mixed_count,
             profile,
             mmap_mib,
             scan_depth,
@@ -240,6 +299,9 @@ fn number_arg(args: &[String], position: usize) -> Result<usize> {
 // ------------------------------------------------------------ build
 
 fn run_build(blocks: usize, options: &Options) -> Result<()> {
+    if options.mixed {
+        bail!("`--mixed` 只用于 query 阶段：先 build 一个干净库，再 query --mixed");
+    }
     let config = model_config()?;
     fs::create_dir_all(&options.dir)
         .with_context(|| format!("建不了量测目录：{}", options.dir.display()))?;
@@ -388,18 +450,41 @@ fn run_build(blocks: usize, options: &Options) -> Result<()> {
 
 fn run_query(blocks: usize, options: &Options) -> Result<()> {
     let config = model_config()?;
-    let db_path = options.dir.join("library.sqlite");
-    if !db_path.exists() {
+    let clean_path = options.dir.join("library.sqlite");
+    if !clean_path.exists() {
         bail!(
-            "库文件不存在：{}；先跑 large-bench build {blocks} --storage {} --dir {}",
-            db_path.display(),
+            "库文件不存在：{}；先跑 large-bench build {blocks} --storage {} --vectors {} --dir {}",
+            clean_path.display(),
             options.storage.wire(),
+            match options.vectors {
+                VectorMode::Model => "model",
+                VectorMode::Hash => "hash",
+            },
             options.dir.display()
         );
     }
+    let db_path = if options.mixed {
+        prepare_mixed_library(&clean_path, blocks, options.mixed_count)?
+    } else {
+        clean_path.clone()
+    };
     println!("===========================================");
     println!("大库实测 · query");
     println!("  块数：{blocks} · 存储：{}", options.storage.wire());
+    println!(
+        "  模式：{}",
+        if options.mixed {
+            format!(
+                "混合状态（干净库副本；{} 篇回收站 + {} 篇旧修订，各约 {:.3}%）→ {}",
+                options.mixed_count.min(blocks / 4),
+                options.mixed_count.min(blocks / 4),
+                options.mixed_count.min(blocks / 4) as f64 / blocks as f64 * 100.0,
+                db_path.display()
+            )
+        } else {
+            "干净库".to_owned()
+        }
+    );
     println!("  目录：{}", options.dir.display());
     println!("  进程：pid {}", std::process::id());
 
@@ -415,17 +500,32 @@ fn run_query(blocks: usize, options: &Options) -> Result<()> {
     }
 
     let load_start = Instant::now();
-    let embedder =
+    let model_embedder =
         load_embedder(&config, EmbedOptions::default()).map_err(|reason| anyhow::anyhow!(reason))?;
-    embedder
+    model_embedder
         .embed_query("预热")
         .map_err(|error| anyhow::anyhow!("预热嵌入失败：{error}"))?;
+    let dims = model_embedder.dims();
+    let model_version = model_embedder.model_version().to_owned();
     println!(
-        "[model] {} 维 · 加载+预热 {:.2} 秒",
-        embedder.dims(),
+        "[model] {dims} 维 · 加载+预热 {:.2} 秒",
         load_start.elapsed().as_secs_f64()
     );
-    core.set_embedder(Box::new(embedder));
+    if options.query_vectors == VectorMode::Hash {
+        if !options.mixed {
+            println!(
+                "[model] 查询向量改用确定性哈希（--query-vectors hash）。这不是质量口径：\
+                 文档与查询必须同一套哈希才有可比的分数；只用于把 top-K 稳定钉在指定块上。"
+            );
+        }
+        drop(model_embedder);
+        core.set_embedder(Box::new(HashEmbedder {
+            model_version,
+            dims,
+        }));
+    } else {
+        core.set_embedder(Box::new(model_embedder));
+    }
 
     let storage = storage_totals(&db_path)?;
     println!(
@@ -438,18 +538,28 @@ fn run_query(blocks: usize, options: &Options) -> Result<()> {
     let rss_before = rss_kb("VmRSS");
     let sampler = RssSampler::start();
 
-    let query_indices = query_indices(blocks, options.queries);
-    let mut latencies: Vec<f64> = Vec::with_capacity(options.queries);
+    let cases = query_cases(blocks, options.queries, options.mixed, options.mixed_count);
+    let mut latencies: Vec<f64> = Vec::with_capacity(cases.len());
     let mut cold_ms = None;
     let mut self_hits = 0_usize;
-    let mut hit_counts: Vec<usize> = Vec::with_capacity(options.queries);
-    if options.profile {
+    let mut hit_counts: Vec<usize> = Vec::with_capacity(cases.len());
+    let profiling = options.profile || options.mixed;
+    if profiling {
         set_query_profiling(true);
     }
-    let mut profiles: Vec<SemanticQueryProfile> = Vec::with_capacity(options.queries);
+    let mut profiles: Vec<SemanticQueryProfile> = Vec::with_capacity(cases.len());
+    let mut samples: Vec<QuerySample> = Vec::with_capacity(cases.len());
 
-    for (position, &index) in query_indices.iter().enumerate() {
-        let query = query_text(index);
+    for (position, case) in cases.iter().enumerate() {
+        // 混合状态基准里查询取**整篇正文**：查询与文档都用同一套哈希向量时，
+        // 全篇文本与那一条块的向量逐位相同，分数 = 1，top-1 必然是被查的块。
+        // 这样「top-K 命中被回收/旧修订块 → 整条回退」才是稳定可复现的，而不是
+        // 靠随机 top-K 碰运气。干净库的基准不受影响（仍取前 40 字）。
+        let query = if options.mixed {
+            piece_text(case.index)
+        } else {
+            query_text(case.index)
+        };
         let started = Instant::now();
         let snapshot = core.start_search(
             SearchRequest {
@@ -467,7 +577,7 @@ fn run_query(blocks: usize, options: &Options) -> Result<()> {
         if snapshot
             .results
             .first()
-            .is_some_and(|hit| hit.group_id == capture_id(index))
+            .is_some_and(|hit| hit.group_id == capture_id(case.index))
         {
             self_hits += 1;
         }
@@ -476,9 +586,15 @@ fn run_query(blocks: usize, options: &Options) -> Result<()> {
         } else if position > 3 {
             latencies.push(elapsed_ms);
         }
-        if options.profile {
+        if profiling {
             if let Some(profile) = take_query_profile() {
                 if position > 3 {
+                    samples.push(QuerySample {
+                        kind: case.kind,
+                        elapsed_ms,
+                        fast_path: profile.fast_path,
+                        coverage_fast: profile.coverage_fast,
+                    });
                     profiles.push(profile);
                 }
             }
@@ -513,14 +629,303 @@ fn run_query(blocks: usize, options: &Options) -> Result<()> {
     );
     println!(
         "[sanity] 首条命中就是被查询的那一篇：{self_hits}/{} · 首屏命中数 {}–{}",
-        query_indices.len(),
+        cases.len(),
         hit_counts.iter().min().copied().unwrap_or(0),
         hit_counts.iter().max().copied().unwrap_or(0)
     );
+    if options.mixed {
+        report_mixed(&samples);
+    }
     if options.profile {
         print_profile(&profiles, summary.p50);
     }
     Ok(())
+}
+
+/// 混合状态基准里一条查询的性质。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryKind {
+    Clean,
+    Trashed,
+    Stale,
+}
+
+impl QueryKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Clean => "干净",
+            Self::Trashed => "命中回收站",
+            Self::Stale => "命中旧修订",
+        }
+    }
+}
+
+struct QueryCase {
+    index: usize,
+    kind: QueryKind,
+}
+
+/// 一条查询的实测结果（路径标记来自产品查询路径的分段计时）。
+struct QuerySample {
+    kind: QueryKind,
+    elapsed_ms: f64,
+    fast_path: bool,
+    coverage_fast: bool,
+}
+
+/// 干净库用原来的均匀取块；混合状态用「一半干净、一半专打混合块」的固定集合。
+fn query_cases(
+    blocks: usize,
+    count: usize,
+    mixed: bool,
+    mixed_count: usize,
+) -> Vec<QueryCase> {
+    if !mixed {
+        return query_indices(blocks, count)
+            .into_iter()
+            .map(|index| QueryCase {
+                index,
+                kind: QueryKind::Clean,
+            })
+            .collect();
+    }
+    let count = count.max(30);
+    let clean = count / 2;
+    let trash = (count - clean) / 2;
+    let stale = count - clean - trash;
+    let (trash_indices, stale_indices) = mixed_indices(blocks, mixed_count);
+    let mut cases = Vec::with_capacity(count);
+    // 干净查询：从 1 开始顺序取，跳过所有注入的块；这样「干净」是真的干净。
+    let mut candidate = 1_usize;
+    for _ in 0..clean {
+        while trash_indices.contains(&candidate) || stale_indices.contains(&candidate) {
+            candidate += 1;
+        }
+        cases.push(QueryCase {
+            index: candidate % blocks,
+            kind: QueryKind::Clean,
+        });
+        candidate += 1;
+    }
+    for index in trash_indices.iter().take(trash) {
+        cases.push(QueryCase {
+            index: *index,
+            kind: QueryKind::Trashed,
+        });
+    }
+    for index in stale_indices.iter().take(stale) {
+        cases.push(QueryCase {
+            index: *index,
+            kind: QueryKind::Stale,
+        });
+    }
+    // 注入篇数少于查询分组时（例如 `--mixed-count 1`），用干净查询补满，保持总数。
+    while cases.len() < count {
+        let index = candidate % blocks;
+        candidate += 1;
+        cases.push(QueryCase {
+            index,
+            kind: QueryKind::Clean,
+        });
+    }
+    cases
+}
+
+/// 混合状态的注入位置：`count` 篇回收站、`count` 篇旧修订，按固定步长均匀铺开。
+/// `query_cases` 与 `inject_mixed_state` 共用它，保证「查的就是注入的那批块」。
+fn mixed_indices(blocks: usize, count: usize) -> (Vec<usize>, Vec<usize>) {
+    let count = count.clamp(1, (blocks / 4).max(1));
+    let stride = (blocks / count).max(2);
+    let trash = (0..count).map(|step| (step * stride) % blocks).collect();
+    let stale = (0..count)
+        .map(|step| (step * stride + stride / 2) % blocks)
+        .collect();
+    (trash, stale)
+}
+
+/// 把干净库复制成**混合状态副本**并注入回收站/旧修订。
+///
+/// 不碰原库：副本在同目录的 `mixed/` 下，注入完成写 marker；重复跑直接复用。
+fn prepare_mixed_library(clean: &Path, blocks: usize, mixed_count: usize) -> Result<PathBuf> {
+    if blocks < 1_000 {
+        bail!("--mixed 需要至少 1000 块（当前 {blocks}），否则混合块不够分");
+    }
+    let (trash_indices, stale_indices) = mixed_indices(blocks, mixed_count);
+    let mixed_dir = clean
+        .parent()
+        .context("干净库没有父目录")?
+        .join("mixed");
+    let target = mixed_dir.join("library.sqlite");
+    let marker = mixed_dir.join("mixed.marker");
+    let expected_marker = format!("trash={}\nstale={}\n", trash_indices.len(), stale_indices.len());
+    if marker.exists() && target.exists() {
+        // 换 `--mixed-count` 时副本要按新密度重建，不能复用旧 marker。
+        if fs::read_to_string(&marker).unwrap_or_default() == expected_marker {
+            return Ok(target);
+        }
+    }
+    if mixed_dir.exists() {
+        fs::remove_dir_all(&mixed_dir)?;
+    }
+    fs::create_dir_all(&mixed_dir)?;
+    {
+        let conn = Connection::open(clean)?;
+        conn.execute(
+            "VACUUM INTO ?1",
+            params![target.to_string_lossy().into_owned()],
+        )?;
+    }
+    let mut conn = Connection::open(&target)?;
+    let (trash, stale) = inject_mixed_state(&mut conn, &trash_indices, &stale_indices)?;
+    fs::write(&marker, expected_marker)?;
+    println!(
+        "[mixed] 已从干净库复制并注入：回收站 {trash} 篇、旧修订 {stale} 篇 → {}",
+        target.display()
+    );
+    Ok(target)
+}
+
+/// 注入两类「混合状态」：
+/// - 每 50 篇回收一篇（`captures.state = 'trashed'`）；
+/// - 每 50 篇取偏移 25 的那篇，给它的 span 换成一个**不是当前修订**的旧修订。
+///
+/// 后者会同时触发两条回退：`counts_fast_checked` 发现过期 span → 覆盖计数回精确 SQL；
+/// `candidates_fast` 的 top-K 命中那块 → 后置过滤掉一块 → 整条候选路径回退。
+fn inject_mixed_state(
+    conn: &mut Connection,
+    trash_indices: &[usize],
+    stale_indices: &[usize],
+) -> Result<(usize, usize)> {
+    let tx = conn.transaction()?;
+    {
+        let mut statement = tx.prepare("UPDATE captures SET state = 'trashed' WHERE id = ?1")?;
+        for index in trash_indices {
+            statement.execute(params![capture_id(*index)])?;
+        }
+    }
+    {
+        let mut item = tx.prepare(
+            "INSERT OR REPLACE INTO source_items \
+             (source_id, capture_id, kind, position, current_revision_id) \
+             VALUES (?1, ?2, 'text', 0, ?3)",
+        )?;
+        let mut revision = tx.prepare(
+            "INSERT OR REPLACE INTO source_revisions \
+             (revision_id, source_id, parent_revision_id, text, asset_id, author_type, occurred_at) \
+             VALUES (?1, ?2, ?3, ?4, NULL, 'user', ?5)",
+        )?;
+        let mut span = tx.prepare(
+            "UPDATE chunk_spans SET source_id = ?1, source_revision_id = ?2 WHERE capture_id = ?3",
+        )?;
+        for index in stale_indices {
+            let source_id = format!("src_mixed_{index:06}");
+            let old_revision = format!("rev_old_{index:06}");
+            let new_revision = format!("rev_new_{index:06}");
+            let occurred_at = format!("{}T04:00:00.000Z", day_key(*index));
+            let text = piece_text(*index);
+            item.execute(params![&source_id, capture_id(*index), &new_revision])?;
+            revision.execute(params![
+                &old_revision,
+                &source_id,
+                Option::<String>::None,
+                &text,
+                &occurred_at
+            ])?;
+            revision.execute(params![
+                &new_revision,
+                &source_id,
+                Some(old_revision.clone()),
+                piece_text(*index),
+                &occurred_at
+            ])?;
+            // span 记的是旧修订；source_items.current_revision_id 是新修订 ⇒ 过期。
+            span.execute(params![&source_id, &old_revision, capture_id(*index)])?;
+        }
+    }
+    tx.commit()?;
+    Ok((trash_indices.len(), stale_indices.len()))
+}
+
+/// 混合状态的回退率与回退后延迟。
+///
+/// 两条回退是**独立**的：候选路径看 top-K 有没有被过滤；覆盖计数只要全库有一条
+/// 过期 span 就整库回退。所以下面分开报，不把「一个数」混成两个原因。
+fn report_mixed(samples: &[QuerySample]) {
+    let total = samples.len();
+    if total == 0 {
+        println!("[mixed] 没有收集到热态样本（--queries 太小？）");
+        return;
+    }
+    let candidate_fallback = samples.iter().filter(|sample| !sample.fast_path).count();
+    let coverage_fallback = samples
+        .iter()
+        .filter(|sample| !sample.coverage_fast)
+        .count();
+    println!(
+        "[mixed] 候选快速路径回退 {candidate_fallback}/{total} · 覆盖计数回退 {coverage_fallback}/{total}"
+    );
+    println!(
+        "  {:<14} {:>7} {:>10} {:>12} {:>12}",
+        "查询性质", "次数", "候选回退", "覆盖回退", "P50/P95 ms"
+    );
+    for kind in [QueryKind::Clean, QueryKind::Trashed, QueryKind::Stale] {
+        let subset: Vec<&QuerySample> = samples.iter().filter(|sample| sample.kind == kind).collect();
+        let p50_p95 = p50_p95(&subset);
+        println!(
+            "  {:<14} {:>7} {:>10} {:>12} {:>12}",
+            kind.label(),
+            subset.len(),
+            format!(
+                "{}/{}",
+                subset.iter().filter(|sample| !sample.fast_path).count(),
+                subset.len()
+            ),
+            format!(
+                "{}/{}",
+                subset.iter().filter(|sample| !sample.coverage_fast).count(),
+                subset.len()
+            ),
+            p50_p95
+                .map(|(p50, p95)| format!("{p50:.1}/{p95:.1}"))
+                .unwrap_or_else(|| "—".to_owned()),
+        );
+    }
+    let fast: Vec<&QuerySample> = samples.iter().filter(|sample| sample.fast_path).collect();
+    let slow: Vec<&QuerySample> = samples
+        .iter()
+        .filter(|sample| !sample.fast_path)
+        .collect();
+    let cov_fast: Vec<&QuerySample> = samples
+        .iter()
+        .filter(|sample| sample.coverage_fast)
+        .collect();
+    let cov_slow: Vec<&QuerySample> = samples
+        .iter()
+        .filter(|sample| !sample.coverage_fast)
+        .collect();
+    for (label, subset) in [
+        ("候选路径未回退", &fast),
+        ("候选路径回退后", &slow),
+        ("覆盖计数未回退", &cov_fast),
+        ("覆盖计数回退后", &cov_slow),
+    ] {
+        match p50_p95(subset) {
+            Some((p50, p95)) => println!(
+                "  {label}：n={} · P50 {p50:.2} ms · P95 {p95:.2} ms",
+                subset.len()
+            ),
+            None => println!("  {label}：n=0"),
+        }
+    }
+}
+
+fn p50_p95(samples: &[&QuerySample]) -> Option<(f64, f64)> {
+    if samples.is_empty() {
+        return None;
+    }
+    let values: Vec<f64> = samples.iter().map(|sample| sample.elapsed_ms).collect();
+    let summary = Summary::of(&values);
+    Some((summary.p50, summary.p95))
 }
 
 /// 分段计时的中位数表。「1.5 秒花在哪」的答案就长这样。

@@ -131,6 +131,10 @@ pub struct SemanticQueryProfile {
     pub fast_meta_build_ns: u64,
     /// #90 快速路径是否命中；`false` = 回退到逐行 join 的精确路径。
     pub fast_path: bool,
+    /// 语义覆盖计数是否走了快路径；`false` = 因为库里有异常块/过期 span 退回精确 SQL。
+    /// 与 `fast_path` 是**两条独立的回退**：覆盖计数只要有一条过期 span 就整库回退，
+    /// 与查询命中哪一块无关。
+    pub coverage_fast: bool,
 }
 
 impl SemanticQueryProfile {
@@ -179,6 +183,7 @@ mod profile_sink {
             fast_meta_query_ns: 0,
             fast_meta_build_ns: 0,
             fast_path: false,
+            coverage_fast: false,
         }) };
     }
 
@@ -772,7 +777,7 @@ fn write_vector(
             model_version,
             vector.len() as i64,
             storage.wire(),
-            storage.encode(vector),
+            storage.encode(vector)?,
             embedding::now_iso(),
         ],
     )?;
@@ -1309,11 +1314,45 @@ fn score_of(
         }
     };
     let denominator = query_norm.sqrt() * norm.sqrt();
-    Ok(if denominator > 0.0 {
+    // 分母本身可能是 NaN/Inf（查询或向量含非有限值）：`NaN > 0.0` 为 false，
+    // 若不先拦住，下面会静默返回 0.0，看起来像「两条向量正交」——这是最坏的一种
+    // 撒谎。先在这里报错，再由下面的分数有限性检查兜住 Inf。
+    if !denominator.is_finite() {
+        return Err(CoreError::CorruptedData {
+            message: format!(
+                "向量{}的模长不是有限数（查询 {}、库内 {}）；查询或库里的向量含 NaN/Inf",
+                if chunk_id.is_empty() {
+                    "（快速路径）".to_owned()
+                } else {
+                    format!(" {chunk_id} ")
+                },
+                query_norm,
+                norm,
+            ),
+        });
+    }
+    let score = if denominator > 0.0 {
         dot / denominator
     } else {
         0.0
-    })
+    };
+    // 查询向量或库里的字节都可能含 NaN/Inf（旧库、坏模型输出、手工写坏的行）。
+    // 分数一旦不是有限数，`partial_cmp` 的全序就断了（NaN 与任何数比较都不等），
+    // `sort_by` 会乱序甚至 panic；而且 NaN 会被当成「最高分」蒙混进结果。
+    // 这里统一报 CorruptedData，让调用方如实失败，不把 NaN 当分数传下去。
+    if !score.is_finite() {
+        return Err(CoreError::CorruptedData {
+            message: format!(
+                "向量{}算出的余弦不是有限数（{score}）；查询或库里的向量含 NaN/Inf",
+                if chunk_id.is_empty() {
+                    "（快速路径）".to_owned()
+                } else {
+                    format!(" {chunk_id} ")
+                }
+            ),
+        });
+    }
+    Ok(score)
 }
 
 /// 点积 + 自身模长平方，直接从 BLOB 字节读 f32。
@@ -1702,10 +1741,13 @@ fn rank_and_fold(
 /// 性能：`content_key` 要读块正文、算 sha256，10 万块全算一遍不值得；只对前五道键
 /// **完全相同**的并列组才去取正文（见 [`resolve_ties`]）。
 fn position_order(left: &SemanticCandidate, right: &SemanticCandidate) -> std::cmp::Ordering {
+    // `total_cmp` 而不是 `partial_cmp(...).unwrap_or(Equal)`：NaN 在偏序里与任何数
+    // 都「不可比」，退回 Equal 会破坏全序（比较不传递），`sort_by` 因此可能乱序甚至
+    // panic。`total_cmp` 给 NaN 一个确定位置（排在 +Inf 之后），排序始终是全序。
+    // 正常路径上 `score_of` 已经拒绝非有限分数；这里是排序层自己的防线。
     right
         .score
-        .partial_cmp(&left.score)
-        .unwrap_or(std::cmp::Ordering::Equal)
+        .total_cmp(&left.score)
         .then_with(|| right.day_key.cmp(&left.day_key))
         .then_with(|| left.start_char.cmp(&right.start_char))
         .then_with(|| left.end_char.cmp(&right.end_char))
@@ -1749,21 +1791,42 @@ fn resolve_ties(core: &Core, scored: &mut [SemanticCandidate]) -> Result<()> {
                 .collect();
             chunk_ids.sort_unstable();
             chunk_ids.dedup();
-            let placeholders = crate::search::placeholders(chunk_ids.len());
-            let sql = format!(
-                "SELECT chunk_id, text FROM text_chunks WHERE chunk_id IN ({placeholders})"
-            );
-            let mut statement = core.conn.prepare(&sql)?;
-            let rows = statement.query_map(
-                rusqlite::params_from_iter(chunk_ids),
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            // **不能拼成 `IN (?, ?, ...)`**：SQLite 一条语句的变量数有上限（默认
+            // 32766），一个超大并列组（同分、同位置、同段序号）会直接报
+            // `too many SQL variables`，把整条查询打成错误。照 `delete_stale_chunks`
+            // 的做法先把 id 放进临时表，再用主键 join 取正文：变量数与并列组大小无关。
+            core.conn.execute_batch(
+                "DROP TABLE IF EXISTS temp.semantic_tie_chunks; \
+                 CREATE TEMP TABLE semantic_tie_chunks (chunk_id TEXT PRIMARY KEY);",
             )?;
+            {
+                let tx = core.conn.unchecked_transaction()?;
+                {
+                    let mut insert = tx.prepare(
+                        "INSERT OR IGNORE INTO semantic_tie_chunks (chunk_id) VALUES (?1)",
+                    )?;
+                    for chunk_id in &chunk_ids {
+                        insert.execute(params![chunk_id])?;
+                    }
+                }
+                tx.commit()?;
+            }
+            let mut statement = core.conn.prepare(
+                "SELECT t.chunk_id, t.text FROM text_chunks t \
+                 JOIN semantic_tie_chunks tie ON tie.chunk_id = t.chunk_id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
             let mut texts: std::collections::HashMap<String, String> =
                 std::collections::HashMap::with_capacity(end - start);
             for row in rows {
                 let (chunk_id, text) = row?;
                 texts.insert(chunk_id, text);
             }
+            drop(statement);
+            core.conn
+                .execute_batch("DROP TABLE temp.semantic_tie_chunks;")?;
             for candidate in &mut scored[start..end] {
                 let text = texts.get(&candidate.chunk_id).ok_or_else(|| {
                     CoreError::CorruptedData {
@@ -2016,6 +2079,18 @@ pub(crate) fn active_model_version(core: &Core) -> Result<ActiveModelVersion> {
     })
 }
 
+/// 生效代次里出现过的存储格式（去重、字典序）。
+///
+/// **不加载模型**：`index_status` 只用它判断「库里的格式与当前默认是否同一口径」。
+/// 空 = 没有生效代次或那一代没有向量；长度 > 1 = 历史遗留的混合编码（同样不是
+/// 同一个向量空间，检索路径会整路不作数）。
+pub(crate) fn active_storages(core: &Core) -> Result<Vec<String>> {
+    let Some(generation) = active_generation(core)? else {
+        return Ok(Vec::new());
+    };
+    distinct_values(core, "storage", generation)
+}
+
 /// 生效代次与**当前嵌入器**不是同一个向量空间时的如实说法（检索路径唯一的判据来源）。
 ///
 /// 什么时候会不一样（都是真实会发生的）：
@@ -2191,4 +2266,122 @@ mod tests {
             "分数高的在前"
         );
     }
+    /// NaN/Inf 不能变成「看起来正常的分数」：查询向量或库里的字节含非有限值时，
+    /// `score_of` 必须报 `CorruptedData`。否则 NaN 会一路传到排序与结果里。
+    #[test]
+    fn score_of_rejects_non_finite_scores() {
+        let finite = VectorStorage::F32.encode(&[1.0, 0.0]).unwrap();
+        let cases: [(&str, Vec<u8>, Vec<f32>); 4] = [
+            (
+                "查询向量含 NaN",
+                finite.clone(),
+                vec![f32::NAN, 0.0],
+            ),
+            (
+                "查询向量含 Inf",
+                finite.clone(),
+                vec![f32::INFINITY, 0.0],
+            ),
+            (
+                "库里的 f32 向量含 NaN",
+                [1.0_f32.to_le_bytes(), f32::NAN.to_le_bytes()].concat(),
+                vec![1.0, 0.0],
+            ),
+            (
+                "库里的 f32 向量含 Inf",
+                [1.0_f32.to_le_bytes(), f32::INFINITY.to_le_bytes()].concat(),
+                vec![1.0, 0.0],
+            ),
+        ];
+        for (label, bytes, query) in cases {
+            let error = score_of(VectorStorage::F32, &bytes, &query, 1.0, 2, "chunk_x")
+                .unwrap_err();
+            let CoreError::CorruptedData { message } = error else {
+                panic!("{label}：应当报 CorruptedData，实际是 {error:?}");
+            };
+            assert!(
+                message.contains("不是有限数"),
+                "{label}：错误消息要说明分数不是有限数：{message}"
+            );
+        }
+    }
+
+    /// `position_order` 必须是全序：NaN 也要有确定位置，绝不能因为不可比就退化成
+    /// `Equal`（那会让 `sort_by` 的 comparator 不传递）。
+    #[test]
+    fn position_order_is_total_with_non_finite_scores() {
+        let mut candidates = [
+            candidate("chunk_nan", "", f32::NAN),
+            candidate("chunk_inf", "", f32::INFINITY),
+            candidate("chunk_one", "", 1.0),
+            candidate("chunk_neg_inf", "", f32::NEG_INFINITY),
+        ];
+        // 直接钉住比较器的传递性：旧实现把 NaN 与任何数的比较都退化成 Equal，
+        // 于是同时得到「NaN == 1」「NaN == 2」，却又「1 < 2」——等价关系不传递，
+        // `sort_by` 因此可以乱序甚至 panic。`total_cmp` 不会让这两条同时成立。
+        let nan = candidate("chunk_nan", "", f32::NAN);
+        let one = candidate("chunk_one", "", 1.0);
+        let two = candidate("chunk_two", "", 2.0);
+        assert!(
+            !(position_order(&nan, &one) == std::cmp::Ordering::Equal
+                && position_order(&nan, &two) == std::cmp::Ordering::Equal)
+                || position_order(&one, &two) == std::cmp::Ordering::Equal,
+            "比较器必须传递：不能把 NaN 同时当成等于 1 和 2，却又认为 1 != 2"
+        );
+        candidates.sort_by(position_order);
+        for pair in candidates.windows(2) {
+            assert_ne!(
+                position_order(&pair[0], &pair[1]),
+                std::cmp::Ordering::Greater,
+                "排序结果必须满足 comparator 全序"
+            );
+        }
+        assert!(candidates[0].score.is_nan(), "total_cmp 把 NaN 排在最后（降序的最前）");
+        assert_eq!(candidates[1].score, f32::INFINITY);
+        assert_eq!(candidates[3].score, f32::NEG_INFINITY);
+    }
+
+    /// 超大并列组（> SQLite 单语句变量上限 32766）不能拼 `IN (?, ...)`。
+    /// 退回旧实现会直接报 `too many SQL variables`，这条测试会红。
+    #[test]
+    fn resolve_ties_handles_groups_larger_than_the_sqlite_variable_limit() {
+        let count = 33_000_usize;
+        let mut core = Core::open_in_memory().unwrap();
+        {
+            let tx = core.conn.transaction().unwrap();
+            {
+                let mut insert = tx
+                    .prepare(
+                        "INSERT INTO text_chunks (chunk_id, ordinal, text, kind, coverage, \
+                         day_key, chunker_version, created_at) \
+                         VALUES (?1, ?2, ?3, 'text', 'complete', '2026-09-20', 'v1', \
+                         '2026-09-20T00:00:00.000Z')",
+                    )
+                    .unwrap();
+                for index in 0..count {
+                    insert
+                        .execute(params![
+                            format!("chunk_{index:05}"),
+                            index as i64,
+                            format!("正文 {index}")
+                        ])
+                        .unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        }
+        let mut scored: Vec<SemanticCandidate> = (0..count)
+            .map(|index| {
+                let mut item = candidate(&format!("chunk_{index:05}"), "", 0.5);
+                item.chunk_id = format!("chunk_{index:05}");
+                item
+            })
+            .collect();
+        resolve_ties(&core, &mut scored).unwrap();
+        assert!(
+            scored.iter().all(|item| !item.content_key.is_empty()),
+            "每个并列候选都要补上 content_key"
+        );
+    }
+
 }

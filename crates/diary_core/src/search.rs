@@ -601,11 +601,26 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
         crate::semantic::ActiveModelVersion::Single(version) => (Some(version), None),
         crate::semantic::ActiveModelVersion::Mixed(versions) => (None, Some(versions)),
     };
-    // 「就绪」要求有一代向量在服务、这一代把范围内的块都覆盖了，**并且**整代口径一致。
+    // 生效代次那一批向量的**存储格式**。这是口径三字段之一，但 `model_version` 查不出
+    // 它：存量 f32 库通常只有一种 `model_version`，换默认存储之后会「看起来干净」，
+    // 于是旧逻辑报 ready = true，而检索路径按口径判据整路不作数——用户先看到
+    // 「已就绪」，搜出来是空。这里**不加载模型**，只读库里的 `storage` 列。
+    //
+    // 当前口径取 `core.vector_storage`（产品默认 int8；测试可显式改）。空 = 那一代
+    // 没有向量；长度 > 1 = 历史遗留的混合编码，同样不是同一个向量空间。
+    let stored_storages = crate::semantic::active_storages(core)?;
+    let current_storage = core.vector_storage().wire();
+    let storage_mismatch = stored_storages.len() > 1
+        || stored_storages
+            .first()
+            .is_some_and(|storage| storage != current_storage);
+    // 「就绪」要求有一代向量在服务、这一代把范围内的块都覆盖了，**并且**整代口径一致
+    // （模型版本、维度、存储格式三项都算）。
     let semantic_index_ready = active_generation.is_some()
         && chunk_counts.total > 0
         && chunk_counts.embedded == chunk_counts.total
-        && mixed_versions.is_none();
+        && mixed_versions.is_none()
+        && !storage_mismatch;
 
     let mut reasons = Vec::new();
     if total_segments == 0 && total_captures == 0 {
@@ -644,7 +659,7 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
     //
     // 「模型加载失败」与「还没有配置模型」是**两件事**，前者必须把失败原因原样说出来
     // ——把错误盖成「未就绪」等于骗人（见 `embedding` 模块的说明）。
-    // 五段与上面 `semantic_index_ready` 的取值**严格互补**：就绪时没有原因，
+    // 六段与上面 `semantic_index_ready` 的取值**严格互补**：就绪时没有原因，
     // 有原因时一定不就绪。
     let semantic_reason = if active_generation.is_none() {
         match core.embedder_readiness() {
@@ -665,6 +680,22 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
     } else if chunk_counts.total == 0 {
         // 有生效代次却没有任何块：要么还没重建过块，要么范围内的内容本来就没有正文。
         Some("语义索引未就绪：范围内还没有文本块".to_owned())
+    } else if storage_mismatch {
+        // 存量库最常见的一种：库是 f32 建的，新版本默认 int8。模型版本可能只有一种，
+        // 所以上面几段都看不出问题；只说「需要重建」并把两种格式都写出来。
+        let stored = stored_storages.join(" / ");
+        Some(if stored_storages.len() > 1 {
+            format!(
+                "语义索引未就绪：生效代次里的向量混了多种存储格式（{stored}），当前是 \
+                 {current_storage}；存储格式是向量空间口径之一，需要重建语义索引\
+                 （build_semantic_index 会按当前格式整代重算）"
+            )
+        } else {
+            format!(
+                "语义索引未就绪：存储格式从 {stored} 变为 {current_storage}，需要重建\
+                 （build_semantic_index 会按当前格式整代重算）"
+            )
+        })
     } else if let Some(versions) = &mixed_versions {
         // 混合代次：整代里不止一种模型口径。这是**如实报出来**而不是挑一行装作干净
         // ——不同模型空间的向量放在一起打分，结果本身就不作数（检索路径从 #80 起

@@ -389,7 +389,7 @@ impl Core {
 
     /// 仅供量测/测试：改快速路径保留的候选块数上限（#90），用来扫「深度 vs 延迟」。
     ///
-    /// 产品默认是可审计的 `FAST_SCAN_DEPTH`（8192）。这个上限**不是 ANN**：保留范围内
+    /// 产品默认是可审计的 `FAST_SCAN_DEPTH`（4096）。这个上限**不是 ANN**：保留范围内
     /// 的名次仍是逐条精算的，只影响「最多能翻到多深」。产品代码不调它。
     #[doc(hidden)]
     pub fn set_semantic_scan_depth_for_test(&mut self, depth: usize) {
