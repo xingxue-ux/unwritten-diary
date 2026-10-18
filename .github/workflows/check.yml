@@ -31,7 +31,9 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: 校验关键文件、Markdown 链接、.github YAML 与共用场景
-        run: python3 tools/check_docs.py
+        run: |
+          python3 tools/check_docs.py
+          python3 tools/test_check_docs.py
 
   dart:
     name: dart
