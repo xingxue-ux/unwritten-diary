@@ -72,6 +72,10 @@ READELF=""
 NM=""
 STRIP=""
 REAL_PATCH=""
+# 缓存文件存在但不可用（版本/sha256/ELF 自检失败）时记下原因：preflight 里要把
+# 「缓存损坏」和「没有 NDK」区分开，否则 CI 上会误导人去装 NDK（评审 #126 建议项 4）。
+CACHE_UNUSABLE=0
+CACHE_UNUSABLE_REASON=""
 
 # 1.29.1 的源码包（与 conandata 里的 sha256 一致：实测 2026-10-16 用同一份源码编出过成品）。
 SOURCE_URL_1291="https://github.com/microsoft/onnxruntime/archive/refs/tags/v1.29.1.tar.gz"
@@ -174,6 +178,9 @@ selfcheck_artifact() {
   ((${#unexpected[@]} == 0)) || { warn "自检：出现白名单外的 NEEDED：${unexpected[*]}"; fail=1; }
   printf '%s\n' "${needed[@]}" | grep -qx 'libc.so' || { warn "自检：NEEDED 里没有 libc.so"; fail=1; }
   soname=$(soname_of "$so")
+  # 文档 §3.1 把 SONAME 列为命中条件；这里必须**断言**，不能只打印（评审 #126 建议项 5）。
+  [[ "$soname" == "libonnxruntime.so.1" ]] \
+    || { warn "自检：SONAME 是 ${soname:-<无>}，期望 libonnxruntime.so.1"; fail=1; }
 
   syms=$("$NM" -D "$so" 2>/dev/null || "$READELF" --dyn-syms "$so")
   grep -q "OrtGetApiBase@@VERS_${ORT_VERSION}" <<<"$syms" \
@@ -236,15 +243,30 @@ try_cache() {
     want_ver=$(manifest_field ort_version)
     want_sha=$(manifest_field sha256)
     [[ "$want_ver" == "$ORT_VERSION" ]] \
-      || { say "缓存 manifest 的版本是 ${want_ver:-?}，不是 $ORT_VERSION → 视为未命中"; return 1; }
+      || {
+        say "缓存 manifest 的版本是 ${want_ver:-?}，不是 $ORT_VERSION → 视为未命中"
+        CACHE_UNUSABLE=1
+        CACHE_UNUSABLE_REASON="manifest 的 ORT 版本是 ${want_ver:-?}，不是 $ORT_VERSION"
+        return 1
+      }
     got=$(sha256_of "$SO")
     [[ "$got" == "$want_sha" ]] \
-      || { say "缓存 sha256 与 manifest 不一致（$got ≠ $want_sha）→ 视为未命中"; return 1; }
+      || {
+        say "缓存 sha256 与 manifest 不一致（$got ≠ $want_sha）→ 视为未命中"
+        CACHE_UNUSABLE=1
+        CACHE_UNUSABLE_REASON="文件 sha256 与 manifest 不一致（缓存损坏）"
+        return 1
+      }
   else
     say "缓存没有 manifest（可能是手工放进去的成品）：先自检，通过就收编"
   fi
   selfcheck_artifact "$SO" quiet \
-    || { say "缓存自检不通过 → 视为未命中，走构建"; return 1; }
+    || {
+      say "缓存自检不通过（缓存损坏，不是「没有 NDK」）→ 视为未命中，需要重建"
+      CACHE_UNUSABLE=1
+      CACHE_UNUSABLE_REASON="ELF 自检失败（缓存损坏）"
+      return 1
+    }
   [[ -f "$MANIFEST" ]] || write_manifest "$SO" "adopted-existing"
   return 0
 }
@@ -294,6 +316,13 @@ preflight() {
   if [[ ! -d "$NDK" ]]; then
     warn "找不到 OHOS NDK：$NDK"
     warn "  期望目录：$NDK/llvm/bin/aarch64-unknown-linux-ohos-clang"
+    if (( CACHE_UNUSABLE == 1 )); then
+      # CI 缓存命中但自检失败时，真正的问题是「缓存损坏」，不是「没有 NDK」。
+      warn "  注意：缓存目录里的产物**存在但不可用**（$CACHE_UNUSABLE_REASON）。"
+      warn "  这不是「第一次构建、缺 NDK」，而是缓存本身坏了：CI 上请 bump vars.ORT_CACHE_REV"
+      warn "  （或 gh cache delete <key>）让缓存 key 变掉，不要先去装 NDK。"
+      warn "  本地：删掉 $CACHE_DIR 后重跑，或用 --force-build 重建。"
+    fi
     warn "  获取方式（任选其一）："
     warn "    1) DevEco Studio → SDK Manager → Native（默认落到 ~/command-line-tools/sdk/default/openharmony/native）"
     warn "    2) 下载 Command Line Tools（linux-x64）解压到 ~/command-line-tools（见文档「CI 里没有 NDK 怎么办」）"

@@ -1,25 +1,33 @@
 # M6 ORT 构建与缓存（OHOS / arm64-v8a）
 
-> 状态（2026-10-18，分支 `feat/B8c-ort-ci`，评审 #126 修复后）：
+> 状态（2026-10-18，分支 `feat/B8c-ort-ci`，评审 #126 **第二轮**修复后）：
 > **缓存命中路径、前置检查、以及完整的 CMake configure 已在本机实测**；
-> **`cmake --build`（~24 min 的编译）与 CI job 本身没有跑过**。
-> 评审 #126 的修复：`ohos-ort` 只在 `workflow_dispatch` 或配置了 `vars.OHOS_CLT_URL`
-> 时运行；未配置时整个 job **skipped**（不是红），由 `ohos-ort-cache` 留 notice + Step Summary
-> 说明「没跑」。该修复只做了本地静态/逻辑验证，**CI 实跑未验**（见 §8.1）。
-> 未验证项集中列在 [§8](#8-没做到的如实)，不要把它们当成已完成。
+> **冷缓存的全量 `cmake --build`（~24 min 编译）仍没有跑过**。
+>
+> 第二轮修复（3 个阻塞）：① 新增 `run_build` dispatch 输入——未配置变量时普通 dispatch
+> 也 **skipped**（上一版 dispatch 恒 `enabled` ⇒ 稳定报红）；② `timeout-minutes: 90 → 240`，
+> 文档与 gate Summary 写明「4 核 hosted 约 1.5–2 h、不推荐自举」；③ **拆出独立 workflow
+> [`ohos-ort.yml`](../../.github/workflows/ohos-ort.yml)**，不再与 `check.yml` 的 run 级
+> `cancel-in-progress: true` 共享并发组（实测 `push main` 的 run 39135398152 被取消）。
+>
+> 本轮**有真实 CI run**：skip 与 fail-fast 两条路径都实跑过（run URL 见 §9.2）；
+> 但**成功的冷缓存全量构建仍未在 CI 跑过**（见 [§8](#8-没做到的如实)）。
 >
 > 相关：[鸿蒙可行性探针](m6-鸿蒙可行性探针.md)（§4 / §23 / §24.5 / §25）、
 > [`tools/ohos/build-ort.sh`](../../tools/ohos/build-ort.sh)、
 > [`tools/ohos/ort_source_edits.py`](../../tools/ohos/ort_source_edits.py)、
-> [`.github/workflows/check.yml`](../../.github/workflows/check.yml)。
+> [`.github/workflows/check.yml`](../../.github/workflows/check.yml)、
+> [`.github/workflows/ohos-ort.yml`](../../.github/workflows/ohos-ort.yml)。
 
 ## 0 一句话
 
 `tools/ohos/build-ort.sh` 一条命令产出 `libonnxruntime.so`：**先查缓存**（manifest
-sha256 + ELF 自检，命中约 0.1–0.3 s），**未命中才完整构建**（~33 min / 16 核）；
-产物只落 `$HOME/dev/caches/ort-1291/`，**不进仓库**；CI 里是一个**可选的**
-`ohos-ort` job，用 `actions/cache` 缓存产物。**未配置 `OHOS_CLT_URL` 时它显示
-skipped，不会让普通 PR 报红**；`ohos-ort-cache` 会留 notice 说明它没跑（§6）。
+sha256 + ELF 自检，命中约 0.1–0.3 s），**未命中才完整构建**（~33 min / 16 核，
+4 核约 1.5–2 h）。产物只落 `$HOME/dev/caches/ort-1291/`，**不进仓库**。CI 里是一个
+**独立的可选 workflow** [`ohos-ort.yml`](../../.github/workflows/ohos-ort.yml)：
+`ohos-ort-cache` 是秒级 gate，`ohos-ort` 才构建；**未配置 `vars.OHOS_CLT_URL` 时，
+普通 PR 与不勾 `run_build` 的 dispatch 都是 skipped，不会报红**，gate 会留 notice
+说明它没跑（§6）。
 
 ## 1 为什么必须自编
 
@@ -86,7 +94,7 @@ tools/ohos/build-ort.sh --configure-only   # 再走到 CMake configure
 3. ELF 自检通过：
    - `file` 认得出是 aarch64 ELF；
    - `NEEDED` **只允许** `libc.so` 与 `libc++_shared.so`，且 `libc.so` 必须在；
-   - `SONAME` 为 `libonnxruntime.so.1`；
+   - `SONAME` 为 `libonnxruntime.so.1`（**脚本会断言**，不只是打印；评审 #126 建议项 5）；
    - `nm -D` 里有 `OrtGetApiBase@@VERS_1.29.1`。
 
 > **与任务描述的一处事实差异**：成品实测 `NEEDED` 是
@@ -190,133 +198,169 @@ exec "$real" "$@" < "$spool"
 
 ## 6 CI 集成
 
-### 6.1 两个 job 与「跑不跑」的判定
+### 6.1 为什么是独立 workflow（评审 #126 第二轮阻塞 3）
 
-`.github/workflows/check.yml` 里有两个与 ORT 相关的 job：
-
-| job | 作用 | 是否必需检查 |
-|---|---|---|
-| `ohos-ort-cache` | 轻量提示 job（秒级，不下载不编译）：判定 `ohos-ort` 会不会跑；不会跑时留 `::notice` + Step Summary | 否 |
-| `ohos-ort` | 真正构建/复用 ORT 产物 | **否，不要勾进 required checks** |
-
-`ohos-ort` 的 job 级条件只有一个判定源（`ohos-ort-cache` 的输出）：
+ORT 构建是长任务（16 核 33 min，4 核 1.5–2 h）。上一版把它放在 `check.yml` 里，与
+`check` 的 **run 级**并发策略共享同一个组：
 
 ```yaml
-if: needs.ohos_ort_cache.outputs.enabled == 'true'
-# enabled := github.event_name == 'workflow_dispatch' || vars.OHOS_CLT_URL != ''
+concurrency: {group: check-${{ github.ref }}, cancel-in-progress: true}
 ```
 
-**不把「改了 ohos 文件」单独当作触发条件**：job 级 `if` 预知不了 Actions 缓存是否命中，
-改了 `probes/ohos-*` / `apps/ohos-*` / `tools/ohos/**` ≠ 有 NDK/缓存。文件变更只影响提示
-文案（告诉人「这次改了 ohos，但 ORT 没验证」），不影响跑不跑。
+后果：同一 PR 每 push 一次就取消上一次整个 run；`push: main` 时一次 merge 也会取消
+main 上正在跑的手动预热。`actions/cache` 的 post-step 在 **cancelled** 的 run 里不会
+保存 ⇒ 配了 `OHOS_CLT_URL` 之后，活跃 PR 上的 `ohos-ort` 会长期 `cancelled`，缓存永远
+存不下来。这比 skipped 更糟：它看起来像失败。
 
-相关仓库变量（都可选，在 Settings → Secrets and variables → Actions → Variables 里设）：
+实测佐证：`push main` 的 run **39135398152** 结论就是 **cancelled**
+（<https://github.com/xingxue-ux/unwritten-diary/actions/runs/39135398152>）。
+
+**job 级 `concurrency` 修不了这个问题**（run 级取消在 job 开始前就生效），所以拆成独立
+workflow [`.github/workflows/ohos-ort.yml`](../../.github/workflows/ohos-ort.yml)：
+
+```yaml
+concurrency:
+  group: ohos-ort-${{ github.ref }}
+  cancel-in-progress: false
+```
+
+- 与 `check-*` 完全分开，长构建不会再被 PR push / merge main 连坐取消；
+- 同一 PR 连续 push 是**排队**（`cancel-in-progress: false`），不是互相取消；
+- `check.yml` 里**不再有** `ohos-ort` / `ohos_ort_cache` 两个 job（只留 check 的常规检查）。
+
+| workflow | job | 作用 | 必需检查 |
+|---|---|---|---|
+| `check.yml` | docs / dart / flutter / rust / bridge / probe / platform-host | 常规门禁 | 是 |
+| `ohos-ort.yml` | `ohos-ort-cache` | 轻量 gate（秒级，不 checkout/不编译）：判定跑不跑，留 notice + Summary | 否 |
+| `ohos-ort.yml` | `ohos-ort` | 真正构建/复用 ORT 产物 | **否，不要勾进 required checks** |
+
+### 6.2 触发条件与三态
+
+```yaml
+enabled      := vars.OHOS_CLT_URL != '' || inputs.run_build == true
+should_build := enabled && (非 PR || 同仓库 PR && 打了 ci:ohos-ort label)
+```
+
+- `run_build` 是 `workflow_dispatch` 的 boolean 输入、**默认 false**：普通 dispatch（不勾）
+  在未配置变量时 ⇒ **skipped**；勾了 ⇒ 真跑（失败也只给指引，不阻塞合入）。
+- 普通 PR：`pull_request` 只在 `tools/ohos/**`、`probes/ohos-*/**`、
+  `.github/workflows/ohos-ort.yml` 变更时触发；未配置变量时 gate 绿 + notice、`ohos-ort`
+  skipped。
+- PR 还要 `ci:ohos-ort` label：把「能自举」与「每个 PR 都跑」拆开（建议项 6）；fork PR
+  一律不跑（`head.repo.full_name == github.repository`）。
+- **push main 不触发本 workflow**：main 的缓存预热靠手动 dispatch（见 §6.5）。
+
+逐场景推演（三种结果都不阻塞合入）：
+
+| # | 事件 | `OHOS_CLT_URL` | `run_build` | `ci:ohos-ort` | gate | `ohos-ort` | 用户看到 |
+|---|---|---|---|---|---|---|---|
+| 1 | 普通 PR（命中 paths） | 空 | — | 无 | false | skipped | gate 绿 + notice「未配置 URL，跳过」 |
+| 2 | 普通 PR（未命中 paths） | 任意 | — | — | — | 不触发 | PR 上没有这个 workflow |
+| 3 | 普通 PR + label | 空 | — | 有 | false | skipped | gate 绿 + notice（label 单独不放宽开关） |
+| 4 | 普通 PR + label | 有 | — | 有 | true | 跑 | 命中缓存秒级；未命中下载 NDK 后 1.5–2 h |
+| 5 | 普通 PR | 有 | — | 无 | true | skipped | gate 绿 + notice「需要 ci:ohos-ort label」 |
+| 6 | fork PR | 有 | — | 有 | true | skipped | gate 绿 + notice「fork PR 不跑」 |
+| 7 | `workflow_dispatch` 不勾 | 空 | false | — | false | skipped | gate 绿 + notice（**评审 #126 要的证据**） |
+| 8 | `workflow_dispatch` 勾 run_build | 空 | true | — | true | 跑 | 无 NDK/URL/缓存 ⇒ fail-fast 红 + 三条自举指引 |
+| 9 | `workflow_dispatch` | 有 | 任意 | — | true | 跑 | 同上；有缓存则秒级 |
+| 10 | 缓存命中但自检失败 | 任意 | — | — | true | 跑（自愈） | 删缓存条目 + `--force-build` 重建；无 NDK ⇒ 报「缓存损坏」而不是「没有 NDK」 |
+| 11 | 构建/下载/自检失败 | 任意 | — | — | true | 红 | 失败；不是必需检查，不阻塞合入 |
+
+> 第 3 行是有意的：label 是「同意在 CI 上花 1.5–2 h」的开关，但**不能**代替
+> `OHOS_CLT_URL` / `run_build`——否则一个 label 就能在没有 NDK 的 runner 上稳定报红。
+
+### 6.3 timeout 与 runner 规格（评审 #126 第二轮阻塞 2）
+
+- `ohos-ort` 的 `timeout-minutes` 是 **240**（上一版 90 不够）；
+- **4 核 `ubuntu-latest` 冷缓存约 1.5–2 h**（按 16 核实测 33 min 的核数粗算，**没有实测**）；
+- 因此：**不推荐在 4 核 hosted 上自举**；**≥8 核（或带 NDK 的自托管 runner）才建议跑全量**。
+  这句话同时写进了 gate 的 Step Summary（每次运行都能看到）；
+- 16 核实测 33 min 的拆解见 §4；240 min 留的是 4 核慢路径的余量，不是正常耗时。
+
+### 6.4 仓库变量
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `vars.OHOS_CLT_URL` | 空 | NDK 下载地址。**非空 = 允许 `ohos-ort` 在普通 PR 上运行**；空 = 只有 `workflow_dispatch` 才跑 |
-| `vars.OHOS_CLT_SHA256` | 空 | 下载包的 sha256；建议设，不设只打 warning |
+| `vars.OHOS_CLT_URL` | 空 | NDK 下载地址。**非空 = 允许 `ohos-ort` 运行**（PR 仍需 label）；空 = 只有勾 `run_build` 才跑 |
+| `vars.OHOS_CLT_SHA256` | 空 | 下载包的 sha256。**配了 URL 就必须配它**：为空直接 fail-fast，不再 warning 后解压（建议项 1）；同时是缓存 key 的 NDK 维度 |
 | `vars.OHOS_RUNNER` | `ubuntu-latest` | `ohos-ort` 的 runner label；有 NDK 的自托管 runner 填 `self-hosted` |
-| `vars.OHOS_NDK` | 脚本默认路径 | 自托管 runner 上 OHOS NDK 的 `native` 目录；不设则用 `~/command-line-tools/sdk/default/openharmony/native` |
-| `vars.ORT_CACHE_REV` | `v1` | 缓存代次；bump 它让 key 变掉，用于刷新/作废旧缓存（§6.4） |
+| `vars.OHOS_NDK` | 脚本默认路径 | 自托管 runner 上 OHOS NDK 的 `native` 目录（也是缓存 key 的 NDK 维度） |
+| `vars.ORT_CACHE_REV` | `v1` | 缓存代次；bump 它让 key 变掉，用于刷新/作废旧缓存（§6.5） |
 
-> 旧设计（本 PR 修复前）用 `changes` job 的 diff 结果触发：只要改了 ohos 路径就进入
-> `ohos-ort`，缓存未命中又没有 NDK 时脚本 `exit 1`，普通 PR 因此稳定报红。评审 #126
-> 要求「未配置时不要稳定报红」——现在改成 **skipped**，由 `ohos-ort-cache` 说明为什么没跑。
+> 为什么 SHA256 是强制的：压缩包里的 clang/cmake 会在 runner 上**执行**，产物还会写进
+> Actions 缓存。只 warning 等于把「供应链校验」降级成装饰（建议项 1）。
+> 为什么 URL 不进日志：仓库变量不是 secret，带 token 的地址会进公开日志；工作流里
+> `::add-mask::` 之后只打印 host（建议项 2）。
 
-### 6.2 什么时候跑 / skip / 失败
-
-三态（`ohos-ort` 不是必需检查，三种状态都不阻塞合入）：
-
-| 状态 | 什么时候 | PR 上的表现 |
-|---|---|---|
-| **跑（成功）** | `workflow_dispatch`；或配了 `vars.OHOS_CLT_URL`（下载/构建/自检都成功） | 命中缓存秒级绿；未命中 ~33 min 后绿 |
-| **skip** | 普通 PR / push main，且未配 `vars.OHOS_CLT_URL`（缓存有没有预热都一样——job 级预知不了） | `ohos-ort` 显示 **skipped**；`ohos-ort-cache` 绿，notice + Step Summary 写明「没跑」 |
-| **失败** | 手动 dispatch 时无 NDK/URL/缓存（故意 fail-fast 给指引）；或配了 URL 但下载/构建/自检失败 | `ohos-ort` 红；`ohos-ort-cache` 仍绿 |
-
-逐场景推演（`if` 求值 → 用户看到什么）：
-
-| # | 场景 | `enabled` | `ohos-ort` | 用户看到什么 |
-|---|---|---|---|---|
-| 1 | 普通 PR，未配 `OHOS_CLT_URL`，没改 ohos 路径 | false | skipped | `ohos-ort-cache` 的 notice：「未涉及 OHOS/ORT 路径，已跳过，不代表通过」；`ohos-ort` 显示 skipped |
-| 2 | 普通 PR，改了 `probes/ohos-*` / `apps/ohos-*` / `tools/ohos/**`，未配 URL | false | skipped | 同上，且 notice 明确写「本次改了 OHOS 路径，ORT **没有**被验证」+ 本地验证命令 |
-| 3 | 普通 PR，已配 `OHOS_CLT_URL` | true | 跑 | 命中缓存秒级绿；未命中下载 NDK 后 ~33 min，成功则绿 |
-| 4 | `workflow_dispatch` | true | 跑 | 有 NDK/URL/缓存则成功；都没有则 fail-fast 红，Step Summary 写三条自举路径（允许失败，人在验证） |
-| 5 | 普通 PR，未配 URL，但缓存其实已预热 | false | skipped | 仍然 skipped（job 级无法预知缓存）；想用它就手动 dispatch，命中缓存只需几秒 |
-
-第 5 条是有意的取舍：不做「先跑一个缓存探测 job，再动态决定另一个 job 跑不跑」——那会把
-构建逻辑塞进一个永远运行的 job，容易变成「绿但其实没跑」。skipped 至少是诚实的。
-
-### 6.3 缓存 key 与路径
+### 6.5 缓存 key、自愈与预热
 
 ```yaml
 path: ~/.cache/dsh-ort
-key: ort-${{ env.ORT_VERSION }}-${{ runner.os }}-${{ hashFiles('tools/ohos/build-ort.sh', 'tools/ohos/ort_source_edits.py') }}-${{ vars.ORT_CACHE_REV || 'v1' }}
+key: ort-${{ env.ORT_VERSION }}-${{ runner.os }}-${{ hashFiles('tools/ohos/build-ort.sh', 'tools/ohos/ort_source_edits.py') }}-ndk${{ needs.ohos-ort-cache.outputs.ndk_id }}-${{ vars.ORT_CACHE_REV || 'v1' }}
 ```
 
-- **ORT 版本** + **构建脚本内容哈希** + runner OS + **缓存代次** `vars.ORT_CACHE_REV`
-  （未设置时为 `v1`）；
-- 脚本改了 key 就变：旧产物虽然接口上还能用，但应该让 CI 重编一次，验证「新脚本确实
-  还能从零编出来」——这是这个 job 存在的意义；
-- **Actions 缓存不可变**：同一个 key 已存在时不会覆盖。要刷新产物，必须 bump
-  `vars.ORT_CACHE_REV` 让 key 变掉（见 §6.4）；
+- **ORT 版本** + **构建脚本内容哈希** + runner OS + **NDK 维度** + **缓存代次**；
+- NDK 维度 `ndk_id` = `vars.OHOS_CLT_SHA256`（优先）或 `vars.OHOS_NDK` 路径的短 sha256：
+  换了 Command Line Tools / NDK 就换 key（建议项 3）；
+- `ORT_CACHE_REV` 未设置时为 `v1`；**Actions 缓存不可变**，要刷新产物必须 bump 它；
 - 缓存里只有 `ort-1291/{libonnxruntime.so,manifest.json}`（约 20 MB），不缓存 3 GB 构建树；
-- 命中时 job 只跑 `tools/ohos/build-ort.sh`（复制 + 自检，秒级，**不需要 NDK**）；
-- 未命中（或 dispatch 勾了 `force_build`）时先准备 NDK，再 `--force-build`（~33 min）；
-- 默认分支的缓存对 PR 可见；7 天未使用或仓库 10 GB 上限会淘汰。
+- 命中时只跑 `build-ort.sh`（复制 + 自检，秒级，不需要 NDK）；
+- **缓存作用域**：GitHub 的缓存按 ref 隔离，PR 只能恢复 **base 分支/默认分支**的缓存。
+  所以要让 PR 命中缓存，预热必须发生在 **main** 上（dispatch 时选 main），而不是某个
+  feature 分支；feature 分支 dispatch 出来的缓存只有它自己能用；
+- **缓存损坏自愈**（建议项 4）：命中后自检失败 ⇒ 删掉本地缓存 +（有权限时）
+  `gh cache delete <key>`，然后 `--force-build` 重建；没有 `actions: write` 或删不掉时
+  会 warning 提示 bump `ORT_CACHE_REV`。脚本侧也会把「缓存损坏」与「没有 NDK」分开报
+  （`build-ort.sh` 的 `CACHE_UNUSABLE_REASON`），不再让人误以为要装 NDK；
+- 压缩包按 magic 分派：zip（DevEco CLT 常见）/ tar.gz / tar.xz 都支持（建议项 7）。
 
-### 6.4 在自托管 runner / 本机预热缓存并上传
+**在自托管 runner / 本机预热缓存并上传**
 
-先把一个事实说清：**`gh cache` 只能 `list` / `delete`，没有 `upload`**。缓存只能由一次
-成功的 workflow run 在 `actions/cache` 的 post-step 里保存。因此「本机编好」只是把产物
-搬到 runner 上，上传仍要走 dispatch。
+`gh cache` 只能 `list` / `delete`，没有 `upload`：缓存只能由一次成功的 workflow run 在
+`actions/cache` 的 post-step 里保存。
 
 **A. 有 NDK 的自托管 runner（推荐）**
 
-1. 注册 runner，打 label（如 `self-hosted`）；装 Command Line Tools，NDK 在
+1. 注册 runner、打 label（如 `self-hosted`）；装 Command Line Tools，NDK 在
    `~/command-line-tools/sdk/default/openharmony/native`（或用 `vars.OHOS_NDK` 指定）。
-2. 仓库变量 `vars.OHOS_RUNNER=self-hosted`（job 的 `runs-on` 用它；不设则 `ubuntu-latest`）。
-3. Actions → `check` → Run workflow。**不配 `OHOS_CLT_URL` 也可以**：dispatch 本身就是
-   允许运行的条件（前提是 `OHOS_RUNNER` 已指到有 NDK 的 runner，否则会 fail-fast）。
-4. 缓存未命中 → ~33 min 构建 → post-step 按当前 key 保存 `~/.cache/dsh-ort`。
-   之后普通 PR 仍然 skip（未配 URL），但手动 dispatch 命中缓存只需几秒。
+2. 仓库变量 `vars.OHOS_RUNNER=self-hosted`。
+3. Actions → **`ohos-ort`** → Run workflow：**勾 `run_build`**（没有 URL 时这是唯一开关），
+   分支选 `main`（缓存才对 PR 可见）。
+4. 缓存未命中 → 33 min（16 核）构建 → post-step 保存 `~/.cache/dsh-ort`。
 
 **B. 没有自托管 runner：hosted + `OHOS_CLT_URL`**
 
-1. 设 `vars.OHOS_CLT_URL` 指向 Command Line Tools（linux-x64）压缩包；
-   建议同时设 `vars.OHOS_CLT_SHA256`。
-2. dispatch（配了 URL 后普通 PR 也会跑）。
-3. 首次未命中：下载、校验、解压 NDK → 构建 → post-step 保存缓存；之后命中秒级。
+1. 设 `vars.OHOS_CLT_URL` 指向 Command Line Tools（linux-x64）压缩包，**同时**设
+   `vars.OHOS_CLT_SHA256`。
+2. Actions → `ohos-ort` → Run workflow：有 URL 时不用勾 `run_build`；分支选 `main`。
+3. 首次未命中：下载、校验、按 magic 解压 NDK → 构建 → 保存缓存。
+4. 4 核 hosted 约 1.5–2 h，**不推荐**；≥8 核 runner 才建议自举。
 
 **C. 本机已编好，搬到自托管 runner 再上传**
 
 1. 本机 `tools/ohos/build-ort.sh --force-build`（或命中本机缓存），产物在
-   `$HOME/dev/caches/ort-1291/`（两个文件：`libonnxruntime.so`、`manifest.json`）。
+   `$HOME/dev/caches/ort-1291/`。
 2. 拷到自托管 runner 的 `~/.cache/dsh-ort/ort-1291/`。
-3. dispatch：`actions/cache` restore miss **不会清掉**已有文件，脚本 `try_cache` 直接命中
-   （秒级），post-step 再把 `~/.cache/dsh-ort` 按当前 key 上传。
-4. 这只适用于自托管（能预先放文件）。hosted runner 每次都是干净的，只能走 A/B。
+3. dispatch（勾 `run_build` 或用 URL）：restore miss 不会清掉已有文件，脚本直接命中，
+   post-step 上传。
 
 **刷新 / 作废旧缓存**
 
 1. bump `vars.ORT_CACHE_REV`（如 `v1` → `v2`）；
-2. 可选：dispatch 时勾 `force_build=true`（即使新 key 意外命中，也强制重编一次；
-   本地等价于 `ORT_FORCE_BUILD=1 tools/ohos/build-ort.sh` 或 `--force-build`）；
-3. 新 key 的 run 成功后，旧缓存仍在，用 `gh cache list` 查看、`gh cache delete <id|key>` 清理。
+2. 可选：dispatch 勾 `force_build`（需同时勾 `run_build`；即使 key 意外命中，也强制重编）；
+3. 新 key 的 run 成功后，旧缓存用 `gh cache list` / `gh cache delete <id|key>` 清理。
 
-> **只勾 `force_build` 而不 bump `ORT_CACHE_REV` 不会更新缓存**：key 已存在，Actions 缓存
-> 不可变，重建的产物不会覆盖旧缓存。`force_build` 的用途是「验证脚本能重建」和配合
-> 新 key 刷新；不是单独刷新缓存的开关。
+> 只勾 `force_build` 而不 bump `ORT_CACHE_REV` 不会更新缓存（key 已存在、缓存不可变）。
+> 它是「验证脚本能重建」和配合新 key 刷新的开关，不是单独的刷新开关。
 
-### 6.5 为什么不做成必需检查
+### 6.6 为什么不做成必需检查
 
-- 缓存未命中 = **33 min**，比现有最长的 job（30 min）还长，不该卡所有人的 PR；
-- hosted runner 天生没有 NDK，首次必然要人预热/配置——把「没预热」变成「阻塞合入」
+- 缓存未命中 = 33 min（16 核）/ 1.5–2 h（4 核），比现有最长的 job（30 min）还长；
+- hosted runner 天生没有 NDK，首次必须人预热/配置——把「没预热」变成「阻塞合入」
   是把基础设施缺位变成开发者的红灯；
-- 未配置时它是 **skipped**（不是绿也不是红）；**不要**把 `ohos-ort` 勾进 required checks，
-  否则一个「本来就不跑」的 job 会变成分支保护里的噪声；
+- 未配置时是 **skipped**（不是绿也不是红）；不要把它勾进 required checks，否则一个
+  「本来就不跑」的 job 会变成分支保护里的噪声；
 - 它的价值是**回归保护**（脚本/补丁改坏时能发现），而不是每次 PR 的必经门禁。
-  需要时手动 dispatch；配了 `OHOS_CLT_URL` 后它会自然进入普通 PR。
 
 ## 7 与探针 / 产品的关系
 
@@ -330,12 +374,13 @@ key: ort-${{ env.ORT_VERSION }}-${{ runner.os }}-${{ hashFiles('tools/ohos/build
 
 ## 8 没做到的（如实）
 
-1. **没有在 CI 真跑过（评审 #126 的修复也没有）**：只验证了 YAML 能被
-   `tools/check_docs.py` 解析、所有 `run` 块能过 `bash -n`、`ohos-ort-cache` 的 gate 逻辑
-   在本机按四种场景执行过。**GitHub 上 `skipped` / `::notice` / Step Summary 的实际显示、
-   `needs.ohos_ort_cache.outputs.enabled` 的传递、`actions/cache` 的 key 命中与保存、
-   `vars.OHOS_RUNNER` 选 runner、NDK 下载分支，全都没有实跑**。PR 页面上的最终形态
-   要等一次真实 workflow run 才能确认——**CI 实跑未验**。
+1. **没有在 CI 上跑过冷缓存全量构建**：本轮**实跑了** skip 与 fail-fast 两条路径
+   （run URL 见 §9.2），但**没有一次「从零到 `.so`」的成功构建**：4 核 hosted 约 1.5–2 h，
+   仓库没有配置 `OHOS_CLT_URL`，也没有 ≥8 核自托管 runner。因此下面这些仍然**没有实跑**：
+   `actions/cache` 命中后的**保存**（skip/fail-fast 都不走 post-step 保存）、NDK 下载与
+   zip/tar.gz 解压分支、`vars.OHOS_RUNNER` 选 runner、缓存损坏自愈的 `gh cache delete` 分支。
+   已实跑的：`skipped` 呈现、`::notice`、gate Step Summary、`needs` 输出传递、fail-fast 的
+   报错与指引（见 §9.2）。
 2. **没有从零全量跑完**：为避免占用机器 33 min（本机另有一条 cargo 重线在跑），
    本次验证到 **CMake configure 成功**为止：
    - 源码包下载（sha256 校验）→ 解压 → 编辑（幂等，第二次全部 `already`）；
@@ -423,37 +468,44 @@ $ NDK=/nonexistent/native ORT_CACHE_DIR=$PWD/.scratch-no-cache tools/ohos/build-
 2
 ```
 
-### 9.1 评审 #126 修复的本地验证（非 CI）
+### 9.1 评审 #126 第二轮的本地验证（非 CI）
 
 ```console
-$ python3 -c "import yaml; yaml.safe_load(open('.github/workflows/check.yml'))"   # 解析通过
+$ python3 - <<'PY'   # 两个 workflow 都能被 PyYAML 解析
 $ python3 tools/check_docs.py
 [通过] 关键文件、Markdown 相对链接、.github YAML、共用场景 JSON 均正常。
-$ # 抽出所有 step.run 交给 bash -n：36 个 run 块，0 失败
+$ # 抽出两个 workflow 的所有 step.run 交给 bash -n：36 个 run 块，0 失败
+$ tools/ohos/build-ort.sh     # 带新 SONAME 断言，缓存命中 0.21 s，exit 0
 ```
 
-`ohos-ort-cache` 的 gate 脚本按四种输入在本机 bash 里执行（不是 GitHub Actions）：
+gate 脚本按 8 种输入在本机 bash 里执行（不是 GitHub Actions；`GITHUB_OUTPUT` 用临时文件）：
 
-| `GITHUB_EVENT_NAME` | `OHOS_CLT_URL` | `OHOS_CHANGED` | `enabled` | 输出 |
-|---|---|---|---|---|
-| `pull_request` | 空 | `true` | `false` | notice：「改了 OHOS 路径，但 ORT **没有**被验证」 |
-| `pull_request` | 空 | `false` | `false` | notice：「未涉及 OHOS/ORT，已跳过，不代表通过」 |
-| `pull_request` | 有 | `true` | `true` | 摘要：「ohos-ort 将运行」 |
-| `workflow_dispatch` | 空 | `unknown` | `true` | 摘要：「ohos-ort 将运行」 |
+| 事件 | `OHOS_CLT_URL` | `run_build` | label | `enabled` | `should_build` | 输出 |
+|---|---|---|---|---|---|---|
+| `pull_request`（同仓库） | 空 | — | 无 | false | false | notice「未配置 URL ⇒ skipped」 |
+| `pull_request`（同仓库） | 有 | — | 无 | true | false | notice「需要 ci:ohos-ort label」 |
+| `pull_request`（同仓库） | 有 | — | 有 | true | true | 无 notice（将运行） |
+| `pull_request`（同仓库） | 空 | — | 有 | false | false | notice（label 不放宽开关） |
+| `pull_request`（fork） | 有 | — | 有 | true | false | notice「fork PR 不跑」 |
+| `workflow_dispatch` | 空 | false | — | false | false | notice「没勾 run_build ⇒ skipped」 |
+| `workflow_dispatch` | 空 | true | — | true | true | 无 notice（将运行） |
+| `workflow_dispatch` | 空 | false（只勾 force_build） | — | false | false | notice（force_build 不放宽开关） |
 
-`ORT_FORCE_BUILD=1` 的「跳过缓存」也做了一个**不触发构建**的验证（同一个本机缓存目录，
-故意给不存在的 NDK）：不设时缓存命中、0.8 s、exit 0；设了之后跳过缓存、前置检查立即
-exit 2（0.02 s，没有进入编译）。
+压缩包 magic 分派用自造 zip / tar.gz 各跑一次（`command-line-tools/sdk/default/openharmony/native`
+都能找到）；缓存损坏路径用「截断的 .so + 无 NDK」跑 `build-ort.sh`：先报
+`缓存自检不通过（缓存损坏…）`，preflight 再报 `缓存目录里的产物存在但不可用`，
+不再只说「找不到 NDK」，exit 2（未进入构建）。
 
-> 这验证的是 gate 脚本的分支逻辑与输出文案；`needs` 传递、GitHub 页面上的 skipped 呈现、
-> `actions/cache` 命中/保存、`vars.OHOS_RUNNER` 选 runner 都**没有实跑**（§8.1）。
+> 这验证的是 gate 的分支逻辑、YAML/bash 语法、压缩格式分派与报错文案；
+> `actions/cache` 实际命中/保存、NDK 下载、自愈删除仍没有实跑（§8.1）。
 
 ## 10 需要拍板的点
 
 1. **CI 的「绿」语义**：已按评审 #126 改成「未配置就 **skipped**，由 `ohos-ort-cache`
-   留 notice」，不再把「没预热」变成普通 PR 的红灯。还需要拍板的是：要不要配
-   `OHOS_CLT_URL` 让普通 PR 也自动跑（冷缓存 ~33 min），还是保持现状「只在手动
-   dispatch 时验证」——两种都不影响合入。
+   留 notice」，不再把「没预热」变成普通 PR 的红灯；`run_build` 让手动验证可以显式真跑。
+   还需要拍板的是：要不要配 `OHOS_CLT_URL` + `OHOS_CLT_SHA256` 并在 main 上预热一次
+   （缓存才对 PR 可见），让打了 `ci:ohos-ort` label 的 PR 能秒级验证；4 核自举 1.5–2 h
+   不推荐。
 2. **产物分发**：现在只有 Actions 缓存（可能被 7 天未使用清理）。要不要把
    `libonnxruntime.so` 作为 release 资产 / 内网镜像发布，让 CI 的冷启动不依赖 GitHub 缓存？
 3. **core-smoke 的 sherpa 1.16.3 快路**：保留为 `ORT_FLAVOR=sherpa-1.16.3`（现状），

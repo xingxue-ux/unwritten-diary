@@ -1,0 +1,322 @@
+name: ohos-ort
+
+# ORT 构建/缓存（OHOS / arm64-v8a）—— **独立 workflow，不要合回 check.yml**。
+#
+# 为什么必须独立（评审 #126 第二轮阻塞 3）：
+#   check.yml 有 run 级
+#     concurrency: {group: check-${{ github.ref }}, cancel-in-progress: true}
+#   长任务与它共享同一个 run 级并发组 ⇒ 同一 PR 每次 push、每次 merge 到 main 都会取消
+#   上一次整个 run。实测：push main 的 run 39135398152 状态是 **cancelled**。
+#   而 actions/cache 的 post-step 在 cancelled 的 run 里不会保存 ⇒ 活跃 PR 上的
+#   ohos-ort 会长期 cancelled，缓存永远存不下来（比 skipped 更糟：看起来像失败）。
+#   **job 级 concurrency 修不了**（run 级取消在 job 之前生效），只能拆文件。
+#
+# 跑不跑：
+#   enabled      := vars.OHOS_CLT_URL != '' || inputs.run_build == true
+#   should_build := enabled && (非 PR || 同仓库 PR && 打了 ci:ohos-ort label)
+#   普通 PR / push main（未配变量）不触发本 workflow（paths 不匹配）或 gate 绿 + notice、
+#   ohos-ort **skipped**；普通 dispatch（不勾 run_build）⇒ skipped；勾了 ⇒ 真跑/失败指引。
+#   未配置时它永远不会因为「没缓存/没 NDK」把普通 PR 弄红。
+#
+# 长度：16 核 33 min（实测）；4 核 ubuntu-latest 约 1.5–2 h（推算，未实测）。
+#   所以 timeout-minutes 是 240，并在 gate Summary 里写明「4 核不推荐自举」。
+#
+# 文档：docs/architecture/m6-ORT-构建与缓存.md §6。
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_build:
+        description: "真的跑构建（未配 vars.OHOS_CLT_URL 时必须勾；不勾 = 只验证 skipped + notice）"
+        type: boolean
+        default: false
+      force_build:
+        description: "忽略 Actions 缓存强制重建（需同时勾 run_build）"
+        type: boolean
+        default: false
+  pull_request:
+    # 只在这些路径变更时触发：和 ORT 无关的 PR 不该在 checks 里多出一个 workflow。
+    paths:
+      - 'tools/ohos/**'
+      - 'probes/ohos-*/**'
+      - '.github/workflows/ohos-ort.yml'
+    # labeled：打 ci:ohos-ort label 时也触发一次（label 是「同意在 CI 上真跑」的开关）。
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  # 只用于「自检发现 Actions 缓存损坏时删掉该 key 的缓存条目」这一步（自愈）；
+  # 权限被仓库策略降级时那一步只会 warning，不会让构建失败。
+  actions: write
+
+concurrency:
+  # 与 check.yml 的 check-* 组完全分开：长构建不会再被 PR push / merge main 连坐取消。
+  # 同一 PR 的多次 push 是**排队**（cancel-in-progress: false），不是互相取消。
+  group: ohos-ort-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ORT_VERSION: "1.29.1"
+
+jobs:
+
+  # 轻量 gate：**永远运行**，不 checkout、不下载、不编译（秒级）。唯一职责是判定
+  # ohos-ort 会不会跑，并把「为什么没跑」写成 notice + Step Summary。
+  ohos-ort-cache:
+    name: ohos-ort-cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.gate.outputs.enabled }}
+      should_build: ${{ steps.gate.outputs.should_build }}
+      ndk_id: ${{ steps.gate.outputs.ndk_id }}
+    steps:
+      - name: 判定跑不跑（不 checkout、不下载、不编译）
+        id: gate
+        env:
+          RUN_BUILD: ${{ inputs.run_build }}
+          OHOS_CLT_URL: ${{ vars.OHOS_CLT_URL }}
+          OHOS_CLT_SHA256: ${{ vars.OHOS_CLT_SHA256 }}
+          OHOS_NDK: ${{ vars.OHOS_NDK }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          url="${OHOS_CLT_URL:-}"
+          run_build="${RUN_BUILD:-false}"
+          pr_labels="${PR_LABELS:-}"
+          event="$GITHUB_EVENT_NAME"
+
+          # ★ 唯一开关：仓库变量 OHOS_CLT_URL，或人在 dispatch 时显式勾 run_build。
+          #   **不要**把「改了 ohos 文件」加进来：改了文件 ≠ 有 NDK/缓存。
+          enabled=false
+          why=""
+          if [[ -n "$url" ]]; then
+            enabled=true
+            why="vars.OHOS_CLT_URL 已配置（缓存未命中时可下载 NDK 自举）"
+          elif [[ "$run_build" == "true" ]]; then
+            enabled=true
+            why="workflow_dispatch 勾选了 run_build"
+          else
+            why="未配置 vars.OHOS_CLT_URL，且 workflow_dispatch 没有勾 run_build"
+          fi
+
+          # 第二道门（只收窄、不放宽）：
+          #   - fork PR 不跑：不能把 fork 的脚本放到本仓库 runner 上执行；
+          #   - PR 必须打 ci:ohos-ort label：把「能自举」和「每个 PR 都跑」拆开。
+          should_build="$enabled"
+          skip_reason=""
+          if [[ "$enabled" == "true" && "$event" == "pull_request" ]]; then
+            if [[ "${PR_HEAD_REPO:-}" != "$GITHUB_REPOSITORY" ]]; then
+              should_build=false
+              skip_reason="fork PR 不跑（不能把 fork 的代码放到本仓库 runner 上执行）"
+            elif [[ ",${pr_labels}," != *",ci:ohos-ort,"* ]]; then
+              should_build=false
+              skip_reason="PR 没打 ci:ohos-ort label（加上它才在 PR 上花 1.5–2 h 构建）"
+            fi
+          fi
+
+          # 缓存 key 的 NDK 维度：CLT 包 sha256 优先；自托管没设 sha 时用 NDK 路径。
+          # 只取短哈希，避免把带斜杠/空格的路径直接拼进 cache key。
+          ndk_src="${OHOS_CLT_SHA256:-}"
+          [[ -n "$ndk_src" ]] || ndk_src="${OHOS_NDK:-default-ndk}"
+          ndk_id="$(printf '%s' "$ndk_src" | sha256sum | cut -c1-12)"
+
+          {
+            echo "enabled=$enabled"
+            echo "should_build=$should_build"
+            echo "ndk_id=$ndk_id"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$should_build" == "true" ]]; then
+            state="将运行"
+          else
+            state="已跳过"
+          fi
+
+          {
+            echo "## ohos-ort：$state"
+            echo
+            echo "- 触发事件：\`$event\`"
+            echo "- 开关：\`enabled := vars.OHOS_CLT_URL != '' || inputs.run_build == true\` → **$enabled**（$why）"
+            if [[ -n "$skip_reason" ]]; then
+              echo "- 额外门槛未满足：$skip_reason"
+            fi
+            echo "- cache key 的 NDK 维度：\`$ndk_id\`（CLT sha256 或 NDK 路径的短哈希）"
+            echo
+            echo "| 状态 | 触发条件（三者都不阻塞合入） |"
+            echo "|---|---|"
+            echo "| 跑 | dispatch 勾 \`run_build\`；或已配 \`vars.OHOS_CLT_URL\` 且（非 PR，或同仓库 PR + \`ci:ohos-ort\` label） |"
+            echo "| skip | 未配 \`vars.OHOS_CLT_URL\` 且没勾 \`run_build\`；PR 没打 label；fork PR |"
+            echo "| 失败 | 勾了 \`run_build\` 但 runner 上没有 NDK/URL/缓存；或下载、构建、自检失败 |"
+            echo
+            echo "**runner 规格**：4 核 \`ubuntu-latest\` 冷缓存约 **1.5–2 h**，**不推荐**在 hosted 上自举；"
+            echo "**≥8 核（或带 NDK 的自托管 runner）才建议跑全量**。本 workflow 的 \`timeout-minutes\` 是 **240**，"
+            echo "留的就是 4 核的慢路径。"
+            echo
+            echo "跳过 ≠ 通过：它表示 ORT **没有**被验证，不阻塞合入。要真跑：Actions → \`ohos-ort\` → Run workflow，"
+            echo "勾 \`run_build\`（有 NDK 的自托管 runner 设 \`vars.OHOS_RUNNER\`；否则配 \`OHOS_CLT_URL\` + \`OHOS_CLT_SHA256\`）。"
+            echo
+            echo "缓存 key、预热与刷新见 docs/architecture/m6-ORT-构建与缓存.md §6。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$should_build" != "true" ]]; then
+            if [[ -n "$skip_reason" ]]; then
+              msg="$skip_reason（enabled=$enabled）。ohos-ort 本次 skipped，不是失败，也不代表 ORT 验证通过。"
+            elif [[ "$event" == "workflow_dispatch" ]]; then
+              msg="未配置 vars.OHOS_CLT_URL 且没有勾 run_build ⇒ ohos-ort skipped。要真跑请重新 dispatch 并勾 run_build（或配置 vars.OHOS_CLT_URL + OHOS_CLT_SHA256）。"
+            else
+              msg="未配置 vars.OHOS_CLT_URL ⇒ ohos-ort skipped（不是失败，也不代表 ORT 验证通过）。要真跑：给 PR 打 ci:ohos-ort label 并配置 URL，或手动 dispatch 勾 run_build。"
+            fi
+            echo "::notice title=ohos-ort skipped::$msg"
+          fi
+
+  # 真正构建/复用 ORT 产物。**不是必需检查**，不要勾进 branch protection。
+  ohos-ort:
+    name: ohos-ort
+    needs: ohos-ort-cache
+    if: needs.ohos-ort-cache.outputs.should_build == 'true'
+    # 可选：有 NDK 的自托管 runner 用 vars.OHOS_RUNNER 指定 label（如 self-hosted）；
+    # 不设就是 ubuntu-latest（没有 NDK，只能命中缓存或靠 OHOS_CLT_URL 自举）。
+    runs-on: ${{ vars.OHOS_RUNNER || 'ubuntu-latest' }}
+    # 4 核 hosted 约 1.5–2 h（按 16 核 33 min 推算；未实测）⇒ 240 留足余量。
+    # 用 90 是上一版的问题：90 min 对 4 核就是必超时（评审 #126 第二轮阻塞 2）。
+    timeout-minutes: 240
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: 指定 ORT 缓存目录（与脚本默认值不同，只为了把缓存路径收在 ~/.cache）
+        run: |
+          set -euo pipefail
+          echo "ORT_CACHE_DIR=$HOME/.cache/dsh-ort/ort-${ORT_VERSION//./}" >> "$GITHUB_ENV"
+      - name: 恢复 ORT 产物缓存
+        id: cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/dsh-ort
+          # key：ORT 版本 + 构建脚本内容 + runner OS + **NDK 维度** + 缓存代次。
+          # NDK 维度是评审 #126 的建议项 3：换了 Command Line Tools（OHOS_CLT_SHA256 变了）
+          # 或自托管换了 NDK 路径（vars.OHOS_NDK）时，旧产物不该被当成「同一次构建」复用。
+          # 末尾 vars.ORT_CACHE_REV：Actions 缓存**不可变**，刷新产物必须让 key 变掉。
+          key: ort-${{ env.ORT_VERSION }}-${{ runner.os }}-${{ hashFiles('tools/ohos/build-ort.sh', 'tools/ohos/ort_source_edits.py') }}-ndk${{ needs.ohos-ort-cache.outputs.ndk_id }}-${{ vars.ORT_CACHE_REV || 'v1' }}
+      - name: 缓存命中 → 复用 + 自检（秒级，不需要 NDK）
+        id: verify
+        if: steps.cache.outputs.cache-hit == 'true' && github.event.inputs.force_build != 'true'
+        # 自检失败 ⇒ 缓存损坏，不是构建失败：下面删掉这个 key 再重建（自愈）。
+        continue-on-error: true
+        run: tools/ohos/build-ort.sh
+      - name: 缓存自检失败 → 删除损坏的缓存条目（自愈第一步）
+        if: steps.cache.outputs.cache-hit == 'true' && github.event.inputs.force_build != 'true' && steps.verify.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_KEY: ${{ steps.cache.outputs.cache-primary-key }}
+        run: |
+          set -euo pipefail
+          echo "::warning::Actions 缓存命中，但产物自检失败（缓存损坏）—— 删除该 key 后重建，不是「没有 NDK」"
+          rm -rf "$HOME/.cache/dsh-ort"
+          if ! gh cache delete "$CACHE_KEY" --repo "$GITHUB_REPOSITORY"; then
+            echo "::warning::删不掉缓存条目（key 已存在时 Actions 缓存不可覆盖）：本次仍会重建并自检；请 bump vars.ORT_CACHE_REV 或手动 gh cache delete '$CACHE_KEY'"
+          fi
+      - name: 缓存未命中 / 缓存损坏 / 强制重建 → 准备 NDK（没有就 fail-fast 并给指引）
+        if: steps.cache.outputs.cache-hit != 'true' || github.event.inputs.force_build == 'true' || steps.verify.outcome == 'failure'
+        env:
+          NDK: ${{ vars.OHOS_NDK }}
+          OHOS_CLT_URL: ${{ vars.OHOS_CLT_URL }}
+          OHOS_CLT_SHA256: ${{ vars.OHOS_CLT_SHA256 }}
+          CACHE_INVALID: ${{ steps.verify.outcome == 'failure' }}
+        run: |
+          set -euo pipefail
+          ndk="${NDK:-$HOME/command-line-tools/sdk/default/openharmony/native}"
+          if [[ -d "$ndk" ]]; then
+            echo "复用 runner 上已有的 NDK：$ndk"
+            echo "NDK=$ndk" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [[ -z "${OHOS_CLT_URL:-}" ]]; then
+            if [[ "${CACHE_INVALID:-false}" == "true" ]]; then
+              echo "::error::Actions 缓存里的 ORT 产物自检失败（缓存损坏），而这个 runner 上没有 OHOS NDK —— 无法重建"
+              cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## ohos-ort：缓存损坏，且没有 OHOS NDK
+
+          这次是缓存**命中但自检失败**（缓存损坏），不是「没有 NDK」的首次构建。
+          本 workflow 已经删掉本地缓存并尝试删除 Actions 缓存条目；剩下的办法是：
+
+          1. bump `vars.ORT_CACHE_REV`（如 `v1` → `v2`）让 key 变掉，再 dispatch 一次；
+          2. 或 `gh cache delete <key>` 清掉坏条目后重跑；
+          3. 或换到有 NDK 的 runner（`vars.OHOS_RUNNER`）后 dispatch —— 它会直接重建。
+
+          见 docs/architecture/m6-ORT-构建与缓存.md §6.5。
+          EOF
+            else
+              echo "::error::ohos-ort 缓存未命中，且这个 runner 上没有 OHOS NDK —— 1.5–2 h 的构建跑不了"
+              cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## ohos-ort：缓存未命中，且没有 OHOS NDK
+
+          这次是**显式要求真跑**（dispatch 勾了 `run_build`，或配置了 `vars.OHOS_CLT_URL`）。
+          要让它真正构建，任选一条：
+
+          1. **自托管 runner**：装好 Command Line Tools，NDK 在
+             `~/command-line-tools/sdk/default/openharmony/native`（或用仓库变量 `OHOS_NDK`
+             指定 native 目录），用仓库变量 `OHOS_RUNNER` 指定它的 label（如 `self-hosted`），
+             再手动 dispatch 一次。构建产物会写入 Actions 缓存，之后命中缓存只需几秒。
+          2. **仓库变量**：设 `OHOS_CLT_URL` 指向 Command Line Tools（linux-x64）压缩包的
+             可下载地址，并**必须**同时设 `OHOS_CLT_SHA256`（包里的 clang/cmake 会在 runner
+             上执行、产物还会写进缓存，不能跳过校验）。job 会自动按 magic 解压 zip / tar.gz
+             并找到 `*/openharmony/native`。
+          3. **本地预热**：`tools/ohos/build-ort.sh --force-build`，把
+             `$HOME/dev/caches/ort-1291/` 拷到自托管 runner 的 `~/.cache/dsh-ort/ort-1291/`，
+             再 dispatch；脚本会直接命中并秒级返回，随后由 actions/cache 上传。
+
+          缓存 key 规则、刷新与 `gh cache` 用法见 `docs/architecture/m6-ORT-构建与缓存.md` §6。
+          EOF
+            fi
+            exit 1
+          fi
+
+          # 未设 SHA256 就拒绝下载/解压：这是 fail-fast，不是 warning（评审 #126 建议项 1）。
+          if [[ -z "${OHOS_CLT_SHA256:-}" ]]; then
+            echo "::error::OHOS_CLT_URL 已配置，但 OHOS_CLT_SHA256 为空 —— 拒绝使用未校验的 Command Line Tools"
+            cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## ohos-ort：拒绝下载未校验的 Command Line Tools
+
+          `OHOS_CLT_URL` 已配置，但 `OHOS_CLT_SHA256` 为空。压缩包里的 clang / cmake 会在
+          runner 上**执行**，产物还会写进 Actions 缓存，所以校验和不是可选项。
+
+          在 Settings → Secrets and variables → Actions → Variables 里设
+          `OHOS_CLT_SHA256` = 该压缩包的 sha256（`sha256sum command-line-tools.zip`），再重跑。
+          EOF
+            exit 1
+          fi
+
+          # 仓库变量不是 secret：地址可能带 token，绝不打印完整 URL（评审 #126 建议项 2）。
+          echo "::add-mask::$OHOS_CLT_URL"
+          host="${OHOS_CLT_URL#*://}"
+          host="${host%%/*}"
+          echo "下载 Command Line Tools（host=${host:-?}；完整 URL 不打印，避免带 token 的地址进公开日志）"
+
+          dest="$HOME/ohos-clt"
+          rm -rf "$dest"
+          mkdir -p "$dest"
+          archive="$dest/command-line-tools.archive"
+          curl -fL --retry 3 -o "$archive" "$OHOS_CLT_URL"
+          echo "$OHOS_CLT_SHA256  $archive" | sha256sum -c -
+
+          # DevEco 的 linux-x64 CLT 多为 .zip，不再是「假定 tar.gz」（建议项 7）：
+          # 按文件头 magic 分派，zip 用 python3 解，tar.gz / tar.xz 用 tar。
+          magic="$(od -An -tx1 -N4 "$archive" | tr -d ' \n')"
+          case "$magic" in
+            504b0304*) python3 -m zipfile -e "$archive" "$dest" ;;
+            1f8b*)     tar -xzf "$archive" -C "$dest" ;;
+            fd377a585a00*) tar -xJf "$archive" -C "$dest" ;;
+            *)
+              echo "::error::不认识的压缩格式（magic=$magic）；支持 zip / tar.gz / tar.xz"
+              exit 1
+              ;;
+          esac
+
+          ndk="$(find "$dest" -type d -path '*/openharmony/native' -print -quit)"
+          [[ -n "$ndk" ]] || { echo "::error::压缩包里没找到 */openharmony/native"; exit 1; }
+          echo "NDK=$ndk" >> "$GITHUB_ENV"
+      - name: 缓存未命中 / 缓存损坏 / 强制重建 → 完整构建（16 核 ~33 min；4 核 ~1.5–2 h）
+        if: steps.cache.outputs.cache-hit != 'true' || github.event.inputs.force_build == 'true' || steps.verify.outcome == 'failure'
+        run: tools/ohos/build-ort.sh --force-build
