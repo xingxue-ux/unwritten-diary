@@ -392,6 +392,8 @@ cargo +1.94.1 build -p diary_capi --release --target aarch64-unknown-linux-ohos
    本块**没有量**长正文（比如 10 KB 草稿、检索 100 条命中）的往返开销；
 3. **ArkTS 侧 NAPI 包装**：没有 C++ shim、没有 `index.d.ts` / `oh-package.json5`、
    没有 `externalNativeOptions`。探针 §24.3 的三件套可以直接复用，但要在鸿蒙工程里做；
+   **已在第二块补上：见 [m6-ArkTS-NAPI.md](m6-ArkTS-NAPI.md)——shim + 类型声明 +
+   `DiaryCore` 薄封装 + 参考工程，本机能编、HAP 能打；真机仍未验**；
 4. **鸿蒙真机验证**：只验到「能交叉编过」。`dlopen` 能不能拿到符号、沙箱里能不能建库、
    SQLite 能不能落盘——**全部未验证**（探针验过的是探针自己那份薄 ABI，不是这一份）；
 5. **方法子集**：只接了 9 条（§6.1），其余 30+ 条只是扩展点；

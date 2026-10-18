@@ -400,8 +400,10 @@ napi_value OpenJs(napi_env env, napi_callback_info info) {
         return nullptr;
     }
     napi_value out = nullptr;
-    if (napi_create_uint32(env, Handles().Add(handle), &out) != napi_ok) {
-        // 极端情况：JS 值都造不出来，只好把刚打开的句柄关掉，避免泄漏。
+    const uint32_t id = Handles().Add(handle);
+    if (napi_create_uint32(env, id, &out) != napi_ok) {
+        // 极端情况：JS 值都造不出来。把登记表和 C 句柄都还回去，避免泄漏。
+        (void)Handles().Take(id);
         (void)api->close(handle);
         Throw(env, "ERR_DIARY_CALL", "创建返回值失败");
         return nullptr;
