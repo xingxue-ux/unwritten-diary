@@ -622,8 +622,9 @@ impl LocalEngine for SherpaOnnxEngine {
         }
 
         // 引擎库：`EngineConfig::resolve` 已经把「显式路径 → 可执行文件旁边的候选」
-        // 解析过了。解析不到（`None`）在两处是正常的：Android 上按库名加载，
-        // 由系统在应用的 native 库目录里解析；桌面端则是真的缺库，如实报。
+        // 解析过了。解析不到（`None`）在两类平台上是正常的：Android 与 OHOS
+        // 都按库名加载，由系统在应用的 native 库目录（OHOS 是 `libs/arm64`）里
+        // 解析——引擎随 HAP 分发时就在那儿；桌面端则是真的缺库，如实报。
         if let Some(path) = &config.engine_lib {
             if !path.is_file() {
                 return EngineReadiness {
@@ -638,7 +639,7 @@ impl LocalEngine for SherpaOnnxEngine {
                     )),
                 };
             }
-        } else if !cfg!(target_os = "android") {
+        } else if !cfg!(any(target_os = "android", target_env = "ohos")) {
             return EngineReadiness {
                 ready: false,
                 code: "provider_not_configured".to_owned(),

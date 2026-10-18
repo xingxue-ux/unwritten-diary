@@ -5,6 +5,7 @@ import { process } from '@kit.ArkTS';
 import { DiaryCoreSmoke } from '../core/Smoke';
 import { DeviceVerify } from '../verify/DeviceVerify';
 import { RecordingVerify } from '../recording/RecordingVerify';
+import { TranscriptionVerify } from '../recording/TranscriptionVerify';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryCore';
@@ -32,10 +33,19 @@ const MARK: string = 'DIARY_SMOKE';
  *   --ps verify_mode recover       只查「上次没走完的录音」
  *   --ps verify_mode recover_finalize  查询并把恢复出来的会话最终化
  *
+ * 转写验证入口（#108 转写未验项，实现在 `recording/TranscriptionVerify.ets`）：
+ *   --ps verify_mode asr_setup     建 0777 模型目录 + 保存本机引擎 provider 配置
+ *   --ps verify_mode asr_test      连接测试（真加载模型，不联网）
+ *   --ps verify_mode asr_jobs      跑一轮 jobs.runDue（worker 里，量耗时/内存）
+ *   --ps verify_mode asr_search --ps query=<词>   关键词检索
+ *   --ps verify_mode asr_remove    删除本探针的 provider 配置
+ *
  * 不带参数时就是原来的同步 Smoke（用于量主线程阻塞）。
  */
 export default class EntryAbility extends UIAbility {
   private mode: string = 'smoke';
+  /** `asr_search` 的检索词；其它模式忽略。 */
+  private query: string = '';
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     const params = want.parameters;
@@ -44,6 +54,10 @@ export default class EntryAbility extends UIAbility {
       if (typeof value === 'string') {
         this.mode = value;
       }
+      const query = params['query'];
+      if (typeof query === 'string') {
+        this.query = query;
+      }
     }
     hilog.info(DOMAIN, TAG, '%{public}s onCreate mode=%{public}s pid=%{public}d',
       MARK, this.mode, process.pid);
@@ -51,7 +65,12 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     const filesDir = this.context.filesDir;
-    if (this.mode === 'record' || this.mode === 'record_bg' ||
+    if (this.mode.startsWith('asr_')) {
+      TranscriptionVerify.run(this.mode, this.context, filesDir, this.query).catch((err: Object) => {
+        hilog.error(DOMAIN, TAG, '%{public}s ASR_VERIFY failed %{public}s',
+          MARK, JSON.stringify(err));
+      });
+    } else if (this.mode === 'record' || this.mode === 'record_bg' ||
       this.mode === 'record_hold' || this.mode === 'record_crash' ||
       this.mode === 'record_crash_tail' ||
       this.mode === 'recover' || this.mode === 'recover_finalize') {

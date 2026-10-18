@@ -64,7 +64,8 @@
 use chrono::Utc;
 use diary_core::model::{NativeRecordingStatus, RecordingState, SegmentManifest};
 use diary_core::{
-    Core, CoreError, CreateDraftInput, JobState, SearchFilters, SearchMode, SearchRequest,
+    Core, CoreError, CreateDraftInput, JobState, Provider, ProviderCapability, SearchFilters,
+    SearchMode, SearchRequest,
 };
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -88,6 +89,10 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "indexes.rebuild",
     "jobs.runDue",
     "jobs.status",
+    "providers.save",
+    "providers.list",
+    "providers.test",
+    "providers.remove",
 ];
 
 /// 一轮 `jobs.runDue` 最多跑几条任务（防御性上限）。
@@ -223,6 +228,31 @@ pub(crate) fn dispatch(
         "jobs.status" => {
             no_params(method, params)?;
             to_value(core.job_status()?)
+        }
+        // ------------------------------------------------------------ 本机服务配置
+        // 本机转写引擎（sherpa-onnx）的配置入口。没有这几条，宿主就没法把
+        // 「模型目录」告诉核心：`providers.model` 只能通过 `providers.save` 落库。
+        //
+        // 这里**不加任何业务规则**：适配器校验、endpoint 拒绝、能力声明、
+        // 测试结论作废都在核心 `provider::save` 里（见那条路径的注释）。
+        "providers.save" => {
+            let input: SaveProviderParams = parse(params)?;
+            let saved = core.save_provider(&input.config, input.secret.as_deref())?;
+            to_value(saved)
+        }
+        "providers.list" => {
+            no_params(method, params)?;
+            to_value(core.list_providers()?)
+        }
+        "providers.test" => {
+            let input: TestProviderParams = parse(params)?;
+            let report = core.test_provider(&input.provider_id, &input.scope)?;
+            to_value(report)
+        }
+        "providers.remove" => {
+            let input: ProviderIdParams = parse(params)?;
+            core.remove_provider(&input.provider_id)?;
+            Ok(Value::Null)
         }
         // ------------------------------------------------------------ 测试钩子
         // 只在 `cargo test` 的构建里存在：证明「核心 panic 不会穿过 FFI」。
@@ -529,4 +559,35 @@ struct RunDueParams {
     #[serde(alias = "budgetMs")]
     budget_ms: u64,
     trigger: String,
+}
+
+/// `providers.save`：`config` 与 `secret` 的字段名就是核心 `Provider` 的字段名。
+///
+/// `config.test_status` 由核心忽略（只读结论，不能由调用方写成「已验证」）；
+/// 本机引擎的 `model` 是一份**目录**，`endpoint` 必须为空。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SaveProviderParams {
+    config: Provider,
+    /// 明文密钥：只在这一刻经过内存，核心立刻换成凭据引用。本机引擎不需要。
+    #[serde(default)]
+    secret: Option<String>,
+}
+
+/// `providers.remove`：只删配置行，不删任何日记/派生内容。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderIdParams {
+    #[serde(alias = "providerId")]
+    provider_id: String,
+}
+
+/// `providers.test`：`scope` 是用户授权的测试范围（契约要求显式列出）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestProviderParams {
+    #[serde(alias = "providerId")]
+    provider_id: String,
+    #[serde(default)]
+    scope: Vec<ProviderCapability>,
 }
