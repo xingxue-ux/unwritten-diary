@@ -97,24 +97,27 @@ python3 scripts/compare-host-device.py evidence/device-bge.json evidence/host-co
 3. **`libc++_shared.so` 仍然必须随包**（第 2 步§24.1 的坑对 ORT 一样成立）。
 4. **`hdc install` 失败时退出码仍是 0**（第 1 步§15/4）——脚本 grep `install bundle successfully`。
 
-## 4 ORT 从哪来（本轮不用重编）
+## 4 ORT 从哪来（一条命令，缓存优先）
 
 设备侧用的 `libonnxruntime.so` 是**自编 ORT 1.29.1**（全算子集，`OrtGetApiBase@@VERS_1.29.1`，
-strip 后 19,623,736 B）。本轮 `/tmp` 被系统清空后，靠 **conan 构建树里的副本**救回来了：
+strip 后 19,623,736 B）。现在由 [`tools/ohos/build-ort.sh`](../../tools/ohos/build-ort.sh) 统一提供，
+`build-native.sh` 只调它：
 
 ```bash
-# conan 构建树里那份未 strip 的 aarch64 产物（在 $HOME，不在 /tmp）
-SRC=$HOME/.conan2/p/b/onnxrb1d51c7f51392/b/build/Release/libonnxruntime.so.1.29.1   # 31,958,648 B
-mkdir -p $HOME/dev/caches/ort-1291
-cp "$SRC" $HOME/dev/caches/ort-1291/libonnxruntime.so
-$NDK/llvm/bin/llvm-strip --strip-unneeded $HOME/dev/caches/ort-1291/libonnxruntime.so  # → 19,623,736 B
-$NDK/llvm/bin/llvm-readelf --dyn-syms $HOME/dev/caches/ort-1291/libonnxruntime.so | grep OrtGetApiBase
-#   → OrtGetApiBase@@VERS_1.29.1   （版本戳一致才说明救回来的是同一份）
+# 命中缓存（~$HOME/dev/caches/ort-1291）+ 自检 ⇒ 秒级返回，不编译、不联网
+tools/ohos/build-ort.sh --dest probes/ohos-bge-smoke/entry/libs/arm64-v8a
+
+# 缓存未命中才完整构建（首次 ~33 min / 16 核；幂等，重复运行不重下/不重打补丁）
+tools/ohos/build-ort.sh --force-build
 ```
 
-要真从零重建（首次 ~24–33 min / 16 核）：配方与本地补丁在
-`probes/ohos-core-smoke/evidence/ort-1.29.1-build.md` + `ort-recipe-local-patch.diff`；
-`~/.conan2` 缓存里源码、12 个 FetchContent 依赖与宿主 `protoc` 都还在。
+为什么必须自编、配方与踩过的坑、缓存失效条件、CI 怎么用，见
+[`docs/architecture/m6-ORT-构建与缓存.md`](../../docs/architecture/m6-ORT-构建与缓存.md)。
+
+> 历史记录（2026-10-16，`/tmp` 被清空后靠 conan 构建树里的未 strip 副本救回）：
+> `$HOME/.conan2/p/b/onnxrb1d51c7f51392/b/build/Release/libonnxruntime.so.1.29.1`
+> （31,958,648 B）→ `llvm-strip --strip-unneeded` → 19,623,736 B。
+> 这条手工路径现在只用于救急，不再是复现方式。
 
 ## 5 设备侧结果（原文在 `evidence/`）
 
