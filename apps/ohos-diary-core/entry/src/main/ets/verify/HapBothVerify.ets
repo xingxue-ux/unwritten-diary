@@ -15,7 +15,8 @@
 //
 // 时序（见 `HapBothWorker` 的注释）：
 //
-//   [主线程] 下配置 + bge 模型（rport→127.0.0.1:8000，应用自己写进沙箱）
+//   [主线程] 由探针**自己生成** `core-config.json`（不经 HTTP）；bge 模型仍经
+//            rport→127.0.0.1:8000 下载（统一下载器，bytes+sha256 校验）
 //   [主线程] 开一个锚句柄（整段验证期间不关，Core 与两个 ORT 的会话都留在进程里）
 //   [worker] 阶段一：建日记 → 排关键词/语义索引 → 跑任务 → 语义检索（加载 1.29.1）
 //   [主线程] 把一段**已知**的 5.59 s 中文 PCM（沙箱里的 zh.wav）按平台层约定登记成
@@ -47,8 +48,13 @@ import {
 } from '../core/Models';
 import { HapPhaseReport } from '../recording/HapBothOps';
 import { runJobsOnly, runSemanticAfterAsr, runSemanticPhase } from '../recording/HapBothWorker';
+import {
+  downloadToFile,
+  ExpectedFile,
+  sha256OfFile,
+} from '../recording/ModelDownload';
 import { PcmSegmentWriter } from '../recording/PcmSegmentWriter';
-import { downloadToFile, readWavPcm } from '../recording/HapBothFetch';
+import { readWavPcm } from '../recording/HapBothWav';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryHap';
@@ -57,8 +63,23 @@ const CHUNK: number = 900;
 
 /** bge-small-zh-v1.5（我们自导出的量化版）在沙箱里的位置（相对 filesDir）。 */
 const BGE_REL: string = 'models/bge-small-zh-v1.5-ours';
-const BGE_MODEL_BYTES: number = 23830209;
-const BGE_TOKENIZER_BYTES: number = 439125;
+// 数值唯一事实来源：models/manifest/bge-small-zh-v1.5.json 的 files 数组。
+const BGE_MODEL: ExpectedFile = {
+  bytes: 23830209,
+  sha256: 'd44978e451a0b4e0c561b8c6bb2cfaf5aac734f2729359aae46e1db893499f43',
+};
+const BGE_TOKENIZER: ExpectedFile = {
+  bytes: 439125,
+  sha256: '48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26',
+};
+
+/** 探针生成的 `core-config.json` 形状（camelCase，与核心 `CoreConfigFile` 同形）。 */
+interface HapConfig {
+  modelDir: string;
+  ortDylib: string;
+  asrEngineLib: string;
+  asrModelDir: string;
+}
 
 /** 转写文本的语义查询词：与常见识别结果（开饭/快饭/派饭…）语义最近。 */
 const ASR_SEMANTIC_QUERY: string = '开饭时间';
@@ -74,24 +95,39 @@ export class HapBothVerify {
     order: string,
   ): Promise<void> {
     const totalStart = Date.now();
-    const dbPath = `${filesDir}/library.sqlite`;
+    // **临时库**：验证数据不往当前资料库写。放在 filesDir 下的独立子目录，
+    // 配置也必须与库同目录（Core 从库文件所在目录读 core-config.json）。
+    const tmpDir = `${filesDir}/hap-both-tmp`;
+    cleanupTempDir(tmpDir);
+    ensureDir(tmpDir);
+    const dbPath = `${tmpDir}/library.sqlite`;
     // 查询词缺省时给一个与目标日记**没有共同词**的句子：命中只可能来自语义那一路。
     const semanticQuery = query.length > 0 ? query : '母亲体检的结果怎么样';
     hilog.info(DOMAIN, TAG, '%{public}s START filesDir=%{public}s db=%{public}s query=%{public}s nativeLibDir=%{public}s',
       MARK, filesDir, dbPath, semanticQuery, DiaryCore.nativeLibraryDir());
 
-    // ── 1. 配置 + 模型进沙箱（hdc file send 写不进去，走 rport + 应用内流式下载）
+    // ── 1. 配置 + 模型进沙箱
+    //    配置**由探针自己在沙箱里生成**（不经 HTTP）：它是产品真正会读的运行期配置，
+    //    不能「下载即信任」。模型仍走 rport + 应用内下载（带 bytes+sha256 校验）。
     const configStart = Date.now();
-    const configPath = `${filesDir}/core-config.json`;
-    // 配置由宿主编排，长度随运行变化（-1 = 不校验固定字节数）；下载器仍会要求 2xx 并原子替换。
-    await downloadToFile('http://127.0.0.1:8000/core-config.json', configPath, -1);
+    const configPath = `${tmpDir}/core-config.json`;
+    const nativeDir = DiaryCore.nativeLibraryDir();
+    const config: HapConfig = {
+      modelDir: `${filesDir}/${BGE_REL}`,
+      ortDylib: `${nativeDir}/libonnxruntime-diary-1.29.1.so`,
+      asrEngineLib: `${nativeDir}/libsherpa-onnx-c-api.so`,
+      asrModelDir: `${filesDir}/asr/sense-voice`,
+    };
+    writeText(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    hilog.info(DOMAIN, TAG, '%{public}s CONFIG_WRITE path=%{public}s source=probe（不走 HTTP）',
+      MARK, configPath);
     HapBothVerify.logConfig(configPath);
     await HapBothVerify.ensureModel(filesDir);
     hilog.info(DOMAIN, TAG, '%{public}s STAGE wallMs=%{public}d', MARK, Date.now() - configStart);
 
     // ── 2. 锚句柄：整段验证期间不关，Core（与两个 ORT 的会话）留在进程里。
     //    worker 用同一个库路径 open，拿到的是同一个 Core（C ABI 的进程内登记表）。
-    const anchor = DiaryCore.openInDirectory(filesDir);
+    const anchor = DiaryCore.open(dbPath);
     try {
       HapBothVerify.logConfigReport('info.anchor', anchor.coreInfo());
 
@@ -145,6 +181,9 @@ export class HapBothVerify {
       anchor.close();
       hilog.info(DOMAIN, TAG, '%{public}s CLOSED handles=%{public}d',
         MARK, DiaryCore.openHandleCount());
+      // 跑完清理临时库与配置（模型留在沙箱，避免下次重下 24 MB）。
+      cleanupTempDir(tmpDir);
+      hilog.info(DOMAIN, TAG, '%{public}s TEMP_CLEANED dir=%{public}s', MARK, tmpDir);
     }
 
     hilog.info(DOMAIN, TAG, '%{public}s DONE totalMs=%{public}d', MARK, Date.now() - totalStart);
@@ -334,37 +373,46 @@ export class HapBothVerify {
   }
 
   /**
-   * bge 模型进沙箱：大小对得上就跳过（重复跑不必再下 24 MB）。
+   * bge 模型进沙箱：**大小与 sha256 都对**才跳过；否则重下（下载器保证原子替换）。
    *
-   * 为什么按字节数判断而不是哈希：ArkTS 侧算 24 MB 的 sha256 要额外读写一遍；
-   * 设备侧的哈希在宿主用 `hdc shell sha256sum` 直接算（沙箱对 shell 可读），
-   * 与宿主文件逐字节比对，证据更直接。
+   * 不再只比字节数：24 MB 的文件「大小对、内容错」是可能的（代理错误页、半截文件
+   * 恰好补齐）。哈希清单来自 `models/manifest/bge-small-zh-v1.5.json`。
    */
   private static async ensureModel(filesDir: string): Promise<void> {
     const dir = `${filesDir}/${BGE_REL}`;
     ensureDir(dir);
     await HapBothVerify.ensureFile(
-      'http://127.0.0.1:8000/model_quantized.onnx', `${dir}/model_quantized.onnx`, BGE_MODEL_BYTES);
+      'http://127.0.0.1:8000/model_quantized.onnx', `${dir}/model_quantized.onnx`, BGE_MODEL);
     await HapBothVerify.ensureFile(
-      'http://127.0.0.1:8000/tokenizer.json', `${dir}/tokenizer.json`, BGE_TOKENIZER_BYTES);
+      'http://127.0.0.1:8000/tokenizer.json', `${dir}/tokenizer.json`, BGE_TOKENIZER);
   }
 
-  private static async ensureFile(url: string, dest: string, expectedBytes: number): Promise<void> {
+  private static async ensureFile(url: string, dest: string, expected: ExpectedFile): Promise<void> {
     let size = -1;
     try {
       size = fs.statSync(dest).size;
     } catch (e) {
       size = -1;
     }
-    if (size === expectedBytes) {
-      hilog.info(DOMAIN, TAG, '%{public}s MODEL skip=%{public}s bytes=%{public}d（已存在且大小一致）',
-        MARK, dest, size);
-      return;
+    if (size === expected.bytes) {
+      try {
+        const actual = await sha256OfFile(dest);
+        if (actual === expected.sha256) {
+          hilog.info(DOMAIN, TAG, '%{public}s MODEL skip=%{public}s bytes=%{public}d sha256=%{public}s（已存在且校验一致）',
+            MARK, dest, size, actual);
+          return;
+        }
+        hilog.warn(DOMAIN, TAG, '%{public}s MODEL hash-mismatch=%{public}s actual=%{public}s expected=%{public}s（重下）',
+          MARK, dest, actual, expected.sha256);
+      } catch (e) {
+        hilog.warn(DOMAIN, TAG, '%{public}s MODEL hash-failed=%{public}s %{public}s（重下）',
+          MARK, dest, JSON.stringify(e));
+      }
     }
-    await downloadToFile(url, dest, expectedBytes);
+    await downloadToFile(url, dest, expected);
     try {
       hilog.info(DOMAIN, TAG, '%{public}s MODEL file=%{public}s bytes=%{public}d expected=%{public}d',
-        MARK, dest, fs.statSync(dest).size, expectedBytes);
+        MARK, dest, fs.statSync(dest).size, expected.bytes);
     } catch (e) {
       hilog.error(DOMAIN, TAG, '%{public}s MODEL stat failed %{public}s：%{public}s',
         MARK, dest, JSON.stringify(e));
@@ -387,4 +435,31 @@ function ensureDir(path: string): void {
     return;
   }
   fs.mkdirSync(path, true);
+}
+
+/** 覆盖写一个文本文件（探针生成的 `core-config.json` 用；内容来自代码，不来自网络）。 */
+function writeText(path: string, text: string): void {
+  const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+  try {
+    fs.writeSync(file.fd, text);
+  } finally {
+    fs.closeSync(file);
+  }
+}
+
+/** 清掉临时库/配置目录（只删这个探针自己的文件；不动当前资料库）。 */
+function cleanupTempDir(dir: string): void {
+  const names = ['library.sqlite', 'library.sqlite-wal', 'library.sqlite-shm', 'core-config.json'];
+  for (let i = 0; i < names.length; i++) {
+    try {
+      fs.unlinkSync(`${dir}/${names[i]}`);
+    } catch (e) {
+      // 不存在是正常情况。
+    }
+  }
+  try {
+    fs.rmdirSync(dir);
+  } catch (e) {
+    // 目录不存在或非空都无所谓；下次运行开头还会再清一次。
+  }
 }

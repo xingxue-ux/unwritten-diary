@@ -11,6 +11,7 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { process } from '@kit.ArkTS';
+import BuildProfile from 'BuildProfile';
 import { DiaryCore } from '../core/DiaryCore';
 import { DeviceVerify } from './DeviceVerify';
 
@@ -37,10 +38,15 @@ export default class ProbeAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     const filesDir = this.context.filesDir;
-    if (this.mode === 'multi_hold') {
-      this.hold(filesDir);
+    if (BuildProfile.DEBUG) {
+      if (this.mode === 'multi_hold') {
+        this.hold(filesDir);
+      } else {
+        DeviceVerify.run(this.mode, filesDir);
+      }
     } else {
-      DeviceVerify.run(this.mode, filesDir);
+      hilog.warn(DOMAIN, TAG, '%{public}s PROBE_DISABLED ability=ProbeAbility mode=%{public}s reason=release',
+        MARK, this.mode);
     }
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {

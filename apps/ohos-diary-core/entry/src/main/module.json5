@@ -25,9 +25,6 @@
       },
       {
         "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
-      },
-      {
-        "name": "ohos.permission.INTERNET"
       }
     ],
     "abilities": [
@@ -62,7 +59,7 @@
         "label": "$string:EntryAbility_label",
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
-        "exported": true
+        "exported": false
       },
       {
         "name": "ProbeIsoAbility",
@@ -72,7 +69,7 @@
         "label": "$string:EntryAbility_label",
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
-        "exported": true,
+        "exported": false,
         "process": ":probe"
       }
     ]

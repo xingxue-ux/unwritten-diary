@@ -228,8 +228,9 @@ finalize `state=saved`、`logical_duration_ms=4980`、blob 159,404 B 是合法�
 ## 转写（#108 第三片）：真机「录音 → 转写 → 可检索」已跑通
 
 2026-10-18 夜，HAD-W32 / API 23 / arm64-v8a / HarmonyOS PC，产品身份
-`com.lingxing.unwrittendiary`，debug signed HAP。**全程不联网**：引擎是包里的
-`sherpa-onnx-c-api.so`，模型在应用沙箱，转写走本机推理。
+`com.lingxing.unwrittendiary`，debug signed HAP。**转写推理全程不联网**：引擎是包里的
+`sherpa-onnx-c-api.so`，模型在应用沙箱，转写走本机推理。**验证期的模型传输**走
+`hdc rport`（debug 构建声明 `INTERNET`）；release 构建**不声明** `INTERNET`，也不下载。
 
 ### 打进 HAP 的库与体积（同一份代码，四种打包）
 
@@ -287,7 +288,8 @@ finalize `state=saved`、`logical_duration_ms=4980`、blob 159,404 B 是合法�
 ### 模型怎么进沙箱（`hdc file send` 不通，走 rport）
 
 应用沙箱 `/data/app/el2/100/base/<bundle>/haps/entry/files` 属于 app uid，
-即便子目录 `chmod 0777`，shell 域仍写不进去：
+即便手工把目录权限放宽，shell 域仍写不进去（所以探针**不再** `chmod 0777`；
+模型只能由应用自己下载）：
 
 ```text
 $ hdc file send tokens.txt /data/app/el2/100/base/.../asr/sense-voice/tokens-probe.txt
@@ -425,10 +427,13 @@ DIARY_HAP CONFIG label=info.final transcription.state=ready transcription.source
 
 ### 两个 ORT：改名共存 + 绝对路径加载
 
-| 包内文件 | 来源 | 大小 | SONAME | 导出 |
-|---|---|---:|---|---|
-| `libonnxruntime.so` | sherpa 自带 1.16.3 | 12,930,856 | `libonnxruntime.so` | `OrtGetApiBase@@VERS_1.16.3` |
-| `libonnxruntime-diary-1.29.1.so` | 自编 1.29.1 | 19,623,560 | `libonnxruntime.so.1` | `OrtGetApiBase@@VERS_1.29.1` |
+| 包内文件 | 来源 | 大小 | sha256 | SONAME | 导出 |
+|---|---|---:|---|---|---|
+| `libonnxruntime.so` | sherpa 自带 1.16.3 | 12,930,856 | `f9fd9080…` | `libonnxruntime.so` | `OrtGetApiBase@@VERS_1.16.3` |
+| `libonnxruntime-diary-1.29.1.so` | 自编 1.29.1 | 19,623,560 | `1ece24ca…`（源文件未 strip 是 `a2240074…` / 19,623,736） | `libonnxruntime.so.1` | `OrtGetApiBase@@VERS_1.29.1` |
+
+**构建矩阵**：默认 `build-hap.sh` **不含** 1.29.1（`asr-only`，关键词可用）；
+`WITH_SEMANTIC=1` 才带第二份（`stage-ort-1291.sh --check` 必须通过）。
 
 sherpa 的 `NEEDED = libonnxruntime.so` 由系统按名解析到 1.16.3；`ort` 的 `load-dynamic`
 按 `init_from` 的**绝对路径**加载自编那份，不依赖文件名与 SONAME 一致。**两者 SONAME
@@ -498,15 +503,16 @@ DIARY_HAP TRANSCRIPT extractor=local_transcription coverage=complete status=read
 ### 复现
 
 ```bash
-# 1. 原生库 + 两个 ORT + HAP（签名材料见「用临时 bundleName 做真机验证」一节）
+# 1. 原生库 + 两个 ORT + **含语义**的 HAP（签名材料见「用临时 bundleName 做真机验证」）
 CARGO_BUILD_JOBS=4 bash apps/ohos-diary-core/scripts/build-native.sh
 SHERPA_LIB_DIR=$HOME/dev/caches/asr-ohos/sherpa-onnx-v1.13.8-ohos-arm64-v8a/lib \
   bash apps/ohos-diary-core/scripts/stage-sherpa.sh
-bash apps/ohos-diary-core/scripts/stage-ort-1291.sh
+bash apps/ohos-diary-core/scripts/stage-ort-1291.sh     # 可选；默认构建会把它临时移出
 source "$HOME/napi-device-scratch/product-sign.env"
-SKIP_NATIVE=1 bash apps/ohos-diary-core/scripts/build-hap.sh
+WITH_SEMANTIC=1 SKIP_NATIVE=1 bash apps/ohos-diary-core/scripts/build-hap.sh
+# 只要关键词检索（不含 1.29.1，HAP ~30 MB）：去掉 WITH_SEMANTIC=1
 
-# 2. 宿主 HTTP（配置 + bge 模型）+ rport
+# 2. 宿主 HTTP **只提供 bge 模型**；core-config.json 由探针自己在沙箱里生成（不走 HTTP）
 python3 -m http.server 8000 --bind 127.0.0.1 --directory "$HOME/dev/caches/hap-cfg/serve" &
 hdc rport tcp:8000 tcp:8000
 
@@ -518,9 +524,31 @@ hdc shell "hilog -x" | grep DIARY_HAP
 # 顺序反过来：--ps verify_mode hap_both --ps order asr_first
 ```
 
+### 探针怎么关在 debug 外（release 的诚实边界）
+
+- `EntryAbility` / `ProbeAbility` / `ProbeIsoAbility` 都用 `BuildProfile.DEBUG` 门控；
+  release 下 `EntryAbility` 直接走 `PROBE_DISABLED` 分支，**不跑** smoke / record* /
+  asr_* / hap_both，不写库、不下载、不加载测试库。
+- **ArkTS 不支持条件 import**：release 的 `ets/modules.abc` 里**仍有探针模块**
+  （实测 `strings` 能命中 `HapBothVerify` / `hap_both` / `PROBE_DISABLED`）——**没有裁掉**，
+  只是运行时不可达。这是当前构建工具/语言的边界，不声称「已从包里移除」。
+- `INTERNET` 只在 **debug** 变体声明（`build-hap.sh` 构建期注入 `module.json5`
+  `requestPermissions`，退出时还原）；release 的 HAP 里只有 `MICROPHONE` 与
+  `KEEP_BACKGROUND_RUNNING`（`unzip -p ... module.json` 实测）。
+- `ProbeAbility` / `ProbeIsoAbility` 是 `exported: false`；`EntryAbility` 是产品入口
+  （launcher 的 home skill 需要），保持 `exported: true`，探针路由已由 `BuildProfile` 关掉。
+- `hap_both` 用**临时库** `<filesDir>/hap-both-tmp/library.sqlite`（配置也放同目录），
+  跑完删掉；不再往当前资料库写测试数据。
+- 模型下载只有一份实现（`recording/ModelDownload.ets`，`.part` → 2xx →
+  Content-Length → 实收字节 → sha256 → 原子 rename + 重试）；`core-config.json`
+  由探针本地生成，**不经 HTTP**。
+
 ### 没验到的（这一片）
 
-- 产品 Profile / release / 混淆都没重跑；本轮只装 debug；
+- **release 真机启动没有跑**：只做了静态检查（release HAP 无 `INTERNET`、
+  `BuildProfile.DEBUG=false`、探针分支会走 `PROBE_DISABLED`）与字符串检查（探针代码仍在
+  `modules.abc` 里）；没有装 release HAP 去真机点一遍；
+- 产品 Profile / 混淆都没重跑；本轮只装 debug；
 - 转写用的是**已知 PCM**（麦克风→文本上一轮验过，声学路径不稳定：本轮第一次真录得到
   `The.`）；
 - 低内存机型、大库、长时间、两个 ORT 同毫秒并发推理（`Core` 本就串行）、其它 ABI。

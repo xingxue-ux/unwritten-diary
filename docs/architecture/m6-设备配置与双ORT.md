@@ -50,6 +50,12 @@ OHOS 预编译库 `NEEDED = libonnxruntime.so`，且按符号版本只认 `OrtGe
 | 转写模型目录 | 环境变量 `DIARY_ASR_MODEL_DIR` → 文件 `asrModelDir` → `providers.model` → 随包默认 |
 | 转写引擎库 | 环境变量 `DIARY_ASR_ENGINE_LIB` → 文件 `asrEngineLib` → 可执行文件旁候选 → 按库名（移动端） |
 
+- **OHOS 沙箱路径拒绝（两个库都拦）**：`asrEngineLib` **和** `ortDylib` 都不能指向
+  应用数据目录（`/data/storage/el2/...`、`/data/storage/el1/base/...`）——linker 只允许
+  从 HAP 的 `libs/arm64` dlopen。配置解析时就报 `invalid` / `invalid_argument`（不是等
+  第一次加载才失败），`/data/storage/el1/bundle/libs/arm64/...` 放行；宿主单测同时覆盖
+  「拒绝沙箱」与「放行安装目录」（`validate_ort_dylib_path` / `validate_engine_lib_path`）。
+
 - **环境变量仍在最前**：探针/CI 靠它换模型，设备上有配置文件也不能让它失效；
 - 文件和 provider 谁先：**文件在前**（任务书给的链）。代价写在 m3 文档里：provider 行仍被
   选中（`providerId` 还是它），但模型目录以文件为准；
@@ -130,19 +136,27 @@ apps/ohos-diary-core/scripts/stage-sherpa.sh     # libsherpa-onnx-c-api.so + lib
 apps/ohos-diary-core/scripts/stage-ort-1291.sh   # libonnxruntime-diary-1.29.1.so
 ```
 
-`stage-ort-1291.sh` 会打印包内名字、大小、sha256、`NEEDED`/`SONAME` 与
-`OrtGetApiBase` 的版本串，并断言：自家的必须是 `VERS_1.29.1`、sherpa 那份必须是
-`VERS_1.16.3`。两个脚本的产物都在 `entry/libs/`（`.gitignore`），构建时由
-`build-hap.sh` 的 ProcessLibs 收进 HAP。
+`stage-ort-1291.sh` 会先断言**源文件** sha256（`a2240074…` / 19,623,736 B，未 strip），
+再 `llvm-strip --strip-all` 成**包内文件**并断言包内 sha256（`1ece24ca…` / 19,623,560 B）、
+`SONAME=libonnxruntime.so.1` 与 `OrtGetApiBase@@VERS_1.29.1`；同时调
+`stage-sherpa.sh --check` 断言 sherpa 那份 1.16.3。默认 `build-hap.sh` **不含**这份；
+`WITH_SEMANTIC=1` 构建才会调它的 `--check` 并把它打进 HAP。两个脚本的产物都在
+`entry/libs/`（`.gitignore`），构建时由 `build-hap.sh` 的 ProcessLibs 收进 HAP。
 
 ### 2.3 HAP 体积
 
 | 构建 | `libs/arm64-v8a` 里的原生库 | signed HAP | 相对 #130 |
 |---|---|---:|---:|
 | #122 基线（只有我们自己的库） | capi + napi + libc++ | 13,374,010 | — |
-| #130 转写（+ sherpa + 1.16.3） | + `libsherpa-onnx-c-api.so` + `libonnxruntime.so` | 30,198,881 | 基线 |
-| **本次（+ 自编 1.29.1，rebase 前验证）** | 再加 `libonnxruntime-diary-1.29.1.so` 19,623,560 | **50,067,086** | **+19,868,205（+18.95 MiB）** |
-| 本次（rebase 到 #130 后重构建） | 同上 + #130 的 ArkTS（下载重写） | **50,088,328** | **+19,889,447（+18.97 MiB）** |
+| 默认 `build-hap.sh`（asr-only） | + `libsherpa-onnx-c-api.so` + `libonnxruntime.so` | 30,198,881（本轮 29,977,970） | 基线 |
+| **`WITH_SEMANTIC=1`（+ 自编 1.29.1，rebase 前验证）** | 再加 `libonnxruntime-diary-1.29.1.so` 19,623,560 | **50,067,086** | **+19,868,205（+18.95 MiB）** |
+| `WITH_SEMANTIC=1`（rebase 到 #130 后重构建） | 同上 + #130 的 ArkTS（下载重写） | **50,088,328** | **+19,889,447（+18.97 MiB）** |
+
+**构建矩阵**：默认 `build-hap.sh` **不含** 1.29.1（关键词可用、语义不可用）；
+本页的真机结果用 **`WITH_SEMANTIC=1`** 构建（`stage-ort-1291.sh --check` 通过才构建）。
+两份 ORT 的包内字节数/hash 见 `models/manifest/sense-voice-small-int8-2024-07-17.json`
+的 `prebuiltArtifacts.ohos-arm64-v8a`（1.29.1 的包内 sha256 是
+`1ece24ca…`，源文件是 `a2240074…`）。
 
 增量基本就是 1.29.1 这一份（差值 244,645 B 来自 `modules.abc` 的探针代码与签名/对齐）。
 模型**都不进 HAP**：bge 与 SenseVoice 由 `hdc rport` + 应用内 `http.requestInStream`
@@ -154,8 +168,10 @@ apps/ohos-diary-core/scripts/stage-ort-1291.sh   # libonnxruntime-diary-1.29.1.s
 
 `--ps verify_mode hap_both`（`entry/src/main/ets/verify/HapBothVerify.ets`）：
 
-1. 从 `http://127.0.0.1:8000`（宿主 `hdc rport` + `python3 -m http.server`）下
-   `core-config.json` 与 bge 模型进沙箱（配置由宿主给，应用只负责落盘）；
+1. **探针自己生成** `core-config.json`（沙箱内本地写，**不经 HTTP**：运行期配置不能
+   「下载即信任」）；bge 模型仍从 `http://127.0.0.1:8000`（宿主 `hdc rport` +
+   `python3 -m http.server`）下载，走统一的 `ModelDownload`（bytes+sha256、`.part`、
+   2xx/Content-Length、原子 rename、重试）；
 2. 开一个**锚句柄**，整段验证期间不关（Core 与两个 ORT 的会话留在进程里）；
 3. worker 阶段一：建两条中文日记（**前一天**，避开上一轮留下的同一天音频篇，否则切块会
    把它们塞进同一块、块级相似度让目标篇挤出首页）→ 排关键词/语义索引任务 → `jobs.runDue`

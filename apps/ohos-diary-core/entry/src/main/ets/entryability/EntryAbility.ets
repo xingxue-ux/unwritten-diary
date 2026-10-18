@@ -2,6 +2,7 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { process } from '@kit.ArkTS';
+import BuildProfile from 'BuildProfile';
 import { DiaryCoreSmoke } from '../core/Smoke';
 import { DeviceVerify } from '../verify/DeviceVerify';
 import { RecordingVerify } from '../recording/RecordingVerify';
@@ -11,6 +12,15 @@ import { HapBothVerify } from '../verify/HapBothVerify';
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryCore';
 const MARK: string = 'DIARY_SMOKE';
+
+/**
+ * 构建期旗标：探针只在 debug 构建里跑。
+ *
+ * ArkTS 不支持条件 import，所以 release 包里**仍有探针代码**（`BuildProfile.DEBUG`
+ * 在编译期是常量，打包器可能内联/裁剪，但不保证）；运行时这里 early-return，保证
+ * release 不会执行任何探针（不写库、不下载、不 dlopen 测试库）。诚实口径见 README。
+ */
+const DEBUG_BUILD: boolean = BuildProfile.DEBUG;
 
 /**
  * 最小示例 Ability：应用启动时跑一遍「打开库 → coreInfo → 建草稿 → 保存 → 提交 → 抽取 →
@@ -35,7 +45,7 @@ const MARK: string = 'DIARY_SMOKE';
  *   --ps verify_mode recover_finalize  查询并把恢复出来的会话最终化
  *
  * 转写验证入口（#108 转写未验项，实现在 `recording/TranscriptionVerify.ets`）：
- *   --ps verify_mode asr_setup     建 0777 模型目录 + 保存本机引擎 provider 配置
+ *   --ps verify_mode asr_setup     建沙箱模型目录（应用默认权限）+ 保存本机引擎 provider 配置
  *   --ps verify_mode asr_test      连接测试（真加载模型，不联网）
  *   --ps verify_mode asr_jobs      跑一轮 jobs.runDue（worker 里，量耗时/内存）
  *   --ps verify_mode asr_warm      先加载模型，再跑一轮 jobs.runDue（量热态耗时）
@@ -91,7 +101,13 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     const filesDir = this.context.filesDir;
-    if (this.mode === 'hap_both') {
+    if (!DEBUG_BUILD) {
+      // release：所有探针（smoke / record* / asr_* / hap_both / verify）一律不跑。
+      // 代码还在包里（ArkTS 无条件 import），但这条路径不可达；不写库、不联网。
+      hilog.warn(DOMAIN, TAG,
+        '%{public}s PROBE_DISABLED mode=%{public}s buildMode=%{public}s reason=release（探针代码在包里但不可达）',
+        MARK, this.mode, BuildProfile.BUILD_MODE_NAME);
+    } else if (this.mode === 'hap_both') {
       HapBothVerify.run(this.mode, this.context, filesDir, this.query, this.order).catch((err: Object) => {
         hilog.error(DOMAIN, TAG, '%{public}s HAP_BOTH failed %{public}s',
           MARK, JSON.stringify(err));
