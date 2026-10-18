@@ -2943,3 +2943,273 @@ fn retired_revision_is_not_returned_by_semantic_search_before_rebuild() {
         after.results.iter().map(|h| h.snippet.clone()).collect::<Vec<_>>()
     );
 }
+
+/// 与 `long_piece_with_insomnia` 同一个形状，只把段标识换成 `tag`：用来造**两份等长、
+/// 内容不同**的长文。两份都被同一条切块规则切成两块，四块都含「失眠」。
+fn long_piece_with_tag(tag: &str) -> String {
+    let mut text = String::new();
+    for index in 0..24 {
+        if index == 12 {
+            text.push_str(&format!(
+                "第12段 {tag}：这一段说的是连续几天失眠，凌晨两点还醒着。\n"
+            ));
+        } else {
+            text.push_str(&format!(
+                "第{index}段 {tag}：今天天气不错，路上人很多，顺便买了点水果回家。\n"
+            ));
+        }
+    }
+    text
+}
+
+/// issue #57 的第二半（旧修复只挡到「同一篇的两块」）：**不同篇**的两段也可能拥有
+/// 完全相同的（分数、日期、篇内起点 / 终点、段序号）。这时若落到 `chunk_id`，
+/// 又会回到「每个库不一样」的老问题——两条候选正文不同，摘录会真的换人。
+///
+/// 构造：同一天导入两份等长、不同内容的长文 A/B，四块都含查询词，桩把所有含查询词
+/// 的块映射成同一个单位向量 ⇒ 四块分数都是 1.0。A、B 的第一段都是
+/// `(2026-09-20, start=0, end=390, ordinal=0, score=1.0)`，前五道键完全相同；旧逻辑
+/// 只能用 `chunk_id`（每库随机 UUID）决定先后。
+///
+/// 断言的是**整份结果顺序**（摘录 + 定位区间）在 16 份独立库之间逐条相同。
+/// 旧逻辑下每份库都是一次独立抛硬币，16 轮全对的概率约 2^-15；这里**验证过**
+/// 去掉 `content_key` 这道键会红。
+#[test]
+fn equal_score_across_pieces_is_ordered_by_content_across_libraries() {
+    const ROUNDS: usize = 16;
+    let mut evidence: Vec<Vec<(Option<String>, Option<i64>, Option<i64>)>> = Vec::new();
+
+    for round in 0..ROUNDS {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+        let mut core = new_core(dir.path());
+        let counters = Arc::new(Counters::default());
+        core.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+
+        let capture_a = write_capture(&mut core, at(2026, 9, 20), "", "op");
+        import_and_extract(
+            &mut core,
+            &capture_a,
+            "长文A.txt",
+            &long_piece_with_tag("A"),
+            &format!("matA{round}"),
+        );
+        let capture_b = write_capture(&mut core, at(2026, 9, 20), "", "op2");
+        import_and_extract(
+            &mut core,
+            &capture_b,
+            "长文B.txt",
+            &long_piece_with_tag("B"),
+            &format!("matB{round}"),
+        );
+
+        let built = core.build_semantic_index(None).unwrap();
+        assert_eq!(
+            built.total_chunks, 4,
+            "前提（第 {round} 轮）：两份等长长文各切成两块"
+        );
+
+        // 前提：四块都含「失眠」，桩给它们同一个单位向量，分数才会完全相同。
+        let conn = open(&path);
+        let with_word = count(
+            &conn,
+            "SELECT COUNT(*) FROM text_chunks WHERE text LIKE '%失眠%'",
+            "text_chunks",
+        );
+        assert_eq!(
+            with_word, 4,
+            "前提（第 {round} 轮）：四块都含「失眠」，分数才会完全相同"
+        );
+        // 前提：A、B 的第一段拥有完全相同的篇内区间；两篇各两块，区间分布是 2+2。
+        let span_groups: Vec<(i64, i64, i64)> = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT start_char, end_char, COUNT(*) FROM chunk_spans \
+                     GROUP BY start_char, end_char ORDER BY start_char",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(
+            span_groups,
+            vec![(0, 390, 2), (343, 731, 2)],
+            "前提（第 {round} 轮）：不同篇的两块区间完全重合，才谈得上「同分谁当证据」"
+        );
+        drop(conn);
+
+        let snapshot = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+        assert_eq!(
+            snapshot.results.len(),
+            2,
+            "前提（第 {round} 轮）：两份长文各折叠成一条命中"
+        );
+        evidence.push(
+            snapshot
+                .results
+                .iter()
+                .map(|hit| {
+                    (
+                        hit.snippet.clone(),
+                        hit.locator.as_ref().and_then(|locator| locator.text_start),
+                        hit.locator.as_ref().and_then(|locator| locator.text_end),
+                    )
+                })
+                .collect(),
+        );
+    }
+
+    for (round, entry) in evidence.iter().enumerate() {
+        assert_eq!(
+            entry, &evidence[0],
+            "第 {round} 份库的结果顺序与第 0 份不同：{:?} vs {:?}\
+             （不同篇的两段同分时，必须由内容键（content_key）决胜，不能落到每库随机的 chunk_id）",
+            entry, evidence[0]
+        );
+    }
+}
+
+/// 同一个库、同一个查询、两个独立的 `Core` 连接：结果必须**逐字节**相同。
+///
+/// 这是「同一查询跑两次」的最直接形态；跨到**另一个进程**再跑一次的那一条在
+/// `same_library_cross_process_is_byte_identical` 里。
+#[test]
+fn same_library_two_cores_agree_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+
+    {
+        let mut build = Core::open(&path).unwrap();
+        let counters = Arc::new(Counters::default());
+        build.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+        let capture = write_capture(&mut build, at(2026, 9, 20), "", "op");
+        import_and_extract(
+            &mut build,
+            &capture,
+            "长文A.txt",
+            &long_piece_with_tag("A"),
+            "matA",
+        );
+        let capture = write_capture(&mut build, at(2026, 9, 20), "", "op2");
+        import_and_extract(
+            &mut build,
+            &capture,
+            "长文B.txt",
+            &long_piece_with_tag("B"),
+            "matB",
+        );
+        build.build_semantic_index(None).unwrap();
+    }
+
+    let query = |core: &mut Core| -> (Vec<u8>, Vec<(String, u32)>) {
+        let counters = Arc::new(Counters::default());
+        core.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+        let snapshot = search_mode(core, "失眠", SearchMode::Semantic, 20);
+        let ranking = core
+            .semantic_ranking("失眠", &SearchFilters::default())
+            .unwrap()
+            .into_iter()
+            .map(|(group, score)| (group, score.to_bits()))
+            .collect();
+        (serde_json::to_vec(&snapshot.results).unwrap(), ranking)
+    };
+
+    let mut first = Core::open(&path).unwrap();
+    let mut second = Core::open(&path).unwrap();
+    let (first_bytes, first_ranking) = query(&mut first);
+    let (second_bytes, second_ranking) = query(&mut second);
+    assert_eq!(
+        first_bytes, second_bytes,
+        "两个独立 Core 对同一库、同一查询必须给出逐字节相同的结果"
+    );
+    assert_eq!(
+        first_ranking, second_ranking,
+        "分数的 f32 位模式也必须逐位相同（不是「差不多」）"
+    );
+}
+
+/// 跨进程：父进程建好库，再用**同一测试二进制**起一个子进程查一次；两边的
+/// （顺序 + 摘录 + 定位 + `semantic_ranking` 的 f32 位）必须逐字节相同。
+///
+/// 子进程与父进程的 `HashMap` 随机种子不同，所以如果有人误把排序/折叠建立在
+/// 容器迭代顺序上，这条会红。子进程模式靠环境变量区分；正常跑测试时它什么都不做。
+#[test]
+fn same_library_cross_process_is_byte_identical() {
+    const DB_ENV: &str = "DIARY57_CROSS_PROCESS_DB";
+
+    let query_json = |core: &mut Core| -> String {
+        let counters = Arc::new(Counters::default());
+        core.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+        let snapshot = search_mode(core, "失眠", SearchMode::Semantic, 20);
+        let ranking: Vec<(String, u32)> = core
+            .semantic_ranking("失眠", &SearchFilters::default())
+            .unwrap()
+            .into_iter()
+            .map(|(group, score)| (group, score.to_bits()))
+            .collect();
+        serde_json::to_string(&(snapshot.results, ranking)).unwrap()
+    };
+
+    if let Some(path) = std::env::var_os(DB_ENV) {
+        let mut core = Core::open(Path::new(&path)).unwrap();
+        println!("ZZ57_CHILD={}", query_json(&mut core));
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    {
+        let mut build = Core::open(&path).unwrap();
+        let counters = Arc::new(Counters::default());
+        build.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+        let capture = write_capture(&mut build, at(2026, 9, 20), "", "op");
+        import_and_extract(
+            &mut build,
+            &capture,
+            "长文A.txt",
+            &long_piece_with_tag("A"),
+            "matA",
+        );
+        let capture = write_capture(&mut build, at(2026, 9, 20), "", "op2");
+        import_and_extract(
+            &mut build,
+            &capture,
+            "长文B.txt",
+            &long_piece_with_tag("B"),
+            "matB",
+        );
+        build.build_semantic_index(None).unwrap();
+    }
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "same_library_cross_process_is_byte_identical",
+            "--nocapture",
+        ])
+        .env(DB_ENV, &path)
+        .output()
+        .expect("起子进程失败");
+    assert!(
+        output.status.success(),
+        "子进程失败：{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let child = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("ZZ57_CHILD="))
+        .unwrap_or_else(|| {
+            panic!("子进程没有输出 ZZ57_CHILD 行；stdout = {stdout:?}");
+        });
+
+    let mut parent = Core::open(&path).unwrap();
+    let parent_json = query_json(&mut parent);
+    assert_eq!(
+        child, parent_json,
+        "同一库、同一查询在另一个进程里必须给出逐字节相同的结果"
+    );
+}
