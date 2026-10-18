@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Diary core ArkTS NAPI reference module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Runs the diary core smoke sequence and logs it to hilog"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Diary Core"
+    }
+  ]
+}

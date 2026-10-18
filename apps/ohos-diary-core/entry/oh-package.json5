@@ -1,0 +1,15 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Entry module of the ArkTS NAPI reference project.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {
+    // ★ 三件套之二：把 src/main/cpp/types/libdiary_napi 注册成名为 "libdiary_napi.so" 的
+    //    本地依赖，ArkTS 的 `import diaryNapi from 'libdiary_napi.so'` 才能解析到 index.d.ts。
+    //    （DevEco 的 C++ 模板会自动生成这一行；纯命令行工程要自己写。）
+    //    三件套之三：`ohpm install --all`（scripts/build-hap.sh 里已经做掉）。
+    "libdiary_napi.so": "file:./src/main/cpp/types/libdiary_napi"
+  }
+}

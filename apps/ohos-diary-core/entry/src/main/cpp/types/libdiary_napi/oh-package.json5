@@ -1,0 +1,6 @@
+{
+  "name": "libdiary_napi.so",
+  "types": "./index.d.ts",
+  "version": "1.0.0",
+  "description": "「不写日记」核心的 NAPI 模块：libdiary_napi.so 的 ArkTS 类型声明（一进一出 JSON 面）。"
+}
