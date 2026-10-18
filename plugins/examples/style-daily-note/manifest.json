@@ -1,0 +1,28 @@
+{
+  "activationEvents": [
+    "organize.template.select",
+    "command:style"
+  ],
+  "apiRange": ">=1.0 <2.0",
+  "author": "不写日记",
+  "description": "把 #114 的 StyleProfile 字段渲染成一段风格偏好文本；纯数据，没有可执行代码。",
+  "entryFile": "main.json",
+  "entryKind": "declarative",
+  "id": "example.style-daily-note",
+  "license": "MIT",
+  "manifestVersion": 1,
+  "name": "日常风格模板",
+  "packageHashes": {
+    "README.md": "be1396ea8d41d8c5067a7171914cdaded95f77ca2cf9725331b48bdbdc72395a",
+    "main.json": "1c6b559914cccfa708cb95b3aa211ee65a8b66d8fbdf8d9075e121c692e8ba2d"
+  },
+  "permissions": [],
+  "settingsSchema": {},
+  "supportedPlatforms": [
+    "windows",
+    "android",
+    "linux",
+    "macos"
+  ],
+  "version": "1.0.0"
+}

@@ -1,0 +1,6 @@
+{
+  "modelVersion": "26.0.0",
+  "description": "「不写日记」核心的 ArkTS 参考工程：NAPI shim + DiaryCore 薄封装 + 最小示例 Ability。",
+  "dependencies": {},
+  "devDependencies": {}
+}

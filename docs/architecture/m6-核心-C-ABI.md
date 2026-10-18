@@ -167,7 +167,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 ## 6 方法映射表
 
-### 6.1 已接（9 条，`core.info.capabilities` 就是这份清单）
+### 6.1 已接（14 条，`core.info.capabilities` 就是这份清单）
 
 | 契约方法 | 核心调用 | `data` |
 |---|---|---|
@@ -175,6 +175,11 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `captures.createDraft` | `Core::create_draft` | `Capture` |
 | `captures.saveDraft` | `Core::save_draft` | `DraftSaveResult` |
 | `captures.commit` | `Core::commit` | `CommitResult` |
+| `recordings.prepare` | `Core::prepare_recording` | `RecordingTicket` |
+| `recordings.registerSegment` | `Core::register_segment` | `SegmentReceipt` |
+| `recordings.updateState` | `Core::update_recording_state` | `RecordingSession` |
+| `recordings.finalize` | `Core::finalize_recording` | `RecordingFinalizeResult` |
+| `recordings.recover` | `Core::recover_recording` | `RecordingRecovery` |
 | `sources.extract` | `Core::extract_source`（`source_ref` 可以是来源 id 或修订 id） | `ExtractedContent` |
 | `search.start` | `Core::start_search`（`{"request":{…},"query_revision":N}`） | `SearchSnapshot` |
 | `indexes.rebuild` | `Core::schedule_index_rebuild`（只排任务） | `Job` |
@@ -204,7 +209,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 **还没接的（按契约第 4 节分组，代码里带 `TODO(#108)`）**：`captures.get/list/moveDay/trash/
 restore/previewPurge/purge`、`sources.extractedContent/previousRevision/reviseText/locate`、
-`imports.*`、`recordings.*`、`assets.open/release`、`search.nextPage/snapshot/cancel/upgrade`、
+`imports.*`、`assets.open/release`、`search.nextPage/snapshot/cancel/upgrade`、
 `indexes.status`、`indexes.rebuildSemantic`、`jobs.list/get/retry/cancel/nextWakeup/
 acknowledgeAttention`、`core.events/snapshot/close/setRuntimeState`、`backups.*`（桥上已有同步
 入口，映射过来即可）、`diary.*` / `styles.*` / `responses.*` / `providers.*` / `settings.*` /
@@ -392,9 +397,11 @@ cargo +1.94.1 build -p diary_capi --release --target aarch64-unknown-linux-ohos
    本块**没有量**长正文（比如 10 KB 草稿、检索 100 条命中）的往返开销；
 3. **ArkTS 侧 NAPI 包装**：没有 C++ shim、没有 `index.d.ts` / `oh-package.json5`、
    没有 `externalNativeOptions`。探针 §24.3 的三件套可以直接复用，但要在鸿蒙工程里做；
+   **已在第二块补上：见 [m6-ArkTS-NAPI.md](m6-ArkTS-NAPI.md)——shim + 类型声明 +
+   `DiaryCore` 薄封装 + 参考工程，本机能编、HAP 能打；真机仍未验**；
 4. **鸿蒙真机验证**：只验到「能交叉编过」。`dlopen` 能不能拿到符号、沙箱里能不能建库、
    SQLite 能不能落盘——**全部未验证**（探针验过的是探针自己那份薄 ABI，不是这一份）；
-5. **方法子集**：只接了 9 条（§6.1），其余 30+ 条只是扩展点；
+5. **方法子集**：只接了 14 条（§6.1；录音 5 条是 #108 ⑦ 第一片补的），其余仍是扩展点；
 6. **性能**：没测吞吐、没测 JSON 序列化占比、没测大库（十万条记录）下的表现；
 7. **并发压力**：跨线程用例是 15 次循环的**正确性**验证，不是压测（没有 P50/P99）；
 8. **错误 message 的语言**：桥面判定的是中文，`serde_json` 的解析错误是英文

@@ -449,8 +449,11 @@ pub struct NativeRecordingStatus {
     pub recording_id: String,
     pub state: RecordingState,
     pub wall_clock: DateTime<Utc>,
+    /// 采集器**实际收到**的 PCM 总时长（只增，不含还没收到的）。
     pub elapsed_ms: i64,
-    /// 已经持久化的位置，恢复时用来判断缺口。
+    /// **已成功登记**片段时长之和；两次登记之间还没封闭的尾巴不能算进来。
+    ///
+    /// 恢复时用 `elapsed_ms - persisted_through_ms` 判断「可能丢失的尾巴」。
     pub persisted_through_ms: i64,
     pub input_device_changed: bool,
     pub message: Option<String>,
@@ -485,6 +488,16 @@ pub struct RecordingRecovery {
     pub recording_id: Option<String>,
     pub state: RecordingState,
     pub closed_segment_indexes: Vec<i64>,
+    /// **已登记**片段时长之和：真正落盘、`finalize` 能拼出来的音频长度。
+    ///
+    /// 只有「已封闭并登记成功」的片段算数；两次登记之间收到的 PCM 还在内存 /
+    /// 未封闭文件里，进程崩溃就没了，绝不能算进来。
+    pub persisted_ms: i64,
+    /// 采集器**最后一次上报**的「已收到 PCM 总时长」（会话的 `elapsed_ms`）。
+    ///
+    /// 这是上报时刻的值（平台层通常一秒上报一次、停止时再补一次），所以只是实际
+    /// 收到量的**下界**；`received_ms - persisted_ms` 就是「可能丢失的尾巴」。
+    pub received_ms: i64,
     /// 已知缺口的总时长；无法估计时为 0 并在 notes 里说明。
     pub gap_ms: i64,
     pub notes: Vec<String>,
@@ -1839,4 +1852,247 @@ pub struct RestoreReport {
     pub counts: BackupCounts,
     /// 如实说明恢复出来的库里「还没做完」的东西（不假装完成）。
     pub warnings: Vec<String>,
+}
+
+// ------------------------------------------------------------ 插件（#88，B6）
+//
+// 这些类型是**桥接与缓存清单的公开形状**。插件清单字段与任务书 §8.2 一一对应；
+// 缓存进 `plugin_installations` 的 `manifest_json` 后，应用启动只读这一份 JSON，
+// 不读、不编译、不执行插件的入口文件（见 `docs/architecture/m4-插件SDK与宿主.md`）。
+
+/// 插件入口形态：声明式（纯数据，宿主解释）或 Wasm（受限沙箱）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginEntryKind {
+    /// `main.json`：只有模板，宿主按固定占位符解释，**没有可执行代码**。
+    Declarative,
+    /// `main.wasm`：在 `wasmi` 解释器里跑，权限与预算由宿主强制。
+    Wasm,
+}
+
+impl PluginEntryKind {
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Declarative => "declarative",
+            Self::Wasm => "wasm",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "declarative" => Some(Self::Declarative),
+            "wasm" => Some(Self::Wasm),
+            _ => None,
+        }
+    }
+}
+
+/// 插件清单。字段名与任务书 §8.2 的 camelCase 一致（缓存 JSON 也用它）。
+///
+/// `package_hashes` 覆盖包内**除 `manifest.json` 之外**的每一个文件；清单自身无法
+/// 自哈希，由安装时的结构校验与包哈希（`PluginInspection.package_hash`）兜住。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginManifest {
+    pub manifest_version: i64,
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub license: String,
+    pub api_range: String,
+    pub supported_platforms: Vec<String>,
+    pub entry_kind: PluginEntryKind,
+    pub entry_file: String,
+    pub activation_events: Vec<String>,
+    pub permissions: Vec<String>,
+    /// 设置声明的 JSON 文本（对象）。这一片只做保存与展示，不据此自动授权。
+    pub settings_schema_json: Option<String>,
+    pub package_hashes: std::collections::HashMap<String, String>,
+    pub description: Option<String>,
+    pub homepage: Option<String>,
+}
+
+/// 一项权限的展示信息。权限的**判定**在核心，界面只负责让用户看清再授权。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginPermission {
+    /// wire 名，例如 `read_selected_material` 或 `invoke_provider:<providerId>`。
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    /// `low` / `medium` / `high`；只用于界面提示，不参与判定。
+    pub risk: String,
+}
+
+/// 一次包检查的结论。**不执行包内容**：只读文件、校验清单/哈希/版本/平台/权限。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginInspection {
+    pub package_path: String,
+    /// 包的来源形态：`directory` 或 `zip`。
+    pub package_kind: String,
+    /// 对清单与全部文件算出的稳定包哈希（换一个字节就变）。
+    pub package_hash: String,
+    pub manifest: PluginManifest,
+    /// 声明的模板（声明式插件）；Wasm 插件为空。
+    pub templates: Vec<PluginTemplate>,
+    /// 清单声明的权限，带中文说明。
+    pub permissions: Vec<PluginPermission>,
+    /// 调用方这次没有授予的权限（安装会因此被拒，并说清缺哪几项）。
+    pub missing_permissions: Vec<String>,
+    /// 本构建能不能安装：版本范围、平台、清单版本、结构都算。
+    pub compatible: bool,
+    /// 不能安装/需要用户注意的原因。机器可读前缀：`incompatible:` / `invalid:`。
+    pub issues: Vec<String>,
+    /// 已安装的版本（没有就是 None）。
+    pub installed_version: Option<String>,
+    /// 这次安装会不会是一次升级。
+    pub is_upgrade: bool,
+}
+
+/// 一个已安装插件。**全部来自缓存清单与授权表**，启动时不需要碰插件文件。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginInstallation {
+    pub plugin_id: String,
+    pub name: String,
+    pub version: String,
+    pub manifest_version: i64,
+    pub entry_kind: PluginEntryKind,
+    pub api_range: String,
+    pub enabled: bool,
+    /// 用户**已经授予**的权限（不是清单声明的全集；两者取交集后存这里）。
+    pub permissions: Vec<String>,
+    /// 清单声明的权限（授权前展示用；与 `permissions` 对照能看出撤权/升级新增）。
+    pub requested_permissions: Vec<String>,
+    /// 清单声明的支持平台（缓存，不读入口文件）。
+    pub supported_platforms: Vec<String>,
+    pub activation_events: Vec<String>,
+    /// 缓存下来的模板（声明式插件）；启动时直接从缓存读，不读入口文件。
+    pub templates: Vec<PluginTemplate>,
+    pub package_hash: String,
+    pub installed_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub last_run_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+}
+
+/// 声明式插件里的一个模板。纯数据，宿主只做白名单占位符替换。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginTemplate {
+    pub plugin_id: String,
+    pub id: String,
+    /// `style`（风格模板）或 `export`（导出模板）。
+    pub kind: String,
+    pub label: String,
+    pub description: String,
+    /// `style_instruction` / `markdown` / `plain_text`。
+    pub format: String,
+    /// 模板正文（有大小上限，进缓存清单供预览）。
+    pub body: String,
+}
+
+/// 风格输入：字段与契约 `StyleProfile` 对齐（#114 的现有形状），但**不落库**。
+///
+/// 这一片把渲染好的文本交回调用方；`styles.*` 的存储仍是 #114 的未完成部分，
+/// 不在这里另造一套风格表。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginStyleProfile {
+    pub id: String,
+    pub label: String,
+    pub revision: i64,
+    pub updated_at: DateTime<Utc>,
+    pub length_preference: Option<String>,
+    pub person: Option<String>,
+    pub tone: Option<String>,
+    pub emotional_temperature: Option<String>,
+    pub rhetoric_level: Option<String>,
+    pub examples: Vec<String>,
+    pub banned_expressions: Vec<String>,
+}
+
+/// `plugins.invoke` 的入参。
+///
+/// 激活点必须是清单声明的字符串之一：`command:<id>`、`materials_pending:<kind>`、
+/// `export.start`、`organize.template.select`。`export.start` 的格式与日期范围
+/// 沿用契约 `ExportRequest` 的 `format` 与 dayKey 语义（#113 的现有形状）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginInvocation {
+    pub plugin_id: String,
+    pub activation: String,
+    /// 声明式模板 id；Wasm 插件与命令激活可以为空。
+    pub template_id: Option<String>,
+    /// 用户选定的日记版本（读当前选中材料权限）。
+    pub selected_version_ids: Vec<String>,
+    /// 用户选定的材料/记录（读当前选中材料权限）。
+    pub selected_capture_ids: Vec<String>,
+    /// 明确日期范围（读日期范围权限）；闭区间，最多 366 天。
+    pub from_day_key: Option<String>,
+    pub to_day_key: Option<String>,
+    /// 风格模板的输入（#114 的 `StyleProfile` 形状）。
+    pub style_profile: Option<PluginStyleProfile>,
+    /// 导出格式：`markdown` / `plain_text`；声明式模板必须与模板的 format 一致。
+    pub format: Option<String>,
+    /// 命令的附加文字；有 1 MiB 上限，作为**数据**交给插件，不是指令。
+    pub input_text: Option<String>,
+}
+
+/// 一次插件运行产出的文件。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginArtifact {
+    pub file_name: String,
+    pub media_type: String,
+    pub byte_size: i64,
+    pub sha256: String,
+    /// 文件库里的绝对路径；内存库没有落盘时为 None。
+    pub path: Option<String>,
+    /// 文本内容的副本（最多 1 MiB），方便界面直接展示/保存；二进制为 None。
+    pub content: Option<String>,
+}
+
+/// 插件返回的候选派生内容。**不会自动写进日记**；核心校验后随运行结果交给调用方，
+/// 并把摘要记在 `plugin_installations.last_run_json` 供审计。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginDerivedContent {
+    pub kind: String,
+    pub text: String,
+    pub source_refs: Vec<PluginSourceRef>,
+}
+
+/// 派生内容的来源定位（必须是本次授权范围内的材料/日记）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSourceRef {
+    pub source_id: String,
+    pub source_revision_id: Option<String>,
+    /// 可读定位的 JSON 文本（例如 `{"type":"text_range",...}`）；没有就是 None。
+    pub locator_json: Option<String>,
+}
+
+/// 插件调用 Provider 失败时的审计项。核心在运行结束后据此把服务标记为「测试失败」
+/// （只对鉴权/模型不可用这类永久错误，与既有 `mark_provider_verdict_failed` 同口径）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginProviderFailure {
+    pub provider_id: String,
+    pub error_code: String,
+}
+
+/// 一次插件运行的结果。`status` 只有 `succeeded` / `failed` / `denied` / `timeout` /
+/// `budget_exceeded` 五种；`error_code` 用契约第 7 节的既有码，不新增 wire 码。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginRunResult {
+    pub run_id: String,
+    pub plugin_id: String,
+    pub activation: String,
+    pub status: String,
+    pub output: Option<String>,
+    pub artifacts: Vec<PluginArtifact>,
+    pub derived_contents: Vec<PluginDerivedContent>,
+    pub logs: Vec<String>,
+    pub warnings: Vec<String>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub duration_ms: i64,
+    /// 这一轮实际消耗的 Wasm 指令预算（fuel）；声明式插件为 None。
+    pub instructions_used: Option<i64>,
 }

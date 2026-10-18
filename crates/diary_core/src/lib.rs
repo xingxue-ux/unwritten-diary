@@ -35,6 +35,11 @@ pub mod model;
 /// 公开是为了让集成测试能直接断言模板规则与判据（`render_rule` / `LIMITS` /
 /// `candidates`）——产品代码只走 `Core::organize_*` 与驱动。
 pub mod organize;
+/// 插件 SDK 与宿主（B6，#88）：包格式、清单、权限、声明式模板与 Wasm 沙箱。
+///
+/// 公开是为了让桥接扫描 DTO、让测试直接断言权限目录与 ABI 导入表；产品代码只走
+/// `Core::inspect_plugin_package` / `install_plugin` / `run_plugin` 这几个入口。
+pub mod plugin;
 /// Provider 适配与配置（B4a）：配置、密钥托管、能力协商、连接测试与可注入传输层。
 ///
 /// 公开是为了让测试与 `tools/probe` 能注入回放/记账传输层——这是给测试与量测的
@@ -94,9 +99,12 @@ pub use model::{
     JobStatus, LocatorType, MatchedBy, MaterialCounts, NativeRecordingStatus, NewJob,
     OrganizePendingDay, OrganizePlanSummary, OrganizeQuota, OrganizeRunInfo, OrganizeSettings,
     OrganizeSkippedDay, OrganizeStatus, OrganizeTemplate, OrganizeTemplateParam, ProcessingStatus,
-    ProcessingSummary, ProvenanceLink, Provider, ProviderCapability, ProviderTestReport,
-    ProviderTestStatus, RecordingFinalizeResult, RecordingRecovery, RecordingSession,
-    RecordingState, RecordingTicket, ResponseTicket, RestoreReport, SearchFilters, SearchHit,
+    ProcessingSummary, PluginArtifact, PluginDerivedContent, PluginEntryKind, PluginInspection,
+    PluginInstallation, PluginInvocation, PluginManifest, PluginPermission, PluginProviderFailure,
+    PluginRunResult, PluginSourceRef, PluginStyleProfile, PluginTemplate, ProvenanceLink, Provider,
+    ProviderCapability, ProviderTestReport, ProviderTestStatus, RecordingFinalizeResult,
+    RecordingRecovery, RecordingSession, RecordingState, RecordingTicket, ResponseTicket,
+    RestoreReport, SearchFilters, SearchHit,
     SearchMode, SearchPhase, SearchRequest, SearchSnapshot, SegmentManifest, SegmentReceipt,
     SourceItem, SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
 };

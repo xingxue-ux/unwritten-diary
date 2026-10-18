@@ -17,7 +17,11 @@ use rusqlite::{params, Connection};
 /// `user_version` 已经是 12、但没有 v11 的两张表；只跑过 B4e 分支的库是 11、没有
 /// `revision` 列。光靠 `current < 11` / `current < 12` 会漏掉前者，所以 v11 的守卫是
 /// 「版本号小于 11 **或**表不在」，v12 是「版本号小于 12 **或**列不在」。
-pub const SCHEMA_VERSION: i64 = 13;
+///
+/// 14 是 B6（插件 SDK 与宿主，#88）抬的号：只加 `plugin_installations` /
+/// `plugin_grants` 两张全新的表，**不回填**任何旧数据（升级前没有插件，也没有
+/// 「替用户装一个」这种默认）。
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -113,6 +117,12 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 这一天一条 `diary_days` 行都没有时不用管：`day_revision` 对没有行的天返回 0，
         // 而没有行也就没有版本可切。
         tx.execute_batch(V12_BACKFILL)?;
+    }
+    if current < 13 || !table_exists(&tx, "plugin_installations")? || !table_exists(&tx, "plugin_grants")? {
+        tx.execute_batch(V13)?;
+        // **不回填、不迁移任何旧数据**：v13 只加两张全新的插件表。升级前没有插件，
+        // 也就没有东西可搬；更不能在迁移里替用户预设一个插件或一条授权。迁移后
+        // `plugin_installations` 为空，和刚建的新库一样。
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.execute(
@@ -785,5 +795,50 @@ ALTER TABLE diary_days ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
 const V12_BACKFILL: &str = r#"
 UPDATE diary_days SET revision = (
     SELECT COUNT(*) FROM diary_versions WHERE diary_versions.day_key = diary_days.day_key
+);
+"#;
+
+/// v13：插件安装缓存与授权（B6，#88）。
+///
+/// 为什么是两张**全新的表**而不是往现有表里塞列：
+/// - `plugin_installations` 是**缓存清单**。应用启动只读它（`manifest_json` /
+///   `templates_json` / `enabled` / 授权），**不读、不编译、不执行**插件入口文件——
+///   这是任务书 §8.2 的硬要求，也是「启动不执行插件」可验证的落点。
+///   `install_rel_path` 指向 `plugins/<id>/<version>-<hash8>`（相对资料库根目录）；
+///   内存库没有根目录，安装会明确报 `invalid_state`。
+///   `state_json` 是插件自己的私有状态（有 16 KiB 配额），`last_run_json` 是最近一次
+///   运行的审计摘要（有大小上限），两者都不参与「清单是否可信」的判断。
+/// - `plugin_grants` 是**用户显式授予**的权限，与清单声明分开存：清单说「我想读材料」
+///   不等于用户说「你可以」。更新插件时新增权限必须重新出现在 `grants` 里，否则安装
+///   被拒——不默默扩大权限。
+///
+/// 两张表都**没有回填**：升级前不存在插件，替用户猜一个装上去是错的。外键级联删除
+/// 只作用于授权行；卸载插件不会删除已经产生的日记或导出物（那是用户的资料）。
+const V13: &str = r#"
+CREATE TABLE IF NOT EXISTS plugin_installations (
+    id               TEXT PRIMARY KEY,
+    version          TEXT NOT NULL,
+    manifest_version INTEGER NOT NULL,
+    manifest_json    TEXT NOT NULL,
+    templates_json   TEXT NOT NULL DEFAULT '[]',
+    entry_kind       TEXT NOT NULL,
+    entry_file       TEXT NOT NULL,
+    package_hash     TEXT NOT NULL,
+    install_rel_path TEXT NOT NULL,
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    state_json       TEXT NOT NULL DEFAULT '{}',
+    last_run_at      TEXT,
+    last_run_json    TEXT,
+    last_error       TEXT,
+    installed_at     TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plugin_installations_enabled ON plugin_installations(enabled, installed_at, id);
+
+CREATE TABLE IF NOT EXISTS plugin_grants (
+    plugin_id  TEXT NOT NULL REFERENCES plugin_installations(id) ON DELETE CASCADE,
+    permission TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    PRIMARY KEY (plugin_id, permission)
 );
 "#;

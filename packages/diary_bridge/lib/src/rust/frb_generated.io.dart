@@ -147,6 +147,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   OrganizeSettings dco_decode_box_autoadd_organize_settings(dynamic raw);
 
   @protected
+  PluginEntryKind dco_decode_box_autoadd_plugin_entry_kind(dynamic raw);
+
+  @protected
+  PluginInvocation dco_decode_box_autoadd_plugin_invocation(dynamic raw);
+
+  @protected
+  PluginStyleProfile dco_decode_box_autoadd_plugin_style_profile(dynamic raw);
+
+  @protected
   ProcessingStatus dco_decode_box_autoadd_processing_status(dynamic raw);
 
   @protected
@@ -332,6 +341,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<PluginArtifact> dco_decode_list_plugin_artifact(dynamic raw);
+
+  @protected
+  List<PluginDerivedContent> dco_decode_list_plugin_derived_content(
+    dynamic raw,
+  );
+
+  @protected
+  List<PluginInstallation> dco_decode_list_plugin_installation(dynamic raw);
+
+  @protected
+  List<PluginPermission> dco_decode_list_plugin_permission(dynamic raw);
+
+  @protected
+  List<PluginSourceRef> dco_decode_list_plugin_source_ref(dynamic raw);
+
+  @protected
+  List<PluginTemplate> dco_decode_list_plugin_template(dynamic raw);
+
+  @protected
   Float64List dco_decode_list_prim_f_64_strict(dynamic raw);
 
   @protected
@@ -441,6 +470,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   OrganizeRunInfo? dco_decode_opt_box_autoadd_organize_run_info(dynamic raw);
 
   @protected
+  PluginEntryKind? dco_decode_opt_box_autoadd_plugin_entry_kind(dynamic raw);
+
+  @protected
+  PluginStyleProfile? dco_decode_opt_box_autoadd_plugin_style_profile(
+    dynamic raw,
+  );
+
+  @protected
   ProcessingStatus? dco_decode_opt_box_autoadd_processing_status(dynamic raw);
 
   @protected
@@ -503,6 +540,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   OrganizeTemplateParam dco_decode_organize_template_param(dynamic raw);
+
+  @protected
+  PluginArtifact dco_decode_plugin_artifact(dynamic raw);
+
+  @protected
+  PluginDerivedContent dco_decode_plugin_derived_content(dynamic raw);
+
+  @protected
+  PluginEntryKind dco_decode_plugin_entry_kind(dynamic raw);
+
+  @protected
+  PluginInspection dco_decode_plugin_inspection(dynamic raw);
+
+  @protected
+  PluginInstallation dco_decode_plugin_installation(dynamic raw);
+
+  @protected
+  PluginInvocation dco_decode_plugin_invocation(dynamic raw);
+
+  @protected
+  PluginManifest dco_decode_plugin_manifest(dynamic raw);
+
+  @protected
+  PluginPermission dco_decode_plugin_permission(dynamic raw);
+
+  @protected
+  PluginRunResult dco_decode_plugin_run_result(dynamic raw);
+
+  @protected
+  PluginSourceRef dco_decode_plugin_source_ref(dynamic raw);
+
+  @protected
+  PluginStyleProfile dco_decode_plugin_style_profile(dynamic raw);
+
+  @protected
+  PluginTemplate dco_decode_plugin_template(dynamic raw);
 
   @protected
   ProcessingStatus dco_decode_processing_status(dynamic raw);
@@ -756,6 +829,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  PluginEntryKind sse_decode_box_autoadd_plugin_entry_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PluginInvocation sse_decode_box_autoadd_plugin_invocation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PluginStyleProfile sse_decode_box_autoadd_plugin_style_profile(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ProcessingStatus sse_decode_box_autoadd_processing_status(
     SseDeserializer deserializer,
   );
@@ -975,6 +1063,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<PluginArtifact> sse_decode_list_plugin_artifact(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<PluginDerivedContent> sse_decode_list_plugin_derived_content(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<PluginInstallation> sse_decode_list_plugin_installation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<PluginPermission> sse_decode_list_plugin_permission(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<PluginSourceRef> sse_decode_list_plugin_source_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<PluginTemplate> sse_decode_list_plugin_template(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Float64List sse_decode_list_prim_f_64_strict(SseDeserializer deserializer);
 
   @protected
@@ -1116,6 +1234,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  PluginEntryKind? sse_decode_opt_box_autoadd_plugin_entry_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PluginStyleProfile? sse_decode_opt_box_autoadd_plugin_style_profile(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ProcessingStatus? sse_decode_opt_box_autoadd_processing_status(
     SseDeserializer deserializer,
   );
@@ -1198,6 +1326,48 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   OrganizeTemplateParam sse_decode_organize_template_param(
     SseDeserializer deserializer,
   );
+
+  @protected
+  PluginArtifact sse_decode_plugin_artifact(SseDeserializer deserializer);
+
+  @protected
+  PluginDerivedContent sse_decode_plugin_derived_content(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PluginEntryKind sse_decode_plugin_entry_kind(SseDeserializer deserializer);
+
+  @protected
+  PluginInspection sse_decode_plugin_inspection(SseDeserializer deserializer);
+
+  @protected
+  PluginInstallation sse_decode_plugin_installation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PluginInvocation sse_decode_plugin_invocation(SseDeserializer deserializer);
+
+  @protected
+  PluginManifest sse_decode_plugin_manifest(SseDeserializer deserializer);
+
+  @protected
+  PluginPermission sse_decode_plugin_permission(SseDeserializer deserializer);
+
+  @protected
+  PluginRunResult sse_decode_plugin_run_result(SseDeserializer deserializer);
+
+  @protected
+  PluginSourceRef sse_decode_plugin_source_ref(SseDeserializer deserializer);
+
+  @protected
+  PluginStyleProfile sse_decode_plugin_style_profile(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PluginTemplate sse_decode_plugin_template(SseDeserializer deserializer);
 
   @protected
   ProcessingStatus sse_decode_processing_status(SseDeserializer deserializer);
@@ -1510,6 +1680,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_plugin_entry_kind(
+    PluginEntryKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_plugin_invocation(
+    PluginInvocation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_plugin_style_profile(
+    PluginStyleProfile self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_processing_status(
     ProcessingStatus self,
     SseSerializer serializer,
@@ -1783,6 +1971,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_plugin_artifact(
+    List<PluginArtifact> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_plugin_derived_content(
+    List<PluginDerivedContent> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_plugin_installation(
+    List<PluginInstallation> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_plugin_permission(
+    List<PluginPermission> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_plugin_source_ref(
+    List<PluginSourceRef> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_plugin_template(
+    List<PluginTemplate> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_prim_f_64_strict(
     Float64List self,
     SseSerializer serializer,
@@ -1975,6 +2199,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_plugin_entry_kind(
+    PluginEntryKind? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_plugin_style_profile(
+    PluginStyleProfile? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_processing_status(
     ProcessingStatus? self,
     SseSerializer serializer,
@@ -2082,6 +2318,78 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_organize_template_param(
     OrganizeTemplateParam self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_plugin_artifact(
+    PluginArtifact self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_plugin_derived_content(
+    PluginDerivedContent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_plugin_entry_kind(
+    PluginEntryKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_plugin_inspection(
+    PluginInspection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_plugin_installation(
+    PluginInstallation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_plugin_invocation(
+    PluginInvocation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_plugin_manifest(
+    PluginManifest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_plugin_permission(
+    PluginPermission self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_plugin_run_result(
+    PluginRunResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_plugin_source_ref(
+    PluginSourceRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_plugin_style_profile(
+    PluginStyleProfile self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_plugin_template(
+    PluginTemplate self,
     SseSerializer serializer,
   );
 
