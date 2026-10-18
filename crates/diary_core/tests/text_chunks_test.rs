@@ -797,7 +797,7 @@ fn v7_library_migrates_to_v8_without_backfilling_chunks() {
 
     let capture_id = {
         let mut core = new_core(dir.path());
-        assert_eq!(core.schema_version().unwrap(), 8);
+        assert_eq!(core.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
         let capture_id = write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "op1");
         import_and_extract(&mut core, &capture_id, "天气.txt", "今天天气不错。\n", "op-mat");
         assert!(core.rebuild_text_chunks(None).unwrap() > 0);
@@ -827,10 +827,18 @@ fn v7_library_migrates_to_v8_without_backfilling_chunks() {
     {
         let conn = open(&path);
         conn.execute_batch(
-            "DROP TABLE chunk_vectors;
+            "DROP TABLE ai_responses;
+             DROP TABLE providers;
+             DROP TABLE chunk_vectors;
              DROP TABLE chunk_spans;
              DROP TABLE text_chunks;
              DROP TABLE index_meta;
+             DROP TABLE diary_generations;
+             DROP TABLE diary_days;
+             DROP TABLE diary_versions;
+             DROP TABLE diary_source_snapshots;
+             DROP TABLE diary_model_calls;
+             DROP TABLE organize_settings;
              UPDATE schema_migrations SET version = 7;
              PRAGMA user_version = 7;",
         )
@@ -842,7 +850,11 @@ fn v7_library_migrates_to_v8_without_backfilling_chunks() {
     }
 
     let mut core = Core::open(&path).unwrap();
-    assert_eq!(core.schema_version().unwrap(), 8, "打开时要升到 v8");
+    assert_eq!(
+        core.schema_version().unwrap(),
+        diary_core::SCHEMA_VERSION,
+        "打开时要升到最新（v8 建块表、v9 建服务配置表、v10 建日记表，都不碰旧数据）"
+    );
 
     // 旧数据一行未动。
     assert_eq!(

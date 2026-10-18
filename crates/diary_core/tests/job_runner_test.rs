@@ -315,9 +315,12 @@ fn a_job_missed_while_the_library_was_closed_is_backfilled_after_reopening() {
 fn a_kind_without_a_handler_is_never_silently_completed() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = new_core(dir.path());
+    // 用「现在真的有执行者」之外的 kind：`transcribe` 从 #91 起有执行者了，
+    // 它在没有引擎时会停在 `waiting_configuration`（见 `transcription_test.rs`），
+    // 不再适合当「没有处理器」的样例。
     let queued = core
         .enqueue_job(
-            NewJob::new("transcribe", JobPriority::BackgroundExtract)
+            NewJob::new("future_kind", JobPriority::BackgroundExtract)
                 .targeting(vec!["asset_录音".to_owned()]),
         )
         .unwrap();
@@ -346,11 +349,11 @@ fn a_kind_without_a_handler_is_never_silently_completed() {
         .first()
         .expect("已放弃的任务要出现在最近错误里");
     assert_eq!(error.job_id, queued.id);
-    assert_eq!(error.kind, "transcribe");
+    assert_eq!(error.kind, "future_kind");
     assert_eq!(error.error_code, "no_handler");
     assert!(error.requires_user_action);
 
-    // B4a 的 Provider 到位之前，人工重试也只会得到同样的结论（不会变成成功）。
+    // 没有处理器的 kind，人工重试也只会得到同样的结论（不会变成成功）。
     let retried = core.retry_job(&queued.id).unwrap();
     assert_eq!(retried.state, JobState::Queued);
     let again = core.run_due_jobs(Utc::now(), 60_000, "test", 10).unwrap();
@@ -413,9 +416,13 @@ fn the_same_business_key_is_enqueued_once_and_run_once() {
 fn the_limit_caps_one_run_and_the_rest_stay_queued() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = new_core(dir.path());
+    // 用**没有处理器**的 kind：它每次都以 `no_handler` 终态失败，跑得快且结果确定
+    // ——预算/条数这两个测试要量的是「一轮跑几条」，不是某个具体执行者。
+    // （`transcribe` 从 #91 起有执行者了：没有引擎时它会停在等配置、不消耗尝试次数，
+    // 于是它不再适合当「必然快速失败」的样例。）
     for index in 0..5 {
         core.enqueue_job(
-            NewJob::new("transcribe", JobPriority::Maintenance)
+            NewJob::new("future_kind", JobPriority::Maintenance)
                 .targeting(vec![format!("asset_{index}")]),
         )
         .unwrap();
@@ -452,7 +459,7 @@ fn the_time_budget_caps_a_run_without_lying_about_progress() {
     let mut core = new_core(dir.path());
     for index in 0..5 {
         core.enqueue_job(
-            NewJob::new("transcribe", JobPriority::Maintenance)
+            NewJob::new("future_kind", JobPriority::Maintenance)
                 .targeting(vec![format!("asset_{index}")]),
         )
         .unwrap();
@@ -480,7 +487,7 @@ fn the_time_budget_caps_a_run_without_lying_about_progress() {
     let all = core.run_due_jobs(now, 60_000, "foreground", 64).unwrap();
     assert_eq!(all.processed, 5);
     assert_eq!(all.succeeded, 0);
-    assert_eq!(all.failed, 5, "transcribe 没有处理器 → 已放弃");
+    assert_eq!(all.failed, 5, "future_kind 没有处理器 → 已放弃");
     assert_eq!(all.due_backlog, 0);
     assert_eq!(all.trigger, "foreground");
     assert_eq!(core.count_jobs(Some(&[JobState::Queued])).unwrap(), 0);
@@ -564,14 +571,15 @@ fn local_first_features_keep_working_while_jobs_fail() {
     core.save_draft(&capture_id, "今天买了牛奶", 1, "op-save").unwrap();
     core.commit(&capture_id, 2, "op-commit").unwrap();
 
-    // 一条必然失败的提取 + 一条没有处理器的转写。
+    // 两条确定性失败：目标不存在的提取 + 没有处理器的 kind。
+    // （转写不再用在这里：它现在有执行者，没有引擎时停在等配置而不是失败。）
     core.enqueue_job(
         NewJob::new("extract", JobPriority::BackgroundExtract)
             .targeting(vec!["rev_不存在".to_owned()]),
     )
     .unwrap();
     core.enqueue_job(
-        NewJob::new("transcribe", JobPriority::BackgroundExtract)
+        NewJob::new("future_kind", JobPriority::BackgroundExtract)
             .targeting(vec!["asset_不存在".to_owned()]),
     )
     .unwrap();

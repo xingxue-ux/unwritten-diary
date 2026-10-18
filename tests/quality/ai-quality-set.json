@@ -1,0 +1,503 @@
+{
+  "version": 1,
+  "note": "B4b（#93 前半）AI 生成质量集：合成材料 + 人工参考输出 + 可判定的期望特征。判定不是逐字比对，而是「事实覆盖 / 跑题 / 编造 / 人称 / 时态 / 风格 / 长度」七类可判定规则，实现见 crates/diary_core/src/quality/judge.rs。语料全部自造（键盘可读、无真实用户数据）；判定器只按**规范化的字面**判，所以第一人称用例的参考输出里连一个第三人称代词都不该有（「我觉得」之外混进一个「她」，人称判据就会按「不占支配」判失败——这是刻意的，人称是要保持一致的东西）；replayOutput 是人工写的合格参考输出，不是模型产物。",
+  "cases": [
+    {
+      "id": "gen-01-first-past-written",
+      "category": "first_person_past",
+      "what": "第一人称过去时书面复盘：必须保住材料里的具体事实（十点、花），不许编出新的具体事实，不许加材料里没有的引号原话。",
+      "material": [
+        {
+          "name": "记录A.txt",
+          "text": "今天又加班到十点，回家路上没什么人。地铁里看到一个姑娘抱着很大一束花，应该是别人送的，她自己笑得挺开心。到站时花枝刮到了扶手，她小声说了句不好意思。"
+        }
+      ],
+      "template": {
+        "id": "tpl-first-past-written",
+        "note": "第一人称、过去时、书面、90-220 字。",
+        "person": "first",
+        "tense": "past",
+        "style": "written",
+        "length": {
+          "min": 50,
+          "max": 130
+        }
+      },
+      "expect": {
+        "facts": [
+          {
+            "id": "late-work",
+            "description": "加班到很晚才离开",
+            "anyOf": [
+              "加班",
+              "下班"
+            ]
+          },
+          {
+            "id": "subway-flowers",
+            "description": "地铁里有人抱着一大束花",
+            "anyOf": [
+              "花",
+              "姑娘"
+            ]
+          },
+          {
+            "id": "carriage-incident",
+            "description": "花枝刮到扶手的那个小插曲",
+            "anyOf": [
+              "扶手",
+              "花枝"
+            ]
+          }
+        ],
+        "offTopic": [
+          {
+            "id": "off-topic-weather",
+            "description": "把材料里没有的天气写进复盘（跑题）",
+            "allOf": [
+              "暴雨",
+              "伞"
+            ]
+          },
+          {
+            "id": "off-topic-meeting",
+            "description": "把材料里没有的会议写进复盘（跑题）",
+            "allOf": [
+              "会议室",
+              "方案"
+            ]
+          }
+        ],
+        "forbiddenFacts": [
+          {
+            "id": "fake-person",
+            "description": "编出材料里没有的人物",
+            "allOf": [
+              "同事",
+              "小李"
+            ]
+          }
+        ],
+        "invention": {
+          "requireConcreteFacts": true,
+          "minFactRetention": 1.0,
+          "novelRunChars": 12,
+          "ngramSize": 3,
+          "allow": [
+            "复盘",
+            "记录",
+            "那天",
+            "后来",
+            "这件事"
+          ],
+          "minBackedRatio": 0.25
+        },
+        "softNovelty": {
+          "report": true,
+          "minChars": 14
+        }
+      },
+      "replayOutput": "那天我加班到十点才离开，路上已经没什么人。地铁里有一位姑娘抱着很大一束花，看样子是别人送的，她笑得很开心。列车到站时花枝刮到了扶手，我随后听到一声抱歉。"
+    },
+    {
+      "id": "gen-02-first-past-colloquial",
+      "category": "first_person_past",
+      "what": "第一人称过去时口语：材料里有多条不同天的记录，要求把具体数字（四点半、一点、十一点半）都留住，且不许编材料外的数字。",
+      "material": [
+        {
+          "name": "记录A.txt",
+          "text": "四点半散会，我留在工位上把文档收了个尾，六点才走。"
+        },
+        {
+          "name": "记录B.txt",
+          "text": "妈妈打电话来说她体检结果不太好，医生让她下周再去复查一次。我午饭拖到一点才吃，晚上没什么胃口。"
+        },
+        {
+          "name": "记录C.txt",
+          "text": "十一点半躺下，翻来覆去睡不着，起来把阳台的窗关了。"
+        }
+      ],
+      "template": {
+        "id": "tpl-first-past-colloquial",
+        "note": "第一人称、过去时、口语、140-300 字。",
+        "person": "first",
+        "tense": "past",
+        "style": "colloquial",
+        "length": {
+          "min": 75,
+          "max": 180
+        }
+      },
+      "expect": {
+        "facts": [
+          {
+            "id": "meeting-end",
+            "description": "四点半散会",
+            "anyOf": [
+              "四点半",
+              "散会"
+            ]
+          },
+          {
+            "id": "mother-checkup",
+            "description": "妈妈体检结果不太好、要复查",
+            "anyOf": [
+              "体检"
+            ]
+          },
+          {
+            "id": "late-lunch",
+            "description": "午饭拖到一点才吃",
+            "anyOf": [
+              "午饭"
+            ]
+          },
+          {
+            "id": "sleepless",
+            "description": "十一点半躺下却睡不着",
+            "anyOf": [
+              "睡不着",
+              "十一点半"
+            ]
+          }
+        ],
+        "offTopic": [
+          {
+            "id": "off-topic-trip",
+            "description": "把材料里没有的出行写进来（跑题）",
+            "allOf": [
+              "高铁",
+              "行李"
+            ]
+          }
+        ],
+        "forbiddenFacts": [
+          {
+            "id": "fake-hospital",
+            "description": "编出材料里没有的具体医院名（编造）",
+            "allOf": [
+              "市一院",
+              "挂号"
+            ]
+          }
+        ],
+        "invention": {
+          "requireConcreteFacts": true,
+          "minFactRetention": 1.0,
+          "novelRunChars": 12,
+          "ngramSize": 3,
+          "allow": [
+            "复盘",
+            "记录",
+            "那天",
+            "后来"
+          ],
+          "minBackedRatio": 0.5
+        },
+        "softNovelty": {
+          "report": true,
+          "minChars": 14
+        }
+      },
+      "replayOutput": "四点半散会以后我留在工位把文档收了尾，六点才走。妈妈打电话来说体检结果不太好，医生让她下周再复查一次，我午饭拖到一点才吃，晚上一直没什么胃口。十一点半躺下还翻来覆去睡不着，干脆起来把阳台的窗关上吧。"
+    },
+    {
+      "id": "gen-03-third-past-written",
+      "category": "third_person_past",
+      "what": "第三人称过去时转述：把第一人称材料改成「他」，要求不改事实、不加引号原话。",
+      "material": [
+        {
+          "name": "记录A.txt",
+          "text": "早上去菜市场买鱼，二十二块一斤，摊主抹了零，收了我二十。走到半路才发现他多找了我两块，我又折回去把钱还了。"
+        },
+        {
+          "name": "记录B.txt",
+          "text": "下午把阳台的花盆挪了位置，那只橘猫跳上去打翻了一盆，我扫了半天土。"
+        }
+      ],
+      "template": {
+        "id": "tpl-third-past-written",
+        "note": "第三人称、过去时、书面、80-200 字。",
+        "person": "third",
+        "tense": "past",
+        "style": "written",
+        "length": {
+          "min": 65,
+          "max": 160
+        }
+      },
+      "expect": {
+        "facts": [
+          {
+            "id": "market-fish",
+            "description": "去菜市场买鱼",
+            "anyOf": [
+              "菜市场",
+              "买鱼"
+            ]
+          },
+          {
+            "id": "price",
+            "description": "二十二块一斤、实收二十",
+            "anyOf": [
+              "二十二",
+              "一斤"
+            ]
+          },
+          {
+            "id": "return-money",
+            "description": "发现多找了两块、折回去还钱",
+            "anyOf": [
+              "多找",
+              "还"
+            ]
+          },
+          {
+            "id": "cat-flowerpot",
+            "description": "橘猫打翻了花盆",
+            "anyOf": [
+              "橘猫",
+              "花盆"
+            ]
+          }
+        ],
+        "offTopic": [
+          {
+            "id": "off-topic-family",
+            "description": "把材料里没有的家人写进来（跑题）",
+            "allOf": [
+              "妻子",
+              "孩子"
+            ]
+          }
+        ],
+        "forbiddenFacts": [
+          {
+            "id": "fake-rain",
+            "description": "编出材料里没有的天气（编造）",
+            "allOf": [
+              "下雨",
+              "雨伞"
+            ]
+          }
+        ],
+        "invention": {
+          "requireConcreteFacts": true,
+          "minFactRetention": 1.0,
+          "novelRunChars": 12,
+          "ngramSize": 3,
+          "allow": [
+            "记录",
+            "那天",
+            "后来",
+            "摊主"
+          ],
+          "minBackedRatio": 0.35
+        },
+        "softNovelty": {
+          "report": true,
+          "minChars": 14
+        }
+      },
+      "replayOutput": "那天他去菜市场买鱼，二十二块一斤，摊主抹了零只收二十。走到半路他才发现对方多找了两块，于是折回去把钱还了。下午他挪了阳台的花盆，那只橘猫跳上去打翻了一盆，他随后扫了半天土。"
+    },
+    {
+      "id": "gen-04-first-past-written-cat",
+      "category": "first_person_past",
+      "what": "第一人称过去时书面、材料更长：多事实覆盖 + 数字保留（快五点）+ 不许编出材料外的数字或引号原话。",
+      "material": [
+        {
+          "name": "记录A.txt",
+          "text": "快五点的时候我妈打电话过来，聊了半个多小时。她说家里的猫又把花盆打翻了，橘色的，一只爪子是白的。她还说老家那边的市集要搬到新的地方去。"
+        },
+        {
+          "name": "记录B.txt",
+          "text": "我这边这个周五要交一份报告，还差最后一节没写完。台灯坏了，晚上只能开着顶灯凑合，打字老是打错。"
+        }
+      ],
+      "template": {
+        "id": "tpl-first-past-written",
+        "note": "第一人称、过去时、书面、100-230 字。",
+        "person": "first",
+        "tense": "past",
+        "style": "written",
+        "length": {
+          "min": 50,
+          "max": 160
+        }
+      },
+      "expect": {
+        "facts": [
+          {
+            "id": "mother-call",
+            "description": "妈妈快五点打来电话、聊了半个多小时",
+            "anyOf": [
+              "电话",
+              "半个多小时"
+            ]
+          },
+          {
+            "id": "cat",
+            "description": "家里的橘猫又把花盆打翻了、一只爪子是白的",
+            "anyOf": [
+              "橘"
+            ]
+          },
+          {
+            "id": "market-move",
+            "description": "老家市集要搬到新地方",
+            "anyOf": [
+              "市集"
+            ]
+          },
+          {
+            "id": "report",
+            "description": "周五要交报告、还差最后一节",
+            "anyOf": [
+              "报告",
+              "周五"
+            ]
+          },
+          {
+            "id": "lamp",
+            "description": "台灯坏了、开顶灯凑合",
+            "anyOf": [
+              "台灯"
+            ]
+          }
+        ],
+        "offTopic": [
+          {
+            "id": "off-topic-travel",
+            "description": "把材料里没有的出差写进来（跑题）",
+            "allOf": [
+              "出差",
+              "机票"
+            ]
+          }
+        ],
+        "forbiddenFacts": [
+          {
+            "id": "fake-deadline",
+            "description": "编出材料里没有的具体期限（编造）",
+            "allOf": [
+              "周四",
+              "截止"
+            ]
+          }
+        ],
+        "invention": {
+          "requireConcreteFacts": true,
+          "minFactRetention": 1.0,
+          "novelRunChars": 12,
+          "ngramSize": 3,
+          "allow": [
+            "记录",
+            "那天",
+            "后来"
+          ],
+          "minBackedRatio": 0.65
+        },
+        "softNovelty": {
+          "report": true,
+          "minChars": 14
+        }
+      },
+      "replayOutput": "快五点的时候我接到妈妈的电话，聊了半个多小时。我妈说家里的猫又把花盆打翻了，那只猫是橘色的，一只爪子是白的。她还说老家那边的市集要搬到新的地方去。我这边这个周五要交一份报告，因此还差最后一节没有写完。台灯坏了，我晚上只能开着顶灯凑合，打字老是打错。"
+    },
+    {
+      "id": "gen-05-third-present-written",
+      "category": "third_person_present",
+      "what": "第三人称现在时书面：时态判据要挡住「通篇完成体」。材料里没有数字，输出也不许凭空造数字。",
+      "material": [
+        {
+          "name": "记录A.txt",
+          "text": "老周这两天在给那只狗找新主人。狗是去年捡的，土狗，黄毛，特别黏人。他每天早晚各遛一次，怕自己下个月出差没人管。"
+        }
+      ],
+      "template": {
+        "id": "tpl-third-present-written",
+        "note": "第三人称、现在时、书面、70-190 字。",
+        "person": "third",
+        "tense": "present",
+        "style": "written",
+        "length": {
+          "min": 48,
+          "max": 140
+        }
+      },
+      "expect": {
+        "facts": [
+          {
+            "id": "dog-adoption",
+            "description": "在给狗找新主人",
+            "anyOf": [
+              "新主人",
+              "找"
+            ]
+          },
+          {
+            "id": "dog-look",
+            "description": "土狗、黄毛、黏人",
+            "anyOf": [
+              "黄毛",
+              "土狗"
+            ]
+          },
+          {
+            "id": "walk-twice",
+            "description": "每天早晚各遛一次",
+            "anyOf": [
+              "早晚",
+              "遛"
+            ]
+          },
+          {
+            "id": "trip-next-month",
+            "description": "下个月要出差、怕没人管",
+            "anyOf": [
+              "出差"
+            ]
+          }
+        ],
+        "offTopic": [
+          {
+            "id": "off-topic-adoption-fee",
+            "description": "把材料里没有的领养费用写进来（跑题）",
+            "allOf": [
+              "押金",
+              "领养费"
+            ]
+          }
+        ],
+        "forbiddenFacts": [
+          {
+            "id": "fake-vet",
+            "description": "编出材料里没有的宠物医院（编造）",
+            "allOf": [
+              "宠物医院",
+              "疫苗"
+            ]
+          }
+        ],
+        "invention": {
+          "requireConcreteFacts": true,
+          "minFactRetention": 0.5,
+          "novelRunChars": 12,
+          "ngramSize": 3,
+          "allow": [
+            "记录",
+            "如今",
+            "眼下"
+          ],
+          "minBackedRatio": 0.4
+        },
+        "softNovelty": {
+          "report": true,
+          "minChars": 14
+        }
+      },
+      "replayOutput": "老周现在正在给那只狗找新主人。那只狗是去年捡的土狗，黄毛，特别黏人。他每天早晚各遛一次，因此眼下最怕的是下个月出差时没人管它。"
+    }
+  ]
+}

@@ -7,9 +7,56 @@ import '../../frb_generated.dart';
 import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NewJob`, `SourceItem`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NewJob`, `OrganizePlanSummary`, `SourceItem`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`, `partial_cmp`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
+
+/// 独立保存的 AI 回应，契约第 4.3 节 `responses.get`。
+///
+/// AI 回应**不自动成为日记的原始事实**：它只带来源（`capture_ids`）与生成信息
+/// （`provider_id` / `model`），正文是模型给的东西。
+class AiResponse {
+  final String id;
+  final String requestText;
+  final String body;
+  final DateTime createdAt;
+  final List<String> captureIds;
+  final String? providerId;
+  final String? model;
+
+  const AiResponse({
+    required this.id,
+    required this.requestText,
+    required this.body,
+    required this.createdAt,
+    required this.captureIds,
+    this.providerId,
+    this.model,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      requestText.hashCode ^
+      body.hashCode ^
+      createdAt.hashCode ^
+      captureIds.hashCode ^
+      providerId.hashCode ^
+      model.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AiResponse &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          requestText == other.requestText &&
+          body == other.body &&
+          createdAt == other.createdAt &&
+          captureIds == other.captureIds &&
+          providerId == other.providerId &&
+          model == other.model;
+}
 
 /// 资产在文件库中的状态，契约第 2.3 节。
 enum AssetStorageState {
@@ -404,6 +451,227 @@ enum Coverage {
       RustLib.instance.api.diaryCoreModelCoverageWire(that: this);
 }
 
+/// 某一天的日记聚合视图，契约 2.5 节 `DiaryDay`。
+///
+/// **候选与当前只在这里区分**：契约的 `DiaryVersion` 没有状态字段，所以「哪一版是当前、
+/// 哪些是候选」由 `current_version_id` 与 `candidate_version_ids` 表达，不给版本另造状态。
+class DiaryDay {
+  final String dayKey;
+
+  /// 这一天的时区名。没有任何材料也没有生成过时是 `UTC`（缺省，不是推测）。
+  final String timeZone;
+
+  /// 当前版本；这一天还没有任何版本时为 None。
+  final String? currentVersionId;
+
+  /// 候选版本（这一天的全部版本里除当前版本之外的那些），最新在前。
+  final List<String> candidateVersionIds;
+
+  /// 这一天的 **revision**：持久、单调递增的状态推进计数（`diary_days.revision`）。
+  ///
+  /// 每次成功写入 +1：新增一版（生成 / 编辑 / 合并）算一次，`diary.setCurrent`
+  /// 真的换了当前版本也算一次；没有推进的调用（切到已经是当前的版本）不加。
+  /// 调用方把读到的这个值原样回传给 `saveEdit` / `setCurrent` / `merge` 的
+  /// `expectedRevision`（契约 2.5 / 4.3）；没有推进过的天是 0。
+  final PlatformInt64 revision;
+  final MaterialCounts materialCounts;
+  final Coverage coverage;
+  final DateTime updatedAt;
+
+  const DiaryDay({
+    required this.dayKey,
+    required this.timeZone,
+    this.currentVersionId,
+    required this.candidateVersionIds,
+    required this.revision,
+    required this.materialCounts,
+    required this.coverage,
+    required this.updatedAt,
+  });
+
+  @override
+  int get hashCode =>
+      dayKey.hashCode ^
+      timeZone.hashCode ^
+      currentVersionId.hashCode ^
+      candidateVersionIds.hashCode ^
+      revision.hashCode ^
+      materialCounts.hashCode ^
+      coverage.hashCode ^
+      updatedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DiaryDay &&
+          runtimeType == other.runtimeType &&
+          dayKey == other.dayKey &&
+          timeZone == other.timeZone &&
+          currentVersionId == other.currentVersionId &&
+          candidateVersionIds == other.candidateVersionIds &&
+          revision == other.revision &&
+          materialCounts == other.materialCounts &&
+          coverage == other.coverage &&
+          updatedAt == other.updatedAt;
+}
+
+/// 生成日记的原因，契约 4.3 节 `diary.generate` 的入参。
+///
+/// 它进幂等指纹（同一个 operationId 换了原因就是换了内容），也进快照的审计信息。
+/// `Regenerate` 是唯一被允许「同一份输入再产一版」的原因——用户明确说了要再来一版，
+/// 其余原因对同一快照哈希**不重复产版本**（见 `diary` 模块）。
+enum DiaryGenerationReason {
+  manual,
+  scheduled,
+  automatic,
+  regenerate;
+
+  static Future<DiaryGenerationReason?> fromWire({required String value}) =>
+      RustLib.instance.api.diaryCoreModelDiaryGenerationReasonFromWire(
+        value: value,
+      );
+
+  /// 是不是**自动整理**这一路（B4e）。
+  ///
+  /// 这一路与用户主动要一版（`manual` / `regenerate`）有三处不同：
+  /// 1. 用设置里选中的**整理模板**（写进冻结快照）拼提示词；
+  /// 2. 结果**一律进候选**，绝不成为当前版本（用户确认走 `diary.setCurrent`）；
+  /// 3. 受整理设置里的**配额上限**约束（单次/每日调用次数、材料条数与字数、失败率）。
+  Future<bool> isOrganize() => RustLib.instance.api
+      .diaryCoreModelDiaryGenerationReasonIsOrganize(that: this);
+
+  Future<void> wire() =>
+      RustLib.instance.api.diaryCoreModelDiaryGenerationReasonWire(that: this);
+}
+
+/// 一次日记生成的票据，契约 4.3 节 `diary.generate`。
+///
+/// 输入在**返回之前**就已经冻结（快照已落库、哈希已算），真正的调用由队列驱动执行。
+/// Provider 还没配好时**照样返回票据**：那条任务会停在 `waiting_configuration` 等配置，
+/// 而不是把「还没有配置服务」说成一次调用失败（与 #66 的队列闸门同一口径）。
+class DiaryGenerationTicket {
+  final String jobId;
+  final String sourceSnapshotId;
+
+  const DiaryGenerationTicket({
+    required this.jobId,
+    required this.sourceSnapshotId,
+  });
+
+  @override
+  int get hashCode => jobId.hashCode ^ sourceSnapshotId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DiaryGenerationTicket &&
+          runtimeType == other.runtimeType &&
+          jobId == other.jobId &&
+          sourceSnapshotId == other.sourceSnapshotId;
+}
+
+/// 日记版本，契约 2.5 节。正文是自然段，来源关联放在独立字段。
+class DiaryVersion {
+  final String id;
+  final String dayKey;
+  final String? parentVersionId;
+  final DiaryVersionOrigin origin;
+  final String body;
+  final DateTime createdAt;
+
+  /// 不可变的输入清单快照（用了哪些材料、哪些修订、覆盖范围的真相）。
+  final String? sourceSnapshotId;
+  final String? styleSnapshotId;
+  final GenerationInfo? generationInfo;
+  final List<ProvenanceLink> provenanceLinks;
+
+  const DiaryVersion({
+    required this.id,
+    required this.dayKey,
+    this.parentVersionId,
+    required this.origin,
+    required this.body,
+    required this.createdAt,
+    this.sourceSnapshotId,
+    this.styleSnapshotId,
+    this.generationInfo,
+    required this.provenanceLinks,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      dayKey.hashCode ^
+      parentVersionId.hashCode ^
+      origin.hashCode ^
+      body.hashCode ^
+      createdAt.hashCode ^
+      sourceSnapshotId.hashCode ^
+      styleSnapshotId.hashCode ^
+      generationInfo.hashCode ^
+      provenanceLinks.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DiaryVersion &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          dayKey == other.dayKey &&
+          parentVersionId == other.parentVersionId &&
+          origin == other.origin &&
+          body == other.body &&
+          createdAt == other.createdAt &&
+          sourceSnapshotId == other.sourceSnapshotId &&
+          styleSnapshotId == other.styleSnapshotId &&
+          generationInfo == other.generationInfo &&
+          provenanceLinks == other.provenanceLinks;
+}
+
+/// 日记版本的来源，契约 2.5 节。
+///
+/// **AI 生成的正文永远是 `Generated`**，绝不写成 `UserEdit`——`source_revisions`
+/// 的 `AuthorType` 只有 user/import，AI 文本也不写进用户原件（见 `diary` 模块）。
+enum DiaryVersionOrigin {
+  generated,
+  userEdit,
+  merge;
+
+  static Future<DiaryVersionOrigin?> fromWire({required String value}) =>
+      RustLib.instance.api.diaryCoreModelDiaryVersionOriginFromWire(
+        value: value,
+      );
+
+  /// 是不是用户自己写的（手写或用户确认后的合并）。
+  ///
+  /// 「首次生成可成为 current」这条例外的边界靠它：只要这一天有用户自己的版本，
+  /// 自动生成的版本就**不会**被设成当前版本。
+  Future<bool> isUserAuthored() => RustLib.instance.api
+      .diaryCoreModelDiaryVersionOriginIsUserAuthored(that: this);
+
+  Future<void> wire() =>
+      RustLib.instance.api.diaryCoreModelDiaryVersionOriginWire(that: this);
+}
+
+/// 分页的版本列表，契约 4.3 节 `diary.listVersions`。
+class DiaryVersionPage {
+  final List<DiaryVersion> versions;
+  final String? nextCursor;
+
+  const DiaryVersionPage({required this.versions, this.nextCursor});
+
+  @override
+  int get hashCode => versions.hashCode ^ nextCursor.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DiaryVersionPage &&
+          runtimeType == other.runtimeType &&
+          versions == other.versions &&
+          nextCursor == other.nextCursor;
+}
+
 /// 持久业务事件。
 class DomainEvent {
   final String eventId;
@@ -580,6 +848,53 @@ class ExtractedSegment {
           ordinal == other.ordinal &&
           text == other.text &&
           locator == other.locator;
+}
+
+/// 生成过程的审计信息，契约 2.5 节。
+class GenerationInfo {
+  final String promptVersion;
+  final String? providerId;
+  final String? model;
+
+  /// 生成选项：固定的协议参数与**如实记录的步数**
+  /// （`steps` / `intermediateCalls` / `repairCalls`），不虚构。
+  final Map<String, String> generationOptions;
+
+  /// 快照里已处理的材料数。
+  final PlatformInt64 coveredSourceCount;
+
+  /// 快照里明确记为「暂未处理」的材料数（不假装完整）。
+  final PlatformInt64 unprocessedSourceCount;
+
+  const GenerationInfo({
+    required this.promptVersion,
+    this.providerId,
+    this.model,
+    required this.generationOptions,
+    required this.coveredSourceCount,
+    required this.unprocessedSourceCount,
+  });
+
+  @override
+  int get hashCode =>
+      promptVersion.hashCode ^
+      providerId.hashCode ^
+      model.hashCode ^
+      generationOptions.hashCode ^
+      coveredSourceCount.hashCode ^
+      unprocessedSourceCount.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is GenerationInfo &&
+          runtimeType == other.runtimeType &&
+          promptVersion == other.promptVersion &&
+          providerId == other.providerId &&
+          model == other.model &&
+          generationOptions == other.generationOptions &&
+          coveredSourceCount == other.coveredSourceCount &&
+          unprocessedSourceCount == other.unprocessedSourceCount;
 }
 
 /// 复制完成信息：调用方声明它写了多少、算出的哈希是什么。
@@ -1300,6 +1615,48 @@ enum MatchedBy {
       RustLib.instance.api.diaryCoreModelMatchedByWire(that: this);
 }
 
+/// 当天的材料统计，契约 2.5 节。数字都是真值，不是估计。
+class MaterialCounts {
+  /// 当天的记录数（不含回收站）。
+  final PlatformInt64 captures;
+
+  /// 已经有可用正文的材料数（用户的文字天然算「已处理」）。
+  final PlatformInt64 processed;
+
+  /// 还在等提取的材料数。
+  final PlatformInt64 pending;
+
+  /// 提取失败、暂无可读正文的材料数。
+  final PlatformInt64 failed;
+
+  const MaterialCounts({
+    required this.captures,
+    required this.processed,
+    required this.pending,
+    required this.failed,
+  });
+
+  static Future<MaterialCounts> default_() =>
+      RustLib.instance.api.diaryCoreModelMaterialCountsDefault();
+
+  @override
+  int get hashCode =>
+      captures.hashCode ^
+      processed.hashCode ^
+      pending.hashCode ^
+      failed.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MaterialCounts &&
+          runtimeType == other.runtimeType &&
+          captures == other.captures &&
+          processed == other.processed &&
+          pending == other.pending &&
+          failed == other.failed;
+}
+
 /// 原生上报的录音状态。后端不虚构麦克风状态。
 class NativeRecordingStatus {
   final String recordingId;
@@ -1344,6 +1701,488 @@ class NativeRecordingStatus {
           persistedThroughMs == other.persistedThroughMs &&
           inputDeviceChanged == other.inputDeviceChanged &&
           message == other.message;
+}
+
+/// 一个「该整理」的日子，以及它为什么该整理。
+///
+/// 判据全是可判定的（见 `docs/architecture/m4-整理与自动化.md`），没有一条是
+/// 「AI 觉得该整理」。
+class OrganizePendingDay {
+  final String dayKey;
+
+  /// 该整理的理由：`first`（这一天还没有任何版本）/ `supplement`（已有版本，之后又来了新材料）。
+  final String reason;
+
+  /// 可读正文的材料条数。
+  final PlatformInt64 materials;
+
+  /// 这些材料的字符总数（Unicode 标量值）。
+  final PlatformInt64 chars;
+
+  /// 按现有材料估算的模型调用次数（1 = 一步；N+1 = 两步走）。
+  final PlatformInt64 estimatedCalls;
+
+  /// 这一天的计划触发时刻（`autoOrganizeTime` 折成 UTC）。
+  final DateTime dueAt;
+
+  /// 这一天的当前版本（没有就是空）。
+  final String? currentVersionId;
+
+  const OrganizePendingDay({
+    required this.dayKey,
+    required this.reason,
+    required this.materials,
+    required this.chars,
+    required this.estimatedCalls,
+    required this.dueAt,
+    this.currentVersionId,
+  });
+
+  @override
+  int get hashCode =>
+      dayKey.hashCode ^
+      reason.hashCode ^
+      materials.hashCode ^
+      chars.hashCode ^
+      estimatedCalls.hashCode ^
+      dueAt.hashCode ^
+      currentVersionId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizePendingDay &&
+          runtimeType == other.runtimeType &&
+          dayKey == other.dayKey &&
+          reason == other.reason &&
+          materials == other.materials &&
+          chars == other.chars &&
+          estimatedCalls == other.estimatedCalls &&
+          dueAt == other.dueAt &&
+          currentVersionId == other.currentVersionId;
+}
+
+/// 自动整理的配额与用量现状。数字都来自**真实的调用账本**，不是估算。
+class OrganizeQuota {
+  /// 最近 24 小时（滚动窗口）真的发出去的整理调用次数。
+  final PlatformInt64 callsLast24H;
+  final PlatformInt64 maxCallsPerDay;
+
+  /// 还能发几次（不会小于 0）。
+  final PlatformInt64 callsRemaining;
+
+  /// 失败率窗口里的样本数（最近 24 小时的整理调用，最多取最近 20 条）。
+  final PlatformInt64 failureSamples;
+
+  /// 窗口里的失败比例（0.0–1.0）；没有样本时为 0。
+  final double failureRate;
+  final double maxFailureRate;
+  final DateTime? lastCallAt;
+
+  const OrganizeQuota({
+    required this.callsLast24H,
+    required this.maxCallsPerDay,
+    required this.callsRemaining,
+    required this.failureSamples,
+    required this.failureRate,
+    required this.maxFailureRate,
+    this.lastCallAt,
+  });
+
+  @override
+  int get hashCode =>
+      callsLast24H.hashCode ^
+      maxCallsPerDay.hashCode ^
+      callsRemaining.hashCode ^
+      failureSamples.hashCode ^
+      failureRate.hashCode ^
+      maxFailureRate.hashCode ^
+      lastCallAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeQuota &&
+          runtimeType == other.runtimeType &&
+          callsLast24H == other.callsLast24H &&
+          maxCallsPerDay == other.maxCallsPerDay &&
+          callsRemaining == other.callsRemaining &&
+          failureSamples == other.failureSamples &&
+          failureRate == other.failureRate &&
+          maxFailureRate == other.maxFailureRate &&
+          lastCallAt == other.lastCallAt;
+}
+
+/// 最近一次自动整理的真实结果。
+class OrganizeRunInfo {
+  final String dayKey;
+
+  /// 生成行的状态：`pending`（还没有结论：在队列里、在等配置、或在退避重试）/
+  /// `ready`（产出了版本）/ `failed`（终态失败，**没有**版本）。
+  final String state;
+  final String? errorCode;
+  final String? versionId;
+
+  /// 这次真的发出去了几次调用（来自账本，不是估算）。
+  final PlatformInt64 calls;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  const OrganizeRunInfo({
+    required this.dayKey,
+    required this.state,
+    this.errorCode,
+    this.versionId,
+    required this.calls,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  @override
+  int get hashCode =>
+      dayKey.hashCode ^
+      state.hashCode ^
+      errorCode.hashCode ^
+      versionId.hashCode ^
+      calls.hashCode ^
+      createdAt.hashCode ^
+      updatedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeRunInfo &&
+          runtimeType == other.runtimeType &&
+          dayKey == other.dayKey &&
+          state == other.state &&
+          errorCode == other.errorCode &&
+          versionId == other.versionId &&
+          calls == other.calls &&
+          createdAt == other.createdAt &&
+          updatedAt == other.updatedAt;
+}
+
+/// 整理设置。默认**全关**：`enabled = false`，核心不会自动调用任何服务。
+///
+/// 这是「必须由用户显式开启」的落点：`Core::open` 建出来的资料库（含从旧版本升级上来
+/// 的）都是关的，只有显式 `update_organize_settings` 才能打开。
+class OrganizeSettings {
+  final bool enabled;
+  final String templateId;
+
+  /// 显式覆盖的参数（生效值 = 覆盖 + 模板默认值）。**只允许整数与布尔**。
+  final Map<String, String> templateParams;
+
+  /// 单次整理的材料条数上限。
+  final PlatformInt64 maxMaterials;
+
+  /// 单次整理的材料字数上限（Unicode 标量值）。
+  final PlatformInt64 maxChars;
+
+  /// 单次整理的模型调用次数上限（含两步走与格式修复）。
+  final PlatformInt64 maxCallsPerRun;
+
+  /// 最近 24 小时内自动整理的模型调用次数上限。
+  final PlatformInt64 maxCallsPerDay;
+
+  /// 失败率上限（0.0–1.0）：最近窗口内样本 ≥3 且失败比例超过它就停下。
+  final double maxFailureRate;
+
+  /// 计划触发时间 `HH:mm`（本地时间，按当天材料的 UTC 偏移折算）。**不是完成承诺**。
+  final String autoOrganizeTime;
+
+  /// 当天已有当前版本、之后又来了新材料时，是否自动补做一份候选。关掉就只手动。
+  final bool supplementOnNewMaterials;
+
+  /// 设置版本（乐观锁；每次真的改动 +1）。
+  final PlatformInt64 revision;
+  final DateTime updatedAt;
+
+  const OrganizeSettings({
+    required this.enabled,
+    required this.templateId,
+    required this.templateParams,
+    required this.maxMaterials,
+    required this.maxChars,
+    required this.maxCallsPerRun,
+    required this.maxCallsPerDay,
+    required this.maxFailureRate,
+    required this.autoOrganizeTime,
+    required this.supplementOnNewMaterials,
+    required this.revision,
+    required this.updatedAt,
+  });
+
+  @override
+  int get hashCode =>
+      enabled.hashCode ^
+      templateId.hashCode ^
+      templateParams.hashCode ^
+      maxMaterials.hashCode ^
+      maxChars.hashCode ^
+      maxCallsPerRun.hashCode ^
+      maxCallsPerDay.hashCode ^
+      maxFailureRate.hashCode ^
+      autoOrganizeTime.hashCode ^
+      supplementOnNewMaterials.hashCode ^
+      revision.hashCode ^
+      updatedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeSettings &&
+          runtimeType == other.runtimeType &&
+          enabled == other.enabled &&
+          templateId == other.templateId &&
+          templateParams == other.templateParams &&
+          maxMaterials == other.maxMaterials &&
+          maxChars == other.maxChars &&
+          maxCallsPerRun == other.maxCallsPerRun &&
+          maxCallsPerDay == other.maxCallsPerDay &&
+          maxFailureRate == other.maxFailureRate &&
+          autoOrganizeTime == other.autoOrganizeTime &&
+          supplementOnNewMaterials == other.supplementOnNewMaterials &&
+          revision == other.revision &&
+          updatedAt == other.updatedAt;
+}
+
+/// 被跳过的日子与原因（超限、材料有问题……），如实报出来。
+class OrganizeSkippedDay {
+  final String dayKey;
+
+  /// 契约第 7 节的错误码（现在只会用到 `quota_exceeded`）。
+  final String code;
+
+  /// 可执行的说明：哪一条上限、已经做了什么、下一步怎么办。
+  final String message;
+
+  const OrganizeSkippedDay({
+    required this.dayKey,
+    required this.code,
+    required this.message,
+  });
+
+  @override
+  int get hashCode => dayKey.hashCode ^ code.hashCode ^ message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeSkippedDay &&
+          runtimeType == other.runtimeType &&
+          dayKey == other.dayKey &&
+          code == other.code &&
+          message == other.message;
+}
+
+/// 自动整理的状态：开关、模板、**什么时候会跑、会跑哪些材料**、配额与最近结果。
+///
+/// 这是「开启后要能说清会跑什么、什么时候跑」的落点。
+class OrganizeStatus {
+  final OrganizeSettings settings;
+
+  /// 选中的模板（含规则与参数声明）。
+  final OrganizeTemplate template;
+
+  /// 生效参数（覆盖 + 默认值），键有序。
+  final Map<String, String> effectiveParams;
+
+  /// 现在就该跑的日子。
+  final List<OrganizePendingDay> dueDays;
+
+  /// 已经该整理、但还没到计划触发时刻的日子（`nextRunAt` 就是其中最早的）。
+  final List<OrganizePendingDay> scheduledDays;
+
+  /// 下一次计划触发时刻；没有待办时为空。
+  final DateTime? nextRunAt;
+  final OrganizeQuota quota;
+
+  /// Provider 能力闸门（没配好时给出原因与可执行的下一步）。**只读，不发请求**。
+  final String? providerCode;
+  final String? providerReason;
+  final String? providerNextStep;
+
+  /// 全局停下时的错误码与说明（例如 `quota_exceeded`：失败率过高）。
+  final String? blockedCode;
+  final String? blockedReason;
+
+  /// 被跳过的日子（单日超限等）。
+  final List<OrganizeSkippedDay> skippedDays;
+  final OrganizeRunInfo? lastRun;
+
+  /// 如实补充说明（观察窗、默认关、哪些不算待处理……）。
+  final List<String> notes;
+
+  const OrganizeStatus({
+    required this.settings,
+    required this.template,
+    required this.effectiveParams,
+    required this.dueDays,
+    required this.scheduledDays,
+    this.nextRunAt,
+    required this.quota,
+    this.providerCode,
+    this.providerReason,
+    this.providerNextStep,
+    this.blockedCode,
+    this.blockedReason,
+    required this.skippedDays,
+    this.lastRun,
+    required this.notes,
+  });
+
+  @override
+  int get hashCode =>
+      settings.hashCode ^
+      template.hashCode ^
+      effectiveParams.hashCode ^
+      dueDays.hashCode ^
+      scheduledDays.hashCode ^
+      nextRunAt.hashCode ^
+      quota.hashCode ^
+      providerCode.hashCode ^
+      providerReason.hashCode ^
+      providerNextStep.hashCode ^
+      blockedCode.hashCode ^
+      blockedReason.hashCode ^
+      skippedDays.hashCode ^
+      lastRun.hashCode ^
+      notes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeStatus &&
+          runtimeType == other.runtimeType &&
+          settings == other.settings &&
+          template == other.template &&
+          effectiveParams == other.effectiveParams &&
+          dueDays == other.dueDays &&
+          scheduledDays == other.scheduledDays &&
+          nextRunAt == other.nextRunAt &&
+          quota == other.quota &&
+          providerCode == other.providerCode &&
+          providerReason == other.providerReason &&
+          providerNextStep == other.providerNextStep &&
+          blockedCode == other.blockedCode &&
+          blockedReason == other.blockedReason &&
+          skippedDays == other.skippedDays &&
+          lastRun == other.lastRun &&
+          notes == other.notes;
+}
+
+/// 一个整理模板：核心内置规则，或将来由 #88 的声明式插件提供的规则。
+///
+/// **这一片只实现内置三类**（`source = "builtin"`）。`source` 字段就是留给 #88 的
+/// 对接点：插件模板进来时，`source = "plugin"` 并且 `plugin_id` 有值——解析、校验、
+/// 提示词拼装的路径都不变（见 `docs/architecture/m4-整理与自动化.md`「#88 的对接点」）。
+class OrganizeTemplate {
+  /// 模板 id（不透明字符串，进冻结快照）。
+  final String id;
+  final String label;
+  final String description;
+
+  /// 规则文本：**产品指令**，只在 system 消息里出现，由核心常量拼出。
+  final String rule;
+  final List<OrganizeTemplateParam> params;
+
+  /// `builtin`（核心内置）或 `plugin`（#88 的声明式插件，尚未实现）。
+  final String source;
+
+  /// 插件模板所属的插件 id；内置模板为空。
+  final String? pluginId;
+
+  const OrganizeTemplate({
+    required this.id,
+    required this.label,
+    required this.description,
+    required this.rule,
+    required this.params,
+    required this.source,
+    this.pluginId,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      label.hashCode ^
+      description.hashCode ^
+      rule.hashCode ^
+      params.hashCode ^
+      source.hashCode ^
+      pluginId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeTemplate &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          label == other.label &&
+          description == other.description &&
+          rule == other.rule &&
+          params == other.params &&
+          source == other.source &&
+          pluginId == other.pluginId;
+}
+
+/// 整理模板的一个可选参数：**只允许整数与布尔**，不接受自由文本。
+///
+/// 为什么参数不能是文本：模板规则属于**产品指令**，只在 system 消息里。如果参数能带
+/// 任意文字，调用方（或将来某个插件）就能把「忽略上面的指令」写进指令槽——那正是
+/// #64 花力气堵住的那条路（材料是数据，不是指令）。限定成整数/布尔之后，参数**没有
+/// 地方**可以承载指令文本。
+class OrganizeTemplateParam {
+  /// 参数键（wire 名，例如 `targetChars`）。
+  final String key;
+
+  /// 中文短名，设置页直接用。
+  final String label;
+
+  /// 参数类型：`integer` 或 `boolean`。
+  final String kind;
+
+  /// 整数参数的取值范围（布尔参数两者都为空）。
+  final PlatformInt64? minimum;
+  final PlatformInt64? maximum;
+
+  /// 默认值（字符串形式，`true` / `false` 或十进制整数）。
+  final String defaultValue;
+  final String description;
+
+  const OrganizeTemplateParam({
+    required this.key,
+    required this.label,
+    required this.kind,
+    this.minimum,
+    this.maximum,
+    required this.defaultValue,
+    required this.description,
+  });
+
+  @override
+  int get hashCode =>
+      key.hashCode ^
+      label.hashCode ^
+      kind.hashCode ^
+      minimum.hashCode ^
+      maximum.hashCode ^
+      defaultValue.hashCode ^
+      description.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrganizeTemplateParam &&
+          runtimeType == other.runtimeType &&
+          key == other.key &&
+          label == other.label &&
+          kind == other.kind &&
+          minimum == other.minimum &&
+          maximum == other.maximum &&
+          defaultValue == other.defaultValue &&
+          description == other.description;
 }
 
 /// 派生内容的处理状态。取值沿用契约第 3 节「索引」行。
@@ -1397,6 +2236,194 @@ class ProcessingSummary {
           processing == other.processing &&
           searchable == other.searchable &&
           needsAttention == other.needsAttention;
+}
+
+/// 正文与来源的关联，契约 2.5 节。涉及事实的内容要能追溯；不要求每句修辞都有引用。
+///
+/// 长材料两步走时，第一步提炼出来的**中间事实**也记在这里（`note` 是那条派生事实，
+/// 来源是它真正来自的记录/片段），所以中间结果不脱离来源独立存在。
+class ProvenanceLink {
+  final String sourceId;
+  final String sourceRevisionId;
+  final SourceLocator locator;
+
+  /// 正文中对应的字符区间；整段关联或位置不可靠时为空（不伪造）。
+  final TextRange? bodyRange;
+  final String? note;
+
+  const ProvenanceLink({
+    required this.sourceId,
+    required this.sourceRevisionId,
+    required this.locator,
+    this.bodyRange,
+    this.note,
+  });
+
+  @override
+  int get hashCode =>
+      sourceId.hashCode ^
+      sourceRevisionId.hashCode ^
+      locator.hashCode ^
+      bodyRange.hashCode ^
+      note.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ProvenanceLink &&
+          runtimeType == other.runtimeType &&
+          sourceId == other.sourceId &&
+          sourceRevisionId == other.sourceRevisionId &&
+          locator == other.locator &&
+          bodyRange == other.bodyRange &&
+          note == other.note;
+}
+
+/// 脱敏后的远端服务配置，契约第 2.7 节。
+///
+/// **没有密钥字段**：`credential_ref` 是凭据存储里的引用，不是密钥本身。
+/// 这个对象会原样过桥到 Dart，所以任何密文都不该出现在这里。
+class Provider {
+  final String id;
+  final String label;
+
+  /// 协议适配器标识（例如 `openai_compatible`）。业务层不硬编码供应商。
+  final String adapterId;
+  final String? endpoint;
+  final String? model;
+
+  /// 配置里声明的能力。空集合表示「什么都还没声明」，不是「什么都能做」。
+  final Set<ProviderCapability> capabilities;
+
+  /// 凭据存储里的引用；为空表示还没配密钥。**永远不是密钥明文。**
+  final String? credentialRef;
+  final bool enabled;
+  final ProviderTestStatus testStatus;
+
+  const Provider({
+    required this.id,
+    required this.label,
+    required this.adapterId,
+    this.endpoint,
+    this.model,
+    required this.capabilities,
+    this.credentialRef,
+    required this.enabled,
+    required this.testStatus,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      label.hashCode ^
+      adapterId.hashCode ^
+      endpoint.hashCode ^
+      model.hashCode ^
+      capabilities.hashCode ^
+      credentialRef.hashCode ^
+      enabled.hashCode ^
+      testStatus.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Provider &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          label == other.label &&
+          adapterId == other.adapterId &&
+          endpoint == other.endpoint &&
+          model == other.model &&
+          capabilities == other.capabilities &&
+          credentialRef == other.credentialRef &&
+          enabled == other.enabled &&
+          testStatus == other.testStatus;
+}
+
+/// 远端服务能力，契约第 2.7 节。
+///
+/// **诚实声明**：这里只是「这一类能力」的集合，不代表核心内置的适配器都实现了。
+/// 一个能力要真的能被排任务，还要适配器有实现、且（测过之后）被连接测试验过——
+/// 口径见 `docs/architecture/m3-Provider-配置与能力.md`。
+enum ProviderCapability {
+  /// 文本生成。
+  generateText,
+
+  /// 音频转写。
+  transcribeAudio,
+
+  /// 图像理解。内置适配器**还没有**实现它（插件模型能力在 M4）。
+  understandImage;
+
+  static Future<ProviderCapability?> fromWire({required String value}) =>
+      RustLib.instance.api.diaryCoreModelProviderCapabilityFromWire(
+        value: value,
+      );
+
+  Future<void> wire() =>
+      RustLib.instance.api.diaryCoreModelProviderCapabilityWire(that: this);
+}
+
+/// 连接测试报告，契约第 4.4 节 `providers.test`。
+///
+/// `actual_call_made` 是**如实**的：只有真的发出了 HTTP 请求才是 true；能力在
+/// 适配器/配置层面就不成立、根本没发请求时是 false。
+class ProviderTestReport {
+  final String providerId;
+
+  /// 用户授权的测试范围里，每项能力的结论。
+  final Map<ProviderCapability, ProviderTestStatus> results;
+
+  /// 这次测试是否真的发生了模型调用（发起了 HTTP 请求）。
+  final bool actualCallMade;
+
+  /// 用户可读的说明：可达性 / 认证 / 模型可用 / 实际能力集 / 下一步。
+  final String? message;
+
+  const ProviderTestReport({
+    required this.providerId,
+    required this.results,
+    required this.actualCallMade,
+    this.message,
+  });
+
+  @override
+  int get hashCode =>
+      providerId.hashCode ^
+      results.hashCode ^
+      actualCallMade.hashCode ^
+      message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ProviderTestReport &&
+          runtimeType == other.runtimeType &&
+          providerId == other.providerId &&
+          results == other.results &&
+          actualCallMade == other.actualCallMade &&
+          message == other.message;
+}
+
+/// 连接测试状态，契约第 2.7 节。
+enum ProviderTestStatus {
+  /// 还没测过。
+  untested,
+
+  /// 最近一次测试通过。
+  ok,
+
+  /// 最近一次测试失败（具体错误码在 `providers.last_error_code`，不进这个对象：
+  /// 契约的 Provider 对象没有这个字段，编一个会变成没人认识的形状）。
+  failed;
+
+  static Future<ProviderTestStatus?> fromWire({required String value}) =>
+      RustLib.instance.api.diaryCoreModelProviderTestStatusFromWire(
+        value: value,
+      );
+
+  Future<void> wire() =>
+      RustLib.instance.api.diaryCoreModelProviderTestStatusWire(that: this);
 }
 
 /// 最终化结果。转写不阻塞完成。
@@ -1572,6 +2599,27 @@ class RecordingTicket {
           recordingId == other.recordingId &&
           assetId == other.assetId &&
           stagingTicket == other.stagingTicket;
+}
+
+/// 一次主动回应的请求回执，契约第 4.4 节 `responses.request`。
+class ResponseTicket {
+  final String jobId;
+
+  /// 回应对象 id。请求受理时就已经存在（`pending`），生成完成后正文才有内容。
+  final String? responseId;
+
+  const ResponseTicket({required this.jobId, this.responseId});
+
+  @override
+  int get hashCode => jobId.hashCode ^ responseId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ResponseTicket &&
+          runtimeType == other.runtimeType &&
+          jobId == other.jobId &&
+          responseId == other.responseId;
 }
 
 /// 恢复到新库的结果（`backups.restore`）。

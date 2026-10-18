@@ -316,7 +316,8 @@ pub(crate) fn finalize(
     let now = support::now();
     let source_id = support::new_id("src");
     let revision_id = support::new_id("rev");
-    let job = NewJob::new("transcribe", JobPriority::BackgroundExtract)
+    // 任务 kind 的常量在转写链那边定义：入队与执行者引用同一个字符串。
+    let job = NewJob::new(crate::transcription::KIND_TRANSCRIBE, JobPriority::BackgroundExtract)
         .targeting(vec![session.asset_id.clone()])
         .with_snapshot(sha256.clone());
 

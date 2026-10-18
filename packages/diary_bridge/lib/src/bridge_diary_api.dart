@@ -10,10 +10,14 @@ import '../diary_bridge.dart' as bridge;
 
 /// 把桥接的 `BridgeSession` 适配成契约的 [api.DiaryApi]。
 ///
-/// **覆盖记录与检索路径**：`open` / `snapshot` / `close` / 记录 CRUD /
-/// `startSearch` / `nextPage` / `searchSnapshot` / `cancelSearch`，以及
+/// **覆盖记录、检索、远端服务、语义索引与日记生成路径**：`open` / `snapshot` /
+/// `close` / 记录 CRUD / `startSearch` / `nextPage` / `searchSnapshot` /
+/// `cancelSearch` / `listProviders` / `saveProvider` / `removeProvider` /
+/// `testProvider` / `requestResponse` / `getResponse`，以及
 /// **语义索引重建**（`rebuildSemanticIndex`，契约 `indexes.rebuildSemantic`：设置页
-/// 要在换过模型之后触发「重建语义索引」，所以这一条必须真的能调）。其余契约方法一律抛
+/// 要在换过模型之后触发「重建语义索引」，所以这一条必须真的能调），
+/// **日记生成与版本**：`getDay` / `generateDiary` / `listVersions` / `getVersion` /
+/// `saveDiaryEdit` / `setCurrentVersion` / `mergeDiary`。其余契约方法一律抛
 /// [UnsupportedError]（和 `diary_mock` 的做法一致），并且**不出现在
 /// [api.CoreInfo.capabilities] 里**——能力清单是窄化过的，界面据此决定显示哪些入口。
 ///
@@ -81,6 +85,19 @@ class BridgeDiaryApi implements api.DiaryApi {
     'recordings.finalize',
     'recordings.recover',
     'search.upgrade',
+    'providers.list',
+    'providers.save',
+    'providers.remove',
+    'providers.test',
+    'responses.request',
+    'responses.get',
+    'diary.getDay',
+    'diary.generate',
+    'diary.listVersions',
+    'diary.getVersion',
+    'diary.saveEdit',
+    'diary.setCurrent',
+    'diary.merge',
     'indexes.rebuildSemantic',
   };
 
@@ -314,6 +331,159 @@ class BridgeDiaryApi implements api.DiaryApi {
     await _translate(() => _open.cancelSearch(sessionId: sessionId));
   }
 
+  // ------------------------------------------------------------ 服务配置与主动回应
+
+  @override
+  Future<List<api.Provider>> listProviders() async {
+    final session = _open;
+    final providers = await _translate(() => session.listProviders());
+    return providers.map(_provider).toList(growable: false);
+  }
+
+  /// 保存脱敏配置。契约的签名里没有密钥，所以这里只透传 `credentialRef`。
+  ///
+  /// 从设置页输入一个新密钥要走 [saveProviderCredential]（本片的过渡入口，
+  /// 见它的文档）。
+  @override
+  Future<api.Provider> saveProvider(api.Provider provider) async {
+    final session = _open;
+    final saved = await _translate(
+      () => session.saveProvider(config: _bridgeProvider(provider)),
+    );
+    return _provider(saved);
+  }
+
+  /// **过渡入口**：把明文密钥交给核心的密钥托管，并返回脱敏后的配置。
+  ///
+  /// 契约最终的口径是「平台层用系统凭据接口存好、核心只拿 `credentialRef`」
+  /// （`PlatformHost.storeCredential` / `readCredential`）。平台层的凭据桥接还没接上
+  /// （F1/F2），所以本片给设置页一条能用的路：明文只在这一次调用里经过桥，核心写进
+  /// 密钥托管后只留引用——配置表、返回值与错误消息里都不会有明文。
+  ///
+  /// 宿主凭据接上之后这个方法会被移除（或改成只传 `credentialRef`），调用方不该把它
+  /// 当成长期接口。
+  Future<api.Provider> saveProviderCredential({
+    required String providerId,
+    required String secret,
+  }) async {
+    final session = _open;
+    final current = await _translate(() => session.listProviders());
+    final target = current.firstWhere(
+      (item) => item.id == providerId,
+      orElse: () => throw api.DiaryException(
+        code: api.DiaryErrorCode.notFound,
+        message: '没有这个服务配置：$providerId',
+      ),
+    );
+    final saved = await _translate(
+      () => session.saveProvider(config: target, secret: secret),
+    );
+    return _provider(saved);
+  }
+
+  @override
+  Future<void> removeProvider(String providerId) async {
+    final session = _open;
+    await _translate(() => session.removeProvider(providerId: providerId));
+  }
+
+  @override
+  Future<api.ProviderTestReport> testProvider({
+    required String providerId,
+    required Set<api.ProviderCapability> scope,
+  }) async {
+    final session = _open;
+    final report = await _translate(
+      () => session.testProvider(
+        providerId: providerId,
+        scope: scope.map(_bridgeCapability).toList(growable: false),
+      ),
+    );
+    return api.ProviderTestReport(
+      providerId: report.providerId,
+      results: report.results.map(
+        (capability, status) => MapEntry(
+          api.ProviderCapability.values.byName(capability.name),
+          api.ProviderTestStatus.values.byName(status.name),
+        ),
+      ),
+      actualCallMade: report.actualCallMade,
+      message: report.message,
+    );
+  }
+
+  @override
+  Future<api.ResponseTicket> requestResponse({
+    required List<String> captureIds,
+    required String requestText,
+    String? providerId,
+  }) async {
+    final session = _open;
+    final ticket = await _translate(
+      () => session.requestResponse(
+        captureIds: captureIds,
+        requestText: requestText,
+        providerId: providerId,
+      ),
+    );
+    return api.ResponseTicket(
+      jobId: ticket.jobId,
+      responseId: ticket.responseId,
+    );
+  }
+
+  @override
+  Future<api.AiResponse> getResponse(String responseId) async {
+    final session = _open;
+    final response = await _translate(
+      () => session.getResponse(responseId: responseId),
+    );
+    return api.AiResponse(
+      id: response.id,
+      requestText: response.requestText,
+      body: response.body,
+      createdAt: response.createdAt,
+      captureIds: response.captureIds,
+      providerId: response.providerId,
+      model: response.model,
+    );
+  }
+
+  // ------------------------------------------------------- 日记生成与版本（B4b）
+
+  @override
+  Future<api.DiaryDay> getDay(String dayKey) async {
+    final session = _open;
+    final day = await _translate(() => session.getDiaryDay(dayKey: dayKey));
+    return _diaryDay(day);
+  }
+
+  /// 生成一篇日记。**输入在返回前已冻结**；真正的调用由 `runDueJobs` 执行。
+  ///
+  /// 首次生成可成为当前版本，之后一律候选（`regenerate` 是用户明确再要一版的例外）。
+  /// 没有配好服务也返回票据：任务会停在 `waiting_configuration`，用 `getJob` 看状态。
+  @override
+  Future<api.DiaryGenerationTicket> generateDiary({
+    required String dayKey,
+    String? styleId,
+    api.DiaryGenerationReason reason = api.DiaryGenerationReason.manual,
+    required String operationId,
+  }) async {
+    final session = _open;
+    final ticket = await _translate(
+      () => session.generateDiary(
+        dayKey: dayKey,
+        styleId: styleId,
+        reason: bridge.DiaryGenerationReason.values.byName(reason.name),
+        operationId: operationId,
+      ),
+    );
+    return api.DiaryGenerationTicket(
+      jobId: ticket.jobId,
+      sourceSnapshotId: ticket.sourceSnapshotId,
+    );
+  }
+
   @override
   Future<DateTime?> nextWakeup() => _translate(() => _open.nextWakeup());
 
@@ -343,6 +513,107 @@ class BridgeDiaryApi implements api.DiaryApi {
   }
 
   @override
+  Future<api.DiaryVersionPage> listVersions(
+    String dayKey, {
+    String? cursor,
+    int pageSize = 20,
+  }) async {
+    final session = _open;
+    final page = await _translate(
+      () => session.listDiaryVersions(
+        dayKey: dayKey,
+        cursor: cursor,
+        limit: pageSize,
+      ),
+    );
+    return api.DiaryVersionPage(
+      versions: page.versions.map(_diaryVersion).toList(growable: false),
+      nextCursor: page.nextCursor,
+    );
+  }
+
+  @override
+  Future<api.DiaryVersion> getVersion(String versionId) async {
+    final session = _open;
+    final version = await _translate(
+      () => session.getDiaryVersion(versionId: versionId),
+    );
+    return _diaryVersion(version);
+  }
+
+  // ------------------------------------------------- 编辑 / 指定当前 / 合并（B4c）
+
+  /// 保存人工编辑：**新写一条 `user_edit` 版本**（基版一个字节都不动），并让它成为当前。
+  ///
+  /// `expectedRevision` 是这一天的 revision（`getDay().revision`）。
+  /// 不符 → `revisionConflict`（核心零改动）；同一条 `operationId` 重试返回原版本，
+  /// 换了内容 → `idempotencyConflict`。
+  @override
+  Future<api.DiaryVersion> saveDiaryEdit({
+    required String baseVersionId,
+    required String body,
+    required int expectedRevision,
+    required String operationId,
+  }) async {
+    final session = _open;
+    final version = await _translate(
+      () => session.saveDiaryEdit(
+        baseVersionId: baseVersionId,
+        body: body,
+        expectedRevision: expectedRevision,
+        operationId: operationId,
+      ),
+    );
+    return _diaryVersion(version);
+  }
+
+  /// 指定某一天的当前版本（用户想退回上一版）。只允许这一天自己的版本。
+  ///
+  /// 旧当前版变成候选、不删除；切到已经是当前的版本是无操作。
+  /// **换当前版本也会推进这一天的 revision**：两个窗口拿着同一个
+  /// `expectedRevision` 时，后一个会被 `revisionConflict` 拒绝，不会静默覆盖前一个。
+  @override
+  Future<api.DiaryDay> setCurrentVersion({
+    required String dayKey,
+    required String versionId,
+    required int expectedRevision,
+  }) async {
+    final session = _open;
+    final day = await _translate(
+      () => session.setDiaryCurrent(
+        dayKey: dayKey,
+        versionId: versionId,
+        expectedRevision: expectedRevision,
+      ),
+    );
+    return _diaryDay(day);
+  }
+
+  /// 把两版（或多版）合成一条新的 `merge` 版本，`body` 是用户确认后的正文。
+  ///
+  /// 来源记在新版本的 `generationInfo.generationOptions.mergeSourceVersionIds`；
+  /// 参与合并的版本全部保留、随时可取回原文；新版本成为当前。
+  @override
+  Future<api.DiaryVersion> mergeDiary({
+    required String baseVersionId,
+    required List<String> candidateVersionIds,
+    required String body,
+    required int expectedRevision,
+    required String operationId,
+  }) async {
+    final session = _open;
+    final version = await _translate(
+      () => session.mergeDiaryVersions(
+        baseVersionId: baseVersionId,
+        candidateVersionIds: candidateVersionIds,
+        body: body,
+        expectedRevision: expectedRevision,
+        operationId: operationId,
+      ),
+    );
+    return _diaryVersion(version);
+  }
+
   Future<api.ImportStatus> finishImport({
     required String importId,
     required String ticket,
@@ -615,6 +886,39 @@ class BridgeDiaryApi implements api.DiaryApi {
     );
   }
 
+  api.Provider _provider(bridge.Provider value) => api.Provider(
+    id: value.id,
+    label: value.label,
+    adapterId: value.adapterId,
+    capabilities: value.capabilities
+        .map((capability) => api.ProviderCapability.values.byName(capability.name))
+        .toSet(),
+    enabled: value.enabled,
+    endpoint: value.endpoint,
+    model: value.model,
+    credentialRef: value.credentialRef,
+    testStatus: api.ProviderTestStatus.values.byName(value.testStatus.name),
+  );
+
+  /// 契约对象 → 桥接对象。密钥不在这里：它只经 `saveProvider` 的 `secret` 参数。
+  bridge.Provider _bridgeProvider(api.Provider value) => bridge.Provider(
+    id: value.id,
+    label: value.label,
+    adapterId: value.adapterId,
+    capabilities: value.capabilities
+        .map(_bridgeCapability)
+        .toSet(),
+    enabled: value.enabled,
+    endpoint: value.endpoint,
+    model: value.model,
+    credentialRef: value.credentialRef,
+    testStatus: bridge.ProviderTestStatus.values.byName(value.testStatus.name),
+  );
+
+  static bridge.ProviderCapability _bridgeCapability(
+    api.ProviderCapability capability,
+  ) => bridge.ProviderCapability.values.byName(capability.name);
+
   api.Capture _capture(bridge.Capture value) => api.Capture(
     id: value.id,
     revision: value.revision.toInt(),
@@ -718,6 +1022,66 @@ class BridgeDiaryApi implements api.DiaryApi {
         indexCoverage: api.Coverage.values.byName(value.indexCoverage.name),
         warnings: value.warnings,
       );
+
+  api.DiaryDay _diaryDay(bridge.DiaryDay value) => api.DiaryDay(
+    dayKey: value.dayKey,
+    timeZone: value.timeZone,
+    updatedAt: value.updatedAt,
+    currentVersionId: value.currentVersionId,
+    candidateVersionIds: value.candidateVersionIds,
+    revision: value.revision.toInt(),
+    materialCounts: api.MaterialCounts(
+      captures: value.materialCounts.captures.toInt(),
+      processed: value.materialCounts.processed.toInt(),
+      pending: value.materialCounts.pending.toInt(),
+      failed: value.materialCounts.failed.toInt(),
+    ),
+    coverage: api.Coverage.values.byName(value.coverage.name),
+  );
+
+  api.DiaryVersion _diaryVersion(bridge.DiaryVersion value) => api.DiaryVersion(
+    id: value.id,
+    dayKey: value.dayKey,
+    parentVersionId: value.parentVersionId,
+    origin: switch (value.origin) {
+      bridge.DiaryVersionOrigin.generated => api.DiaryVersionOrigin.generated,
+      bridge.DiaryVersionOrigin.userEdit => api.DiaryVersionOrigin.userEdit,
+      bridge.DiaryVersionOrigin.merge => api.DiaryVersionOrigin.merge,
+    },
+    body: value.body,
+    createdAt: value.createdAt,
+    sourceSnapshotId: value.sourceSnapshotId,
+    styleSnapshotId: value.styleSnapshotId,
+    generationInfo: value.generationInfo == null
+        ? null
+        : api.GenerationInfo(
+            promptVersion: value.generationInfo!.promptVersion,
+            providerId: value.generationInfo!.providerId,
+            model: value.generationInfo!.model,
+            generationOptions: value.generationInfo!.generationOptions,
+            coveredSourceCount: value.generationInfo!.coveredSourceCount.toInt(),
+            unprocessedSourceCount: value
+                .generationInfo!
+                .unprocessedSourceCount
+                .toInt(),
+          ),
+    provenanceLinks: value.provenanceLinks
+        .map(
+          (link) => api.ProvenanceLink(
+            sourceId: link.sourceId,
+            sourceRevisionId: link.sourceRevisionId,
+            locator: _locator(link.locator),
+            bodyRange: link.bodyRange == null
+                ? null
+                : api.TextRange(
+                    start: link.bodyRange!.start.toInt(),
+                    end: link.bodyRange!.end.toInt(),
+                  ),
+            note: link.note,
+          ),
+        )
+        .toList(growable: false),
+  );
 
   api.SourceLocator _locator(bridge.SourceLocator value) => api.SourceLocator(
     type: api.LocatorType.values.byName(value.locatorType.name),

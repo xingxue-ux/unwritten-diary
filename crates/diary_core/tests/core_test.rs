@@ -285,6 +285,20 @@ fn error_codes_match_the_contract() {
     assert_eq!(ErrorCode::RevisionConflict.wire(), "revision_conflict");
     assert_eq!(ErrorCode::IdempotencyConflict.wire(), "idempotency_conflict");
     assert_eq!(ErrorCode::StorageFull.wire(), "storage_full");
+    // B4a 的远端服务错误码（契约第 7 节）。
+    assert_eq!(
+        ErrorCode::ProviderNotConfigured.wire(),
+        "provider_not_configured"
+    );
+    assert_eq!(
+        ErrorCode::AuthenticationFailed.wire(),
+        "authentication_failed"
+    );
+    assert_eq!(ErrorCode::NetworkUnavailable.wire(), "network_unavailable");
+    assert_eq!(ErrorCode::RateLimited.wire(), "rate_limited");
+    assert_eq!(ErrorCode::QuotaExceeded.wire(), "quota_exceeded");
+    assert_eq!(ErrorCode::ProviderTimeout.wire(), "provider_timeout");
+    assert_eq!(ErrorCode::ModelUnavailable.wire(), "model_unavailable");
 
     let not_found = Core::open_in_memory()
         .unwrap()

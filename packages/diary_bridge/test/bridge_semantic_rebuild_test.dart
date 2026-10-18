@@ -15,7 +15,9 @@ import 'package:test/test.dart';
 ///    业务键（「队列里至多一条活着的语义重建」）；同一个 operationId 换原因报
 ///    `idempotency_conflict`；
 /// 4. **等模型配置**（本机没配模型时）：跑一轮驱动后任务落 `waiting_configuration`
-///    + `errorCode = waiting_model`，**不是失败**、不消耗重试额度，也不把
+///    + `errorCode = waiting_model`，**不是失败**、不消耗重试额度（闸门在领取前挡下，
+///    没跑过就不计尝试），但**要用户动手**：`requiresUserAction` +
+///    `attentionKey = job-config:semantic_index:waiting_model`；也不把
 ///    `nextWakeup` 拖成「现在」。
 ///
 /// 「真的建出向量」那一段需要注入嵌入器，Dart 侧没有这个入口：它由核心的
@@ -140,8 +142,17 @@ void main() {
     }
     expect(waiting.state, JobState.waitingConfiguration);
     expect(waiting.errorCode, 'waiting_model');
-    expect(waiting.attemptCount, 0, reason: '等配置不是失败，不扣额度');
-    expect(waiting.requiresUserAction, isFalse);
+    expect(waiting.attemptCount, 0, reason: '闸门在领取前挡下：没跑过就不计尝试');
+    expect(
+      waiting.requiresUserAction,
+      isTrue,
+      reason: '等配置要用户去配模型：不是失败，但也不是无需理会的状态',
+    );
+    expect(
+      waiting.attentionKey,
+      'job-config:semantic_index:waiting_model',
+      reason: '界面靠 attentionKey 深链到「配哪一个」',
+    );
     expect(summary.failed, 0, reason: '等配置不算这一轮的失败');
 
     // 状态摘要里看得见「等配置」，而且它不把下次唤醒拖成「现在」。

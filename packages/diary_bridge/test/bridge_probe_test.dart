@@ -63,8 +63,15 @@ void main() {
     expect(info.capabilities, contains('jobs.status'));
     // B5 的驱动入口也接上了（什么时候调用由平台层决定）。
     expect(info.capabilities, contains('jobs.runDue'));
-    // 诚实的能力声明：还没接的不该出现在清单里。
-    expect(info.capabilities, isNot(contains('diary.generate')));
+    // B4b 的日记生成与版本读路径接上了。
+    expect(info.capabilities, contains('diary.generate'));
+    expect(info.capabilities, contains('diary.getDay'));
+    expect(info.capabilities, contains('diary.listVersions'));
+    expect(info.capabilities, contains('diary.getVersion'));
+    // B4c 的编辑/切换/合并接上了：能力清单如实列出三个方法。
+    expect(info.capabilities, contains('diary.saveEdit'));
+    expect(info.capabilities, contains('diary.setCurrent'));
+    expect(info.capabilities, contains('diary.merge'));
     expect(info.recovery.pendingJobs, 0);
   });
 
