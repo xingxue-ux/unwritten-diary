@@ -16,6 +16,11 @@ mod assets;
 mod backup;
 mod chunker;
 mod chunks;
+/// 设备配置文件 `core-config.json`（与 `library.sqlite` 同目录）。
+///
+/// 公开是为了让 C ABI 与集成测试能读同一份类型（`RuntimeConfigReport` /
+/// `ConfigOrigin`）；产品代码只通过 `Core::runtime_config()` 看它。
+pub mod config_file;
 /// 日记生成与版本（B4b）：冻结输入快照、候选/当前语义、防注入、两步走、去重。
 ///
 /// 公开是为了让集成测试能直接断言提示词拼装（`SYSTEM_INSTRUCTIONS` /
@@ -73,6 +78,10 @@ pub use extractors::{
     TEXT_DIRECT_EXTRACTOR_VERSION,
 };
 pub use error::{CoreError, ErrorCode, Result};
+pub use config_file::{
+    ConfigFileReport, ConfigOrigin, CoreConfigFile, RuntimeConfigReport, SemanticConfigReport,
+    TranscriptionConfigReport, CONFIG_FILE_NAME,
+};
 pub use provider::adapter::{
     adapter_for, builtin_adapter_ids, GenerateOutcome, GenerateRequest, ProtocolAdapter,
     CALL_TIMEOUT_MS, OPENAI_COMPATIBLE, PROBE_TIMEOUT_MS,
@@ -132,10 +141,11 @@ pub use chunker::{
     MAX_CHUNK_CHARS,
 };
 pub use embedding::{
-    bytes_to_vector, config_from_env, load as load_embedder, text_hash_vector, vector_bytes,
-    EmbedOptions, Embedder, Embedding, EmbeddingConfig, EnvEmbedding, OrtEmbedder, Pooling,
-    TokenTruncation, VectorStorage, DEFAULT_POOLING, DEFAULT_QUERY_INSTRUCTION,
-    DEFAULT_VECTOR_STORAGE, EXPECTED_DIMS, MAX_BODY_TOKENS, MAX_SEQ_TOKENS, MODEL_ID,
+    bytes_to_vector, config_from_env, load as load_embedder, resolve as resolve_embedding_config,
+    text_hash_vector, vector_bytes, EmbedOptions, Embedder, Embedding, EmbeddingConfig,
+    EmbeddingResolution, EnvEmbedding, OrtEmbedder, Pooling, TokenTruncation, VectorStorage,
+    DEFAULT_POOLING, DEFAULT_QUERY_INSTRUCTION, DEFAULT_VECTOR_STORAGE, ENV_MODEL_DIR, ENV_ORT_DYLIB,
+    ENV_ORT_DYLIB_COMPAT, EXPECTED_DIMS, MAX_BODY_TOKENS, MAX_SEQ_TOKENS, MODEL_ID,
     QUERY_INSTRUCTION,
 };
 pub use schema::SCHEMA_VERSION;
@@ -211,6 +221,13 @@ pub struct Core {
     backup_fault: backup::BackupFault,
     /// 仅供测试的备份会合点，默认不设（见 `set_backup_gate_for_test`）。
     backup_gate: Option<Arc<backup::BackupGate>>,
+    /// 资料库旁边的 `core-config.json`（四个可选路径）。`None` = 没有/不可用。
+    ///
+    /// 只在 `open` 时读一次：与 `DIARY_*` 环境变量同一语义（打开那一刻的快照）。
+    /// 读不了/解析失败**不是错误**：`config_report.error` 如实记下原因，配置回落。
+    config_file: Option<config_file::CoreConfigFile>,
+    /// 配置文件本身的状态（路径、是否存在、解析错误、不认识的字段）。
+    config_report: config_file::ConfigFileReport,
 }
 
 /// 契约 1.2 节的 API 版本。
@@ -278,22 +295,32 @@ impl Core {
         library_file_name: Option<String>,
         transport: std::sync::Arc<dyn provider::transport::Transport>,
     ) -> Result<Self> {
+        // 设备配置文件：与库文件同目录的 `core-config.json`。读失败/解析失败都不致命，
+        // 只是这一档不生效（原因记在 `config_report` 里，`core.info` 会如实报出）。
+        //
+        // **先读配置、再建语义运行时**：自动排队的口径核对必须用这份配置解析出来的
+        // 当前口径（环境变量逐字段优先、文件补空缺），不能拿一份旧快照去比。
+        let loaded_config = config_file::load(root.as_deref());
+        let semantic = semantic::SemanticRuntime::from_config_file(loaded_config.file.as_ref());
         Self::prepare_with_semantic(
             conn,
             root,
             library_file_name,
             transport,
-            semantic::SemanticRuntime::from_env(),
+            semantic,
+            loaded_config,
         )
     }
 
-    /// `prepare` 的实现体，语义运行时可注入（产品路径只从环境变量来）。
+    /// `prepare` 的实现体：语义运行时与已读到的配置文件都由调用方给——产品路径从
+    /// `core-config.json` + 环境变量解析，测试路径显式注入（见两个 `_for_test` 入口）。
     fn prepare_with_semantic(
         mut conn: Connection,
         root: Option<PathBuf>,
         library_file_name: Option<String>,
         transport: std::sync::Arc<dyn provider::transport::Transport>,
         semantic: semantic::SemanticRuntime,
+        loaded_config: config_file::LoadedCoreConfig,
     ) -> Result<Self> {
         // WAL 提高并发读写表现；synchronous=FULL 保证「提交了就是落盘了」，
         // 只用 NORMAL 会让进程崩溃时丢掉最后几个事务，与 durable 承诺不符。
@@ -336,11 +363,16 @@ impl Core {
             asr_config_for_test: None,
             backup_fault: backup::BackupFault::None,
             backup_gate: None,
+            config_file: loaded_config.file,
+            config_report: loaded_config.report,
         };
         // 存量库的口径（storage / dims / 已知时的 model_version）与当前不一致时，
         // **核心自己**把语义重建排上：`reasons` 说「需要重建」，就不能让用户找不到
         // 能重建的入口。判据、去重与「同一口径最多自动尝试两次」见
         // `semantic_index_job::enqueue_for_caliber_mismatch`。
+        //
+        // **必须在配置读完之后**：`semantic` 就是由这次读到的 `core-config.json`
+        // 与环境变量解析出来的当前口径；先排队会拿旧口径去比。
         semantic_index_job::enqueue_for_caliber_mismatch(&mut core)?;
         Ok(core)
     }
@@ -349,8 +381,8 @@ impl Core {
     ///
     /// 为什么要这个入口：自动排队只在模型 `Configured` / `Ready` 时生效，而测试不能
     /// 靠设环境变量来造这个状态（环境变量是进程级的，并行测试会互相踩）。`None`
-    /// 固定成「没配」的合法退化；`Some(config)` 走与 `from_env` 同一条 `check_files`
-    /// 路径（缺文件就是 `Failed`，不是 `Configured`）。
+    /// 固定成「没配」的合法退化；`Some(config)` 走与 `from_config_file` 同一条
+    /// `check_files` 路径（缺文件就是 `Failed`，不是 `Configured`）。
     #[doc(hidden)]
     pub fn open_with_embedding_config_for_test(
         path: impl AsRef<std::path::Path>,
@@ -364,12 +396,14 @@ impl Core {
         let file_name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned());
+        let loaded_config = config_file::load(Some(&root));
         Self::prepare_with_semantic(
             Connection::open(path)?,
             Some(root),
             file_name,
             std::sync::Arc::new(provider::transport::PanicTransport {}),
             semantic::SemanticRuntime::configured(config),
+            loaded_config,
         )
     }
 
@@ -390,13 +424,20 @@ impl Core {
         let file_name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned());
+        let loaded_config = config_file::load(Some(&root));
         Self::prepare_with_semantic(
             Connection::open(path)?,
             Some(root),
             file_name,
             std::sync::Arc::new(provider::transport::PanicTransport {}),
             semantic::SemanticRuntime::ready(embedder),
+            loaded_config,
         )
+    }
+
+    /// 打开时读到的核心配置文件（`core-config.json` 的四个可选字段）。
+    pub(crate) fn config_file(&self) -> Option<&config_file::CoreConfigFile> {
+        self.config_file.as_ref()
     }
 
     /// 文件库根目录。内存库没有根目录，导入相关方法会因此报错。

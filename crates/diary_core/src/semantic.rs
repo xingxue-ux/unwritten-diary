@@ -288,36 +288,57 @@ pub(crate) enum EmbedderSlot {
 /// `Core` 上挂的语义运行时状态。
 pub(crate) struct SemanticRuntime {
     pub slot: EmbedderSlot,
+    /// 解析结果（每条路径从哪来）。`core.info.runtime_config` 直接用它，不再重算一遍
+    /// ——重算就会读第二次环境变量，而环境变量是打开库那一刻的快照。
+    pub resolution: embedding::EmbeddingResolution,
     /// 配置了模型但还没加载时，`model_version` 可以从模型文件哈希算出来（不建 ORT
     /// 会话）。第一次 `index_status` 算一次就缓存——状态检查不该每次重读 24 MiB 模型。
     configured_version: OnceLock<Option<String>>,
 }
 
 impl SemanticRuntime {
-    /// 从环境变量初始化。只 stat 文件，不加载模型。
-    pub(crate) fn from_env() -> Self {
-        match embedding::config_from_env() {
-            EnvEmbedding::Unset => Self::configured(None),
-            EnvEmbedding::Invalid(reason) => Self::failed(reason),
-            EnvEmbedding::Ready(config) => Self::configured(Some(config)),
-        }
-    }
-
-    /// 按一份**显式**配置初始化（测试用；产品路径只走 `from_env`）。
+    /// 从「环境变量 + 可选的核心配置文件」初始化。只 stat 文件，不加载模型。
     ///
-    /// `None` 固定为「一个环境变量都没设」的合法退化——测试不能依赖进程环境变量
-    /// （它是进程级的，多个测试并行时会互相踩）。
-    pub(crate) fn configured(config: Option<EmbeddingConfig>) -> Self {
-        let slot = match config {
-            None => EmbedderSlot::NotConfigured,
-            Some(config) => match config.check_files() {
-                Ok(()) => EmbedderSlot::Configured(config),
+    /// 顺序是 `embedding::resolve` 里钉死的：环境变量逐字段优先，文件补空缺。
+    pub(crate) fn from_config_file(file: Option<&crate::config_file::CoreConfigFile>) -> Self {
+        let resolution = embedding::resolve(file);
+        let slot = match &resolution.state {
+            EnvEmbedding::Unset => EmbedderSlot::NotConfigured,
+            EnvEmbedding::Invalid(reason) => EmbedderSlot::Failed(reason.clone()),
+            EnvEmbedding::Ready(config) => match config.check_files() {
+                Ok(()) => EmbedderSlot::Configured(config.clone()),
                 // 缺文件也是**诚实的原因**，不是「未就绪」。
                 Err(reason) => EmbedderSlot::Failed(reason),
             },
         };
         Self {
             slot,
+            resolution,
+            configured_version: OnceLock::new(),
+        }
+    }
+
+    /// 按一份**显式**配置初始化（测试用；产品路径只走 `from_config_file`）。
+    ///
+    /// `None` 固定为「一个环境变量都没设」的合法退化——测试不能依赖进程环境变量
+    /// （它是进程级的，多个测试并行时会互相踩）。
+    pub(crate) fn configured(config: Option<EmbeddingConfig>) -> Self {
+        let (slot, state) = match &config {
+            None => (EmbedderSlot::NotConfigured, EnvEmbedding::Unset),
+            Some(config) => match config.check_files() {
+                Ok(()) => (
+                    EmbedderSlot::Configured(config.clone()),
+                    EnvEmbedding::Ready(config.clone()),
+                ),
+                Err(reason) => (
+                    EmbedderSlot::Failed(reason.clone()),
+                    EnvEmbedding::Invalid(reason),
+                ),
+            },
+        };
+        Self {
+            slot,
+            resolution: explicit_resolution(state, config.as_ref()),
             configured_version: OnceLock::new(),
         }
     }
@@ -326,13 +347,8 @@ impl SemanticRuntime {
     pub(crate) fn ready(embedder: Box<dyn Embedder>) -> Self {
         Self {
             slot: EmbedderSlot::Ready(Arc::from(embedder)),
-            configured_version: OnceLock::new(),
-        }
-    }
-
-    fn failed(reason: String) -> Self {
-        Self {
-            slot: EmbedderSlot::Failed(reason),
+            // 注入的嵌入器没有「配置从哪来」这回事：报告如实说 absent，不编来源。
+            resolution: explicit_resolution(EnvEmbedding::Unset, None),
             configured_version: OnceLock::new(),
         }
     }
@@ -368,6 +384,29 @@ impl SemanticRuntime {
             EmbedderSlot::Ready(embedder) => embedder.dims(),
             _ => embedding::EXPECTED_DIMS,
         }
+    }
+}
+
+/// 测试入口的配置解析结果：显式路径按「环境变量」记来源（它确实是调用方给的），
+/// `None` 则如实记「没有任何来源」。只服务 `configured` / `ready` 两个测试构造器；
+/// 产品路径的来源由 `embedding::resolve` 逐字段给出。
+fn explicit_resolution(
+    state: EnvEmbedding,
+    config: Option<&EmbeddingConfig>,
+) -> embedding::EmbeddingResolution {
+    use crate::config_file::ConfigOrigin;
+    let origin = if config.is_some() {
+        ConfigOrigin::Env
+    } else {
+        ConfigOrigin::Absent
+    };
+    embedding::EmbeddingResolution {
+        state,
+        source: origin,
+        model_dir: config.map(|config| config.model_dir.clone()),
+        model_dir_origin: origin,
+        ort_dylib: config.map(|config| config.ort_dylib.clone()),
+        ort_dylib_origin: origin,
     }
 }
 
@@ -424,8 +463,9 @@ impl Core {
             EmbedderSlot::NotConfigured => {
                 self.semantic.slot = EmbedderSlot::NotConfigured;
                 Err(semantic_unavailable(
-                    "没有配置本地模型：设 DIARY_MODEL_DIR（模型目录）与 DIARY_ORT_DYLIB（ORT 动态库）\
-                     之后才能建语义索引；现在只有关键词索引可用"
+                    "没有配置本地模型：设 DIARY_MODEL_DIR（模型目录）与 DIARY_ORT_DYLIB（ORT 动态库），\
+                     或在资料库旁边的 core-config.json 里写 modelDir 与 ortDylib，之后才能建语义索引；\
+                     现在只有关键词索引可用"
                         .to_owned(),
                 ))
             }

@@ -13,12 +13,14 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { settings } from '@kit.BasicServicesKit';
-import { process } from '@kit.ArkTS';
+import { process, taskpool } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import BuildProfile from 'BuildProfile';
 import { DiaryCore } from '../core/DiaryCore';
 import { RecordingFinalizeResult, RecordingRecovery } from '../core/Models';
 import { ensureMicrophonePermission } from './MicPermission';
 import { RecorderOptions, VoiceRecorder, describeError, nowUptimeMs } from './VoiceRecorder';
+import { AsrJobsReport, runAsrJobs } from './AsrWorker';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryRec';
@@ -70,6 +72,15 @@ export class RecordingVerify {
   }
 
   static async run(mode: string, context: common.UIAbilityContext, filesDir: string): Promise<void> {
+    // release 里这条入口也必须关掉：示例页 `pages/Index` 的两个按钮直接调本函数
+    // （不走 `EntryAbility` 的 verify_mode 路由），只门控 Ability 会留下一条可达路径。
+    // 放在这里而不是页面里：所有调用方（页面 / 将来别的入口）都走同一条早退。
+    if (!BuildProfile.DEBUG) {
+      hilog.warn(DOMAIN, TAG,
+        '%{public}s PROBE_DISABLED entry=RecordingVerify.run mode=%{public}s reason=release',
+        MARK, mode);
+      return;
+    }
     hilog.info(DOMAIN, TAG, '%{public}s VERIFY mode=%{public}s pid=%{public}d filesDir=%{public}s',
       MARK, mode, process.pid, filesDir);
     logScreenTimeout(context);
@@ -204,13 +215,23 @@ export class RecordingVerify {
       if (result !== null) {
         logJson('finalize', result);
         logFiles(filesDir);
-        const summary = core.runDueJobs({ budget_ms: 30000, trigger: 'verify' });
-        logJson('jobs.runDue', summary);
-        const status = core.jobsStatus();
-        logJson('jobs.status', status);
-        hilog.info(DOMAIN, TAG, '%{public}s TRANSCRIBE queued=%{public}s waitingConfiguration=%{public}d succeeded=%{public}d failed=%{public}d',
-          MARK, result.transcription_queued ? 'true' : 'false',
-          status.waiting_configuration, status.succeeded, status.failed);
+        // 转写会同步加载 228 MiB 模型并推理，放主线程会 AppFreeze；交给 TaskPool。
+        // 句柄可跨线程调用（DeviceVerify 的并发项已验），worker 重新 open 同一个库。
+        const raw = await taskpool.execute(runAsrJobs, `${filesDir}/library.sqlite`, 180000, 'verify');
+        const report = JSON.parse(raw as string) as AsrJobsReport;
+        logJson('jobs.report', report);
+        const status = report.status;
+        if (status !== null) {
+          logJson('jobs.status', status);
+          hilog.info(DOMAIN, TAG, '%{public}s TRANSCRIBE queued=%{public}s waitingConfiguration=%{public}d succeeded=%{public}d failed=%{public}d runMs=%{public}d pssDeltaKb=%{public}d privateDeltaKb=%{public}d error=%{public}s',
+            MARK, result.transcription_queued ? 'true' : 'false',
+            status.waiting_configuration, status.succeeded, status.failed,
+            report.run_ms, report.pss_after_kb - report.pss_before_kb,
+            report.private_after_kb - report.private_before_kb, report.error);
+        } else {
+          hilog.error(DOMAIN, TAG, '%{public}s TRANSCRIBE jobs failed %{public}s',
+            MARK, report.error);
+        }
       }
 
       const after = core.coreInfo();

@@ -389,6 +389,74 @@ fn end_to_end_draft_to_search_to_jobs() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// `indexes.rebuildSemantic`（契约 4.4，C ABI 之前没接）+ `core.info.runtime_config` 的形状。
+///
+/// 语义任务只是**排上**，没有模型时它会等配置（`waiting_configuration`），
+/// 所以这里不跑 `jobs.runDue`——那会把一条等模型的任务写进队列状态，与本测试无关。
+#[test]
+fn semantic_rebuild_and_runtime_config_are_wired() {
+    let (dir, _path, handle) = open_temp("semantic-config");
+
+    let info = expect_ok(&call(handle, "core.info", Value::Null));
+    let capabilities = info["capabilities"].as_array().unwrap();
+    assert!(capabilities
+        .iter()
+        .any(|name| name == "indexes.rebuildSemantic"));
+
+    // 配置报告的形状：三个对象 + 每格的来源字符串。
+    let config = &info["runtime_config"];
+    assert!(config["file"].is_object(), "{config}");
+    assert!(config["file"]["present"].is_boolean());
+    assert!(config["semantic"]["state"].is_string());
+    assert!(config["semantic"]["configSource"].is_string());
+    assert!(config["semantic"]["modelDirSource"].is_string());
+    assert!(config["semantic"]["ortDylibSource"].is_string());
+    assert!(config["transcription"]["state"].is_string());
+    assert!(config["transcription"]["configSource"].is_string());
+    assert!(config["transcription"]["engineLibSource"].is_string());
+    let env_clean = ["DIARY_MODEL_DIR", "DIARY_ORT_DYLIB", "DIARY_ASR_MODEL_DIR", "DIARY_ASR_ENGINE_LIB"]
+        .iter()
+        .all(|key| std::env::var_os(key).is_none());
+    if env_clean {
+        assert_eq!(config["semantic"]["configSource"], json!("absent"));
+        assert_eq!(config["semantic"]["state"], json!("absent"));
+        assert_eq!(config["file"]["present"], json!(false));
+    }
+
+    let job = expect_ok(&call(
+        handle,
+        "indexes.rebuildSemantic",
+        json!({"reason": "capi semantic", "operation_id": "op-capi-semantic"}),
+    ));
+    assert_eq!(job["kind"], json!("semantic_index"));
+    assert_eq!(job["state"], json!("queued"));
+    // 幂等：同一个 (原因, operationId) 重放返回同一条任务。
+    let replay = expect_ok(&call(
+        handle,
+        "indexes.rebuildSemantic",
+        json!({"reason": "capi semantic", "operation_id": "op-capi-semantic"}),
+    ));
+    assert_eq!(replay["id"], job["id"]);
+
+    // 缺参数要报 invalid_argument，不能静默排队。
+    expect_error(
+        &call(handle, "indexes.rebuildSemantic", json!({"reason": "x"})),
+        "invalid_argument",
+    );
+    // 不认识的字段也要报错（deny_unknown_fields）。
+    expect_error(
+        &call(
+            handle,
+            "indexes.rebuildSemantic",
+            json!({"reason": "x", "operation_id": "y", "scope": "all"}),
+        ),
+        "invalid_argument",
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// 录音交接：prepare → registerSegment → updateState → finalize → 重开 → recover。
 ///
 /// 片段文件按平台层约定写：第 0 段是「44 字节 PCM WAV 头 + PCM」，后续段是裸 PCM。
@@ -968,6 +1036,173 @@ fn two_threads_can_share_one_handle() {
     assert!(hits > 0, "并发读也要拿到命中");
     assert_eq!(saved["revision"], json!(2));
     assert_eq!(saved["durable"], json!(true));
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `providers.save` / `list` / `test` / `remove` 的 C ABI 形状、校验与错误码。
+///
+/// 不依赖真引擎/真网络：
+/// - `save` 只落配置（本地引擎的 `model` 是目录，不 stat）；
+/// - `test` 用一个**本机适配器没实现**的能力（`generate_text`）⇒ 报告里是 failed、
+///   `actual_call_made=false`，不会加载引擎，也不会发请求；
+/// - 其余都是参数校验（`deny_unknown_fields`、空 scope、未知 id）。
+#[test]
+fn providers_crud_contract_shapes_and_validation() {
+    let (dir, _path, handle) = open_temp("providers");
+
+    let config = json!({
+        "id": "local_asr_capi",
+        "label": "C ABI 测试的本机转写",
+        "adapter_id": "sherpa_onnx",
+        "endpoint": null,
+        "model": "/nonexistent/capi-model-dir",
+        "capabilities": ["transcribe_audio"],
+        "credential_ref": null,
+        "enabled": true,
+        // 只读结论：保存时核心会忽略它（不能由调用方写成「已验证」）。
+        "test_status": "ok"
+    });
+
+    // save：返回配置行；test_status 必须是 untested（传入的 ok 被忽略）。
+    let saved = expect_ok(&call(
+        handle,
+        "providers.save",
+        json!({"config": config, "secret": null}),
+    ));
+    assert_eq!(saved["id"], json!("local_asr_capi"));
+    assert_eq!(saved["adapter_id"], json!("sherpa_onnx"));
+    assert_eq!(saved["endpoint"], json!(null));
+    assert_eq!(saved["test_status"], json!("untested"));
+    assert_eq!(saved["capabilities"], json!(["transcribe_audio"]));
+
+    // list：只返回配置行（内建引擎不在这张表里）。
+    let listed = expect_ok(&call(handle, "providers.list", json!(null)));
+    let rows = listed.as_array().expect("list 应返回数组");
+    assert_eq!(rows.len(), 1, "{listed}");
+    assert_eq!(rows[0]["id"], json!("local_asr_capi"));
+    assert_ne!(rows[0]["id"], json!("builtin_local_asr"));
+
+    // save 校验：本机引擎不接受 endpoint。
+    let mut with_endpoint = config.clone();
+    with_endpoint["endpoint"] = json!("http://127.0.0.1:1/v1");
+    let message = expect_error(
+        &call(
+            handle,
+            "providers.save",
+            json!({"config": with_endpoint, "secret": null}),
+        ),
+        "invalid_argument",
+    );
+    assert!(message.contains("endpoint"), "{message}");
+
+    // save 校验：未知 adapter。
+    let mut unknown_adapter = config.clone();
+    unknown_adapter["adapter_id"] = json!("no_such_adapter");
+    let message = expect_error(
+        &call(
+            handle,
+            "providers.save",
+            json!({"config": unknown_adapter, "secret": null}),
+        ),
+        "invalid_argument",
+    );
+    assert!(message.contains("no_such_adapter"), "{message}");
+
+    // deny_unknown_fields：4 个方法**请求参数**里拼错字段都要报 invalid_argument。
+    // （`config` 里的未知字段由核心 `Provider` 决定，不属于 C ABI 参数层。）
+    expect_error(
+        &call(
+            handle,
+            "providers.save",
+            json!({"config": config.clone(), "secret": null, "unexpected_field": 1}),
+        ),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(
+            handle,
+            "providers.test",
+            json!({"provider_id": "local_asr_capi", "scope": ["transcribe_audio"], "extra": 1}),
+        ),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(
+            handle,
+            "providers.remove",
+            json!({"provider_id": "local_asr_capi", "extra": 1}),
+        ),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(handle, "providers.list", json!({"unexpected": true})),
+        "invalid_argument",
+    );
+
+    // test：scope 不能为空。
+    let message = expect_error(
+        &call(
+            handle,
+            "providers.test",
+            json!({"provider_id": "local_asr_capi", "scope": []}),
+        ),
+        "invalid_argument",
+    );
+    assert!(message.contains("测试范围"), "{message}");
+
+    // test：未知 provider id。
+    expect_error(
+        &call(
+            handle,
+            "providers.test",
+            json!({"provider_id": "prv_missing", "scope": ["transcribe_audio"]}),
+        ),
+        "not_found",
+    );
+
+    // test：本机适配器没实现 generate_text ⇒ 报告是 failed，且没有真的调用/联网。
+    let report = expect_ok(&call(
+        handle,
+        "providers.test",
+        json!({"provider_id": "local_asr_capi", "scope": ["generate_text"]}),
+    ));
+    assert_eq!(report["provider_id"], json!("local_asr_capi"));
+    assert_eq!(report["actual_call_made"], json!(false));
+    assert_eq!(report["results"]["generate_text"], json!("failed"));
+    assert!(
+        report["message"].as_str().unwrap_or_default().contains("没有实现"),
+        "{report}"
+    );
+
+    // remove：删掉配置行；再删一次是 not_found（不是 invalid_state）。
+    expect_ok(&call(
+        handle,
+        "providers.remove",
+        json!({"provider_id": "local_asr_capi"}),
+    ));
+    let listed = expect_ok(&call(handle, "providers.list", json!(null)));
+    assert_eq!(listed, json!([]));
+    expect_error(
+        &call(
+            handle,
+            "providers.remove",
+            json!({"provider_id": "local_asr_capi"}),
+        ),
+        "not_found",
+    );
+
+    // remove：内建引擎没有配置行，删它要说清是 invalid_state（不是 not_found）。
+    let message = expect_error(
+        &call(
+            handle,
+            "providers.remove",
+            json!({"provider_id": "builtin_local_asr"}),
+        ),
+        "invalid_state",
+    );
+    assert!(message.contains("随包") || message.contains("内建"), "{message}");
 
     assert_eq!(diary_close(handle), 0);
     std::fs::remove_dir_all(dir).unwrap();

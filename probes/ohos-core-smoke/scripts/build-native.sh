@@ -11,10 +11,14 @@
 #   NDK            默认 $HOME/command-line-tools/sdk/default/openharmony/native
 #   OHOS_TARGET    默认 aarch64-unknown-linux-ohos
 #   CARGO_TARGET_DIR 默认 /tmp/ohos-core-smoke/target（**不落进仓库**）
-#   SKIP_RUST=1 / SKIP_SHIM=1   只重建其中一个
+#   ORT_FLAVOR     self-built（默认，自编 1.29.1，走 tools/ohos/build-ort.sh）
+#                  | sherpa-1.16.3（历史快路，只用来复现「1.16.3 也能 dlopen」）
+#   ORT_SO_DIR     已有 ORT 目录（兼容旧名；等同 ORT_CACHE_DIR）
+#   SKIP_RUST=1 / SKIP_SHIM=1 / SKIP_ORT=1   只重建其中一个
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 NDK="${NDK:-$HOME/command-line-tools/sdk/default/openharmony/native}"
 TARGET="${OHOS_TARGET:-aarch64-unknown-linux-ohos}"
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/ohos-core-smoke/target}"
@@ -64,25 +68,35 @@ if [[ -z "${SKIP_SHIM:-}" ]]; then
 fi
 
 # ── 2b. ONNX Runtime（沙箱 dlopen 目标；file:/// 语义：HAP 里带一份） ────────
-# 哪里来：sherpa-onnx 官方发布的 OHOS arm64-v8a 预编译包（Apache-2.0 / MIT 混合，
-# ORT 本体是 MIT）。**注意它带的是 ORT 1.16.3（API 16），比我们 ort crate 要求的
-# API 17 低一个 minor**——所以它只用来证明「沙箱能 dlopen ORT」，不是最终选型。
-# 最终应当用 /tmp/requests-wt/archives/o/onnxruntime/1.29.1 的配方自编。
+# 默认走 **自编 1.29.1**（`tools/ohos/build-ort.sh`，缓存优先 + 自检）：这也是产品
+# `ort` crate 要求的 ≥API 17 那条路。
+#
+# `ORT_FLAVOR=sherpa-1.16.3` 保留的是历史快路：sherpa-onnx 官方 OHOS 预编译包里的
+# 1.16.3（API 16）。它只能证明「沙箱能 dlopen ORT」，喂不了产品的 `ort` crate
+# （§23.3 的版本断言），仅用于复现旧证据。缓存目录也从 /tmp 挪到了 $HOME。
 if [[ -z "${SKIP_ORT:-}" ]]; then
-  ORT_SRC="${ORT_SO_DIR:-}"
-  if [[ -z "$ORT_SRC" ]]; then
-    # 没给就现下（~5.6 MB，走 GitHub releases；CI 里应换成固定 sha256 的内网镜像）
-    ORT_SRC=/tmp/ohos-core-smoke/ort-ohos
-    if [[ ! -f "$ORT_SRC/libonnxruntime.so" ]]; then
-      mkdir -p "$ORT_SRC"
-      tb=/tmp/ohos-core-smoke/sherpa-onnx-ohos.tar.bz2
-      [[ -f "$tb" ]] || curl -sSL -o "$tb" \
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-ohos-arm64-v8a.tar.bz2"
-      tar xjf "$tb" -C "$ORT_SRC" --strip-components=2 \
-        sherpa-onnx-v1.13.8-ohos-arm64-v8a/lib/libonnxruntime.so
-    fi
-  fi
-  cp "$ORT_SRC/libonnxruntime.so" "$OUT/libonnxruntime.so"
+  case "${ORT_FLAVOR:-self-built}" in
+    sherpa-1.16.3)
+      ORT_SRC="${ORT_SO_DIR:-$HOME/dev/caches/sherpa-ort-1.16.3}"
+      if [[ ! -f "$ORT_SRC/libonnxruntime.so" ]]; then
+        mkdir -p "$ORT_SRC"
+        tb="$ORT_SRC/sherpa-onnx-v1.13.8-ohos-arm64-v8a.tar.bz2"
+        [[ -f "$tb" ]] || curl -sSL -o "$tb" \
+          "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-ohos-arm64-v8a.tar.bz2"
+        tar xjf "$tb" -C "$ORT_SRC" --strip-components=2 \
+          sherpa-onnx-v1.13.8-ohos-arm64-v8a/lib/libonnxruntime.so
+      fi
+      cp "$ORT_SRC/libonnxruntime.so" "$OUT/libonnxruntime.so"
+      ;;
+    self-built)
+      ORT_CACHE_DIR="${ORT_SO_DIR:-${ORT_CACHE_DIR:-$HOME/dev/caches/ort-1291}}" \
+        "$REPO_ROOT/tools/ohos/build-ort.sh" --dest "$OUT"
+      ;;
+    *)
+      echo "ORT_FLAVOR 只支持 self-built / sherpa-1.16.3，收到：$ORT_FLAVOR" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 # ── 3. 自检：ELF 类型、NEEDED、导出符号 ──────────────────────────────────────

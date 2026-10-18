@@ -1,7 +1,9 @@
 // 真机验证辅助 Ability（#122 未验清单第 9 项：多 Ability / 多进程）。
 //
-// 用途：
+// 用途（**仅 debug 构建**；module.json5 里本 Ability 是 `exported: false`，
+// 按定义第三方应用 / `aa` 不应能直接拉起，**这一点没有真机验证**）：
 //   aa start -a ProbeAbility -b com.example.myapplication -m entry --ps verify_mode multi_hold
+// release 下验证体走 `PROBE_DISABLED`，不做任何动作。
 //
 // `multi_hold` 打开 library.sqlite 后**不关**，等另一个 Ability（EntryAbility）启动并跑
 // Smoke；如果两个 Ability 在同一个进程里，EntryAbility 的 `open OK handles=2` 就证明
@@ -11,6 +13,7 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { process } from '@kit.ArkTS';
+import BuildProfile from 'BuildProfile';
 import { DiaryCore } from '../core/DiaryCore';
 import { DeviceVerify } from './DeviceVerify';
 
@@ -37,10 +40,15 @@ export default class ProbeAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     const filesDir = this.context.filesDir;
-    if (this.mode === 'multi_hold') {
-      this.hold(filesDir);
+    if (BuildProfile.DEBUG) {
+      if (this.mode === 'multi_hold') {
+        this.hold(filesDir);
+      } else {
+        DeviceVerify.run(this.mode, filesDir);
+      }
     } else {
-      DeviceVerify.run(this.mode, filesDir);
+      hilog.warn(DOMAIN, TAG, '%{public}s PROBE_DISABLED ability=ProbeAbility mode=%{public}s reason=release',
+        MARK, this.mode);
     }
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
