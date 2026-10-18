@@ -20,6 +20,7 @@
 #   tools/ohos/build-ort.sh --dest <dir>       # 构建/复用后复制到 <dir>/libonnxruntime.so
 #   tools/ohos/build-ort.sh --force-build      # 忽略缓存，强制重建（~33 min/16 核）
 #   tools/ohos/build-ort.sh --check-only       # 只做构建前置检查（不下载、不编译）
+#   tools/ohos/build-ort.sh --check-cache      # 只验缓存（不下载、不编译；坏缓存非 0 退出）
 #   tools/ohos/build-ort.sh --prepare-only     # 取源码+打补丁+拉依赖+编宿主 protoc 后停
 #   tools/ohos/build-ort.sh --configure-only   # 再往前走到 CMake configure 后停
 #
@@ -38,7 +39,8 @@
 #   ORT_PROTOC         直接指定宿主 protoc（跳过编译）
 #   ORT_FORCE_BUILD    1=忽略缓存强制重建（等价 --force-build；本地/脚本调用用）
 #
-# 退出码：0 成功；2 前置检查/参数错误；3 下载失败；4 configure/build/自检失败。
+# 退出码：0 成功；2 前置检查/参数错误；3 下载失败；
+#         4 configure/build/自检失败（--check-cache 时也表示缓存不存在/不可用）。
 #
 # ★ 路径纪律：**不用 /tmp**（本机 /tmp 会被清空）。缓存、源码、构建树都在 $HOME。
 set -euo pipefail
@@ -61,7 +63,7 @@ case "${ORT_FORCE_BUILD:-0}" in
   1|true|yes|on) FORCE_BUILD=1 ;;
   *)             FORCE_BUILD=0 ;;
 esac
-MODE="full"   # full | check | prepare | configure
+MODE="full"   # full | check | cache | prepare | configure
 
 SO="$CACHE_DIR/libonnxruntime.so"
 MANIFEST="$CACHE_DIR/manifest.json"
@@ -99,6 +101,7 @@ usage() {
   tools/ohos/build-ort.sh --dest <dir>       # 构建/复用后复制到 <dir>/libonnxruntime.so
   tools/ohos/build-ort.sh --force-build      # 忽略缓存，强制重建（~33 min/16 核）
   tools/ohos/build-ort.sh --check-only       # 只做构建前置检查（不下载、不编译）
+  tools/ohos/build-ort.sh --check-cache      # 只验缓存（坏缓存非 0 退出，不编译）
   tools/ohos/build-ort.sh --prepare-only     # 源码+补丁+依赖+宿主 protoc 后停
   tools/ohos/build-ort.sh --configure-only   # 再走到 CMake configure 后停
 
@@ -115,6 +118,7 @@ while (($#)); do
     --dest)          DEST="${2:?--dest 需要一个目录}"; shift 2 ;;
     --force-build)   FORCE_BUILD=1; shift ;;
     --check-only)    MODE=check; shift ;;
+    --check-cache)   MODE=cache; shift ;;
     --prepare-only)  MODE=prepare; shift ;;
     --configure-only) MODE=configure; shift ;;
     -h|--help)       usage; exit 0 ;;
@@ -331,11 +335,23 @@ preflight() {
     exit 2
   fi
 
+  # 注意：工具链二进制必须用 **-x** 而不是 -e。zip 用 `python3 -m zipfile` 解压时
+  # 不会恢复可执行位（也不会建符号链接），文件存在但没有 +x，preflight 放行后 CMake
+  # 调 clang 才 Permission denied（评审 #126 B1）。在 preflight 就把话说清楚。
+  local f
   for f in "llvm/bin/aarch64-unknown-linux-ohos-clang" "llvm/bin/aarch64-unknown-linux-ohos-clang++" \
-           "llvm/bin/llvm-ar" "llvm/bin/llvm-ranlib" "llvm/bin/llvm-strip" \
-           "build/cmake/ohos.toolchain.cmake"; do
-    [[ -e "$NDK/$f" ]] || { warn "NDK 里缺少：$NDK/$f"; missing=1; }
+           "llvm/bin/llvm-ar" "llvm/bin/llvm-ranlib" "llvm/bin/llvm-strip"; do
+    if [[ ! -e "$NDK/$f" ]]; then
+      warn "NDK 里缺少：$NDK/$f"
+      missing=1
+    elif [[ ! -x "$NDK/$f" ]]; then
+      warn "NDK 里的文件存在但不可执行：$NDK/$f"
+      warn "  可执行位丢了？zip 解压请用 unzip / bsdtar，不要用 python3 -m zipfile（它不恢复权限位与符号链接）"
+      missing=1
+    fi
   done
+  [[ -e "$NDK/build/cmake/ohos.toolchain.cmake" ]] \
+    || { warn "NDK 里缺少：$NDK/build/cmake/ohos.toolchain.cmake"; missing=1; }
   (( missing == 0 )) || die 2 "NDK 不完整（见上）—— 请重装 Command Line Tools 或换 NDK 路径"
 
   pick_cmake || die 2 "找不到可用的 CMake 3.28–3.x（不是 4.x：protobuf 21.12 的 cmake_minimum_required 是 3.5，CMake 4 会拒绝）。
@@ -612,6 +628,17 @@ if [[ "$MODE" == "check" ]]; then
   elapsed=$(( SECONDS - t0 ))
   say "仅前置检查（--check-only），用时 ${elapsed}s"
   exit 0
+fi
+
+# --check-cache：只验缓存，**绝不**进 preflight / 构建。
+# CI 的「缓存命中 → 自检」步骤必须用它：普通 full 模式在坏缓存 + 有 NDK 时会直接重建
+# 并 exit 0（评审 #126 B2 指出的 no-op），坏缓存就永远触发不了自愈。
+if [[ "$MODE" == "cache" ]]; then
+  if try_cache; then
+    say "缓存检查通过（--check-cache，未编译），用时 $(( SECONDS - t0 ))s"
+    exit 0
+  fi
+  die 4 "缓存不可用（--check-cache）：${CACHE_UNUSABLE_REASON:-$SO 不存在或不可读}；未编译"
 fi
 
 # --prepare-only / --configure-only 是显式「走构建路径」的验证模式，不吃缓存。
