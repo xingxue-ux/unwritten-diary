@@ -43,8 +43,8 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use diary_core::{
     config_from_env, load_embedder, set_query_profiling, take_query_profile, text_hash_vector, Core,
-    Embedder, EmbeddingConfig, EmbedOptions, EnvEmbedding, SearchFilters, SearchMode, SearchRequest,
-    SemanticQueryProfile, VectorStorage,
+    Embedder, Embedding, EmbeddingConfig, EmbedOptions, EnvEmbedding, SearchFilters, SearchMode,
+    SearchRequest, SemanticQueryProfile, VectorStorage,
 };
 use rusqlite::{params, Connection};
 
@@ -873,12 +873,12 @@ impl Embedder for HashEmbedder {
         EmbedOptions::default()
     }
 
-    fn embed_document(&self, text: &str) -> diary_core::Result<Vec<f32>> {
-        Ok(text_hash_vector(text, self.dims))
+    fn embed_document(&self, text: &str) -> diary_core::Result<Embedding> {
+        Ok(Embedding::untruncated(text_hash_vector(text, self.dims)))
     }
 
-    fn embed_query(&self, text: &str) -> diary_core::Result<Vec<f32>> {
-        Ok(text_hash_vector(text, self.dims))
+    fn embed_query(&self, text: &str) -> diary_core::Result<Embedding> {
+        Ok(Embedding::untruncated(text_hash_vector(text, self.dims)))
     }
 }
 

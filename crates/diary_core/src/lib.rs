@@ -125,9 +125,10 @@ pub use chunker::{
 };
 pub use embedding::{
     bytes_to_vector, config_from_env, load as load_embedder, text_hash_vector, vector_bytes,
-    EmbedOptions, Embedder, EmbeddingConfig, EnvEmbedding, OrtEmbedder, Pooling,
-    VectorStorage, DEFAULT_POOLING, DEFAULT_QUERY_INSTRUCTION, DEFAULT_VECTOR_STORAGE,
-    EXPECTED_DIMS, MODEL_ID, QUERY_INSTRUCTION,
+    EmbedOptions, Embedder, Embedding, EmbeddingConfig, EnvEmbedding, OrtEmbedder, Pooling,
+    TokenTruncation, VectorStorage, DEFAULT_POOLING, DEFAULT_QUERY_INSTRUCTION,
+    DEFAULT_VECTOR_STORAGE, EXPECTED_DIMS, MAX_BODY_TOKENS, MAX_SEQ_TOKENS, MODEL_ID,
+    QUERY_INSTRUCTION,
 };
 pub use schema::SCHEMA_VERSION;
 pub use search::TOKENIZER_VERSION;

@@ -73,7 +73,7 @@ use rusqlite::{params, OptionalExtension};
 
 use crate::chunks;
 use crate::embedding::{
-    self, Embedder, EmbeddingConfig, EnvEmbedding, VectorStorage,
+    self, Embedder, EmbeddingConfig, EnvEmbedding, TokenTruncation, VectorStorage,
 };
 use crate::error::{CoreError, Result};
 use crate::model::{
@@ -257,6 +257,14 @@ pub struct SemanticBuildReport {
     /// 上一次中断留下的、本代次里已经有的**口径一致**向量数（同模型续跑时不为 0；
     /// 换过模型时那一批被整代清掉、这里回到 0）。
     pub resumed_chunks: i64,
+    /// **本次调用**里正文超长、被 token 截断后才算的块数（issue #109）。
+    ///
+    /// 产品切块按 400 字符，实测最多 402 token（数字见
+    /// `docs/architecture/m2-质量集与分块.md`），正常永远是 0；不为 0 就说明有别的
+    /// 入口把超长正文递给了嵌入器，或者切块规则/分词器换了——这就是「不静默」的信号。
+    pub truncated_chunks: i64,
+    /// 本次调用里这些块一共被截掉多少 token（`truncated_chunks` 的 token 之和）。
+    pub truncated_tokens: i64,
 }
 
 /// 嵌入器在 `Core` 上的状态。懒加载：`Core::open` 只读环境变量与 stat 文件，
@@ -455,6 +463,8 @@ pub(crate) fn build_with_deadline(
             reused_chunks: 0,
             embedded_chunks: 0,
             resumed_chunks: 0,
+            truncated_chunks: 0,
+            truncated_tokens: 0,
         }));
     }
     // 先拿嵌入器：拿不到就在这里失败，**不改任何状态**（块也不重建）。
@@ -638,8 +648,17 @@ fn build_generation(
     let resumed_chunks = (total_chunks - reused_chunks - missing.len() as i64).max(0);
     let started_with: i64 = reused_chunks + resumed_chunks;
     let mut embedded_this_run: i64 = 0;
+    // #109：整块算向量时如果入口做了 token 截断，这里如实累计（向量仍然写、索引仍然
+    // 能用；但不能假装「这一块完整参与了向量」）。
+    let mut truncated_chunks: i64 = 0;
+    let mut truncated_tokens: i64 = 0;
     for (chunk_id, text) in &missing {
-        let vector = embedder.embed_document(text)?;
+        let embedding = embedder.embed_document(text)?;
+        if let Some(truncation) = embedding.truncation {
+            truncated_chunks += 1;
+            truncated_tokens += truncation.dropped_tokens as i64;
+        }
+        let vector = embedding.vector;
         if vector.len() as i64 != caliber.dims {
             return Err(CoreError::InvalidState {
                 entity: "语义嵌入",
@@ -697,6 +716,8 @@ fn build_generation(
         reused_chunks,
         embedded_chunks: missing.len() as i64,
         resumed_chunks,
+        truncated_chunks,
+        truncated_tokens,
     }))
 }
 
@@ -772,6 +793,15 @@ pub(crate) enum SemanticCandidates {
     ForeignSpace(CaliberMismatch),
 }
 
+/// 一次语义候选计算的结果：候选 + 查询侧有没有被 token 截断（issue #109）。
+///
+/// 查询超长不再是错误：入口截到 510 个正文 token 再算，[`TokenTruncation`] 由这里
+/// 带出去，让检索会话在 `warnings` 里如实说一句（而不是让用户以为整句都参与了检索）。
+pub(crate) struct SemanticOutcome {
+    pub candidates: SemanticCandidates,
+    pub query_truncation: Option<TokenTruncation>,
+}
+
 /// 一条「块 × 篇」候选。分数属于整块，按 span 归属到各自的篇。
 #[derive(Debug, Clone)]
 pub(crate) struct SemanticCandidate {
@@ -781,6 +811,12 @@ pub(crate) struct SemanticCandidate {
     pub chunk_id: String,
     /// 这一篇在块里的第几段。
     pub span_ordinal: i64,
+    /// 证据块正文的哈希（`text_chunks.text`，**不含**任何篇标识 / 库内 UUID）。
+    ///
+    /// 同分兜底用：`chunk_id` 与 `group_id` 都含 v7 UUID，同一份内容重新建库就会换一批；
+    /// 这个键只由块正文决定，是「跨库也稳定」的那一层（issue #57）。正文完全相同的
+    /// 两个块才会落到更后面的 `chunk_id`，那时用户看到的摘录已经一样。
+    pub content_key: String,
     pub score: f32,
     pub capture_id: String,
     pub source_id: String,
@@ -811,7 +847,7 @@ pub(crate) fn candidates(
     embedder: &dyn Embedder,
     query: &str,
     filters: &SearchFilters,
-) -> Result<SemanticCandidates> {
+) -> Result<SemanticOutcome> {
     candidates_impl(core, embedder, query, filters, RowMode::Streaming)
 }
 
@@ -830,23 +866,34 @@ fn candidates_impl(
     query: &str,
     filters: &SearchFilters,
     mode: RowMode,
-) -> Result<SemanticCandidates> {
+) -> Result<SemanticOutcome> {
     let profiling = profile_sink::enabled();
     let total_start = profiling.then(Instant::now);
     let Some(generation) = active_generation(core)? else {
-        return Ok(SemanticCandidates::Scored(Vec::new()));
+        return Ok(SemanticOutcome {
+            candidates: SemanticCandidates::Scored(Vec::new()),
+            query_truncation: None,
+        });
     };
     if let Some(mismatch) = caliber_mismatch(core, embedder)? {
-        return Ok(SemanticCandidates::ForeignSpace(mismatch));
+        return Ok(SemanticOutcome {
+            candidates: SemanticCandidates::ForeignSpace(mismatch),
+            query_truncation: None,
+        });
     }
     if query.trim().is_empty() {
-        return Ok(SemanticCandidates::Scored(Vec::new()));
+        return Ok(SemanticOutcome {
+            candidates: SemanticCandidates::Scored(Vec::new()),
+            query_truncation: None,
+        });
     }
     let embed_start = profiling.then(Instant::now);
-    let query_vector = embedder.embed_query(query)?;
+    let query_embedding = embedder.embed_query(query)?;
     if let Some(start) = embed_start {
         profile_sink::add(|profile| profile.embed_ns += elapsed_ns(start));
     }
+    let query_truncation = query_embedding.truncation;
+    let query_vector = query_embedding.vector;
     if query_vector.len() != embedder.dims() {
         return Err(CoreError::InvalidState {
             entity: "语义检索",
@@ -883,11 +930,14 @@ fn candidates_impl(
             if profiling {
                 profile_sink::add(|profile| profile.fast_path = true);
             }
-            let ranked = rank_and_fold(scored, profiling);
+            let ranked = rank_and_fold(core, scored, profiling)?;
             if let Some(start) = total_start {
                 profile_sink::add(|profile| profile.total_ns += elapsed_ns(start));
             }
-            return Ok(SemanticCandidates::Scored(ranked));
+            return Ok(SemanticOutcome {
+                candidates: SemanticCandidates::Scored(ranked),
+                query_truncation,
+            });
         }
     }
 
@@ -975,11 +1025,14 @@ fn candidates_impl(
         }
     };
 
-    let ranked = rank_and_fold(scored, profiling);
+    let ranked = rank_and_fold(core, scored, profiling)?;
     if let Some(start) = total_start {
         profile_sink::add(|profile| profile.total_ns += elapsed_ns(start));
     }
-    Ok(SemanticCandidates::Scored(ranked))
+    Ok(SemanticOutcome {
+        candidates: SemanticCandidates::Scored(ranked),
+        query_truncation,
+    })
 }
 
 // ------------------------------------------------------------ 快速路径（#90）
@@ -1188,6 +1241,8 @@ fn candidates_fast(
             group_id: source_id.clone(),
             chunk_id,
             span_ordinal: row.get(2)?,
+            // 只在「前五道键完全相同」的并列组里查块正文再算；见 `resolve_ties`。
+            content_key: String::new(),
             score,
             capture_id: row.get(3)?,
             source_id,
@@ -1565,6 +1620,8 @@ fn candidate_of(
         group_id: row.source_id.clone(),
         chunk_id: row.chunk_id,
         span_ordinal: row.span_ordinal,
+        // 只在「前五道键完全相同」的并列组里查块正文再算；见 `resolve_ties`。
+        content_key: String::new(),
         score,
         capture_id: row.capture_id,
         source_id: row.source_id,
@@ -1581,11 +1638,21 @@ fn candidate_of(
     Ok(candidate)
 }
 
-/// 排序 + 按篇折叠。流式与全量两条路径共用，保证结果只差在内存占用。
+/// 排序 + 按篇折叠。流式、全量参考与快速路径共用，保证结果只差在取行方式。
+///
+/// 排序走**七道全序**（issue #57）：`score DESC → day_key DESC → start_char →
+/// end_char → span_ordinal → content_key → chunk_id`。分两段实现：
+/// [`position_order`] 先排前五道；[`resolve_ties`] 只对「前五道完全相同」的并列组
+/// 回表读块正文、算 `content_key`，再在组内按 [`rank_order`] 收尾。这样绝大多数候选
+/// 不必为排序读一遍正文，而同分时的先后仍然只由内容决定（跨库稳定）。
+///
+/// 快速路径（#90）选出的 top-K 也走这里：被裁掉的块本来就不会出现在结果里，
+/// 裁剪与并列组解析不冲突；保留范围内的名次仍然是逐条精算的。
 fn rank_and_fold(
+    core: &Core,
     mut scored: Vec<SemanticCandidate>,
     profiling: bool,
-) -> Vec<SemanticCandidate> {
+) -> Result<Vec<SemanticCandidate>> {
     // 分数从高到低；同分按日期近到远，再按**真正由内容决定**的键：篇内区间与段序号。
     //
     // 为什么同分时**不能**先比 `chunk_id`（issue #57）：`chunk_id` 的哈希输入里有
@@ -1593,28 +1660,29 @@ fn rank_and_fold(
     // 内容重新建一遍库就会换一批 chunk_id**，两个同分块的相对大小也就跟着抛硬币——
     // 同一篇的一块 A 与一块 B 得分一样时，谁当证据在两次建库之间会变，用户看到的
     // 摘录跟着变。`start_char` / `end_char` 是篇内区间（块切法的函数），
-    // `span_ordinal` 是块内位置，三者都只由内容与切块规则决定，跨库稳定。
+    // `span_ordinal` 是块内位置，两者都只由内容与切块规则决定，跨库稳定。
     //
-    // `chunk_id` 只留作最后的**全序兜底**：只有两条候选的（日期、篇内区间、段序号）
-    // 都完全相同才会走到它——那时两条命中的内容已经一模一样，顺序不影响用户看到什么。
-    // 同分规则的契约写在 `docs/architecture/m2-向量索引与换代.md` 的「消费契约」里。
+    // 但只靠（日期、篇内区间、段序号）还不够：**不同篇**的两段完全可以有相同的
+    // （日期、起点、终点、段序号）——例如同一天导入的两份等长文件，各自被同一条
+    // 规则切成两块。这时若直接落到 `chunk_id`，又会回到「每个库不一样」的老问题；
+    // 而两条候选的正文**不一定**相同（它们是不同的篇），摘录会真的换人。所以倒数
+    // 第二道键是 `content_key`（块正文哈希）：只由内容决定，跨库稳定。`chunk_id`
+    // 只留作最后的**全序兜底**：只有正文也完全相同才会走到它——那时两条命中的
+    // 摘录已经一模一样，顺序不影响用户看到什么。
+    //
+    // 同分规则的契约写在 `docs/architecture/m2-向量索引与换代.md` 的「消费契约」里，
+    // 「排序并列必须全序」写在 `docs/architecture/m2-检索会话.md`。
     let sort_start = profiling.then(Instant::now);
-    scored.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| right.day_key.cmp(&left.day_key))
-            .then_with(|| left.start_char.cmp(&right.start_char))
-            .then_with(|| left.end_char.cmp(&right.end_char))
-            .then_with(|| left.span_ordinal.cmp(&right.span_ordinal))
-            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
-    });
+    scored.sort_by(position_order);
+    resolve_ties(core, &mut scored)?;
     if let Some(start) = sort_start {
         profile_sink::add(|profile| profile.sort_ns += elapsed_ns(start));
     }
 
-    // 折叠：同一篇只留第一条（也就是得分最高的那块）。
+    // 折叠：同一篇只留第一条（也就是排序最靠前的那一块）。
+    //
+    // `HashSet` 只做「这个 group_id 见过没有」的成员查询，**从不迭代**；输出顺序完全
+    // 来自上面已经是全序的 `scored`，所以进程间随机的 `RandomState` 影响不到结果。
     let fold_start = profiling.then(Instant::now);
     let mut seen: HashSet<String> = HashSet::new();
     let folded: Vec<SemanticCandidate> = scored
@@ -1624,7 +1692,94 @@ fn rank_and_fold(
     if let Some(start) = fold_start {
         profile_sink::add(|profile| profile.fold_ns += elapsed_ns(start));
     }
-    folded
+    Ok(folded)
+}
+
+/// 语义候选的**前五道**排序键：`score DESC → day_key DESC → start_char →
+/// end_char → span_ordinal`。全部由分数与内容位置决定，跨库稳定。
+///
+/// 它们之后才轮到 `content_key` 与 `chunk_id`（见 [`rank_order`]）。这样分两段是为了
+/// 性能：`content_key` 要读块正文、算 sha256，10 万块全算一遍不值得；只对前五道键
+/// **完全相同**的并列组才去取正文（见 [`resolve_ties`]）。
+fn position_order(left: &SemanticCandidate, right: &SemanticCandidate) -> std::cmp::Ordering {
+    right
+        .score
+        .partial_cmp(&left.score)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| right.day_key.cmp(&left.day_key))
+        .then_with(|| left.start_char.cmp(&right.start_char))
+        .then_with(|| left.end_char.cmp(&right.end_char))
+        .then_with(|| left.span_ordinal.cmp(&right.span_ordinal))
+}
+
+/// 语义候选的全序：`score DESC → day_key DESC → start_char → end_char →
+/// span_ordinal → content_key → chunk_id`。
+///
+/// `span_ordinal` / `content_key` / `chunk_id` 这三道的顺序是刻意分开的：
+/// 段序号是内容决定的定位，`content_key` 是内容决定的正文哈希，`chunk_id` 只是
+/// 「同一个库内再兜底」——它不是内容的函数（哈希输入含篇标识 UUID），所以只允许在
+/// 正文也完全相同时生效。判据与来历见
+/// `docs/architecture/m2-向量索引与换代.md` 消费契约第 6 条。
+fn rank_order(left: &SemanticCandidate, right: &SemanticCandidate) -> std::cmp::Ordering {
+    position_order(left, right)
+        .then_with(|| left.content_key.cmp(&right.content_key))
+        .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+}
+
+/// 给「前五道键完全相同」的并列组补上 `content_key`，再在组内按 [`rank_order`] 排。
+///
+/// 只有并列组才去读块正文：绝大多数候选在 [`position_order`] 上已经分出了先后，
+/// 不值得为它们各读一遍正文。并列组通常很小（同一位置的两块），所以这条路径既稳又便宜。
+///
+/// 与快速路径的 top-K 裁剪的关系：裁剪发生在扫描阶段（只保留分数最高的 K 个块），
+/// 被裁掉的块本来就不会出现在任何结果里；这里只给**留下的**候选补全序，两者不冲突。
+fn resolve_ties(core: &Core, scored: &mut [SemanticCandidate]) -> Result<()> {
+    let mut start = 0;
+    while start < scored.len() {
+        let mut end = start + 1;
+        while end < scored.len()
+            && position_order(&scored[start], &scored[end]) == std::cmp::Ordering::Equal
+        {
+            end += 1;
+        }
+        if end - start > 1 {
+            let mut chunk_ids: Vec<&str> = scored[start..end]
+                .iter()
+                .map(|candidate| candidate.chunk_id.as_str())
+                .collect();
+            chunk_ids.sort_unstable();
+            chunk_ids.dedup();
+            let placeholders = crate::search::placeholders(chunk_ids.len());
+            let sql = format!(
+                "SELECT chunk_id, text FROM text_chunks WHERE chunk_id IN ({placeholders})"
+            );
+            let mut statement = core.conn.prepare(&sql)?;
+            let rows = statement.query_map(
+                rusqlite::params_from_iter(chunk_ids),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
+            let mut texts: std::collections::HashMap<String, String> =
+                std::collections::HashMap::with_capacity(end - start);
+            for row in rows {
+                let (chunk_id, text) = row?;
+                texts.insert(chunk_id, text);
+            }
+            for candidate in &mut scored[start..end] {
+                let text = texts.get(&candidate.chunk_id).ok_or_else(|| {
+                    CoreError::CorruptedData {
+                        message: format!(
+                            "候选块的正文不见了：chunk_id = {}（块表与向量表不一致）",
+                            candidate.chunk_id
+                        ),
+                    }
+                })?;
+                candidate.content_key = crate::support::content_hash(text);
+            }
+            scored[start..end].sort_by(rank_order);
+        }
+        start = end;
+    }
+    Ok(())
 }
 
 /// 融合/量测用：这一篇的**证据正文**的稳定哈希（与 `materialize` 取摘录用的是同一段
@@ -1813,7 +1968,7 @@ fn ranking_with_mode(
     let embedder = core.embedder()?;
     // 口径不一致时给**空排名**：与产品路径「语义这一路不作数」同一口径，
     // 而不是把跨空间的分数当成量测结果报出去。
-    match candidates_impl(core, &*embedder, query, filters, mode)? {
+    match candidates_impl(core, &*embedder, query, filters, mode)?.candidates {
         SemanticCandidates::ForeignSpace(_) => Ok(Vec::new()),
         SemanticCandidates::Scored(candidates) => Ok(candidates
             .into_iter()
@@ -1953,4 +2108,87 @@ pub(crate) fn caliber_mismatch(
         current_dims: caliber.dims,
         current_storage: caliber.storage.to_owned(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 一条只关心排序键的候选。除 `chunk_id` / `content_key` / `score` 外都用同一组值，
+    /// 这样测试能精确钉住「哪一道键在决胜」。
+    fn candidate(chunk_id: &str, content_key: &str, score: f32) -> SemanticCandidate {
+        SemanticCandidate {
+            group_id: "grp".to_owned(),
+            chunk_id: chunk_id.to_owned(),
+            span_ordinal: 0,
+            content_key: content_key.to_owned(),
+            score,
+            capture_id: "cap".to_owned(),
+            source_id: "src".to_owned(),
+            source_revision_id: "rev".to_owned(),
+            kind: "text".to_owned(),
+            coverage: Coverage::Complete,
+            day_key: "2026-09-20".to_owned(),
+            start_char: 0,
+            end_char: 390,
+        }
+    }
+
+    /// issue #57 的回归（纯排序层，不建库、不依赖随机 UUID）：
+    /// 两条候选的（分数、日期、篇内区间、段序号）全部相同、**正文不同**时，
+    /// 顺序必须由 `content_key` 决定；把 `chunk_id` 故意排成相反顺序也不能翻盘。
+    ///
+    /// 这条测试就是「去掉 `content_key` 这一道键就会红」的那一条：删掉
+    /// `rank_order` 里的 `.then_with(|| left.content_key.cmp(&right.content_key))`，
+    /// 下面的左/右顺序会跟着 `chunk_id` 翻过来。
+    #[test]
+    fn equal_position_different_content_is_ordered_by_content_not_chunk_id() {
+        // 正文 A 的块 id 故意大于正文 B（旧逻辑会把 B 排前面）。
+        let content_a = candidate("chunk_zzz", "aaaa", 1.0);
+        let content_b = candidate("chunk_aaa", "bbbb", 1.0);
+        assert_eq!(
+            rank_order(&content_a, &content_b),
+            std::cmp::Ordering::Less,
+            "同分同区间时必须先比正文哈希（content_key），不能先比库内 chunk_id"
+        );
+        assert_eq!(
+            rank_order(&content_b, &content_a),
+            std::cmp::Ordering::Greater
+        );
+
+        // 反过来：正文相同（content_key 相同）时才允许 `chunk_id` 兜底。
+        let same_text_low = candidate("chunk_aaa", "same", 1.0);
+        let same_text_high = candidate("chunk_zzz", "same", 1.0);
+        assert_eq!(
+            rank_order(&same_text_low, &same_text_high),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    /// 全序：任意输入顺序排完都一样；分数 / 日期 / 区间仍按既定方向。
+    #[test]
+    fn candidate_order_is_total_and_deterministic() {
+        let mut forward = vec![
+            candidate("chunk_a", "aa", 0.5),
+            candidate("chunk_b", "bb", 0.9),
+            candidate("chunk_c", "cc", 0.9),
+            candidate("chunk_d", "aa", 0.5),
+        ];
+        let mut backward = forward.clone();
+        forward.sort_by(rank_order);
+        backward.reverse();
+        backward.sort_by(rank_order);
+        let ids = |items: &[SemanticCandidate]| {
+            items
+                .iter()
+                .map(|item| item.chunk_id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&forward), ids(&backward), "换输入顺序不能换结果");
+        assert_eq!(
+            forward.first().map(|item| item.score),
+            Some(0.9),
+            "分数高的在前"
+        );
+    }
 }

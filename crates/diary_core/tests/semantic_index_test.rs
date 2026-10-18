@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, TimeZone, Utc};
 use diary_core::{
-    Core, CreateDraftInput, EmbedOptions, Embedder, ImportManifest, ImportOrigin, ImportRequest,
-    MatchedBy, SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
-    SourceKind, VectorStorage,
+    Core, CreateDraftInput, EmbedOptions, Embedder, Embedding, ImportManifest, ImportOrigin,
+    ImportRequest, MatchedBy, SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest,
+    SearchSnapshot, SourceKind, TokenTruncation, VectorStorage,
 };
 use rusqlite::params;
 use sha2::{Digest, Sha256};
@@ -109,19 +109,23 @@ impl Embedder for StubEmbedder {
         EmbedOptions::default()
     }
 
-    fn embed_document(&self, text: &str) -> diary_core::Result<Vec<f32>> {
+    fn embed_document(&self, text: &str) -> diary_core::Result<diary_core::Embedding> {
         self.counters.documents.fetch_add(1, Ordering::SeqCst);
-        Ok(self.vector_for(text, &self.rules))
+        Ok(diary_core::Embedding::untruncated(
+            self.vector_for(text, &self.rules),
+        ))
     }
 
-    fn embed_query(&self, text: &str) -> diary_core::Result<Vec<f32>> {
+    fn embed_query(&self, text: &str) -> diary_core::Result<diary_core::Embedding> {
         self.counters.queries.fetch_add(1, Ordering::SeqCst);
         let rules = if self.query_rules.is_empty() {
             &self.rules
         } else {
             &self.query_rules
         };
-        Ok(self.vector_for(text, rules))
+        Ok(diary_core::Embedding::untruncated(
+            self.vector_for(text, rules),
+        ))
     }
 }
 
@@ -1845,11 +1849,11 @@ fn a_vector_of_the_wrong_length_is_rejected() {
         fn options(&self) -> EmbedOptions {
             EmbedOptions::default()
         }
-        fn embed_document(&self, _text: &str) -> diary_core::Result<Vec<f32>> {
-            Ok(vec![0.0; 8])
+        fn embed_document(&self, _text: &str) -> diary_core::Result<diary_core::Embedding> {
+            Ok(diary_core::Embedding::untruncated(vec![0.0; 8]))
         }
-        fn embed_query(&self, _text: &str) -> diary_core::Result<Vec<f32>> {
-            Ok(vec![0.0; 8])
+        fn embed_query(&self, _text: &str) -> diary_core::Result<diary_core::Embedding> {
+            Ok(diary_core::Embedding::untruncated(vec![0.0; 8]))
         }
     }
 
@@ -1918,8 +1922,187 @@ fn keyword_search_is_untouched_by_building_semantics() {
     );
 }
 
-// ------------------------------------------------------------ 真模型（不进 CI）
+// ------------------------------------------------------------ #109：超长正文的截断与报告
 
+/// 嵌入器报告了截断时，`SemanticBuildReport` 要**如实累计**块数与 token 数。
+///
+/// 只打日志不算报告：上层（作业进度、探针）拿到的必须是可断言的数字。这里用 2 块
+/// × 每块 107 个 token 构造，断言 2 / 214。
+#[test]
+fn a_truncated_chunk_is_counted_in_the_build_report() {
+    struct TruncatingEmbedder;
+
+    impl Embedder for TruncatingEmbedder {
+        fn model_version(&self) -> &str {
+            "stub-embedder@truncated"
+        }
+
+        fn dims(&self) -> usize {
+            512
+        }
+
+        fn options(&self) -> EmbedOptions {
+            EmbedOptions::default()
+        }
+
+        fn embed_document(&self, text: &str) -> diary_core::Result<Embedding> {
+            Ok(Embedding {
+                vector: diary_core::text_hash_vector(text, 512),
+                truncation: Some(TokenTruncation {
+                    original_tokens: 617,
+                    kept_tokens: diary_core::MAX_BODY_TOKENS,
+                    dropped_tokens: 107,
+                }),
+            })
+        }
+
+        fn embed_query(&self, text: &str) -> diary_core::Result<Embedding> {
+            Ok(Embedding::untruncated(diary_core::text_hash_vector(text, 512)))
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    core.set_embedder(Box::new(TruncatingEmbedder));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "op-trunc-a");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "op-trunc-b");
+
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.embedded_chunks, 2);
+    assert_eq!(
+        report.truncated_chunks, 2,
+        "两块都被截断，报告里必须是 2（只打日志就等于没报）"
+    );
+    assert_eq!(
+        report.truncated_tokens, 214,
+        "107 × 2：报告要给出被截掉的 token 总数"
+    );
+
+    // 向量照写、检索照用：截断不是错误，也不该让索引失效。
+    let status = core.index_status(None).unwrap();
+    assert!(status.semantic_index_ready);
+    assert!(
+        !search_mode(&mut core, "妈妈", SearchMode::Semantic, 20)
+            .results
+            .is_empty(),
+        "截断过的块仍然要能被语义召回"
+    );
+}
+
+/// #109：一篇超长正文被切成多块之后，关键词、语义、混合三路都不报错、都还能召回。
+///
+/// 这条钉的是「修复不能把检索弄坏」：入口加了截断、报告加了字段，检索那条路的
+/// 向量仍然是 512 维、块仍然按篇折叠。
+#[test]
+fn a_long_capture_stays_searchable_on_both_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    // 规则把「含妈妈」的块与查询都映射到同一个单位向量：余弦 1，混合那一路才有
+    // 证据过门槛（纯哈希向量的相似度只有 0.06，会被证据门槛挡掉）。
+    core.set_embedder(stub(&counters, vec![("妈妈", unit(0))]));
+
+    // 16 字 × 200 = 3200 字：按 400 字一块会切成 8 块以上（带 48 字重叠）。
+    let text = "妈妈打电话来说她最近身体不太好。".repeat(200);
+    let capture_id = write_capture(&mut core, at(2026, 9, 20), &text, "op-long");
+
+    let report = core.build_semantic_index(None).unwrap();
+    assert!(
+        report.total_chunks > 1,
+        "这么长的正文必须被切成多块（实际 {} 块）",
+        report.total_chunks
+    );
+    assert_eq!(
+        report.truncated_chunks, 0,
+        "产品切块（400 字符）在 512 token 以内，正常不该有截断"
+    );
+    assert_eq!(report.embedded_chunks, report.total_chunks);
+
+    let keyword = search_mode(&mut core, "妈妈", SearchMode::Keyword, 20);
+    assert_eq!(
+        keyword.results.first().map(|hit| hit.group_id.as_str()),
+        Some(capture_id.as_str()),
+        "关键词那一路不报错、仍能命中：{:?}",
+        keyword.warnings
+    );
+
+    let semantic = search_mode(&mut core, "妈妈", SearchMode::Semantic, 20);
+    assert!(
+        !semantic.results.is_empty(),
+        "语义那一路不报错、仍能命中：{:?}",
+        semantic.warnings
+    );
+    assert!(
+        semantic
+            .results
+            .iter()
+            .all(|hit| hit.group_id == capture_id),
+        "同一篇的多个块要按篇折叠成一条"
+    );
+
+    let hybrid = hybrid_mode(&mut core, "妈妈", 20);
+    assert_eq!(
+        hybrid.phase,
+        SearchPhase::HybridReady,
+        "混合那一路要能完成融合：{:?}",
+        hybrid.warnings
+    );
+    assert!(!hybrid.results.is_empty(), "融合后不该凭空丢结果");
+}
+
+/// #109：查询超长被截断时，检索快照的 `warnings` 必须如实说出来（不是只打日志）。
+#[test]
+fn a_truncated_query_is_reported_in_the_search_warnings() {
+    struct TruncatingQueryEmbedder;
+
+    impl Embedder for TruncatingQueryEmbedder {
+        fn model_version(&self) -> &str {
+            "stub-embedder@truncated-query"
+        }
+
+        fn dims(&self) -> usize {
+            512
+        }
+
+        fn options(&self) -> EmbedOptions {
+            EmbedOptions::default()
+        }
+
+        fn embed_document(&self, text: &str) -> diary_core::Result<Embedding> {
+            Ok(Embedding::untruncated(diary_core::text_hash_vector(text, 512)))
+        }
+
+        fn embed_query(&self, text: &str) -> diary_core::Result<Embedding> {
+            Ok(Embedding {
+                vector: diary_core::text_hash_vector(text, 512),
+                truncation: Some(TokenTruncation {
+                    original_tokens: 617,
+                    kept_tokens: diary_core::MAX_BODY_TOKENS,
+                    dropped_tokens: 107,
+                }),
+            })
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    core.set_embedder(Box::new(TruncatingQueryEmbedder));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "op-query");
+    core.build_semantic_index(None).unwrap();
+
+    let semantic = search_mode(&mut core, "很长很长的查询", SearchMode::Semantic, 20);
+    let warning = semantic
+        .warnings
+        .iter()
+        .find(|warning| warning.contains("查询太长"))
+        .unwrap_or_else(|| panic!("查询截断必须在 warnings 里说：{:?}", semantic.warnings));
+    assert!(
+        warning.contains("107"),
+        "警告里要带被截掉的 token 数：{warning}"
+    );
+}
+
+// ------------------------------------------------------------ 真模型（不进 CI）
 /// 真模型端到端：加载 bge-small-zh-v1.5、建向量、语义检索、按篇折叠。
 ///
 /// **不进 CI**（CI 上没有模型、没有 ORT 动态库），手动跑：
@@ -3237,5 +3420,276 @@ fn int8_search_finds_the_same_pieces_as_f32() {
             .map(|(group, _)| group.clone())
             .collect::<Vec<_>>(),
         "这一组用例上 int8 的排序应当与 f32 相同"
+    );
+}
+
+/// 与 `long_piece_with_insomnia` 同一个形状，只把段标识换成 `tag`：用来造**两份等长、
+/// 内容不同**的长文。两份都被同一条切块规则切成两块，四块都含「失眠」。
+fn long_piece_with_tag(tag: &str) -> String {
+    let mut text = String::new();
+    for index in 0..24 {
+        if index == 12 {
+            text.push_str(&format!(
+                "第12段 {tag}：这一段说的是连续几天失眠，凌晨两点还醒着。\n"
+            ));
+        } else {
+            text.push_str(&format!(
+                "第{index}段 {tag}：今天天气不错，路上人很多，顺便买了点水果回家。\n"
+            ));
+        }
+    }
+    text
+}
+
+/// issue #57 的第二半（旧修复只挡到「同一篇的两块」）：**不同篇**的两段也可能拥有
+/// 完全相同的（分数、日期、篇内起点 / 终点、段序号）。这时若落到 `chunk_id`，
+/// 又会回到「每个库不一样」的老问题——两条候选正文不同，摘录会真的换人。
+///
+/// 构造：同一天导入两份等长、不同内容的长文 A/B，四块都含查询词，桩把所有含查询词
+/// 的块映射成同一个单位向量 ⇒ 四块分数都是 1.0。A、B 的第一段都是
+/// `(2026-09-20, start=0, end=390, ordinal=0, score=1.0)`，前五道键完全相同；旧逻辑
+/// 只能用 `chunk_id`（每库随机 UUID）决定先后。
+///
+/// 断言的是**整份结果顺序**（摘录 + 定位区间）在 16 份独立库之间逐条相同。
+/// 旧逻辑下每份库都是一次独立抛硬币，16 轮全对的概率约 2^-15；这里**验证过**
+/// 去掉 `content_key` 这道键会红。
+#[test]
+fn equal_score_across_pieces_is_ordered_by_content_across_libraries() {
+    const ROUNDS: usize = 16;
+    type Evidence = (Option<String>, Option<i64>, Option<i64>);
+    let mut evidence: Vec<Vec<Evidence>> = Vec::new();
+
+    for round in 0..ROUNDS {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+        let mut core = new_core(dir.path());
+        let counters = Arc::new(Counters::default());
+        core.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+
+        let capture_a = write_capture(&mut core, at(2026, 9, 20), "", "op");
+        import_and_extract(
+            &mut core,
+            &capture_a,
+            "长文A.txt",
+            &long_piece_with_tag("A"),
+            &format!("matA{round}"),
+        );
+        let capture_b = write_capture(&mut core, at(2026, 9, 20), "", "op2");
+        import_and_extract(
+            &mut core,
+            &capture_b,
+            "长文B.txt",
+            &long_piece_with_tag("B"),
+            &format!("matB{round}"),
+        );
+
+        let built = core.build_semantic_index(None).unwrap();
+        assert_eq!(
+            built.total_chunks, 4,
+            "前提（第 {round} 轮）：两份等长长文各切成两块"
+        );
+
+        // 前提：四块都含「失眠」，桩给它们同一个单位向量，分数才会完全相同。
+        let conn = open(&path);
+        let with_word = count(
+            &conn,
+            "SELECT COUNT(*) FROM text_chunks WHERE text LIKE '%失眠%'",
+            "text_chunks",
+        );
+        assert_eq!(
+            with_word, 4,
+            "前提（第 {round} 轮）：四块都含「失眠」，分数才会完全相同"
+        );
+        // 前提：A、B 的第一段拥有完全相同的篇内区间；两篇各两块，区间分布是 2+2。
+        let span_groups: Vec<(i64, i64, i64)> = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT start_char, end_char, COUNT(*) FROM chunk_spans \
+                     GROUP BY start_char, end_char ORDER BY start_char",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(
+            span_groups,
+            vec![(0, 390, 2), (343, 731, 2)],
+            "前提（第 {round} 轮）：不同篇的两块区间完全重合，才谈得上「同分谁当证据」"
+        );
+        drop(conn);
+
+        let snapshot = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+        assert_eq!(
+            snapshot.results.len(),
+            2,
+            "前提（第 {round} 轮）：两份长文各折叠成一条命中"
+        );
+        evidence.push(
+            snapshot
+                .results
+                .iter()
+                .map(|hit| {
+                    (
+                        hit.snippet.clone(),
+                        hit.locator.as_ref().and_then(|locator| locator.text_start),
+                        hit.locator.as_ref().and_then(|locator| locator.text_end),
+                    )
+                })
+                .collect(),
+        );
+    }
+
+    for (round, entry) in evidence.iter().enumerate() {
+        assert_eq!(
+            entry, &evidence[0],
+            "第 {round} 份库的结果顺序与第 0 份不同：{:?} vs {:?}\
+             （不同篇的两段同分时，必须由内容键（content_key）决胜，不能落到每库随机的 chunk_id）",
+            entry, evidence[0]
+        );
+    }
+}
+
+/// 同一个库、同一个查询、两个独立的 `Core` 连接：结果必须**逐字节**相同。
+///
+/// 这是「同一查询跑两次」的最直接形态；跨到**另一个进程**再跑一次的那一条在
+/// `same_library_cross_process_is_byte_identical` 里。
+#[test]
+fn same_library_two_cores_agree_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+
+    {
+        let mut build = Core::open(&path).unwrap();
+        let counters = Arc::new(Counters::default());
+        build.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+        let capture = write_capture(&mut build, at(2026, 9, 20), "", "op");
+        import_and_extract(
+            &mut build,
+            &capture,
+            "长文A.txt",
+            &long_piece_with_tag("A"),
+            "matA",
+        );
+        let capture = write_capture(&mut build, at(2026, 9, 20), "", "op2");
+        import_and_extract(
+            &mut build,
+            &capture,
+            "长文B.txt",
+            &long_piece_with_tag("B"),
+            "matB",
+        );
+        build.build_semantic_index(None).unwrap();
+    }
+
+    let query = |core: &mut Core| -> (Vec<u8>, Vec<(String, u32)>) {
+        let counters = Arc::new(Counters::default());
+        core.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+        let snapshot = search_mode(core, "失眠", SearchMode::Semantic, 20);
+        let ranking = core
+            .semantic_ranking("失眠", &SearchFilters::default())
+            .unwrap()
+            .into_iter()
+            .map(|(group, score)| (group, score.to_bits()))
+            .collect();
+        (serde_json::to_vec(&snapshot.results).unwrap(), ranking)
+    };
+
+    let mut first = Core::open(&path).unwrap();
+    let mut second = Core::open(&path).unwrap();
+    let (first_bytes, first_ranking) = query(&mut first);
+    let (second_bytes, second_ranking) = query(&mut second);
+    assert_eq!(
+        first_bytes, second_bytes,
+        "两个独立 Core 对同一库、同一查询必须给出逐字节相同的结果"
+    );
+    assert_eq!(
+        first_ranking, second_ranking,
+        "分数的 f32 位模式也必须逐位相同（不是「差不多」）"
+    );
+}
+
+/// 跨进程：父进程建好库，再用**同一测试二进制**起一个子进程查一次；两边的
+/// （顺序 + 摘录 + 定位 + `semantic_ranking` 的 f32 位）必须逐字节相同。
+///
+/// 子进程与父进程的 `HashMap` 随机种子不同，所以如果有人误把排序/折叠建立在
+/// 容器迭代顺序上，这条会红。子进程模式靠环境变量区分；正常跑测试时它什么都不做。
+#[test]
+fn same_library_cross_process_is_byte_identical() {
+    const DB_ENV: &str = "DIARY57_CROSS_PROCESS_DB";
+
+    let query_json = |core: &mut Core| -> String {
+        let counters = Arc::new(Counters::default());
+        core.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+        let snapshot = search_mode(core, "失眠", SearchMode::Semantic, 20);
+        let ranking: Vec<(String, u32)> = core
+            .semantic_ranking("失眠", &SearchFilters::default())
+            .unwrap()
+            .into_iter()
+            .map(|(group, score)| (group, score.to_bits()))
+            .collect();
+        serde_json::to_string(&(snapshot.results, ranking)).unwrap()
+    };
+
+    if let Some(path) = std::env::var_os(DB_ENV) {
+        let mut core = Core::open(Path::new(&path)).unwrap();
+        println!("ZZ57_CHILD={}", query_json(&mut core));
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    {
+        let mut build = Core::open(&path).unwrap();
+        let counters = Arc::new(Counters::default());
+        build.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+        let capture = write_capture(&mut build, at(2026, 9, 20), "", "op");
+        import_and_extract(
+            &mut build,
+            &capture,
+            "长文A.txt",
+            &long_piece_with_tag("A"),
+            "matA",
+        );
+        let capture = write_capture(&mut build, at(2026, 9, 20), "", "op2");
+        import_and_extract(
+            &mut build,
+            &capture,
+            "长文B.txt",
+            &long_piece_with_tag("B"),
+            "matB",
+        );
+        build.build_semantic_index(None).unwrap();
+    }
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "same_library_cross_process_is_byte_identical",
+            "--nocapture",
+        ])
+        .env(DB_ENV, &path)
+        .output()
+        .expect("起子进程失败");
+    assert!(
+        output.status.success(),
+        "子进程失败：{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let child = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("ZZ57_CHILD="))
+        .unwrap_or_else(|| {
+            panic!("子进程没有输出 ZZ57_CHILD 行；stdout = {stdout:?}");
+        });
+
+    let mut parent = Core::open(&path).unwrap();
+    let parent_json = query_json(&mut parent);
+    assert_eq!(
+        child, parent_json,
+        "同一库、同一查询在另一个进程里必须给出逐字节相同的结果"
     );
 }

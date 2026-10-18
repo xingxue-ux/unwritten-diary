@@ -68,16 +68,20 @@ impl Embedder for StubEmbedder {
         EmbedOptions::default()
     }
 
-    fn embed_document(&self, text: &str) -> diary_core::Result<Vec<f32>> {
+    fn embed_document(&self, text: &str) -> diary_core::Result<diary_core::Embedding> {
         self.counters.documents.fetch_add(1, Ordering::SeqCst);
         if !self.delay.is_zero() {
             std::thread::sleep(self.delay);
         }
-        Ok(diary_core::text_hash_vector(text, self.dims))
+        Ok(diary_core::Embedding::untruncated(diary_core::text_hash_vector(
+            text, self.dims,
+        )))
     }
 
-    fn embed_query(&self, text: &str) -> diary_core::Result<Vec<f32>> {
-        Ok(diary_core::text_hash_vector(text, self.dims))
+    fn embed_query(&self, text: &str) -> diary_core::Result<diary_core::Embedding> {
+        Ok(diary_core::Embedding::untruncated(diary_core::text_hash_vector(
+            text, self.dims,
+        )))
     }
 }
 
@@ -791,12 +795,12 @@ impl Embedder for WrongDimsEmbedder {
         EmbedOptions::default()
     }
 
-    fn embed_document(&self, _text: &str) -> diary_core::Result<Vec<f32>> {
-        Ok(vec![0.0_f32; 384])
+    fn embed_document(&self, _text: &str) -> diary_core::Result<diary_core::Embedding> {
+        Ok(diary_core::Embedding::untruncated(vec![0.0_f32; 384]))
     }
 
-    fn embed_query(&self, _text: &str) -> diary_core::Result<Vec<f32>> {
-        Ok(vec![0.0_f32; 512])
+    fn embed_query(&self, _text: &str) -> diary_core::Result<diary_core::Embedding> {
+        Ok(diary_core::Embedding::untruncated(vec![0.0_f32; 512]))
     }
 }
 
