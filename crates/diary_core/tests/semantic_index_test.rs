@@ -603,6 +603,9 @@ fn an_interrupted_generation_resumes_without_activating_half_a_build() {
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
     core.set_embedder(stub(&counters, vec![]));
+    // 这条测的是**同口径续跑**，不靠默认存储：把整条测试显式钉在 f32 上，
+    // 否则默认值一改，下面的「续上 / 复用」就会变成「换格式整代重算」。
+    core.set_vector_storage_for_test(VectorStorage::F32);
     write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
     write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
     core.build_semantic_index(None).unwrap();
@@ -672,6 +675,9 @@ fn switching_models_mid_build_discards_the_half_built_generation() {
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
     // A：512 维，把两篇正文都映到 e0，先建出一代生效向量。
+    // 这条测的是**换模型**，所以把存储显式钉在 int8 上：A 的生效代次与半成品
+    // 用同一种编码，口径差异只来自 model_version / dims，不掺 storage。
+    core.set_vector_storage_for_test(VectorStorage::Int8);
     core.set_embedder(Box::new(StubEmbedder::with_dims(
         A_VERSION,
         512,
@@ -683,7 +689,7 @@ fn switching_models_mid_build_discards_the_half_built_generation() {
     let first = core.build_semantic_index(None).unwrap();
     assert_eq!(first.embedded_chunks, 2, "前提：A 先建好一代");
 
-    // 模拟「A 在第 2 代里只写了苹果那一块就中断了」。
+    // 模拟「A 在第 2 代里只写了苹果那一块就中断了」（与第 1 代同编码，只有模型会变）。
     {
         let conn = open(&path);
         let chunk_id: String = conn
@@ -696,8 +702,12 @@ fn switching_models_mid_build_discards_the_half_built_generation() {
         conn.execute(
             "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, storage, \
                                         vector, created_at) \
-             VALUES (?1, 2, ?2, 512, 'f32', zeroblob(2048), '2026-10-10T00:00:00.000Z')",
-            params![chunk_id, A_VERSION],
+             VALUES (?1, 2, ?2, 512, 'int8', ?3, '2026-10-10T00:00:00.000Z')",
+            params![
+                chunk_id,
+                A_VERSION,
+                VectorStorage::Int8.encode(&vec![0.0_f32; 512])
+            ],
         )
         .unwrap();
         conn.execute("UPDATE index_meta SET building_generation = 2", [])
@@ -760,7 +770,7 @@ fn switching_models_mid_build_discards_the_half_built_generation() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(caliber, (B_VERSION.to_owned(), 384, "f32".to_owned()));
+    assert_eq!(caliber, (B_VERSION.to_owned(), 384, "int8".to_owned()));
     assert_eq!(
         count(&conn, "SELECT COUNT(*) FROM chunk_vectors", "chunk_vectors"),
         2,
@@ -802,9 +812,10 @@ fn switching_models_mid_build_discards_the_half_built_generation() {
 
 /// 回归（评审在 #58 上指出的）：**半个代次的存储格式与当前不一致时，同样整代废弃重算**。
 ///
-/// `storage` 是「一套口径」的第三个字段。将来从 f32 换成 int8 时，中断留下的 f32 半成品
-/// 若被当成「已完成」，切出来的代次里就会混着两种编码——搜索读到不认识的 `storage`
-/// 会直接报 `CorruptedData`。这条钉住「换存储格式也当换口径」。
+/// `storage` 是「一套口径」的第三个字段。默认已是 int8；中断留下的 f32 半成品若被
+/// 当成「已完成」，切出来的代次里就会混着两种编码——解码虽然按行分派，跨编码的余弦
+/// 却会被当成正常分数算出来（看起来有结果，但那个分数不代表任何东西）。这条钉住
+/// 「换存储格式也当换口径」。
 #[test]
 fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
     let dir = tempfile::tempdir().unwrap();
@@ -812,11 +823,13 @@ fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
     core.set_embedder(stub(&counters, vec![]));
+    // 当前代次显式用 int8（不靠默认）；下面故意把半成品写成 f32，构造「换过格式」。
+    core.set_vector_storage_for_test(VectorStorage::Int8);
     write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
     write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
     core.build_semantic_index(None).unwrap();
 
-    // 模拟「上一轮开到第 2 代、用另一种存储格式写了一块就中断」。
+    // 模拟「上一轮开到第 2 代、用另一种存储格式（f32）写了一块就中断」。
     {
         let conn = open(&path);
         let chunk_id: String = conn
@@ -829,9 +842,9 @@ fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
         conn.execute(
             "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, storage, \
                                         vector, created_at) \
-             VALUES (?1, 2, 'stub-embedder@000000000000', 512, 'i8', zeroblob(2048), \
+             VALUES (?1, 2, 'stub-embedder@000000000000', 512, 'f32', ?2, \
                      '2026-10-10T00:00:00.000Z')",
-            params![chunk_id],
+            params![chunk_id, diary_core::vector_bytes(&vec![0.0_f32; 512])],
         )
         .unwrap();
         conn.execute("UPDATE index_meta SET building_generation = 2", [])
@@ -840,15 +853,15 @@ fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
 
     let report = core.build_semantic_index(None).unwrap();
     assert_eq!(report.generation, 2);
-    assert_eq!(report.reused_chunks, 2, "废弃半成品后，两块都能从上一代 f32 复用");
+    assert_eq!(report.reused_chunks, 2, "废弃半成品后，两块都能从上一代 int8 复用");
     assert_eq!(report.embedded_chunks, 0, "没有一块需要重算");
-    assert_eq!(report.resumed_chunks, 0, "store 格式不一致的那一块不算「续上」");
+    assert_eq!(report.resumed_chunks, 0, "storage 格式不一致的那一块不算「续上」");
 
     let conn = open(&path);
     assert_eq!(
         count(
             &conn,
-            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2 AND storage <> 'f32'",
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2 AND storage <> 'int8'",
             "chunk_vectors"
         ),
         0,
@@ -859,8 +872,8 @@ fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
         2
     );
     drop(conn);
-    // 半成品若真被留下，语义检索会在读到 'i8' 那一行时报 `CorruptedData`——能正常
-    // 返回（纯语义是 kNN，会把两块都列出来）就说明整代都是认识的 f32。
+    // 半成品若真被留下，语义检索会读到 f32 那一行——能正常返回（纯语义是 kNN，
+    // 会把两块都列出来）就说明整代都是当前格式 int8。
     assert_eq!(
         search_mode(&mut core, "妈妈", SearchMode::Semantic, 10).results.len(),
         2
@@ -1239,10 +1252,10 @@ fn a_mixed_generation_keeps_semantic_out_of_both_paths_until_rebuild() {
 
 /// issue #80 第 2 条：**`dims` 不一致**的向量行不能静默 `zip` 算分。
 ///
-/// 构造：A（512 维）建好一代，把其中一行的 `dims` 与字节一起改成 384 维的 e0
-/// （行内自洽：记录 384、字节也是 384）。修复前这条会通过「字节 vs 行上记录」的检查
-/// （384 = 384），然后 `cosine` 把 512 维查询 `zip` 到前 384 位，得到 1.0 的
-/// 「相似度」——跨空间错分，而且看起来正常。
+/// 构造：A（512 维，显式 int8）建好一代，把其中一行的 `dims` 与字节一起改成 384 维的 e0
+/// （行内自洽：记录 384、int8 字节 = 4 字节 scale + 384 字节分量）。修复前这条会通过
+/// 「字节 vs 行上记录」的检查（384 = 384），然后 `cosine` 把 512 维查询 `zip` 到前 384 位，
+/// 得到 1.0 的「相似度」——跨空间错分，而且看起来正常。
 ///
 /// 修复后：整代口径判据在**进入计算前**发现 `dims` 不是 512，语义这一路整路不作数
 /// （空结果 + 口径警告），不依赖逐行检查兜底。逐行那条只余下「行内自洽但字节与记录
@@ -1255,6 +1268,9 @@ fn a_dims_mismatch_is_blocked_before_any_cosine() {
     let path = dir.path().join("library.sqlite");
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
+    // 这条测的是坏数据/口径校验，显式钉在 int8 上：下面造坏向量时才能保证
+    // 「scale 合法、只有维度不对」——不是先撞上 int8 自己的 scale 校验。
+    core.set_vector_storage_for_test(VectorStorage::Int8);
     core.set_embedder(Box::new(StubEmbedder::with_dims(
         A_VERSION,
         512,
@@ -1274,12 +1290,12 @@ fn a_dims_mismatch_is_blocked_before_any_cosine() {
         )
         .unwrap()
     };
-    // 行内自洽的 384 维向量：记录 384、字节 384。
+    // 行内自洽的 384 维 int8 向量：记录 384、字节是 4 字节 scale + 384 字节分量。
     {
         let conn = open(&path);
         conn.execute(
             "UPDATE chunk_vectors SET dims = 384, vector = ?1 WHERE chunk_id = ?2",
-            params![diary_core::vector_bytes(&unit_in(384, 0)), chunk_id],
+            params![VectorStorage::Int8.encode(&unit_in(384, 0)), chunk_id],
         )
         .unwrap();
     }
@@ -1314,12 +1330,14 @@ fn a_dims_mismatch_is_blocked_before_any_cosine() {
     assert!(!hybrid.results.iter().any(|hit| hit.group_id == b_capture));
     assert!(hybrid.results.iter().any(|hit| hit.group_id == a_capture));
 
-    // —— 行内自洽但字节与记录不符（坏数据）：如实报错，绝不静默算分 ——
+    // —— 行上记 512 维、字节只解出 8 维（坏数据）：如实报错，绝不静默算分 ——
+    // 用合法的 int8 编码（scale = 1.0）造出 8 个分量，确保先撞到的是「维度不符」
+    // 而不是 int8 自己的「scale 不是正数」。
     {
         let conn = open(&path);
         conn.execute(
             "UPDATE chunk_vectors SET dims = 512, vector = ?1 WHERE chunk_id = ?2",
-            params![diary_core::vector_bytes(&[0.0_f32; 8]), chunk_id],
+            params![VectorStorage::Int8.encode(&[0.0_f32; 8]), chunk_id],
         )
         .unwrap();
     }
@@ -2948,7 +2966,8 @@ fn retired_revision_is_not_returned_by_semantic_search_before_rebuild() {
 
 /// 换存储格式 = 换口径：必须**整代重算**，不能把 f32 向量原地当 int8 用。
 ///
-/// 三件事都钉住：
+/// 默认已是 int8；为了让「换」这个动作真的存在，这里先把旧代次**显式**建成 f32，
+/// 再切到 int8。三件事都钉住：
 /// 1. 只改 `storage`、还没重建时，语义这一路**不作数**（跨编码的余弦是垃圾）；
 /// 2. 重建是一次整代重算（`reused_chunks == 0`，代次 +1）；
 /// 3. 新代次里每一行都是 `int8`、字节数是 `4 + dims`，检索照常出结果。
@@ -2959,6 +2978,8 @@ fn switching_the_storage_format_forces_a_full_recompute() {
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
     core.set_embedder(stub(&counters, vec![]));
+    // 旧代次显式用 f32（不靠默认值：默认已改成 int8）。
+    core.set_vector_storage_for_test(VectorStorage::F32);
     write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
     write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
 
@@ -2972,7 +2993,7 @@ fn switching_the_storage_format_forces_a_full_recompute() {
         .unwrap()
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
-    assert_eq!(storages, vec!["f32".to_owned()], "默认仍是 f32");
+    assert_eq!(storages, vec!["f32".to_owned()], "前提：旧代次显式用 f32");
     drop(conn);
 
     // 换格式，但**先不重建**：口径已经不一致，语义这一路必须整路不作数。
@@ -3024,6 +3045,55 @@ fn switching_the_storage_format_forces_a_full_recompute() {
     assert!(
         snapshot.warnings.iter().all(|warning| !warning.contains("口径")),
         "重建后没有口径问题：{:?}",
+        snapshot.warnings
+    );
+}
+
+/// 新库的默认向量存储是 **int8**（#90 的拍板决定）。
+///
+/// 不设任何测试开关，走产品默认路径建一代：状态里报的是 int8、每一行都是 `int8`
+/// （4 字节 scale + dims 字节），检索照常。换默认之后若有哪条路又回退到 f32，这里会红。
+#[test]
+fn a_new_library_builds_int8_vectors_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    assert_eq!(
+        core.vector_storage(),
+        VectorStorage::Int8,
+        "新库默认必须是 int8（DEFAULT_VECTOR_STORAGE）"
+    );
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.embedded_chunks, 1, "前提：真按默认路径写了一块");
+
+    let conn = open(&path);
+    let storages: Vec<String> = conn
+        .prepare("SELECT DISTINCT storage FROM chunk_vectors")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(storages, vec!["int8".to_owned()], "默认建出来的只能是 int8");
+    let bad_lengths: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM chunk_vectors WHERE LENGTH(vector) <> 4 + dims",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bad_lengths, 0, "int8 行必须是 4 字节 scale + dims 字节");
+    drop(conn);
+
+    let snapshot = search_mode(&mut core, "妈妈", SearchMode::Semantic, 10);
+    assert_eq!(snapshot.results.len(), 1, "int8 默认路径检索照常");
+    assert!(
+        snapshot.warnings.iter().all(|warning| !warning.contains("口径")),
+        "没有口径问题：{:?}",
         snapshot.warnings
     );
 }
@@ -3139,6 +3209,9 @@ fn int8_search_finds_the_same_pieces_as_f32() {
         &counters,
         vec![("妈妈", unit(0)), ("桂花", unit(1)), ("加班", unit(2))],
     ));
+    // 第一代显式用 f32：默认已改成 int8，不写这一行的话两次都是 int8，
+    // 这条测试就会退化成「int8 与 int8 相同」，什么都没验到。
+    core.set_vector_storage_for_test(VectorStorage::F32);
     write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
     write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
     write_capture(&mut core, at(2026, 9, 22), "今天又要加班。", "opC");
