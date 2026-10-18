@@ -33,6 +33,7 @@ import {
 } from '../core/Models';
 import { ContinuousTaskController, ContinuousTaskResult } from './ContinuousTask';
 import { PcmSegmentWriter, SegmentFile } from './PcmSegmentWriter';
+import { KeepScreenOnResult, ScreenKeepOn } from './ScreenKeepOn';
 import {
   SAMPLE_RATE,
   CHANNEL_COUNT,
@@ -58,11 +59,13 @@ export class VoiceRecorder {
   private readonly context: common.UIAbilityContext;
   private readonly options: RecorderOptions;
   private readonly continuous: ContinuousTaskController = new ContinuousTaskController();
+  private readonly screen: ScreenKeepOn = new ScreenKeepOn();
 
   private ticket: RecordingTicket | null = null;
   private capturer: audio.AudioCapturer | null = null;
   private writer: PcmSegmentWriter | null = null;
   private bgTask: ContinuousTaskResult = new ContinuousTaskResult();
+  private keepScreen: KeepScreenOnResult = new KeepScreenOnResult();
 
   private segmentIndex: number = 0;
   private lastRegistered: number = -1;
@@ -106,6 +109,11 @@ export class VoiceRecorder {
 
   taskResult(): ContinuousTaskResult {
     return this.bgTask;
+  }
+
+  /** 录音期间「保持屏幕常亮」的设置结果（失败也要能看见）。 */
+  keepScreenResult(): KeepScreenOnResult {
+    return this.keepScreen;
   }
 
   firstDataLatencyMs(): number {
@@ -162,6 +170,13 @@ export class VoiceRecorder {
 
       // 长时任务先申请（这时 Ability 还在前台）；失败不阻断前台录音，但如实记录。
       this.bgTask = await this.continuous.start(this.context);
+
+      // 录音期间保持屏幕常亮：熄屏会被系统强制 STOP 采集（见文档 §7.3）。
+      // 失败不阻断录音，但结果如实暴露；停止/异常/abort 都会关掉。
+      this.keepScreen = await this.screen.enable(this.context);
+      hilog.info(DOMAIN, TAG, '%{public}s KEEP_SCREEN_ON ok=%{public}s code=%{public}d message=%{public}s',
+        MARK, this.keepScreen.ok ? 'true' : 'false',
+        this.keepScreen.error_code, this.keepScreen.error_message);
 
       // 第 0 段先建文件、写好 WAV 头；这样第一块 PCM 到达时不会因为建文件抖动。
       this.openSegment(0);
@@ -262,7 +277,7 @@ export class VoiceRecorder {
     this.reportState('stopping', this.elapsedMs(), this.elapsedMs(), '');
 
     if (this.lastRegistered < 0) {
-      await this.continuous.stop(this.context);
+      await this.releaseHold();
       throw new DiaryError('invalid_state', '没有可用的已封闭片段，核心会拒绝最终化（先检查麦克风权限/采集回调）');
     }
 
@@ -283,15 +298,16 @@ export class VoiceRecorder {
       hilog.info(DOMAIN, TAG, '%{public}s STOP recording=%{public}s segments=%{public}d pcmMs=%{public}d stopLatencyMs=%{public}d',
         MARK, ticket.recording_id, result.segment_count, this.elapsedMs(),
         nowUptimeMs() - this.stopRequestedMs);
-      await this.continuous.stop(this.context);
       return result;
     } catch (e) {
       this.phase = 'error';
       this.errorText = describeError(e as Object);
       hilog.error(DOMAIN, TAG, '%{public}s FINALIZE failed %{public}s',
         MARK, this.errorText);
-      await this.continuous.stop(this.context);
       throw DiaryError.fromThrown(e as Object);
+    } finally {
+      // 无论成功/失败，都要把「保持屏幕常亮」和长时任务收掉。
+      await this.releaseHold();
     }
   }
 
@@ -305,7 +321,7 @@ export class VoiceRecorder {
       this.writer.abort();
       this.writer = null;
     }
-    await this.continuous.stop(this.context);
+    await this.releaseHold();
   }
 
   // ---------------------------------------------------------------- 采集回调
@@ -407,6 +423,12 @@ export class VoiceRecorder {
     this.core.updateRecordingState(status);
   }
 
+  /** 收掉「保持屏幕常亮」与长时任务；重复调用安全。 */
+  private async releaseHold(): Promise<void> {
+    await this.screen.disable();
+    await this.continuous.stop(this.context);
+  }
+
   private async stopCapturer(): Promise<void> {
     const capturer = this.capturer;
     if (capturer === null) {
@@ -445,6 +467,10 @@ export class VoiceRecorder {
           MARK, describeError(e));
       });
     }
+    this.releaseHold().catch((e: Object) => {
+      hilog.warn(DOMAIN, TAG, '%{public}s ERROR release hold failed %{public}s',
+        MARK, describeError(e));
+    });
   }
 
   private cleanupAfterFailure(): void {
@@ -464,8 +490,8 @@ export class VoiceRecorder {
       this.writer.abort();
       this.writer = null;
     }
-    this.continuous.stop(this.context).catch((e: Object) => {
-      hilog.warn(DOMAIN, TAG, '%{public}s CLEANUP task stop failed %{public}s',
+    this.releaseHold().catch((e: Object) => {
+      hilog.warn(DOMAIN, TAG, '%{public}s CLEANUP release hold failed %{public}s',
         MARK, describeError(e));
     });
   }

@@ -11,6 +11,23 @@
 
 口径同仓库其它文档：**实测** = 真机跑过并贴输出；**未验** = 明确写没做；**判断** = 推断。
 
+## 0 设备操作纪律（先读）
+
+> **不得在用户设备上触发电源状态变化**（按 Power、`power-shell suspend`、改息屏超时等）。
+> 测试「熄屏/锁屏」这类场景会**让设备停在锁屏状态**，而 `hdc` 无法代用户输入密码/指纹；
+> 必须由**用户本人**决定是否做这类测试，并且**测完立刻恢复**（解锁 + 恢复原息屏设置）。
+
+这条规矩是这一片踩出来的：2026-10-18 为验证「锁屏后能不能继续录」，我在用户设备上按了
+Power，设备进入锁屏且 hdc 无法解锁，只能请用户本人解锁。**副作用落在用户设备上，不划算。**
+
+同一天用户明确说明：**这台机器正常情况下永不锁屏**。所以：
+
+- 「Power 熄屏 → 系统强制 STOP 采集」是**平台策略**的真实行为，但不是这台设备的默认路径；
+- 产品不能假设用户都关掉了自动锁屏：**录音时仍要主动保持屏幕常亮**（§4.4），
+  并在文档里留下「是否要临时延长息屏超时」的产品决策（§10）；
+- 以后要测锁屏/息屏，先由用户确认、由用户操作电源键，测完由用户解锁并恢复设置；
+  agent 只做「不碰电源键」的验证。
+
 ## 1 摘要（先看这个）
 
 | # | 结论 | 强度 |
@@ -23,10 +40,13 @@
 | 6 | 权限被拒时如实返回：`authResults=[-1]`，日志 `PERM DENIED`，**没有**创建草稿/票据、没有开始录音 | **实测** |
 | 7 | C ABI 原本**没有** `recordings.*`（PR #117 只接了 9 条），本片补了 5 条（prepare / registerSegment / updateState / finalize / recover）；`cargo check -p diary_capi --all-targets` 通过 | 实测（编译） |
 | 8 | 转写链**没有跑通**：每次 finalize 都排了转写任务（`transcription_queued=true`），但设备上没有 ASR 引擎/模型，任务停在 `waiting_configuration` | **未验**（如实） |
-| 9 | 没做：文件选择/导入、通知自定义、2in1 多窗口/多实例、后台唤醒、来电/音频焦点中断、播放/导出、TaskPool 异步化 | 明确未做（§9） |
+| 9 | **录音期间保持屏幕常亮**：`setWindowKeepScreenOn(true)` 成功（`KEEP_SCREEN_ON ok=true`），8 秒录完 4 段、finalize `saved`，停止后 `KEEP_SCREEN_ON released` | **实测**（§7.6） |
+| 10 | 系统息屏超时现值 **30000 ms（30 秒）**（只读 `settings.getValueSync`）；`power-shell timeout` 没有查询模式 | **实测**（§7.6） |
+| 11 | 没做：文件选择/导入、通知自定义、2in1 多窗口/多实例、后台唤醒、来电/音频焦点中断、播放/导出、TaskPool 异步化 | 明确未做（§9） |
 
 **一句话**：录音 → 分片 → 核心 → 音频资产这条链路在 2in1 真机上**前台和后台（Home）都跑通了**；
-**锁屏后采集会停**，这是这一片最需要产品/平台侧拍板的问题；转写因为缺模型没验。
+**主动按 Power 熄屏后采集会被系统 STOP**（平台策略，应用层绕不过），已用「录音时保持屏幕常亮」
+兜住**自动息屏**这条路；转写因为缺模型没验。
 
 ## 2 实现结构（采集 → 分片 → 核心）
 
@@ -182,6 +202,40 @@ DIARY_REC TASK stop ok
 
 系统通知是长时任务自带的「正在录音」通知；本片**没有**自定义通知内容、没有验证通知点击跳转。
 
+### 4.4 录音期间保持屏幕常亮（ScreenKeepOn）
+
+熄屏会被系统强制 STOP 采集（§7.3 的直接原因），应用层绕不过平台策略，所以加一层**产品级兜底**：
+录音开始时把窗口设为「保持屏幕常亮」，让「放着不动就自动息屏」不再杀死录音。
+
+`recording/ScreenKeepOn.ets`：
+
+```ts
+this.win = await window.getLastWindow(context);
+await this.win.setWindowKeepScreenOn(true);   // 录音开始
+await this.win.setWindowKeepScreenOn(false);  // 停止 / 异常 / abort / onDestroy
+```
+
+硬口径：
+
+- **失败不阻断录音**：拿不到窗口或系统拒绝（`1300002` 窗口状态异常 / `1300003` WMS 异常等）时，
+  只把 `ok=false` + 系统错误码写进 `KEEP_SCREEN_ON ok=false code=… message=…`，录音继续；
+- **停止/异常必须关掉**：`VoiceRecorder.stop()` 的 `finally`、`abort()`、`fail()`、
+  `cleanupAfterFailure()` 都会走 `ScreenKeepOn.disable()`；`RecordingVerify.shutdown()`
+  在 Ability 销毁时也走 `abort()`。日志 `KEEP_SCREEN_ON released` 是收回成功的证据；
+- **不碰电源状态**：不按 Power、不 `power-shell suspend`、不改息屏超时（见 §0）；
+- 系统文档提醒 `setWindowKeepScreenOn(true)` 只应在必要场景使用，非标准使用可能被系统判定并
+  自动熄屏；录音是「用户明确发起 + 屏幕上有录音界面」的场景，但**长于息屏阈值的持续常亮未验**（§7.6）。
+
+真机（8 秒、未按 Power）：
+
+```text
+DIARY_REC SCREEN_TIMEOUT name=settings.display.screen_off_timeout value=30000
+DIARY_REC KEEP_SCREEN_ON ok=true
+DIARY_REC KEEP_SCREEN_ON ok=true code=0 message=
+DIARY_REC FINALIZE {"logical_duration_ms":8000,"segment_count":4,"state":"saved",…}
+DIARY_REC KEEP_SCREEN_ON released
+```
+
 ## 5 落到核心：C ABI 补的 5 条
 
 PR #117 的 C ABI 只接了 9 条方法，**没有 `recordings.*`**；这一片在 `crates/diary_capi`
@@ -240,7 +294,7 @@ DIARY_REC RECOVER_FINALIZE count=1
 | 系统 | OpenHarmony-6.1.0.115；产品软件版本 `HAD-W24 6.1.0.117(SP68C00E100R13P3)`；API 23 |
 | hdc target | `3QC0124C20001776` |
 | 安装身份 | **产品名** `com.lingxing.unwrittendiary`，debug 签名（DevEco 自动签名 Profile） |
-| HAP | debug signed `13,232,335 B`，sha256 `abe0a09479c4b3d6bb8605b92d31572ed6a0434e32801cd2028598225756c196` |
+| HAP | debug signed `13,244,956 B`，sha256 `a97f807a7668fe5b076e68c8f66f3203febd057ce68326dbe59fc930f79d9956` |
 | 安装 | `msg:install bundle successfully.`（`hdc install -r` 的 rc 不可信，按 stdout 判定） |
 | 窗口形态 | 2in1 窗口化（窗口不是全屏；`uitest dumpLayout` 的 root 是 `ContainerModal`） |
 
@@ -332,7 +386,9 @@ blob `256,044 B` = 44 + 8×32,000；`STAGING remaining=0`。**Home 后台录音�
 `closed_segment_indexes=[0,1]`、`state=recoverable`、notes 写「尾巴未知」。
 
 **结论（只对这台 2in1 / 这个系统版本）**：长时任务申请成功、Home 后台能录，
-**按 Power 熄屏后系统强制停止采集，亮屏也不自动恢复**。最终化不会报错——它按
+**按 Power 熄屏（或系统自动息屏）后系统强制停止采集，亮屏也不自动恢复**。现在加了
+`ScreenKeepOn`（§4.4/§7.6）让「自动息屏」这条路不再发生；但**用户主动按 Power** 仍然
+会 STOP，这是平台策略，应用层没有绕过的办法。最终化不会报错——它按
 「已登记片段」拼出 3.1 秒音频、`state=saved`，缺失的约 5 秒是**未被核心发现的尾巴**。
 
 代码现在做的：`stateChange` 一旦在 `recording` 期间变成非 RUNNING，就把
@@ -366,6 +422,35 @@ DIARY_REC VERIFY ABORT permission_not_granted
 
 没有 `CAPTURE` / `PREPARE` / `START`；页面/探针都只显示失败，不会假装在录。
 
+### 7.6 录音期间保持屏幕常亮（8 秒，不按 Power）
+
+复验方式：`verify_mode=record_bg`（8 秒自动停止），**全程不按 Power、不发 Home、不改息屏设置**。
+
+```text
+DIARY_REC VERIFY mode=record_bg pid=14741
+DIARY_REC SCREEN_TIMEOUT name=settings.display.screen_off_timeout value=30000
+DIARY_REC KEEP_SCREEN_ON ok=true
+DIARY_REC KEEP_SCREEN_ON ok=true code=0 message=
+DIARY_REC START … sampleRate=16000 channels=1 bits=16 segmentMs=2000 bgTask=ok
+DIARY_REC SEG index=0 file=segment-000000.wav bytes=64044 pcmMs=2000
+DIARY_REC SEG index=1 file=segment-000001.pcm bytes=64000 pcmMs=2000
+DIARY_REC SEG index=2 file=segment-000002.pcm bytes=64000 pcmMs=2000
+DIARY_REC SEG index=3 file=segment-000003.pcm bytes=64000 pcmMs=2000
+DIARY_REC FINALIZE {"logical_duration_ms":8000,"segment_count":4,"state":"saved","transcription_queued":true}
+DIARY_REC KEEP_SCREEN_ON released
+DIARY_REC MEASURE wallMs=8151 cpuMs=446 cpuPercent=5.47 captureLatencyMs=35.905782
+DIARY_REC STAGING remaining=0 names=
+```
+
+- 段数/时长：4 段（2/2/2/2 秒），`logical_duration_ms=8000`，blob `256,044 B`（44 + 8×32,000）；
+- 屏幕常亮：设置成功（`ok=true code=0`），停止后 `released`；
+- **当前息屏超时 = 30000 ms**（只读 `settings.getValueSync(context, settings.display.SCREEN_OFF_TIMEOUT)`）；
+  `power-shell timeout` 没有查询子命令（`-o` 设值、`-r` 恢复），所以没有用它读；`-r` 尝试返回
+  `Restore screen off time failed`，**没有写入**；
+- ⚠️ 8 秒 < 30 秒超时，所以这次只证明「API 接受 + 录音全程屏幕亮着 + 停止后释放」，
+  **没有证明「跨过 30 秒超时仍不熄屏」**；后者需要一次 >30 秒的常亮录音（本次未做，避免
+  在用户设备上制造熄屏/锁屏风险）。
+
 ## 8 设备现在的状态
 
 验证结束后：
@@ -373,23 +458,22 @@ DIARY_REC VERIFY ABORT permission_not_granted
 - 应用 **保留安装**：`com.lingxing.unwrittendiary`，versionCode `1000000` / `1.0.0`，
   debug 签名，`reqPermissionStates=[0,0]`（MICROPHONE 与 KEEP_BACKGROUND_RUNNING 都已授权）；
 - 应用 **已 force-stop**（`pidof` 空），没有在录音、没有残留长时任务；
-- 数据：最后一次 5 秒验证（159,404 B blob）与锁屏验证（99,244 B blob）留下 2 条 capture、
-  2 个 blob、2 条 `waiting_configuration` 转写任务；`recordings.recover` 返回 `open_recordings=0`；
+- **设备已由用户解锁**（2026-10-18 19:23 之后），屏幕正常；之后没有再做任何电源键/息屏操作；
+- 数据：4 条 capture、4 个 blob（159,404 / 99,244 / 256,044 / **256,044 B**）、4 条
+  `waiting_configuration` 转写任务；`recordings.recover` 返回 `open_recordings=0`；
+- 应用已 force-stop，没有在录音、没有残留长时任务/常亮标志；
 - 中间做过一次「卸载 → 重装」来重置权限（拒绝用例），**更早的验证数据已被清掉**；
   上面的日志/文件大小是清理前抓的，证据在 `/mnt/e/ohos/evidence/`（本机临时目录，不进仓库）；
-- ⚠️ **设备当前停在锁屏**：锁屏用例按了 Power（被测行为本身），之后 hdc 不能替用户
-  输密码/指纹。需要人工解锁后设备才回到可操作状态；应用本身仍是安装好的；
-- 最终 HAP（sha256 `abe0a094…`，比实测构建多了「系统中断置 `interrupted` 并写进
-  `end_reason`」这一小段）已 `hdc install -r` 成功，但**因为设备锁屏后 `aa start`
-  被系统拒绝，安装后没有再次启动录制**；§7 的数字来自它的前两个同源构建
-  （`8dd85f6f…` 的 5 秒/后台用例、`3b4ab1b8…` 的锁屏状态日志；除 interrupted 标记外
-  逻辑相同），最终版只做了 `assembleHap` + 安装。解锁后建议复跑
-  `verify_mode record` 一次再签收。
+- 最终 HAP `a97f807a7668fe5b076e68c8f66f3203febd057ce68326dbe59fc930f79d9956`
+  （含 `interrupted` 标记 + `ScreenKeepOn` + Ability 销毁清理）**已安装并真机跑过 8 秒录音**
+  （§7.6），不再有「最终构建没跑过」的缺口。
 
 ## 9 没有做到的（如实）
 
 - **锁屏继续录没做到**：Power 熄屏后采集停止，亮屏不恢复（§7.3）；没有验证「锁屏但屏幕不关」
-  （如合盖/超时锁屏）与「来电中断」；
+  （如合盖/超时锁屏）与「来电中断」；按 §0 纪律，不再在用户设备上主动触发锁屏；
+- **屏幕常亮只验了 8 秒**：当前息屏超时 30 秒，8 秒没有跨过阈值，所以「跨过 30 秒仍不熄屏」
+  未验；`setWindowKeepScreenOn` 失败路径也没有在真机人为制造（拿不到窗口需要无窗口场景）；
 - **转写没验**：没有引擎/模型；`waiting_configuration` 只是「任务在队列里等配置」；
 - **播放/导出没验**：blob 头长度是 4 GiB 占位，外部播放器行为未知；
 - **文件选择/导入没做**：`imports.*` 仍未接 C ABI，这一片只做「自己录」；
@@ -419,7 +503,10 @@ DIARY_REC VERIFY ABORT permission_not_granted
 5. **锁屏录音**：这是硬需求（F1）还是可以接受「锁屏即停」？若要继续，
    需要平台侧方案（ACL 申请 `MICROPHONE_BACKGROUND`、AVSession、或系统白名单），
    不是应用层能单独解决的。
-6. **转写模型部署**：模型放哪、怎么下发/校验、没有模型时界面怎么提示——这一片只把任务排上。
+6. **转写模型部署**：模型放哪、怎么下发/校验、没有模型时界面怎么提示——这一片只把任务排上；
+7. **录音时要不要临时延长息屏超时**：当前系统值 30 秒；`setWindowKeepScreenOn` 是应用级兜底，
+   但系统可能按「非标准使用」自动熄屏。要不要在录音开始时把超时临时拉长、结束时恢复？
+   这会改变用户设备的设置（本片刻意没做，只在文档里记现值）。
 
 ## 11 复现命令
 

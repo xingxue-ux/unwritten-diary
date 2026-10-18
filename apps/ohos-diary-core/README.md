@@ -210,8 +210,12 @@ hdc shell "hilog -x -T DiaryRec" | grep DIARY_REC
 真机结果（2026-10-18，产品身份）：5 秒录出 3 段（64,044 / 64,000 / 31,360 B），
 finalize `state=saved`、`logical_duration_ms=4980`、blob 159,404 B 是合法单头 PCM WAV；
 首包延迟 37.5 ms、录音期间 CPU 5.15%。**Home 后台能继续录**（8 秒/4 段/finalize 成功）；
-**Power 锁屏后系统强制 STOP 采集、亮屏不恢复**（8 秒只录到 3.1 秒，`InterruptHint=STOP`）；转写任务排上了但设备没有
-ASR 引擎/模型，停在 `waiting_configuration`，**转写未验**。
+**Power 锁屏后系统强制 STOP 采集、亮屏不恢复**（8 秒只录到 3.1 秒，`InterruptHint=STOP`）。
+
+录音期间会 `setWindowKeepScreenOn(true)`（`ScreenKeepOn.ets`），停止/异常时释放；
+真机 8 秒用例 `KEEP_SCREEN_ON ok=true`、4 段/8000 ms、停止后 `KEEP_SCREEN_ON released`。
+当前系统息屏超时 **30,000 ms**（只读），8 秒没有跨过该阈值，所以「超过 30 秒仍不熄屏」
+**未验**。转写任务排上了但设备没有 ASR 引擎/模型，停在 `waiting_configuration`，**转写未验**。
 
 ## 真机验证结果（2026-10-18）
 

@@ -11,6 +11,7 @@
 
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { settings } from '@kit.BasicServicesKit';
 import { process } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DiaryCore } from '../core/DiaryCore';
@@ -45,6 +46,7 @@ export class RecordingVerify {
   static async run(mode: string, context: common.UIAbilityContext, filesDir: string): Promise<void> {
     hilog.info(DOMAIN, TAG, '%{public}s VERIFY mode=%{public}s pid=%{public}d filesDir=%{public}s',
       MARK, mode, process.pid, filesDir);
+    logScreenTimeout(context);
 
     const core = DiaryCore.openInDirectory(filesDir);
     try {
@@ -101,13 +103,14 @@ export class RecordingVerify {
       const cpuBefore = process.getPastCpuTime();
       const wallBefore = nowUptimeMs();
       await recorder.start();
+      // 登记活动录音：Ability 被销毁/进程退出时 shutdown() 也能把屏幕常亮与长时任务收掉。
+      RecordingVerify.heldCore = core;
+      RecordingVerify.heldRecorder = recorder;
       hilog.info(DOMAIN, TAG, '%{public}s VERIFY STARTED recording=%{public}s',
         MARK, recorder.recordingId());
 
       if (mode === 'record_hold') {
         // 保持引用，不 stop；外部 `aa force-stop` 或 `process.abort()` 后由下次启动 recover。
-        RecordingVerify.heldCore = core;
-        RecordingVerify.heldRecorder = recorder;
         hilog.info(DOMAIN, TAG, '%{public}s HOLD pid=%{public}d recording=%{public}s',
           MARK, process.pid, recorder.recordingId());
         return;
@@ -166,7 +169,19 @@ export class RecordingVerify {
         MARK, describeError(e as Object));
     } finally {
       // hold 模式不能关：下一次启动（recover 模式）要看库里留下的会话。
-      if (RecordingVerify.heldCore !== core) {
+      if (mode !== 'record_hold') {
+        const active = RecordingVerify.heldRecorder;
+        if (active !== null &&
+          (active.currentPhase() === 'recording' || active.currentPhase() === 'error')) {
+          try {
+            await active.abort();
+          } catch (err) {
+            hilog.warn(DOMAIN, TAG, '%{public}s SHUTDOWN active abort failed %{public}s',
+              MARK, describeError(err as Object));
+          }
+        }
+        RecordingVerify.heldRecorder = null;
+        RecordingVerify.heldCore = null;
         core.close();
       }
     }
@@ -193,6 +208,19 @@ export class RecordingVerify {
 }
 
 // ---------------------------------------------------------------- 日志 / 文件
+
+/** 只读：把系统「息屏超时」现值打进日志（不修改设置）。 */
+function logScreenTimeout(context: common.UIAbilityContext): void {
+  try {
+    const name = settings.display.SCREEN_OFF_TIMEOUT;
+    const value = settings.getValueSync(context, name, 'unknown');
+    hilog.info(DOMAIN, TAG, '%{public}s SCREEN_TIMEOUT name=%{public}s value=%{public}s',
+      MARK, name, value);
+  } catch (e) {
+    hilog.warn(DOMAIN, TAG, '%{public}s SCREEN_TIMEOUT read failed %{public}s',
+      MARK, describeError(e as Object));
+  }
+}
 
 function logJson(label: string, value: Object): void {
   const text = JSON.stringify(value);
