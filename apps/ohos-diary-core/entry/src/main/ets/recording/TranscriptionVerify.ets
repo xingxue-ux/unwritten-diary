@@ -326,8 +326,10 @@ export class TranscriptionVerify {
       await TranscriptionVerify.downloadOne('http://127.0.0.1:8000/zh.wav', wavPath);
     }
     const pcm = readWavPcm(wavPath);
-    hilog.info(DOMAIN, TAG, '%{public}s PLAY wav=%{public}s pcmBytes=%{public}d',
-      MARK, wavPath, pcm.length);
+    // 播的是什么：幅度也打出来，才能和「麦克风收到多少」对上。播放音量受系统媒体
+    // 音量与安全音量保护（长时间大音量会自动降档）影响，只记「播了」不够解释结果。
+    hilog.info(DOMAIN, TAG, '%{public}s PLAY wav=%{public}s pcmBytes=%{public}d rms=%{public}d peak=%{public}d',
+      MARK, wavPath, pcm.length, pcmRms(pcm), pcmPeak(pcm));
 
     const renderer = await audio.createAudioRenderer({
       streamInfo: {
@@ -352,12 +354,17 @@ export class TranscriptionVerify {
     };
     renderer.on('writeData', onWrite);
     await renderer.setVolume(1.0);
-    await renderer.start();
-    hilog.info(DOMAIN, TAG, '%{public}s PLAY started renderer=%{public}d', MARK, renderer.state);
-    await sleep(400);
 
+    // **先开录、再出声**。反过来的话，`record` 模式固定 5 秒，先播 400 ms 会把句首
+    // 吃掉——实测第一版三次里三次都把「开饭」的「开」听成「快/派」；而同一段音频
+    // 在 21:29 那次（句首没被吃）转出的是正确的「开饭时间早上9点至下午5点。」。
+    // 现在录音先跑 450 ms 再 start()，句首落在采集窗口里；末尾丢 0.2 秒无伤。
+    const recording = RecordingVerify.run('record', context, filesDir);
     try {
-      await RecordingVerify.run('record', context, filesDir);
+      await sleep(450);
+      await renderer.start();
+      hilog.info(DOMAIN, TAG, '%{public}s PLAY started renderer=%{public}d', MARK, renderer.state);
+      await recording;
     } finally {
       renderer.off('writeData', onWrite);
       await renderer.stop();
@@ -429,6 +436,29 @@ function readWavPcm(path: string): Uint8Array {
     pos += 8 + size + (size % 2);
   }
   return bytes.slice(44);
+}
+
+/** PCM 的均方根与峰值（16 bit 小端，只用于把播放幅度记进日志）。 */
+function pcmRms(pcm: Uint8Array): number {
+  const count = Math.floor(pcm.length / 2);
+  let sum = 0;
+  for (let i = 0; i < count; i++) {
+    const sample = (pcm[i * 2] | (pcm[i * 2 + 1] << 8)) << 16 >> 16;
+    sum += sample * sample;
+  }
+  return count > 0 ? Math.round(Math.sqrt(sum / count)) : 0;
+}
+
+function pcmPeak(pcm: Uint8Array): number {
+  const count = Math.floor(pcm.length / 2);
+  let peak = 0;
+  for (let i = 0; i < count; i++) {
+    const sample = Math.abs((pcm[i * 2] | (pcm[i * 2 + 1] << 8)) << 16 >> 16);
+    if (sample > peak) {
+      peak = sample;
+    }
+  }
+  return peak;
 }
 
 function sleep(ms: number): Promise<void> {
