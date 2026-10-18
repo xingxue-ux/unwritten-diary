@@ -1482,13 +1482,24 @@ mod rank_tests {
     }
 
     /// 回归（评审 #128 复审）：混合融合的排序也必须用 `total_cmp`。
-    /// 旧实现 `partial_cmp(...).unwrap_or(Equal)` 会把 NaN 当成等于任何数——
-    /// 「NaN == 1」「NaN == 2」同时成立、却又「1 < 2」，比较器不传递。
+    ///
+    /// **这条测试真正的红点是下面的位置断言**（`fused[0].is_nan()` /
+    /// `fused[1] == +Inf`）：旧实现 `partial_cmp(...).unwrap_or(Equal)` 让 NaN 没有
+    /// 确定位置，排完 `+Inf` 会跑到 NaN 前面，那两条立刻失败。
+    ///
+    /// 下面那条「传递性」断言**不是**旧实现的红点，别把它当成证据：本测试的三个候选
+    /// `group_id` 各不相同，旧实现的 NaN 虽然与对手「分数不可比」，但 `then_with` 的
+    /// 决胜键（day_key / content_key / group_id）会把这一对比较出大小——`Equal` 只在
+    /// 所有键都相同时才成立。所以旧实现下这条断言同样为 `true`。它留着是防「将来有人
+    /// 去掉决胜键」的回归：那种情况下 NaN 与任意候选都会比成 `Equal`，不传递才真的
+    /// 暴露出来。
     #[test]
     fn fusion_sort_is_a_total_order_with_nan_scores() {
         let nan = fused("nan", f32::NAN);
         let one = fused("one", 1.0);
         let two = fused("two", 2.0);
+        // 注意：这组数据里 group_id 不同，决胜键使旧实现也得到非 Equal 的结果，
+        // 这条断言在旧实现下恒真；真正的红点是函数末尾的两条位置断言。
         assert!(
             !(fused_order(&nan, &one) == std::cmp::Ordering::Equal
                 && fused_order(&nan, &two) == std::cmp::Ordering::Equal)
