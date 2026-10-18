@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:diary_api/diary_api.dart';
@@ -18,6 +19,8 @@ class AiFakeApi implements DiaryApi {
   );
   final versions = <DiaryVersion>[];
   Job? job;
+  Completer<DiaryDay>? delayedDay;
+  Completer<void>? dayRequested;
 
   @override
   Future<List<Provider>> listProviders() async => hasProvider
@@ -35,7 +38,13 @@ class AiFakeApi implements DiaryApi {
       : [];
 
   @override
-  Future<DiaryDay> getDay(String dayKey) async => day;
+  Future<DiaryDay> getDay(String dayKey) async {
+    if (dayKey == '2026-10-18' && delayedDay != null) {
+      if (dayRequested?.isCompleted == false) dayRequested!.complete();
+      return delayedDay!.future;
+    }
+    return day;
+  }
 
   @override
   Future<DiaryVersionPage> listVersions(
@@ -176,6 +185,9 @@ void main() {
     addTearDown(controller.dispose);
     await controller.open('2026-10-18');
     await controller.generate();
+    await controller.generate();
+    expect(api.generations, 1);
+    expect(controller.error, contains('仍在处理'));
     await controller.cancel();
     expect(api.cancellations, 1);
     expect(controller.job?.state, JobState.cancelled);
@@ -184,5 +196,44 @@ void main() {
     await controller.retry();
     expect(api.retries, 1);
     expect(controller.job?.state, JobState.queued);
+  });
+
+  test('a slow previous day cannot overwrite the newly opened day', () async {
+    final directory = await Directory.systemTemp.createTemp('ai-diary-');
+    addTearDown(() => directory.delete(recursive: true));
+    final api = AiFakeApi()
+      ..delayedDay = Completer<DiaryDay>()
+      ..dayRequested = Completer<void>();
+    final controller = AiDiaryController(
+      api,
+      FileAiLocalStore(File('${directory.path}/state.json')),
+    );
+    addTearDown(controller.dispose);
+
+    final oldOpen = controller.open('2026-10-18');
+    await api.dayRequested!.future;
+    api.day = DiaryDay(
+      dayKey: '2026-10-19',
+      timeZone: 'Asia/Shanghai',
+      updatedAt: DateTime.utc(2026, 10, 19),
+      revision: 4,
+      materialCounts: const MaterialCounts(captures: 1, processed: 1),
+    );
+    await controller.open('2026-10-19');
+    expect(controller.day?.dayKey, '2026-10-19');
+
+    api.delayedDay!.complete(
+      DiaryDay(
+        dayKey: '2026-10-18',
+        timeZone: 'Asia/Shanghai',
+        updatedAt: DateTime.utc(2026, 10, 18),
+        revision: 1,
+        materialCounts: const MaterialCounts(captures: 2, processed: 2),
+      ),
+    );
+    await oldOpen;
+    expect(controller.dayKey, '2026-10-19');
+    expect(controller.day?.dayKey, '2026-10-19');
+    expect(controller.day?.revision, 4);
   });
 }

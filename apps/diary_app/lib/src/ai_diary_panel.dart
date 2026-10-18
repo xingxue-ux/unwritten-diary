@@ -153,8 +153,7 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
         (controller.day?.materialCounts.captures ?? 0) > 0 &&
         (!remote || _remoteConfirmed) &&
         !controller.busy &&
-        job?.state != JobState.running &&
-        job?.state != JobState.queued;
+        (job == null || job.state.isTerminal);
     return Column(
       key: const ValueKey('ai-diary'),
       crossAxisAlignment: CrossAxisAlignment.stretch,

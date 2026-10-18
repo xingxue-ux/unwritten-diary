@@ -85,9 +85,12 @@ class AiDiaryController extends ChangeNotifier {
   bool showDismissed = false;
   Set<String> dismissedIds = {};
   Timer? _poll;
-  bool _refreshing = false;
+  final Map<int, Future<void>> _refreshes = {};
   bool _disposed = false;
   int _operation = 0;
+  int _viewEpoch = 0;
+
+  bool _isCurrent(int epoch) => !_disposed && epoch == _viewEpoch;
 
   Provider? get generationProvider {
     for (final provider in providers) {
@@ -125,6 +128,7 @@ class AiDiaryController extends ChangeNotifier {
 
   Future<void> open(String key) async {
     _poll?.cancel();
+    final epoch = ++_viewEpoch;
     dayKey = key;
     day = null;
     versions = const [];
@@ -134,82 +138,125 @@ class AiDiaryController extends ChangeNotifier {
     job = null;
     error = null;
     loading = true;
+    busy = false;
+    showDismissed = false;
+    dismissedIds = {};
     _notify();
     try {
-      dismissedIds = await store.dismissedFor(key);
+      final savedDismissed = await store.dismissedFor(key);
+      if (!_isCurrent(epoch)) return;
+      dismissedIds = savedDismissed;
       try {
-        providers = await api.listProviders();
+        final availableProviders = await api.listProviders();
+        if (!_isCurrent(epoch)) return;
+        providers = availableProviders;
       } on Object {
+        if (!_isCurrent(epoch)) return;
         providerProblem = '服务配置暂时无法读取；已保存的日记仍可查看。';
       }
       await refresh();
     } on DiaryException catch (failure) {
-      error = nextStepFor(failure.code);
+      if (_isCurrent(epoch)) error = nextStepFor(failure.code);
     } on Object {
-      error = '暂时无法读取整理状态。请稍后重试；原始记录仍在本机。';
+      if (_isCurrent(epoch)) {
+        error = '暂时无法读取整理状态。请稍后重试；原始记录仍在本机。';
+      }
     } finally {
-      loading = false;
-      _notify();
+      if (_isCurrent(epoch)) {
+        loading = false;
+        _notify();
+      }
     }
-    _poll = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (!_disposed && !_refreshing) unawaited(refresh());
-    });
+    if (_isCurrent(epoch)) {
+      _poll = Timer.periodic(const Duration(seconds: 3), (_) {
+        if (_isCurrent(epoch) && !_refreshes.containsKey(epoch)) {
+          unawaited(refresh());
+        }
+      });
+    }
   }
 
-  Future<void> refresh() async {
-    if (_refreshing || dayKey.isEmpty) return;
-    _refreshing = true;
+  Future<void> refresh({bool afterInFlight = false}) async {
+    if (dayKey.isEmpty) return;
+    final epoch = _viewEpoch;
+    final inFlight = _refreshes[epoch];
+    if (inFlight != null) {
+      await inFlight;
+      if (afterInFlight && _isCurrent(epoch)) await refresh();
+      return;
+    }
+    final task = _loadDay(dayKey, epoch);
+    _refreshes[epoch] = task;
     try {
+      await task;
+    } finally {
+      _refreshes.remove(epoch);
+    }
+  }
+
+  Future<void> _loadDay(String key, int epoch) async {
+    try {
+      DiaryDay? loadedDay;
       try {
-        day = await api.getDay(dayKey);
+        loadedDay = await api.getDay(key);
       } on DiaryException catch (failure) {
         if (failure.code != DiaryErrorCode.notFound) rethrow;
-        day = null;
       }
-      if (day == null) {
-        versions = const [];
-      } else {
+      List<DiaryVersion> loadedVersions = const [];
+      if (loadedDay != null) {
         final all = <DiaryVersion>[];
         String? cursor;
         do {
           final page = await api.listVersions(
-            dayKey,
+            key,
             cursor: cursor,
             pageSize: 50,
           );
           all.addAll(page.versions);
           cursor = page.nextCursor;
         } while (cursor != null);
-        versions = all;
+        loadedVersions = all;
       }
-      recentAiJobs = (await api.listJobs(pageSize: 50)).jobs
+      final loadedJobs = (await api.listJobs(pageSize: 50)).jobs
           .where(
             (item) =>
                 item.kind == 'diary_generate' || item.kind == 'transcribe',
           )
           .take(5)
           .toList(growable: false);
-      final jobId = await store.jobFor(dayKey);
+      Job? loadedJob;
+      final jobId = await store.jobFor(key);
       if (jobId != null) {
         try {
-          job = await api.getJob(jobId);
+          loadedJob = await api.getJob(jobId);
         } on DiaryException catch (failure) {
           if (failure.code != DiaryErrorCode.notFound) rethrow;
-          job = null;
         }
       }
+      if (!_isCurrent(epoch)) return;
+      day = loadedDay;
+      versions = loadedVersions;
+      recentAiJobs = loadedJobs;
+      job = loadedJob;
+      error = null;
     } on DiaryException catch (failure) {
-      error = nextStepFor(failure.code);
+      if (_isCurrent(epoch)) error = nextStepFor(failure.code);
     } on Object {
-      error = '状态暂时无法刷新。请稍后重试。';
+      if (_isCurrent(epoch)) error = '状态暂时无法刷新。请稍后重试。';
     } finally {
-      _refreshing = false;
-      _notify();
+      if (_isCurrent(epoch)) _notify();
     }
   }
 
   Future<void> generate({bool regenerate = false}) async {
     if (busy || dayKey.isEmpty) return;
+    final epoch = _viewEpoch;
+    final key = dayKey;
+    if (job case final activeJob? when !activeJob.state.isTerminal) {
+      error = '上一次整理仍在处理。可等待完成或先取消，再发起新的一次。';
+      _notify();
+      return;
+    }
     if (generationProvider == null) {
       error = '尚未配置可生成文字的 Provider。请先配置并测试服务，再回来整理。';
       _notify();
@@ -225,47 +272,62 @@ class AiDiaryController extends ChangeNotifier {
     _notify();
     try {
       final ticket = await api.generateDiary(
-        dayKey: dayKey,
+        dayKey: key,
         reason: regenerate
             ? DiaryGenerationReason.regenerate
             : DiaryGenerationReason.manual,
         operationId:
             'ui-generate-${DateTime.now().microsecondsSinceEpoch}-${++_operation}',
       );
-      await store.setJob(dayKey, ticket.jobId);
-      job = await api.getJob(ticket.jobId);
-      await refresh();
+      await store.setJob(key, ticket.jobId);
+      if (!_isCurrent(epoch)) return;
+      final startedJob = await api.getJob(ticket.jobId);
+      if (!_isCurrent(epoch)) return;
+      job = startedJob;
+      await refresh(afterInFlight: true);
     } on DiaryException catch (failure) {
-      error = nextStepFor(failure.code);
+      if (_isCurrent(epoch)) error = nextStepFor(failure.code);
     } on Object {
-      error = '整理未能启动。请检查本机资料库状态后重试。';
+      if (_isCurrent(epoch)) {
+        error = '整理未能启动。请检查本机资料库状态后重试。';
+      }
     } finally {
-      busy = false;
-      _notify();
+      if (_isCurrent(epoch)) {
+        busy = false;
+        _notify();
+      }
     }
   }
 
   Future<void> adopt(String versionId) async {
     final currentDay = day;
     if (busy || currentDay == null) return;
+    final epoch = _viewEpoch;
+    final key = dayKey;
     busy = true;
     error = null;
     _notify();
     try {
-      day = await api.setCurrentVersion(
-        dayKey: dayKey,
+      final adoptedDay = await api.setCurrentVersion(
+        dayKey: key,
         versionId: versionId,
         expectedRevision: currentDay.revision,
       );
-      await refresh();
+      if (!_isCurrent(epoch)) return;
+      day = adoptedDay;
+      await refresh(afterInFlight: true);
     } on DiaryException catch (failure) {
-      error = nextStepFor(failure.code);
+      if (_isCurrent(epoch)) error = nextStepFor(failure.code);
       // The next scheduled refresh will reconcile a concurrent edit.
     } on Object {
-      error = '未能采纳候选。请刷新状态后重试；当前正文未被替换。';
+      if (_isCurrent(epoch)) {
+        error = '未能采纳候选。请刷新状态后重试；当前正文未被替换。';
+      }
     } finally {
-      busy = false;
-      _notify();
+      if (_isCurrent(epoch)) {
+        busy = false;
+        _notify();
+      }
     }
   }
 
@@ -275,28 +337,37 @@ class AiDiaryController extends ChangeNotifier {
   Future<void> _changeJob({required bool retry}) async {
     final currentJob = job;
     if (busy || currentJob == null) return;
+    final epoch = _viewEpoch;
     busy = true;
     error = null;
     _notify();
     try {
       final operationId =
           'ui-job-${DateTime.now().microsecondsSinceEpoch}-${++_operation}';
-      job = retry
+      final changedJob = retry
           ? await api.retryJob(id: currentJob.id, operationId: operationId)
           : await api.cancelJob(id: currentJob.id, operationId: operationId);
+      if (_isCurrent(epoch)) {
+        job = changedJob;
+        await refresh(afterInFlight: true);
+      }
     } on DiaryException catch (failure) {
-      error = nextStepFor(failure.code);
+      if (_isCurrent(epoch)) error = nextStepFor(failure.code);
     } on Object {
-      error = '任务操作暂时不可用，请刷新状态后重试。';
+      if (_isCurrent(epoch)) error = '任务操作暂时不可用，请刷新状态后重试。';
     } finally {
-      busy = false;
-      _notify();
+      if (_isCurrent(epoch)) {
+        busy = false;
+        _notify();
+      }
     }
   }
 
   Future<void> dismissCandidate(String versionId) async {
     if (day?.candidateVersionIds.contains(versionId) != true) return;
+    final epoch = _viewEpoch;
     await store.dismiss(dayKey, versionId);
+    if (!_isCurrent(epoch)) return;
     dismissedIds = {...dismissedIds, versionId};
     _notify();
   }
