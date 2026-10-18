@@ -25,6 +25,11 @@
 | [docs/development/03-后端开发任务书.md](docs/development/03-后端开发任务书.md) | Rust 本地核心、存储、检索、模型、队列、插件、B0–B8 | 后端 |
 | [docs/development/04-验收与测试计划.md](docs/development/04-验收与测试计划.md) | E01–E38 验收案例、性能预算、质量门槛、发布阻断 | 双方 |
 | [docs/development/05-模型交接提示词.md](docs/development/05-模型交接提示词.md) | 按任务复制给 AI 模型的开工说明 | 认领任务的人 |
+| [docs/development/M5-打包与发布.md](docs/development/M5-打包与发布.md) | Windows/Android/鸿蒙打包、签名、产物结构与体积估算 | 发布 |
+| [docs/development/升级与迁移.md](docs/development/升级与迁移.md) | schema 13 逐级迁移、真旧库回放、目录变更与断电恢复 | 后端/发布 |
+| [docs/development/诊断包与排障.md](docs/development/诊断包与排障.md) | 不含正文的诊断包与可执行白名单测试 | 发布/客服 |
+| [docs/development/发布检查清单.md](docs/development/发布检查清单.md) | 发布前逐条勾选（含真机、升级、备份、体积、许可） | 发布负责人 |
+| [docs/legal/第三方许可与合规.md](docs/legal/第三方许可与合规.md) | 第三方许可证清单、字体 OFL 与不确定项 | 发布/法务 |
 
 接口契约在 **M0 冻结**，任何新增字段先更新契约文档和场景样例，再改实现。
 
