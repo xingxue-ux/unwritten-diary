@@ -168,8 +168,8 @@ jobs:
 
   # 窄范围的 Windows 验证：只跑插件包/沙箱集成测试，不碰 Flutter/Dart/probe，
   # 也不扩成整条矩阵。目的是直接回答评审的「Windows（core.autocrlf=true）干净
-  # checkout 跑一次」：真实 windows-latest runner 的默认 autocrlf=true，且路径
-  # 分隔符、大小写不敏感、文件时间等平台差异只有真机能暴露。
+  # checkout 跑一次」：显式设 autocrlf=true 后重新落盘，再用字节断言示例包仍是
+  # LF（3096/2864/607 B），最后在真实 windows-latest 上跑 plugin_test。
   #
   # 暂不加入必过检查（required checks）：先观察几轮；红了就贴原始错误，不用
   # continue-on-error 假装绿。
@@ -186,6 +186,50 @@ jobs:
           rustup toolchain install "$env:RUST_VERSION" --profile minimal
           rustup default "$env:RUST_VERSION"
           cargo --version
+      # 关键：runner 的默认 autocrlf 是实现细节，必须显式设成 true，并删掉已
+      # 落盘的示例目录后重新 checkout，才能证明「autocrlf=true 时 .gitattributes
+      # 仍然把文本钉成 LF」。只改配置不重新落盘等于没验。
+      - name: 强制 autocrlf=true 后重新检出（复现开发机默认）
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf true
+          git config --local core.autocrlf true
+          "effective core.autocrlf = $(git config --get core.autocrlf)"
+          Remove-Item -Recurse -Force plugins/examples
+          git checkout -- .
+          "effective core.autocrlf after checkout = $(git config --get core.autocrlf)"
+          git ls-files --eol plugins/examples
+      # 用原始字节判断，不用 Get-Content（后者会做行尾转换，看不出真相）。
+      # 3096/2864/607 是评审给出的 LF 字节数，直接对照。
+      - name: 断言行尾真的是 LF 且字节数正确（.gitattributes 生效）
+        shell: pwsh
+        run: |
+          $expected = @{
+            "plugins/examples/export-diary-markdown/main.wat" = 3096
+            "plugins/examples/export-diary-markdown/README.md" = 2864
+            "plugins/examples/style-daily-note/main.json" = 607
+          }
+          $failed = $false
+          $textFiles = Get-ChildItem plugins/examples -Recurse -File |
+            Where-Object { $_.Extension -ne ".wasm" }
+          foreach ($item in $textFiles) {
+            $relative = [System.IO.Path]::GetRelativePath((Get-Location).Path, $item.FullName).Replace('\', '/')
+            $bytes = [System.IO.File]::ReadAllBytes($item.FullName)
+            if ($bytes -contains 13) {
+              Write-Error "CRLF 出现在 $relative（$($bytes.Length) B）"
+              $failed = $true
+            } else {
+              Write-Host "$relative OK ($($bytes.Length) B, no CR)"
+            }
+          }
+          foreach ($relative in $expected.Keys) {
+            $bytes = [System.IO.File]::ReadAllBytes((Join-Path (Get-Location).Path $relative))
+            if ($bytes.Length -ne $expected[$relative]) {
+              Write-Error "$relative 字节数 $($bytes.Length) != 期望 $($expected[$relative])"
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
       - name: 插件包与沙箱测试（Windows 行尾/路径）
         run: cargo test -p diary_core --test plugin_test
         env:
