@@ -165,7 +165,12 @@ hdc shell "aa start -a EntryAbility -b com.example.myapplication -m entry --ps v
 hdc shell "aa start -a EntryAbility -b com.example.myapplication -m entry --ps verify_mode persist"
 hdc shell "aa start -a EntryAbility -b com.example.myapplication -m entry --ps verify_mode diag"
 
-# 多 Ability（同进程）/ 多进程
+# 多 Ability（同进程）/ 多进程——**只适用于 debug 构建，且按 `exported:false` 的语义**：
+#   `ProbeAbility` / `ProbeIsoAbility` 在 module.json5 里是 `exported: false`，按定义
+#   第三方应用（含 `aa` 这类跨应用拉起）不应能直接启动它们——**这一点没有真机验证**（未验）。
+#   下面两条命令只作「门控前 debug HAP 上的用法」记录；release 下两个 Ability 都会走
+#   `PROBE_DISABLED`，不做任何验证动作。`EntryAbility --ps verify_mode` 不覆盖这两项
+#   （multi_hold / `:probe` 隔离进程），没有等价的平替入口。
 hdc shell "aa start -a ProbeAbility -b com.example.myapplication -m entry --ps verify_mode multi_hold"
 hdc shell "aa start -a ProbeIsoAbility -b com.example.myapplication -m entry"
 ```
@@ -483,10 +488,11 @@ DIARY_HAP TRANSCRIPT extractor=local_transcription coverage=complete status=read
 > 50,067,086 B / sha256 `e1354cf7…`）。PR #134 之后 rebase 到 #130 的 `98ec24d`
 > （下载完整性重写 + ArkTS 包装），**包内 native 库与两份 ORT 逐字节未变**
 > （`libdiary_capi.so` 11,528,088、sherpa 3,750,328、ORT 12,930,856 与 19,623,560），
-> 只有 `modules.abc` 从 215,928 涨到 229,900（+13,972 B：并入 #130 的下载实现与探针
-> 自带的取文件），重构建 HAP 为 **50,088,328 B / `31d15915…`**。按要求没有再用产品
-> 身份重跑真机；探针的取文件路径换了实现（`.part` + 2xx + 原子 rename），下次动设备
-> 时先跑一次 `hap_both` 复核。
+> 只有 `modules.abc` 从 215,928 涨到 229,900（+13,972 B：并入 #130 的下载实现与
+> `hap_both` 的取文件），重构建 HAP 为 **50,088,328 B / `31d15915…`**。按要求没有再用
+> 产品身份重跑真机；探针取文件此后已并成**一份**实现 `recording/ModelDownload.ets`
+> （调用方必须给 `{bytes, sha256}`，`.part` + 2xx + 原子 rename；细节见下文「探针怎么关在
+> debug 外」），不再有第二个取文件实现。下次动设备时先跑一次 `hap_both` 复核。
 
 ### PR #130 评审的 P0：缺引擎在 OHOS 上现在是「等配置」
 
@@ -589,7 +595,7 @@ hdc shell "hilog -x" | grep DIARY_HAP
 | 8 | 两个并发 `call`（coreInfo + search） | ✅ 通过 | 同一句柄：2 个 worker（tid 26206/26211）+ 主线程，800+800+500 次，0 error；各自 open 同一路径：1200+1200 次，0 error，观测到 `maxObservedHandles=2`；无 panic/死锁 |
 | 9 | 多进程 / 多 Ability | ✅ 通过 | 同进程两 Ability：pid 26187，`open OK handles=2` → `CLOSED handles=1`；隔离进程：`com.example.myapplication:probe` pid 27768，`ISO HOLD open ... handles=1`，两进程各自一个 Core |
 | 10 | 错误路径 | ✅ 通过（发现并修了一个错误码降级 bug） | 空路径 `invalid_argument`；缺父目录/损坏库 `invalid_state`；同路径两次共享核心；关闭后调用 `invalid_state` / `ERR_DIARY_HANDLE`；非法 JSON/未知方法/缺参数 `invalid_argument`；`revision_conflict` 正确；全程不崩、`handles=0` |
-| 11 | release / 混淆 | ✅ 通过 | `BUILD_MODE=release` 签名安装成功、`debug:false`、Smoke 通过；临时把 `entry/build-profile.json5` 的 obfuscation 打开再构建，混淆 HAP 也跑通 Smoke（构建后已还原 `enable:false`） |
+| 11 | release / 混淆 | ⚠️ **门控前的历史证据**（当前 release 不跑 Smoke） | 门控前那次 release 构建：`BUILD_MODE=release` 签名安装成功、`debug:false`、Smoke 通过；混淆 HAP 也跑通 Smoke（构建后已还原 `enable:false`）。**现在** release 下 `EntryAbility` 走 `PROBE_DISABLED`，Smoke / record* / asr_* / hap_both 都不跑，`INTERNET` 也不在 release 包内 ⇒ 该证据只说明「当初验过」，不代表「现在还能验」；本轮也没装 release 真机（见「没验到的」） |
 | 12 | 升级回滚（同 bundleName 重装，数据仍在） | ✅ 升级通过 | v1 `1000000/1.0.0` → v2 `1000001/1.0.1`；升级前后 `captures=4`、`hits=2`、`dbBytes=389120`、`schema=13` 完全一致 |
 | 13 | hilog 实际输出 | ✅ 通过 | `DIARY_SMOKE JSON[...]` 10 个 label 全部按分片还原成合法 JSON（`search` 占 2 片）；`CLOSED handles=0` 出现 |
 | 14 | C++ OOM 兜底 | ⚠️ 现状确认（未修） | shim 中没有 `try/catch`、没有 `nothrow`/`bad_alloc` 处理；`std::string`/`std::vector` 分配失败会以 C++ 异常穿透 NAPI 边界。未做 OOM 注入 |
@@ -827,13 +833,19 @@ C ABI 文档与实现的形状不一致仍建议后续统一（见问题清单 P
 
 ### 第 11 项：release / 混淆
 
+> **门控前的历史证据（2026-10-18）**：下面的「release Smoke 通过」来自
+> `BuildProfile.DEBUG` 门控**之前**的 release 构建。**现在** release 下 `EntryAbility`
+> 直接走 `PROBE_DISABLED`，Smoke / record* / asr_* / hap_both 都不跑，`INTERNET` 也不在
+> release 包内——用同样的命令重装 release HAP，**Smoke 不会再跑**。所以这条是「当初验过」，
+> 不是「现在还能验」；本轮 release 真机启动也没有重跑（见「没验到的」）。
+
 - `BUILD_MODE=release` 构建 + 签名 + `hdc install -r` 成功；`bm dump` 显示
-  `debug:false`，`versionCode=1000002/1.0.2`；release Smoke 通过（`open OK handles=1`、
+  `debug:false`，`versionCode=1000002/1.0.2`；**门控前** release Smoke 通过（`open OK handles=1`、
   `CLOSED handles=0`）。
 - release 包的 hilog 默认被系统过滤（`hilog -T DiaryCore` 看不到），
   `hdc shell "hilog -b D"` 后才可见；这是运行时日志级别，不是应用没跑。
 - 另外临时把 `entry/build-profile.json5` 的 `obfuscation.enable` 改成 `true` 构建了一次
-  release（versionCode 1000003），安装后 Smoke 仍然通过，`data_schema_version=13`、
+  release（versionCode 1000003），安装后 Smoke 仍然通过（**同为门控前**），`data_schema_version=13`、
   `CLOSED handles=0`。**构建后已把该配置还原为 `enable:false`**，没有提交打开混淆的配置。
 - 该混淆验证用的是工程默认空规则（`obfuscation-rules.txt` 为空），不是产品规则集。
 

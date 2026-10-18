@@ -30,7 +30,8 @@
 # 用法：
 #   apps/ohos-diary-core/scripts/stage-ort-1291.sh            # 放进 entry/libs（可选语义包）
 #   apps/ohos-diary-core/scripts/stage-ort-1291.sh --check    # 只检查已有文件（WITH_SEMANTIC=1 构建调用）
-#   apps/ohos-diary-core/scripts/stage-ort-1291.sh --force    # 跳过两条 sha256（换自编来源时）
+#   apps/ohos-diary-core/scripts/stage-ort-1291.sh --force    # 只跳过两条 sha256 断言（同一份构建的现场排查）；
+#                                                              # 包内字节数仍必须是 19,623,560——本脚本只接受同一份构建
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -83,7 +84,7 @@ check_pinned() {
       "$label" "$actual" "$expected" >&2
     return 0
   fi
-  fail "$label 的 sha256=$actual 与钉死值 $expected 不同；换来源请用 --force 并更新本脚本"
+  fail "$label 的 sha256=$actual 与钉死值 $expected 不同；换来源请更新本脚本里的钉死值（--force 只跳过 sha256，字节数仍须匹配）"
 }
 
 # 符号断言：必须导出 OrtGetApiBase@@VERS_1.29.1，SONAME 必须是 libonnxruntime.so.1。
