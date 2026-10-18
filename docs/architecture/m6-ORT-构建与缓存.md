@@ -247,7 +247,8 @@ should_build := enabled && (非 PR || 同仓库 PR && 打了 ci:ohos-ort label)
   `.github/workflows/ohos-ort.yml` 变更时触发；未配置变量时 gate 绿 + notice、`ohos-ort`
   skipped。
 - PR 还要 `ci:ohos-ort` label：把「能自举」与「每个 PR 都跑」拆开（建议项 6）；fork PR
-  一律不跑（`head.repo.full_name == github.repository`）。
+  一律不跑（`head.repo.full_name == github.repository`）。label 先建一次：
+  `gh label create ci:ohos-ort --description "在 CI 上真跑 ORT 构建（1.5–2 h）"`.
 - **push main 不触发本 workflow**：main 的缓存预热靠手动 dispatch（见 §6.5）。
 
 逐场景推演（三种结果都不阻塞合入）：
@@ -325,14 +326,16 @@ key: ort-${{ env.ORT_VERSION }}-${{ runner.os }}-${{ hashFiles('tools/ohos/build
    `~/command-line-tools/sdk/default/openharmony/native`（或用 `vars.OHOS_NDK` 指定）。
 2. 仓库变量 `vars.OHOS_RUNNER=self-hosted`。
 3. Actions → **`ohos-ort`** → Run workflow：**勾 `run_build`**（没有 URL 时这是唯一开关），
-   分支选 `main`（缓存才对 PR 可见）。
+   分支选 `main`（缓存才对 PR 可见）；等价的 CLI：
+   `gh workflow run ohos-ort.yml --ref main -f run_build=true`。
 4. 缓存未命中 → 33 min（16 核）构建 → post-step 保存 `~/.cache/dsh-ort`。
 
 **B. 没有自托管 runner：hosted + `OHOS_CLT_URL`**
 
 1. 设 `vars.OHOS_CLT_URL` 指向 Command Line Tools（linux-x64）压缩包，**同时**设
    `vars.OHOS_CLT_SHA256`。
-2. Actions → `ohos-ort` → Run workflow：有 URL 时不用勾 `run_build`；分支选 `main`。
+2. Actions → `ohos-ort` → Run workflow：有 URL 时不用勾 `run_build`；分支选 `main`
+   （`gh workflow run ohos-ort.yml --ref main`）。
 3. 首次未命中：下载、校验、按 magic 解压 NDK → 构建 → 保存缓存。
 4. 4 核 hosted 约 1.5–2 h，**不推荐**；≥8 核 runner 才建议自举。
 
@@ -498,6 +501,22 @@ gate 脚本按 8 种输入在本机 bash 里执行（不是 GitHub Actions；`GI
 
 > 这验证的是 gate 的分支逻辑、YAML/bash 语法、压缩格式分派与报错文案；
 > `actions/cache` 实际命中/保存、NDK 下载、自愈删除仍没有实跑（§8.1）。
+
+### 9.2 CI 实跑证据（2026-10-18，commit a9b1fdc）
+
+| run | 事件 | 结论 | 实际看到什么 |
+|---|---|---|---|
+| <https://github.com/xingxue-ux/unwritten-diary/actions/runs/39136177167> | `pull_request`（本 PR 命中 paths） | success | `ohos-ort-cache` 绿；`ohos-ort` **skipped**（未配置变量，自动跳过；不需要 dispatch 也是这个结果） |
+| <https://github.com/xingxue-ux/unwritten-diary/actions/runs/39136296596> | `workflow_dispatch`，**不勾** `run_build` | success | `ohos-ort-cache` 绿 + notice：「未配置 vars.OHOS_CLT_URL 且没有勾 run_build ⇒ ohos-ort skipped」；`ohos-ort` **skipped** |
+| <https://github.com/xingxue-ux/unwritten-diary/actions/runs/39136330358> | `workflow_dispatch`，**勾** `run_build=true` | failure（**预期**） | `ohos-ort` 真的进了：缓存未命中 + 无 NDK/URL ⇒ fail-fast，`##[error] ... 1.5–2 h 的构建跑不了` + Step Summary 三条自举路径；不阻塞合入 |
+
+dispatch 用的是 `gh workflow run ohos-ort.yml --ref feat/B8c-ort-ci -f run_build=<bool>`。
+注意：`workflow_dispatch` 通常要求 workflow 文件在默认分支上才会有 UI 按钮；本次是
+PR 的 `pull_request` run 先把 workflow 注册进去之后，CLI 才能按分支 dispatch。合并到
+main 之后 UI 的 "Run workflow" 会出现。
+
+> 仍然**没有**实跑：冷缓存全量构建（4 核 1.5–2 h，且没有 NDK/URL）、`actions/cache`
+> 成功后的保存、NDK 下载/解压、缓存损坏自愈的删除；见 §8.1。
 
 ## 10 需要拍板的点
 
