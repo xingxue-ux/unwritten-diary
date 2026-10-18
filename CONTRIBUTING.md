@@ -163,6 +163,12 @@ revert 救不了的两类事故：
   但**熄屏会让系统强制 STOP 音频采集**（`HINT_STOP`，应用层绕不过，需产品接受或保持屏幕常亮），这条要写进产品文档与验收清单；
   平台限制的完整证据、已试过的手段与待决定项记在 **#131**。
 
+**堆叠 PR 的批准会被 base 重定位作废（2026-10-18 踩过）**：`main` 开了 `dismiss_stale_reviews`，而叠放 PR（base 指向另一条分支）在**父 PR 合入**时会由 GitHub 自动把 base 重定位到 `main`——**这一步也会让已有的批准被判成过期**，head 一个字节都没变。
+
+- 现象：`#127` 被批（base = `feat/B8b-arkts-napi`）→ 父 PR `#122` 合入 main → `#127` 的 base 自动变 `main` → 批准消失，状态回到 `REVIEW_REQUIRED`。
+- **做法**：叠放 PR 的批准要**等 base 稳定后再要**；或者接受「父 PR 合完请评审者再点一次 Approve」。
+- 相关：`dismiss_stale_reviews` 还意味着**批准之后绝不能再 push**（哪怕只改注释），否则批准立刻作废。要改就**先合、后另开 PR**。
+
 ### 10.2 安卓构建失败：Gradle **不读**环境变量里的代理
 
 **症状**：`flutter build apk` 报 `Could not resolve com.android.tools.build:gradle` 或
