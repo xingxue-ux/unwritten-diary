@@ -6,6 +6,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  # 手动触发：ohos-ort 的缓存预热/强制重建都走这里（见下面的 ohos-ort job）。
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,6 +25,46 @@ env:
   FLUTTER_VERSION: "3.44.6"
 
 jobs:
+
+  # 只为 ohos-ort 判断「要不要跑」：GitHub 的 paths 过滤只能作用在触发事件上，
+  # 不能只过滤某一个 job，所以用一个几秒的 job 先算一次。
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ohos: ${{ steps.diff.outputs.ohos }}
+    steps:
+      - name: 检出仓库（需要历史才能 diff）
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: 判断变更是否涉及 OHOS 原生 / ORT
+        id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "ohos=true" >> "$GITHUB_OUTPUT"
+            echo "手动触发：ohos-ort 会跑（命中缓存则秒级）"
+            exit 0
+          fi
+          changed=""
+          if [[ -n "$BASE_SHA" && "$BASE_SHA" != "0000000000000000000000000000000000000000" ]] \
+             && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            changed="$(git diff --name-only "$BASE_SHA" "$GITHUB_SHA" || true)"
+          else
+            changed="$(git show --pretty=format: --name-only "$GITHUB_SHA" || true)"
+          fi
+          if grep -qE '^(probes/ohos-|apps/ohos-|tools/ohos/|\.github/workflows/check\.yml$)' <<<"$changed"; then
+            echo "ohos=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ohos=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "本次变更文件："
+          sed 's/^/  /' <<<"$changed"
+
   docs:
     name: docs
     runs-on: ubuntu-latest
@@ -218,3 +260,89 @@ jobs:
       # 之后，再谈「提升多少算达标」——现在定阈值只会把刚建的基线锁死。
       - name: 检索质量集（关键词基线，含语料自检）
         run: cargo run --release -p diary_probe -- quality-set
+
+  # 可选 job：把自编 ORT 1.29.1（OHOS/aarch64）变成**可缓存、可复现**的产物。
+  #
+  # ★ 它**不是** main 的必需检查（分支保护里不要勾它）：缓存未命中时要 ~33 min/16 核，
+  #   不该卡住所有人的 PR；而且 GitHub hosted runner 上没有 OHOS NDK，首次只能靠
+  #   手动 dispatch + 自托管 runner / 仓库变量 OHOS_CLT_URL 来预热缓存。
+  #   命中缓存后它只做「复制 + 自检」，几秒结束。
+  #
+  # 触发：只有 probes/ohos-*/**、apps/ohos-*/**、tools/ohos/**、本 workflow 变更，
+  #       或 workflow_dispatch 时才跑（由上面的 changes job 判定）。
+  ohos-ort:
+    name: ohos-ort
+    needs: changes
+    if: needs.changes.outputs.ohos == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ORT_VERSION: "1.29.1"
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: 指定 ORT 缓存目录（与脚本默认值不同，只为了把缓存路径收在 ~/.cache）
+        run: |
+          set -euo pipefail
+          echo "ORT_CACHE_DIR=$HOME/.cache/dsh-ort/ort-${ORT_VERSION//./}" >> "$GITHUB_ENV"
+      - name: 恢复 ORT 产物缓存
+        id: cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/dsh-ort
+          # key 里必须有 ORT 版本 + 构建脚本内容：脚本一改（补丁/参数/自检变了），
+          # 旧产物虽然还能用，但应该让 CI 重新编一次来验证脚本本身。
+          key: ort-${{ env.ORT_VERSION }}-${{ runner.os }}-${{ hashFiles('tools/ohos/build-ort.sh', 'tools/ohos/ort_source_edits.py') }}-v1
+      - name: 缓存命中 → 复用 + 自检（秒级，不需要 NDK）
+        if: steps.cache.outputs.cache-hit == 'true'
+        run: tools/ohos/build-ort.sh
+      - name: 缓存未命中 → 准备 NDK（没有就 fail-fast 并给指引）
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          OHOS_CLT_URL: ${{ vars.OHOS_CLT_URL }}
+          OHOS_CLT_SHA256: ${{ vars.OHOS_CLT_SHA256 }}
+        run: |
+          set -euo pipefail
+          ndk="${NDK:-$HOME/command-line-tools/sdk/default/openharmony/native}"
+          if [[ -d "$ndk" ]]; then
+            echo "复用 runner 上已有的 NDK：$ndk"
+            echo "NDK=$ndk" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [[ -z "${OHOS_CLT_URL:-}" ]]; then
+            echo "::error::ORT 缓存未命中，且这个 runner 上没有 OHOS NDK —— 33 min 的构建跑不了"
+            cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## ohos-ort：缓存未命中，且没有 OHOS NDK
+
+          这个 job 是**可选**的，不影响 main 的必需检查。要让它真正构建，任选一条：
+
+          1. **自托管 runner**：装好 Command Line Tools，NDK 在
+             `~/command-line-tools/sdk/default/openharmony/native`，然后手动 dispatch 一次
+             （会把产物写入 Actions 缓存，之后 hosted runner 命中缓存只需几秒）。
+          2. **仓库变量**：设 `OHOS_CLT_URL` 指向 Command Line Tools（linux-x64）压缩包的
+             可下载地址，建议同时设 `OHOS_CLT_SHA256`。job 会自动解压并找到
+             `*/openharmony/native`。
+          3. **只在本地编**：`tools/ohos/build-ort.sh --force-build`，再把
+             `$HOME/dev/caches/ort-1291` 按 `~/.cache/dsh-ort/ort-1291` 的结构预热缓存。
+
+          配方、踩过的坑与缓存失效条件见 `docs/architecture/m6-ORT-构建与缓存.md`。
+          EOF
+            exit 1
+          fi
+          echo "下载 Command Line Tools：$OHOS_CLT_URL"
+          dest="$HOME/ohos-clt"
+          mkdir -p "$dest"
+          archive="$dest/command-line-tools.tar.gz"
+          curl -fL --retry 3 -o "$archive" "$OHOS_CLT_URL"
+          if [[ -n "${OHOS_CLT_SHA256:-}" ]]; then
+            echo "$OHOS_CLT_SHA256  $archive" | sha256sum -c -
+          else
+            echo "::warning::没有设 OHOS_CLT_SHA256，跳过压缩包校验"
+          fi
+          tar -xzf "$archive" -C "$dest"
+          ndk="$(find "$dest" -type d -path '*/openharmony/native' -print -quit)"
+          [[ -n "$ndk" ]] || { echo "::error::压缩包里没找到 */openharmony/native"; exit 1; }
+          echo "NDK=$ndk" >> "$GITHUB_ENV"
+      - name: 缓存未命中 → 完整构建（首次 ~33 min / 16 核）
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: tools/ohos/build-ort.sh --force-build

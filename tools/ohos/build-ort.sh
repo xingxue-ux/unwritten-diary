@@ -190,7 +190,10 @@ manifest_field() {
 }
 
 write_manifest() {
-  local so=$1 origin=$2 sha size soname needed_json="" n build_sha src_sha
+  local so=$1 origin=$2 sha size soname needed_json="" n build_sha src_sha protoc_ver="unknown"
+  if [[ -n "${PROTOC:-}" && -x "${PROTOC:-}" ]]; then
+    protoc_ver="$("$PROTOC" --version 2>/dev/null | head -1 || true)"
+  fi
   sha=$(sha256_of "$so")
   size=$(stat -c%s "$so")
   soname=$(soname_of "$so")
@@ -214,7 +217,7 @@ write_manifest() {
   "source_url": "${ORT_SOURCE_URL_EFFECTIVE:-$SOURCE_URL_1291}",
   "source_sha256": "$src_sha",
   "ndk": "${NDK}",
-  "host_protoc_version": "$("${PROTOC:-/bin/false}" --version 2>/dev/null || echo unknown)"
+  "host_protoc_version": "$protoc_ver"
 }
 EOF
   note "manifest    $MANIFEST"
@@ -566,11 +569,11 @@ locate_and_install() {
 # ── 主流程 ───────────────────────────────────────────────────────────────────
 detect_tools
 setup_source_pins
-t0=$(date +%s)
+t0=$SECONDS
 
 if [[ "$MODE" == "check" ]]; then
   preflight
-  elapsed=$(( $(date +%s) - t0 )); (( elapsed < 0 )) && elapsed=0
+  elapsed=$(( SECONDS - t0 ))
   say "仅前置检查（--check-only），用时 ${elapsed}s"
   exit 0
 fi
@@ -579,7 +582,7 @@ if (( FORCE_BUILD == 0 )) && try_cache; then
   install_dest
   say "自检（缓存命中，未编译）："
   selfcheck_artifact "$SO" || die 4 "缓存产物自检失败"
-  elapsed=$(( $(date +%s) - t0 )); (( elapsed < 0 )) && elapsed=0
+  elapsed=$(( SECONDS - t0 ))
   say "缓存命中，用时 ${elapsed}s"
   exit 0
 fi
@@ -593,7 +596,7 @@ fetch_deps
 build_host_protoc
 
 if [[ "$MODE" == "prepare" ]]; then
-  elapsed=$(( $(date +%s) - t0 )); (( elapsed < 0 )) && elapsed=0
+  elapsed=$(( SECONDS - t0 ))
   say "--prepare-only 完成（源码+补丁+依赖+宿主 protoc），用时 ${elapsed}s"
   exit 0
 fi
@@ -602,7 +605,7 @@ setup_patch_shim
 configure_ort
 
 if [[ "$MODE" == "configure" ]]; then
-  elapsed=$(( $(date +%s) - t0 )); (( elapsed < 0 )) && elapsed=0
+  elapsed=$(( SECONDS - t0 ))
   say "--configure-only 完成（未编译），用时 ${elapsed}s"
   exit 0
 fi
@@ -612,4 +615,4 @@ locate_and_install
 install_dest
 say "自检（新构建的产物）："
 selfcheck_artifact "$SO" || die 4 "新构建产物自检失败"
-say "构建完成，总用时 $(( ($(date +%s) - t0) / 60 )) min"
+say "构建完成，总用时 $(( (SECONDS - t0) / 60 )) min"
