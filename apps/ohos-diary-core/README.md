@@ -262,12 +262,11 @@ finalize `state=saved`、`logical_duration_ms=4980`、blob 159,404 B 是合法�
   
   但「因此只有重编 sherpa 一条路」**不成立**：`ort::init_from` 接受任意路径，自编
   1.29.1 的 SONAME 是 **`libonnxruntime.so.1`**，与 sherpa 的 `NEEDED`
-  **`libonnxruntime.so`** 并不同名。**#134（`feat/ohos-hap-config-20261018`，
-  commit `378316c`）已经按这条思路在真机上验通**：sherpa 继续用 1.16.3 的
-  `libonnxruntime.so`，语义索引用 `libonnxruntime-diary-1.29.1.so`（SONAME
-  `libonnxruntime.so.1`）显式 `init_from`，同一 HAP 里转写与语义检索可以同时跑。
-  **本 PR 不包含这条改动，也不再排除它**；本 PR 只证明「把同一个文件名直接换成
-  1.29.1」会失败。
+  **`libonnxruntime.so`** 并不同名。**这条双 ORT 路已并入本 PR**（原 #134，commit
+  `378316c` 起）：sherpa 继续用 1.16.3 的 `libonnxruntime.so`，语义索引用
+  `libonnxruntime-diary-1.29.1.so`（SONAME `libonnxruntime.so.1`）显式 `init_from`，
+  同一 HAP 里转写与语义检索可以同时跑（`WITH_SEMANTIC=1` 构建，产品身份已验）。
+  本 PR 仍然证明「把同一个文件名直接换成 1.29.1」会失败。
 
 ### 引擎库怎么进 HAP、构建期怎么防「缺库的包」
 
@@ -282,8 +281,8 @@ finalize `state=saved`、`logical_duration_ms=4980`、blob 159,404 B 是合法�
 
 `build-hap.sh` 默认调用 `stage-sherpa.sh --check` 做同一组断言；**缺库 / 版本不对在构建期
 就红**，不会装到设备上才发现。确实要构建不含转写的基线包时用 `SKIP_ASR_LIBS=1`（这种包
-**不能转写**；缺引擎时任务为什么应停在 `waiting_configuration` 而不是终态 `failed`，是
-**#134 的 P0 核心修复**，本 PR 不含内核改动，别拿这种包当 P0 证据）。
+**不能转写**）。缺引擎时任务为什么应停在 `waiting_configuration` 而不是终态 `failed`，是
+**本 PR 已包含的 P0 核心修复**（commit `378316c`），不是外部依赖。
 
 ### 模型怎么进沙箱（`hdc file send` 不通，走 rport）
 
@@ -348,13 +347,12 @@ DIARY_ASR jobs.report {"open_ms":4,"run_ms":3580,...,"processed":1,"succeeded":1
 | 派生文本（原文） | **「开饭时间早上9点至下午。」** |
 | 检索 | `search.start query=开饭` → `hits=2 elapsedMs=2`；`query=下午` → `hits=4`；命中项 `matched_by=["keyword"]`，locator 是音频 `[0, 4980) ms` |
 
-> **范围口径（别把这张表读大）**：本 PR 的真机结果证明的是**关键词检索**
-> （`matched_by=["keyword"]`），默认 HAP 只带 sherpa 的 ORT 1.16.3（产品 `ort` crate
-> 要求 ORT ≥ 1.17，`crates/diary_core/Cargo.toml:30`）。**语义检索已经由 #134
-> （`feat/ohos-hap-config-20261018`，commit `378316c`）用双 ORT 打包方案真机验通**：
-> 查询「母亲体检的结果怎么样」→ `hits=26`、`matchedBy=["semantic"]`，同一查询关键词
-> 模式 `hits=0`。要语义检索请按 #134 的打包方式（多带一份
-> `libonnxruntime-diary-1.29.1.so`），不要把默认 HAP 读成「检索全通」。
+> **范围口径（构建矩阵）**：默认 `build-hap.sh` **不带** 1.29.1，只带 sherpa 的 ORT
+> 1.16.3（产品 `ort` crate 要求 ORT ≥ 1.17，`crates/diary_core/Cargo.toml:30`）⇒
+> **关键词检索开箱可用、语义检索不可用**。语义检索用 `WITH_SEMANTIC=1` 构建（多带一份
+> `libonnxruntime-diary-1.29.1.so`）；本 PR 已在产品身份用这个构建验通：查询
+> 「母亲体检的结果怎么样」→ `hits=26`、`matchedBy=["semantic"]`，同一查询关键词模式
+> `hits=0`。不要把默认 HAP 读成「检索全通」。
 
 同一段音频四次录音的识别结果（说明可复现 + 偏差来自声学，不是链路）：
 
@@ -376,9 +374,10 @@ DIARY_ASR jobs.report {"open_ms":4,"run_ms":3580,...,"processed":1,"succeeded":1
 - **长音频**（>60 s）与多段拼接的转写耗时/内存；本机只有 5 s 一条的完整数字；
 - **release / 混淆构建**带 sherpa 的包（这轮只装 debug）；
 - **低内存机型**：592 MB PSS 增量在 31 GB 的 HAD-W32 上没问题，4–8 GB 手机未测；
-- **双 ORT 并存 / 语义索引**：本 PR 不验，**#134 已在产品身份真机验通**（sherpa 1.16.3
-  + 自编 1.29.1，不同文件名；语义查询 `hits=26`）。本 PR 只证明了「把
-  `libonnxruntime.so` 直接换成 1.29.1 会符号版本不匹配」；
+- **双 ORT 并存 / 语义索引**：本 PR 已包含并在产品身份真机验通（`WITH_SEMANTIC=1`
+  构建：sherpa 1.16.3 + 自编 1.29.1，不同文件名；语义查询 `hits=26`）。**默认构建不含
+  1.29.1**，默认包仍只到关键词检索；本 PR 也证明了「把 `libonnxruntime.so` 直接换成
+  1.29.1 会符号版本不匹配」；
 - 电源键/锁屏路径（本轮按要求全程没碰）。
 
 ## 产品 HAP 的配置能力与双 ORT 共存（#108 收尾片，2026-10-18 夜）

@@ -16,7 +16,7 @@
       "linux-x64": "实测：下载产物 + 真语音转写通过（见 docs/architecture/m3-转写链.md）",
       "windows-x64": "只核实了预编译产物（下载、解开、列内容、读版本字符串），未真机运行",
       "android-arm64-v8a": "只核实了预编译产物（同上），未真机运行",
-      "ohos-arm64-v8a": "实测（2026-10-18，PR #130）：HAD-W32 / API 23 / arm64-v8a，产品身份 com.lingxing.unwrittendiary；sherpa 1.13.8 + ORT 1.16.3 加载、转写、关键词检索全通。默认 HAP 只到关键词检索（matched_by=[\"keyword\"]）；语义索引要用 ORT ≥ 1.17，技术路已由 PR #134（feat/ohos-hap-config-20261018，双 ORT：sherpa 1.16.3 + 自编 1.29.1）真机验通，默认 HAP 不含 1.29.1。"
+      "ohos-arm64-v8a": "实测（2026-10-18，PR #130）：HAD-W32 / API 23 / arm64-v8a，产品身份 com.lingxing.unwrittendiary；sherpa 1.13.8 + ORT 1.16.3 加载、转写、关键词检索全通。构建矩阵：默认 build-hap.sh 只带 sherpa 的 ORT 1.16.3 ⇒ 关键词检索可用、语义索引不可用（matched_by=[\"keyword\"]）；WITH_SEMANTIC=1 构建多带 libonnxruntime-diary-1.29.1.so（自编 ORT 1.29.1）⇒ 语义索引可用，已在同一产品身份真机验通（matchedBy=[\"semantic\"]）。默认 HAP 不含 1.29.1。"
     },
     "prebuiltArtifacts": {
       "windows-x64": {

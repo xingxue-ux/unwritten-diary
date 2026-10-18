@@ -18,7 +18,7 @@
 #   SKIP_NATIVE=1   跳过原生产物重建（复用 entry/libs/arm64-v8a/ 里已有的 .so）
 #   SKIP_OHPM=1     跳过 ohpm install
 #   SKIP_ASR_LIBS=1 跳过转写引擎库的检查（**基线/冒烟包**，这种 HAP 不能转写；
-#                   缺库时的任务状态由 #134 的 P0 核心修复保证，不在本 PR）
+#                   缺库时的任务状态由本 PR 的 P0 修复保证，commit 378316c）
 #   BUILD_MODE      debug（默认）/ release
 #   OHOS_BUNDLE_NAME / OHOS_VERSION_CODE / OHOS_VERSION_NAME   临时覆盖（构建后还原）
 set -euo pipefail
@@ -51,7 +51,7 @@ done
 # 为什么不再是「有就带上、没有也照建」：缺引擎的 HAP 曾经能通过 readiness
 # （OHOS 的「按库名加载」被当成正常），转写任务跑起来才在 load_library() 失败，
 # 而且按时间语义是**终态** failed。核心侧的 P0 修复（readiness 真的探测一次 +
-# load_library 错误码归位）在 #134，本 PR 不重复改核心；构建这边要把
+# load_library 错误码归位）已在本 PR（commit 378316c）；构建这边要把
 # 「没跑 stage-sherpa」变成**构建期错误**，而不是装到设备上才发现。
 #
 # `stage-sherpa.sh --check` 会断言：两个文件在、aarch64、sherpa 的 NEEDED 有
