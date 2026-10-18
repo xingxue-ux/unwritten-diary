@@ -40,10 +40,12 @@
 //!
 //! # 语义检索
 //!
-//! 按生效代次取全部向量，算余弦相似度，按 `chunk_spans` 展开成「块 × 篇」候选，
-//! 分数从高到低排，再按篇折叠。**全表扫描**是这一片的诚实做法：没有 ANN 索引、
-//! 也没有 mmap（见文档「存储方案评估」与「没有做到的」），10 万块的规模数字是
-//! 算出来的投影，不是实测。
+//! 按生效代次**流式扫描**向量，逐行解码、算余弦，按 `chunk_spans` 展开成
+//! 「块 × 篇」候选，分数从高到低排，再按篇折叠。**不做 ANN**：在 10 万块的实测里
+//! 全量精确余弦已经落在可接受延迟内（数字见
+//! `docs/architecture/m5-大库可用性.md`），加一个近似索引只会用「没说出口的召回
+//! 损失」换一个不需要的加速。向量本身按 `int8`（体积优先）或 `f32` 存，解码按行上
+//! 的 `storage` 分派；编码格式是口径三字段之一（#58），换格式整代重算。
 //!
 //! # 口径判据（换模型未重建）
 //!
@@ -63,16 +65,13 @@ use rusqlite::{params, OptionalExtension};
 
 use crate::chunks;
 use crate::embedding::{
-    self, Embedder, EmbeddingConfig, EnvEmbedding,
+    self, Embedder, EmbeddingConfig, EnvEmbedding, VectorStorage,
 };
 use crate::error::{CoreError, Result};
 use crate::model::{
     Coverage, MatchedBy, SearchFilters, SearchHit, SourceKind, SourceLocator,
 };
 use crate::Core;
-
-/// `chunk_vectors.storage` 目前唯一支持的取值。
-pub(crate) const STORAGE_F32: &str = "f32";
 
 /// 语义摘录最多这么多字符（超出截断加省略号）。取该篇自己那一段，不是整块正文。
 const SEMANTIC_SNIPPET_CHARS: usize = 160;
@@ -325,7 +324,7 @@ pub(crate) fn is_embedder_unavailable(error: &CoreError) -> bool {
 ///
 /// - `model_version` 由模型文件哈希导出，换模型文件必然变；
 /// - `dims` 是向量维度，不同模型可能不同；
-/// - `storage` 是向量的编码格式（现在只有 `f32`）。
+/// - `storage` 是向量的编码格式（`f32` / `int8`，见 `VectorStorage`）。
 ///
 /// 口径不同的一批向量放在一起算余弦，量出来的相似度没有意义（两个空间各说各话），
 /// 所以这三项也是「能不能复用/续跑」的唯一判据。
@@ -336,11 +335,12 @@ struct Caliber<'a> {
 }
 
 impl Caliber<'_> {
-    fn of(embedder: &dyn Embedder) -> Caliber<'_> {
+    fn of(embedder: &dyn Embedder, storage: VectorStorage) -> Caliber<'_> {
         Caliber {
             model_version: embedder.model_version(),
             dims: embedder.dims() as i64,
-            storage: STORAGE_F32,
+            // `wire()` 是 `&'static str`，可以活到 `Caliber<'a>` 的任何生命周期。
+            storage: storage.wire(),
         }
     }
 }
@@ -409,7 +409,7 @@ fn build_generation(
     deadline: Option<std::time::Instant>,
     progress: ProgressSink<'_>,
 ) -> Result<SemanticBuildOutcome> {
-    let caliber = Caliber::of(embedder);
+    let caliber = Caliber::of(embedder, core.vector_storage);
     let (active, building) = chunks::generations(core)?;
     // 开新代次：中断过就从它续跑，否则在生效代次之后 +1。**不在原地更新 active**。
     let generation = match building {
@@ -490,7 +490,7 @@ fn build_generation(
             chunk_id,
             generation,
             caliber.model_version,
-            caliber.storage,
+            core.vector_storage,
             &vector,
         )?;
         embedded_this_run += 1;
@@ -570,7 +570,7 @@ fn write_vector(
     chunk_id: &str,
     generation: i64,
     model_version: &str,
-    storage: &str,
+    storage: VectorStorage,
     vector: &[f32],
 ) -> Result<()> {
     core.conn.execute(
@@ -584,8 +584,8 @@ fn write_vector(
             generation,
             model_version,
             vector.len() as i64,
-            storage,
-            embedding::vector_bytes(vector),
+            storage.wire(),
+            storage.encode(vector),
             embedding::now_iso(),
         ],
     )?;
@@ -646,6 +646,25 @@ pub(crate) fn candidates(
     query: &str,
     filters: &SearchFilters,
 ) -> Result<SemanticCandidates> {
+    candidates_impl(core, embedder, query, filters, RowMode::Streaming)
+}
+
+/// 取行的两种方式。**生产只用 `Streaming`**；`LoadAll` 是测试用的参考实现
+/// （把整代向量先收进 `Vec`，也就是这一片改掉的那条老路），用来钉住两条路径
+/// 的结果逐字节一致。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowMode {
+    Streaming,
+    LoadAll,
+}
+
+fn candidates_impl(
+    core: &Core,
+    embedder: &dyn Embedder,
+    query: &str,
+    filters: &SearchFilters,
+    mode: RowMode,
+) -> Result<SemanticCandidates> {
     let Some(generation) = active_generation(core)? else {
         return Ok(SemanticCandidates::Scored(Vec::new()));
     };
@@ -691,88 +710,140 @@ pub(crate) fn candidates(
                                    WHERE si.source_id = s.source_id \
                                      AND si.current_revision_id = s.source_revision_id))";
     let mut statement = core.conn.prepare(sql)?;
-    let rows = statement
-        .query_map(
-            params![
-                generation,
-                i64::from(filters.include_trashed),
-                filters.from_day_key,
-                filters.to_day_key,
-                kinds,
-                scope,
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, i64>(8)?,
-                    row.get::<_, i64>(9)?,
-                    row.get::<_, String>(10)?,
-                    row.get::<_, String>(11)?,
-                    row.get::<_, String>(12)?,
-                ))
-            },
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // **流式扫描**：一行一行地取、解码、算余弦，算完就丢。不要 `collect` 成
+    // `Vec<Vec<u8>>`——那正是「10 万块 f32 = 195 MiB/次查询」的来源：把整代向量
+    // 连同 SQLite 的一份拷贝同时放进堆里，峰值是向量总量的两倍左右。
+    //
+    // 现在堆里只留**候选的元数据**（篇标识、块标识、区间、分数），每个候选几十字节；
+    // 向量字节的生命周期只有一行。这样查询峰值内存与「向量精度/维度」解耦：
+    // int8 与 f32 的峰值差，只来自候选数量而不是向量宽度。
+    let params = params![
+        generation,
+        i64::from(filters.include_trashed),
+        filters.from_day_key,
+        filters.to_day_key,
+        kinds,
+        scope,
+    ];
+    let scored: Vec<SemanticCandidate> = match mode {
+        // 生产路径：一行一行地取、解码、算余弦，算完就丢。
+        RowMode::Streaming => {
+            let mut rows = statement.query(params)?;
+            let mut scored = Vec::new();
+            while let Some(row) = rows.next()? {
+                scored.push(candidate_of(raw_row(row)?, &query_vector)?);
+            }
+            scored
+        }
+        // 测试参考：先全部收进 `Vec<RawRow>`（连同每行的向量字节），再算。
+        RowMode::LoadAll => {
+            let rows: Vec<RawRow> = statement
+                .query_map(params, raw_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut scored = Vec::with_capacity(rows.len());
+            for raw in rows {
+                scored.push(candidate_of(raw, &query_vector)?);
+            }
+            scored
+        }
+    };
 
-    let mut scored: Vec<SemanticCandidate> = Vec::with_capacity(rows.len());
-    for row in rows {
-        if row.2 != STORAGE_F32 {
-            // 只认 f32。别的格式（将来 int8）要显式支持，不能猜着算。
-            return Err(CoreError::CorruptedData {
-                message: format!("不认识的向量存储格式：{}", row.2),
-            });
-        }
-        let vector = embedding::bytes_to_vector(&row.0)?;
-        if vector.len() as i64 != row.1 {
-            return Err(CoreError::CorruptedData {
-                message: format!(
-                    "向量字节解出 {} 维，但行上记的是 {} 维",
-                    vector.len(),
-                    row.1
-                ),
-            });
-        }
-        // 兜底（正常走不到）：整代口径已经在进计算前核对过，所以这里的每一行**应当**
-        // 与查询向量同维。真的不同维时**如实报错**，绝不退回 `cosine` 的静默 `zip`
-        // ——那会把两条不同空间的向量截到短的那一段，给出一个看起来正常的分数
-        // （原来 `cosine` 的隐患正是这一条）。口径写在
-        // `docs/architecture/m2-向量索引与换代.md` 的「消费契约」里。
-        if vector.len() != query_vector.len() {
-            return Err(CoreError::CorruptedData {
-                message: format!(
-                    "块 {} 的向量是 {} 维、行上记的是 {} 维，查询向量是 {} 维：\
-                     两者不是同一个向量空间，不做余弦",
-                    row.3,
-                    vector.len(),
-                    row.1,
-                    query_vector.len()
-                ),
-            });
-        }
-        let score = cosine(&query_vector, &vector);
-        scored.push(SemanticCandidate {
-            group_id: row.6.clone(),
-            chunk_id: row.3,
-            span_ordinal: row.4,
-            score,
-            capture_id: row.5,
-            source_id: row.6,
-            source_revision_id: row.7,
-            kind: row.10,
-            coverage: Coverage::from_wire(&row.11).unwrap_or(Coverage::Unavailable),
-            day_key: row.12,
-            start_char: row.8,
-            end_char: row.9,
+    Ok(SemanticCandidates::Scored(rank_and_fold(scored)))
+}
+
+/// 从当前行取出 13 列。流式与全量两条路径共用，保证「取出来的东西」完全一样。
+fn raw_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawRow> {
+    Ok(RawRow {
+        vector: row.get(0)?,
+        dims: row.get(1)?,
+        storage: row.get(2)?,
+        chunk_id: row.get(3)?,
+        span_ordinal: row.get(4)?,
+        capture_id: row.get(5)?,
+        source_id: row.get(6)?,
+        source_revision_id: row.get(7)?,
+        start_char: row.get(8)?,
+        end_char: row.get(9)?,
+        kind: row.get(10)?,
+        coverage: row.get(11)?,
+        day_key: row.get(12)?,
+    })
+}
+
+/// 一行候选的原始数据。流式路径逐行构造、算完即弃；测试用的全量路径先
+/// `collect` 成 `Vec<RawRow>` 再算，用来钉住「两条路径逐字节一致」。
+struct RawRow {
+    vector: Vec<u8>,
+    dims: i64,
+    storage: String,
+    chunk_id: String,
+    span_ordinal: i64,
+    capture_id: String,
+    source_id: String,
+    source_revision_id: String,
+    start_char: i64,
+    end_char: i64,
+    kind: String,
+    coverage: String,
+    day_key: String,
+}
+
+/// 把一行的字节解码、校验、算余弦，变成一条候选。两条路径共用这一段，
+/// 唯一的差别是「行是一次一行地取，还是先收成一堆」。
+fn candidate_of(row: RawRow, query_vector: &[f32]) -> Result<SemanticCandidate> {
+    // **按行上的 `storage` 分派解码，不猜。** 整代口径已经在进计算前核对过
+    // （`caliber_mismatch`），所以正常走到这里的行都是当前格式；这里仍然逐行
+    // 解析，是为了让「历史遗留的混合代次」在报错时说得清是哪一行、哪种格式，
+    // 而不是拿一个默认格式解出一串垃圾分数。
+    let storage =
+        VectorStorage::from_wire(&row.storage).ok_or_else(|| CoreError::CorruptedData {
+            message: format!("不认识的向量存储格式：{}", row.storage),
+        })?;
+    let vector = storage.decode(&row.vector)?;
+    if vector.len() as i64 != row.dims {
+        return Err(CoreError::CorruptedData {
+            message: format!(
+                "向量字节解出 {} 维，但行上记的是 {} 维",
+                vector.len(),
+                row.dims
+            ),
         });
     }
+    // 兜底（正常走不到）：整代口径已经在进计算前核对过，所以这里的每一行**应当**
+    // 与查询向量同维。真的不同维时**如实报错**，绝不退回 `cosine` 的静默 `zip`
+    // ——那会把两条不同空间的向量截到短的那一段，给出一个看起来正常的分数
+    // （原来 `cosine` 的隐患正是这一条）。口径写在
+    // `docs/architecture/m2-向量索引与换代.md` 的「消费契约」里。
+    if vector.len() != query_vector.len() {
+        return Err(CoreError::CorruptedData {
+            message: format!(
+                "块 {} 的向量是 {} 维、行上记的是 {} 维，查询向量是 {} 维：                 两者不是同一个向量空间，不做余弦",
+                row.chunk_id,
+                vector.len(),
+                row.dims,
+                query_vector.len()
+            ),
+        });
+    }
+    let score = cosine(query_vector, &vector);
+    Ok(SemanticCandidate {
+        group_id: row.source_id.clone(),
+        chunk_id: row.chunk_id,
+        span_ordinal: row.span_ordinal,
+        score,
+        capture_id: row.capture_id,
+        source_id: row.source_id,
+        source_revision_id: row.source_revision_id,
+        kind: row.kind,
+        coverage: Coverage::from_wire(&row.coverage).unwrap_or(Coverage::Unavailable),
+        day_key: row.day_key,
+        start_char: row.start_char,
+        end_char: row.end_char,
+    })
+}
 
+/// 排序 + 按篇折叠。流式与全量两条路径共用，保证结果只差在内存占用。
+fn rank_and_fold(mut scored: Vec<SemanticCandidate>) -> Vec<SemanticCandidate> {
     // 分数从高到低；同分按日期近到远，再按**真正由内容决定**的键：篇内区间与段序号。
     //
     // 为什么同分时**不能**先比 `chunk_id`（issue #57）：`chunk_id` 的哈希输入里有
@@ -799,11 +870,10 @@ pub(crate) fn candidates(
 
     // 折叠：同一篇只留第一条（也就是得分最高的那块）。
     let mut seen: HashSet<String> = HashSet::new();
-    let folded: Vec<SemanticCandidate> = scored
+    scored
         .into_iter()
         .filter(|candidate| seen.insert(candidate.group_id.clone()))
-        .collect();
-    Ok(SemanticCandidates::Scored(folded))
+        .collect()
 }
 
 /// 余弦相似度。向量已经 L2 归一化，所以正常情况下就是内积；仍然按真余弦算，
@@ -995,13 +1065,32 @@ pub fn ranking(
     query: &str,
     filters: &SearchFilters,
 ) -> Result<Vec<(String, f32)>> {
+    ranking_with_mode(core, query, filters, RowMode::Streaming)
+}
+
+/// 仅供测试：全量载入路径的同一份排名，用来与流式路径逐字节对照。
+#[doc(hidden)]
+pub(crate) fn ranking_load_all_for_test(
+    core: &mut Core,
+    query: &str,
+    filters: &SearchFilters,
+) -> Result<Vec<(String, f32)>> {
+    ranking_with_mode(core, query, filters, RowMode::LoadAll)
+}
+
+fn ranking_with_mode(
+    core: &mut Core,
+    query: &str,
+    filters: &SearchFilters,
+    mode: RowMode,
+) -> Result<Vec<(String, f32)>> {
     if active_generation(core)?.is_none() {
         return Ok(Vec::new());
     }
     let embedder = core.embedder()?;
     // 口径不一致时给**空排名**：与产品路径「语义这一路不作数」同一口径，
     // 而不是把跨空间的分数当成量测结果报出去。
-    match candidates(core, &*embedder, query, filters)? {
+    match candidates_impl(core, &*embedder, query, filters, mode)? {
         SemanticCandidates::ForeignSpace(_) => Ok(Vec::new()),
         SemanticCandidates::Scored(candidates) => Ok(candidates
             .into_iter()
@@ -1127,7 +1216,7 @@ pub(crate) fn caliber_mismatch(
     let Some(generation) = active_generation(core)? else {
         return Ok(None);
     };
-    let caliber = Caliber::of(embedder);
+    let caliber = Caliber::of(embedder, core.vector_storage);
     let foreign_rows = foreign_row_count(core, generation, &caliber)?;
     if foreign_rows == 0 {
         return Ok(None);

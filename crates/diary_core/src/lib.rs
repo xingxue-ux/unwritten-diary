@@ -125,8 +125,9 @@ pub use chunker::{
 };
 pub use embedding::{
     bytes_to_vector, config_from_env, load as load_embedder, text_hash_vector, vector_bytes,
-    EmbedOptions, Embedder, EmbeddingConfig, EnvEmbedding, OrtEmbedder, Pooling, DEFAULT_POOLING,
-    DEFAULT_QUERY_INSTRUCTION, EXPECTED_DIMS, MODEL_ID, QUERY_INSTRUCTION,
+    EmbedOptions, Embedder, EmbeddingConfig, EnvEmbedding, OrtEmbedder, Pooling,
+    VectorStorage, DEFAULT_POOLING, DEFAULT_QUERY_INSTRUCTION, DEFAULT_VECTOR_STORAGE,
+    EXPECTED_DIMS, MODEL_ID, QUERY_INSTRUCTION,
 };
 pub use schema::SCHEMA_VERSION;
 pub use search::TOKENIZER_VERSION;
@@ -170,6 +171,9 @@ pub struct Core {
     /// 混合检索的语义证据门槛。产品默认是 `HYBRID_SEMANTIC_MIN_SCORE`；量测与测试
     /// 可以临时改它来扫曲线（见 `set_hybrid_min_score_for_test`）。
     hybrid_min_score: f32,
+    /// 新写入向量的存储编码。默认 `DEFAULT_VECTOR_STORAGE`；量测与测试可以临时改它
+    /// （见 `set_vector_storage_for_test`）。它是口径三字段之一，换格式 = 整代重算。
+    vector_storage: embedding::VectorStorage,
 /// 密钥托管。默认实现是资料库目录下权限受限的独立文件；测试与内存库用内存实现。
     /// **明文只在这一层**，`providers` 表里只有引用（见 `provider::secret`）。
     secrets: Box<dyn provider::secret::SecretStore>,
@@ -287,6 +291,7 @@ impl Core {
             search_sessions: HashMap::new(),
             semantic: semantic::SemanticRuntime::from_env(),
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
+            vector_storage: embedding::DEFAULT_VECTOR_STORAGE,
             secrets,
             transport,
             asr_engine: std::sync::Arc::new(transcription::sherpa::SherpaOnnxEngine),
@@ -320,6 +325,20 @@ impl Core {
         Ok(())
     }
 
+    /// 仅供量测：改这条连接的 `synchronous`（产品默认 `FULL`）。
+    ///
+    /// 为什么量测需要它：`build_semantic_index` **一块一个事务**（中断可续跑的前提），
+    /// `synchronous = FULL` 时每块一次 fsync。笔记本/机械盘上 fsync 可能比模型推理还贵，
+    /// 于是「构建时间」主要量的是磁盘而不是索引。量测时用 `OFF` 把这一项单独拿掉，
+    /// 并在报告里把两种口径分开写（产品默认的那一档单独量、按比例说明）。
+    ///
+    /// 它只影响这一条连接与之后的提交；产品代码不调它。
+    #[doc(hidden)]
+    pub fn set_synchronous_for_test(&self, mode: &str) -> Result<()> {
+        self.conn.pragma_update(None, "synchronous", mode)?;
+        Ok(())
+    }
+
     /// 仅供量测/测试：改混合检索的语义证据门槛。
     ///
     /// 阈值扫描必须走**同一条产品路径**（`start_search(mode = hybrid)` + 真融合），
@@ -328,6 +347,25 @@ impl Core {
     #[doc(hidden)]
     pub fn set_hybrid_min_score_for_test(&mut self, value: f32) {
         self.hybrid_min_score = value;
+    }
+
+    /// 仅供量测/测试：改**新写入**向量的存储格式（`f32` / `int8`）。
+    ///
+    /// 为什么需要它：`storage` 是口径三字段之一，换格式必须走**同一条产品路径**
+    /// （`build_semantic_index` 整代重算）来量，不能在探针里另写一套写入逻辑——
+    /// 否则量到的召回与体积不是线上会得到的东西。
+    ///
+    /// 它**只影响之后写入的向量**：已有的生效代次不会就地改写；改完格式再检索，
+    /// 整代口径核对会发现不一致（`ForeignSpace`），下一次 `build_semantic_index`
+    /// 整代重算。产品代码不调它，默认值是可审计的 `DEFAULT_VECTOR_STORAGE`。
+    #[doc(hidden)]
+    pub fn set_vector_storage_for_test(&mut self, storage: VectorStorage) {
+        self.vector_storage = storage;
+    }
+
+    /// 当前配置的向量存储格式（状态查询与量测用）。
+    pub fn vector_storage(&self) -> VectorStorage {
+        self.vector_storage
     }
 
     // ------------------------------------------------------------ 记录路径
@@ -1104,6 +1142,17 @@ impl Core {
         filters: &SearchFilters,
     ) -> Result<Vec<(String, f32)>> {
         semantic::ranking(self, query, filters)
+    }
+
+    /// 仅供测试：**全量载入**路径的语义排名（与 `semantic_ranking` 同一段解码、
+    /// 排序与折叠，只是先把整代向量收进堆）。用来钉住「流式扫描没有改变结果」。
+    #[doc(hidden)]
+    pub fn semantic_ranking_load_all_for_test(
+        &mut self,
+        query: &str,
+        filters: &SearchFilters,
+    ) -> Result<Vec<(String, f32)>> {
+        semantic::ranking_load_all_for_test(self, query, filters)
     }
 
     /// 关键词检索候选：命中**派生片段**的 ID，按索引写入顺序。

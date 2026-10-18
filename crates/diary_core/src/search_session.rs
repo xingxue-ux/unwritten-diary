@@ -1017,6 +1017,12 @@ pub(crate) fn cancel(core: &mut Core, session_id: &str) -> Result<SearchSnapshot
     let result = materialize(core, &state, &state.last_page);
     // 取消后还留在表里：这样 `search.snapshot` 还能读到「已取消」这个状态，
     // 前端不至于因为会话突然消失而把它当成过期（那是两件事）。
+    //
+    // 但**不再保留完整候选列表**：取消之后不会再有 `nextPage`，`snapshot` 只需要
+    // `last_page`。大库上这份候选是「每篇一条」，10 万块就是几 MB 到几十 MB；取消的
+    // 会话只增不减，量几次查询就把常驻内存垒到 GB 级（#90 量到的真实问题）。
+    // 释放它不影响任何契约：已取消会话的翻页本来就该报过期。
+    state.ordered = Vec::new();
     core.search_sessions_mut().insert(session_id.to_owned(), state);
     result
 }

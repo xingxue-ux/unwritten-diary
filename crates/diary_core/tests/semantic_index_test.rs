@@ -19,7 +19,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use diary_core::{
     Core, CreateDraftInput, EmbedOptions, Embedder, ImportManifest, ImportOrigin, ImportRequest,
     MatchedBy, SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
-    SourceKind,
+    SourceKind, VectorStorage,
 };
 use rusqlite::params;
 use sha2::{Digest, Sha256};
@@ -2941,5 +2941,175 @@ fn retired_revision_is_not_returned_by_semantic_search_before_rebuild() {
             .contains("旧说法")),
         "重建之后任何命中都不该是旧正文：{:?}",
         after.results.iter().map(|h| h.snippet.clone()).collect::<Vec<_>>()
+    );
+}
+
+// ------------------------------------------------------------ int8 存储与流式扫描（#90）
+
+/// 换存储格式 = 换口径：必须**整代重算**，不能把 f32 向量原地当 int8 用。
+///
+/// 三件事都钉住：
+/// 1. 只改 `storage`、还没重建时，语义这一路**不作数**（跨编码的余弦是垃圾）；
+/// 2. 重建是一次整代重算（`reused_chunks == 0`，代次 +1）；
+/// 3. 新代次里每一行都是 `int8`、字节数是 `4 + dims`，检索照常出结果。
+#[test]
+fn switching_the_storage_format_forces_a_full_recompute() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+
+    let first = core.build_semantic_index(None).unwrap();
+    assert_eq!(first.generation, 1);
+    let conn = open(&path);
+    let storages: Vec<String> = conn
+        .prepare("SELECT DISTINCT storage FROM chunk_vectors WHERE generation = 1")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(storages, vec!["f32".to_owned()], "默认仍是 f32");
+    drop(conn);
+
+    // 换格式，但**先不重建**：口径已经不一致，语义这一路必须整路不作数。
+    core.set_vector_storage_for_test(VectorStorage::Int8);
+    let snapshot = search_mode(&mut core, "妈妈", SearchMode::Semantic, 10);
+    assert!(
+        snapshot.results.is_empty(),
+        "跨编码的余弦不作数，不能返回「看起来正常」的结果：{:?}",
+        snapshot.results
+    );
+    assert!(
+        snapshot.warnings.iter().any(|warning| warning.contains("口径")),
+        "要说清是口径不一致（而不是「没有相近内容」）：{:?}",
+        snapshot.warnings
+    );
+
+    // 重建：整代重算，不复制 f32 向量。
+    let rebuilt = core.build_semantic_index(None).unwrap();
+    assert_eq!(rebuilt.generation, 2, "换口径必须开新代次");
+    assert_eq!(
+        rebuilt.reused_chunks, 0,
+        "f32 向量一条都不能复用进 int8 代次（复用就等于混编码）"
+    );
+    assert_eq!(rebuilt.embedded_chunks, rebuilt.total_chunks, "两块都按 int8 重算");
+
+    let conn = open(&path);
+    let storages: Vec<String> = conn
+        .prepare("SELECT DISTINCT storage FROM chunk_vectors WHERE generation = 2")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(storages, vec!["int8".to_owned()], "生效代次里只能有一种编码");
+    let bad_lengths: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2 \
+             AND LENGTH(vector) <> 4 + dims",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bad_lengths, 0, "int8 行必须是 4 字节 scale + dims 字节");
+    drop(conn);
+
+    // 重建之后检索照常：两块都是哈希向量，查询「妈妈」应当至少命中一块。
+    let snapshot = search_mode(&mut core, "妈妈", SearchMode::Semantic, 10);
+    assert_eq!(snapshot.results.len(), 2, "纯语义是 kNN，两块都会被列出来");
+    assert!(
+        snapshot.warnings.iter().all(|warning| !warning.contains("口径")),
+        "重建后没有口径问题：{:?}",
+        snapshot.warnings
+    );
+}
+
+/// 流式扫描与「全量载入」参考路径必须**逐字节一致**（篇标识、顺序、分数位）。
+///
+/// 参考路径是这一片改掉的那条老路（先 `collect` 整代向量到堆里），只在测试里保留；
+/// 两条路径共用同一段解码、校验、排序与折叠，差别只有「什么时候把向量丢掉」。
+#[test]
+fn streaming_scan_matches_the_load_all_reference() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![("妈妈", unit(0)), ("桂花", unit(1)), ("加班", unit(2))],
+    ));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    write_capture(&mut core, at(2026, 9, 22), "今天又要加班。", "opC");
+    write_capture(&mut core, at(2026, 9, 23), "普通的一天。", "opD");
+    core.build_semantic_index(None).unwrap();
+
+    for query in ["妈妈", "桂花", "加班", "普通", "今天"] {
+        let streaming = core
+            .semantic_ranking(query, &SearchFilters::default())
+            .unwrap();
+        let load_all = core
+            .semantic_ranking_load_all_for_test(query, &SearchFilters::default())
+            .unwrap();
+        assert_eq!(
+            streaming.len(),
+            load_all.len(),
+            "「{query}」：两条路径的候选数必须一样"
+        );
+        for (left, right) in streaming.iter().zip(&load_all) {
+            assert_eq!(left.0, right.0, "「{query}」：篇标识与顺序必须逐字节一致");
+            assert_eq!(
+                left.1.to_bits(),
+                right.1.to_bits(),
+                "「{query}」：分数必须逐位一致（{} vs {}）",
+                left.1,
+                right.1
+            );
+        }
+    }
+}
+
+/// int8 检索的结果与 f32 **同一批篇、同一顺序**（量化误差没有改变这一组用例的排序）。
+///
+/// 这不是「所有语料上召回不变」的证明——那件事由探针的 36 条质量集与 2000 块语料
+/// 量（`large-bench recall-quality` / `recall-large`）。这里只钉住结构性行为：
+/// int8 写入/解码/检索这条链路能跑通，且没有把结果变成另一批篇。
+#[test]
+fn int8_search_finds_the_same_pieces_as_f32() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![("妈妈", unit(0)), ("桂花", unit(1)), ("加班", unit(2))],
+    ));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    write_capture(&mut core, at(2026, 9, 22), "今天又要加班。", "opC");
+
+    core.build_semantic_index(None).unwrap();
+    let f32_ranking = core
+        .semantic_ranking("妈妈", &SearchFilters::default())
+        .unwrap();
+
+    core.set_vector_storage_for_test(VectorStorage::Int8);
+    core.build_semantic_index(None).unwrap();
+    let int8_ranking = core
+        .semantic_ranking("妈妈", &SearchFilters::default())
+        .unwrap();
+
+    assert_eq!(
+        f32_ranking
+            .iter()
+            .map(|(group, _)| group.clone())
+            .collect::<Vec<_>>(),
+        int8_ranking
+            .iter()
+            .map(|(group, _)| group.clone())
+            .collect::<Vec<_>>(),
+        "这一组用例上 int8 的排序应当与 f32 相同"
     );
 }

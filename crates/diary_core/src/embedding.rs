@@ -554,6 +554,114 @@ pub fn bytes_to_vector(bytes: &[u8]) -> Result<Vec<f32>> {
         .collect())
 }
 
+/// 向量的**存储编码格式**，也就是 `chunk_vectors.storage` 的取值。
+///
+/// # 为什么它是一个「口径」而不是一个实现细节
+///
+/// `storage` 与 `model_version` / `dims` 并列，是向量空间的三字段之一（#58）：
+/// 同一段文字用 f32 与 int8 存下来，解码后的数值不同，两者之间的余弦与「两个模型
+/// 各说各话」是同一类错误——看起来有分数、有排序，但那个分数不代表任何东西。
+/// 所以：
+///
+/// - 编码格式**按行记录**（`storage` 列），解码按行分派，**绝不猜**；
+/// - 换格式 = 换口径：`build_semantic_index` 会把整代重算（不是原地重编码，
+///   那会留下「一半 f32 一半 int8」的混合代次）；
+/// - 生效代次里有一行与当前格式不同，语义这一路整路不作数（`ForeignSpace`），
+///   不会把跨编码的余弦当成结果。
+///
+/// # 两种格式
+///
+/// - `f32`：每分量 4 字节 little-endian，512 维 = 2048 B；
+/// - `int8`：每向量一个 f32 `scale` + 每分量 1 字节有符号整数，512 维 = 516 B。
+///   `scale = max(|v|) / 127`，解码 `v' = q * scale`。逐向量一个 scale 而不是全局
+///   一个：不同模型的向量幅度差很多，全局 scale 会让某个模型的量化误差放大到不可用。
+///   BGE 向量已经 L2 归一化，逐向量 scale 的意义是「保住这一条向量的相对形状」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorStorage {
+    /// 每个分量 4 字节 f32。
+    F32,
+    /// 每向量一个 f32 scale + 每分量 1 字节 int8。
+    Int8,
+}
+
+impl VectorStorage {
+    /// 写进 `chunk_vectors.storage` 的 wire 名。
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::Int8 => "int8",
+        }
+    }
+
+    /// 从库里读到的 `storage` 解析。不认识的格式返回 `None`——调用方必须如实报错，
+    /// 不能挑一个默认格式猜着解码。
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "f32" => Some(Self::F32),
+            "int8" => Some(Self::Int8),
+            _ => None,
+        }
+    }
+
+    /// 一条 `dims` 维向量编码后的字节数（报告的「每向量体积」用这个真值）。
+    pub const fn bytes_per_vector(self, dims: usize) -> usize {
+        match self {
+            Self::F32 => dims * 4,
+            Self::Int8 => 4 + dims,
+        }
+    }
+
+    /// 编码成 `chunk_vectors.vector` 的字节。
+    pub fn encode(self, vector: &[f32]) -> Vec<u8> {
+        match self {
+            Self::F32 => vector_bytes(vector),
+            Self::Int8 => {
+                // 全零向量（理论上模型不会给）没有可用的 scale：写 1.0，解出来仍是全零。
+                let max = vector.iter().fold(0_f32, |acc, value| acc.max(value.abs()));
+                let scale = if max > 0.0 { max / 127.0 } else { 1.0 };
+                let mut bytes = Vec::with_capacity(4 + vector.len());
+                bytes.extend_from_slice(&scale.to_le_bytes());
+                for value in vector {
+                    let quantized = (value / scale).round().clamp(-127.0, 127.0) as i8;
+                    bytes.push(quantized as u8);
+                }
+                bytes
+            }
+        }
+    }
+
+    /// 从 `chunk_vectors.vector` 的字节解码。
+    pub fn decode(self, bytes: &[u8]) -> Result<Vec<f32>> {
+        match self {
+            Self::F32 => bytes_to_vector(bytes),
+            Self::Int8 => {
+                if bytes.len() < 4 {
+                    return Err(CoreError::CorruptedData {
+                        message: format!("int8 向量字节数 {} 连一个 scale 都放不下", bytes.len()),
+                    });
+                }
+                let scale = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                if !scale.is_finite() || scale <= 0.0 {
+                    return Err(CoreError::CorruptedData {
+                        message: format!("int8 向量的 scale 是 {scale}，不是正的有限数"),
+                    });
+                }
+                Ok(bytes[4..]
+                    .iter()
+                    .map(|byte| f32::from(*byte as i8) * scale)
+                    .collect())
+            }
+        }
+    }
+}
+
+/// 新写入的向量默认用哪种格式。
+///
+/// **f32 仍是默认**：只有在大语料上复验过 int8 的召回之后才会改它（见
+/// `docs/architecture/m5-大库可用性.md` 的实测数字与结论）；在拿到那些数字之前，
+/// 把「36 条小语料上验过」当成「可以当默认」是拿用户的结果做实验。
+pub const DEFAULT_VECTOR_STORAGE: VectorStorage = VectorStorage::F32;
+
 /// 时间戳工具转发：写向量行时与库里其它时间用同一种格式。
 pub(crate) fn now_iso() -> String {
     support::to_iso(support::now())
@@ -595,6 +703,83 @@ mod tests {
         assert_eq!(bytes.len(), 12);
         assert_eq!(bytes_to_vector(&bytes).unwrap(), vector);
         assert!(bytes_to_vector(&[0, 1, 2]).is_err(), "不是 4 的倍数要报错");
+    }
+
+    #[test]
+    fn int8_round_trip_error_is_bounded_by_half_a_step() {
+        // 一条真实的 BGE 形状向量：L2 归一化、分量有正有负。
+        let vector = text_hash_vector("妈妈打电话来。", EXPECTED_DIMS);
+        let bytes = VectorStorage::Int8.encode(&vector);
+        assert_eq!(
+            bytes.len(),
+            VectorStorage::Int8.bytes_per_vector(EXPECTED_DIMS),
+            "int8 体积 = 4 字节 scale + 每维 1 字节"
+        );
+        assert_eq!(
+            VectorStorage::Int8.bytes_per_vector(EXPECTED_DIMS),
+            516,
+            "512 维 int8 = 4 字节 scale + 512 字节"
+        );
+        assert_eq!(
+            VectorStorage::F32.bytes_per_vector(EXPECTED_DIMS),
+            2048,
+            "512 维 f32 = 2048 字节"
+        );
+        let decoded = VectorStorage::Int8.decode(&bytes).unwrap();
+        assert_eq!(decoded.len(), vector.len());
+
+        // 误差上界：每个分量 \|v' - v\| <= scale/2（四舍五入）。scale 从字节里读回来，
+        // 这样测的是**存进去的那份** scale，不是重新算的。
+        let scale = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        for (original, restored) in vector.iter().zip(&decoded) {
+            assert!(
+                (original - restored).abs() <= scale / 2.0 + 1e-6,
+                "分量误差超过半个量化步长：{original} -> {restored}（scale {scale}）"
+            );
+        }
+        // 余弦几乎不变：这才是「召回会不会掉」的直接指标。
+        let dot: f32 = vector.iter().zip(&decoded).map(|(a, b)| a * b).sum();
+        let norm: f32 = decoded.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let cosine = dot / norm;
+        assert!(
+            (cosine - 1.0).abs() < 1e-4,
+            "量化后与原向量的余弦应当是 1.000 左右：{cosine}"
+        );
+    }
+
+    #[test]
+    fn int8_decoding_rejects_corrupt_rows() {
+        assert!(
+            VectorStorage::Int8.decode(&[0, 0]).is_err(),
+            "连 scale 都不够的字节要报错"
+        );
+        assert!(
+            VectorStorage::Int8.decode(&0_f32.to_le_bytes()).is_err(),
+            "scale = 0 要报错（除零会把整条向量变成 NaN）"
+        );
+        assert!(
+            VectorStorage::Int8.decode(&f32::NAN.to_le_bytes()).is_err(),
+            "scale = NaN 要报错"
+        );
+        assert_eq!(
+            VectorStorage::from_wire("i8"),
+            None,
+            "不认识的格式返回 None，由调用方如实报错，不猜"
+        );
+        assert_eq!(
+            VectorStorage::from_wire("int8"),
+            Some(VectorStorage::Int8)
+        );
+    }
+
+    #[test]
+    fn int8_encoding_is_deterministic() {
+        // 确定性：同一条向量编码两次必须逐字节相同（否则重建索引会无谓地换代）。
+        let vector = text_hash_vector("路边的桂花开了。", EXPECTED_DIMS);
+        assert_eq!(
+            VectorStorage::Int8.encode(&vector),
+            VectorStorage::Int8.encode(&vector)
+        );
     }
 
     #[test]

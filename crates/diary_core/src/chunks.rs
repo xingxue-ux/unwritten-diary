@@ -303,25 +303,44 @@ fn chunk_id_of(day_key: &str, chunk: &crate::chunker::Chunk) -> String {
 
 /// 删掉「这次重建之后已经不存在」的块（连同它们的 span 与向量）。
 ///
-/// `keep` 为空表示这一天（或整库）不该有任何块，全部删掉。绑定顺序与 SQL 里的
-/// 占位符一致：先 scope（`day_condition` 里那一个子查询），再 `keep` 列表。
+/// `keep` 为空表示这一天（或整库）不该有任何块，全部删掉。
+///
+/// **不能把 `keep` 直接拼成 `NOT IN (?, ?, ...)`**：SQLite 一条语句的变量数有上限
+/// （默认 32766），10 万块的建库会在这里直接报 `too many SQL variables`。大库
+/// （issue #90）必须支持，所以 keep 列表先分批写进**临时表**，删除改成
+/// `NOT EXISTS` 相关子查询。分批写临时表也顺带避免了「一条语句几百 KB」的 SQL 文本。
 fn delete_stale_chunks(
     tx: &rusqlite::Transaction<'_>,
     day_condition: &str,
     scope_values: &[String],
     keep: &[String],
 ) -> Result<()> {
-    let sql = if keep.is_empty() {
-        format!("DELETE FROM text_chunks WHERE {day_condition}")
-    } else {
-        format!(
-            "DELETE FROM text_chunks WHERE {day_condition} AND chunk_id NOT IN ({})",
-            placeholders(keep.len())
-        )
-    };
-    let mut values: Vec<&str> = scope_values.iter().map(String::as_str).collect();
-    values.extend(keep.iter().map(String::as_str));
-    tx.execute(&sql, params_from_iter(values))?;
+    if keep.is_empty() {
+        let sql = format!("DELETE FROM text_chunks WHERE {day_condition}");
+        tx.execute(&sql, params_from_iter(scope_values.iter()))?;
+        return Ok(());
+    }
+
+    tx.execute_batch(
+        "DROP TABLE IF EXISTS temp.chunk_rebuild_keep; \
+         CREATE TEMP TABLE chunk_rebuild_keep (chunk_id TEXT PRIMARY KEY);",
+    )?;
+    {
+        let mut insert =
+            tx.prepare("INSERT OR IGNORE INTO chunk_rebuild_keep (chunk_id) VALUES (?1)")?;
+        for chunk_id in keep {
+            insert.execute(params![chunk_id])?;
+        }
+    }
+    // 相关子查询走临时表的主键索引，代价与块数线性；不占语句变量。
+    tx.execute(
+        &format!(
+            "DELETE FROM text_chunks WHERE {day_condition} AND NOT EXISTS \
+             (SELECT 1 FROM chunk_rebuild_keep keep WHERE keep.chunk_id = text_chunks.chunk_id)"
+        ),
+        params_from_iter(scope_values.iter()),
+    )?;
+    tx.execute_batch("DROP TABLE temp.chunk_rebuild_keep;")?;
     Ok(())
 }
 
@@ -639,4 +658,58 @@ pub(crate) fn counts(core: &Core, source_scope: Option<&[String]>) -> Result<Chu
         }
     };
     Ok(ChunkCounts { total, embedded })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 大库回归（#90）：10 万块重建时 `keep` 列表远超 SQLite 的变量数上限
+    /// （默认 32766），不能把它拼成 `NOT IN (?, ...)`。
+    ///
+    /// 这条测试故意用 4 万个 id（超过上限），退回「一条语句拼所有占位符」的实现
+    /// 会直接报 `too many SQL variables`。
+    #[test]
+    fn deleting_stale_chunks_handles_more_ids_than_the_sqlite_variable_limit() {
+        let mut core = crate::Core::open_in_memory().unwrap();
+        let tx = core.conn.transaction().unwrap();
+        {
+            let mut insert = tx
+                .prepare(
+                    "INSERT INTO text_chunks (chunk_id, ordinal, text, kind, coverage, day_key, \
+                     chunker_version, created_at) \
+                     VALUES (?1, 0, 'x', 'text', 'complete', '2026-10-18', ?2, \
+                             '2026-10-18T00:00:00.000Z')",
+                )
+                .unwrap();
+            for index in 0..40_000 {
+                insert
+                    .execute(params![format!("chunk_{index:05}"), CHUNKER_VERSION])
+                    .unwrap();
+            }
+        }
+        let keep: Vec<String> = (0..40_000).map(|index| format!("chunk_{index:05}")).collect();
+        delete_stale_chunks(&tx, "1 = 1", &[], &keep).unwrap();
+        let count = |tx: &rusqlite::Transaction<'_>| -> i64 {
+            tx.query_row("SELECT COUNT(*) FROM text_chunks", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(count(&tx), 40_000, "keep 里的块一块都不能删");
+
+        // 少一个 id：只有那一个块该消失。
+        let stale = keep[12_345].clone();
+        let mut shorter = keep.clone();
+        shorter.remove(12_345);
+        delete_stale_chunks(&tx, "1 = 1", &[], &shorter).unwrap();
+        assert_eq!(count(&tx), 39_999);
+        let gone: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM text_chunks WHERE chunk_id = ?1",
+                params![stale],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(gone, 0, "没在 keep 里的块必须删掉");
+        tx.commit().unwrap();
+    }
 }
