@@ -18,6 +18,7 @@
 #   SKIP_NATIVE=1   跳过原生产物重建（复用 entry/libs/arm64-v8a/ 里已有的 .so）
 #   SKIP_OHPM=1     跳过 ohpm install
 #   BUILD_MODE      debug（默认）/ release
+#   OHOS_BUNDLE_NAME / OHOS_VERSION_CODE / OHOS_VERSION_NAME   临时覆盖（构建后还原）
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -60,6 +61,21 @@ s2, n = re.subn(r'"bundleName"\s*:\s*"[^"]*"', '"bundleName": "%s"' % name, s, c
 assert n == 1, "bundleName not found in app.json5"
 open(p, "w", encoding="utf-8").write(s2)
 PY
+fi
+if [[ -n "${OHOS_VERSION_CODE:-}" || -n "${OHOS_VERSION_NAME:-}" ]]; then
+  echo "[build-hap] versionCode/versionName override → ${OHOS_VERSION_CODE:-<keep>}/${OHOS_VERSION_NAME:-<keep>}"
+  python3 - "$APPJSON" "${OHOS_VERSION_CODE:-}" "${OHOS_VERSION_NAME:-}" <<'PYAPP'
+import re, sys
+p, code, name = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(p, encoding="utf-8").read()
+if code:
+    s, n = re.subn(r'"versionCode"\s*:\s*\d+', '"versionCode": %s' % code, s, count=1)
+    assert n == 1, "versionCode not found in app.json5"
+if name:
+    s, n = re.subn(r'"versionName"\s*:\s*"[^"]*"', '"versionName": "%s"' % name, s, count=1)
+    assert n == 1, "versionName not found in app.json5"
+open(p, "w", encoding="utf-8").write(s)
+PYAPP
 fi
 if [[ -n "${OHOS_COMPAT_SDK_VERSION:-}" || -n "${OHOS_TARGET_SDK_VERSION:-}" ]]; then
   compat="${OHOS_COMPAT_SDK_VERSION:-}"; target="${OHOS_TARGET_SDK_VERSION:-$compat}"

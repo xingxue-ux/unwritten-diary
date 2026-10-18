@@ -32,6 +32,27 @@
             ]
           }
         ]
+      },
+      {
+        "name": "ProbeAbility",
+        "srcEntry": "./ets/verify/ProbeAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:layered_image",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true
+      },
+      {
+        "name": "ProbeIsoAbility",
+        "srcEntry": "./ets/verify/ProbeIsoAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:layered_image",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "process": ":probe"
       }
     ]
   }
