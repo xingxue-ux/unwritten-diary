@@ -166,6 +166,31 @@ jobs:
       - name: AI 质量集（回放，不联网）
         run: cargo run -p diary_probe -- ai-quality --json /tmp/ai-quality-replay-baseline.json
 
+  # 窄范围的 Windows 验证：只跑插件包/沙箱集成测试，不碰 Flutter/Dart/probe，
+  # 也不扩成整条矩阵。目的是直接回答评审的「Windows（core.autocrlf=true）干净
+  # checkout 跑一次」：真实 windows-latest runner 的默认 autocrlf=true，且路径
+  # 分隔符、大小写不敏感、文件时间等平台差异只有真机能暴露。
+  #
+  # 暂不加入必过检查（required checks）：先观察几轮；红了就贴原始错误，不用
+  # continue-on-error 假装绿。
+  plugins-windows:
+    name: plugins-windows
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: 安装 Rust（与主 rust job 同版本）
+        shell: pwsh
+        run: |
+          rustup toolchain install "$env:RUST_VERSION" --profile minimal
+          rustup default "$env:RUST_VERSION"
+          cargo --version
+      - name: 插件包与沙箱测试（Windows 行尾/路径）
+        run: cargo test -p diary_core --test plugin_test
+        env:
+          CARGO_TERM_COLOR: always
+
   bridge:
     name: bridge
     runs-on: ubuntu-latest
