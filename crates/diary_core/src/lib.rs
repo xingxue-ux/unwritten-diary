@@ -185,6 +185,9 @@ pub struct Core {
     /// 新写入向量的存储编码。默认 `DEFAULT_VECTOR_STORAGE`；量测与测试可以临时改它
     /// （见 `set_vector_storage_for_test`）。它是口径三字段之一，换格式 = 整代重算。
     vector_storage: embedding::VectorStorage,
+    /// 当前嵌入器（或产品模型）的维度。默认 `EXPECTED_DIMS`；注入/加载嵌入器后跟着它走。
+    /// `index_status` 用它判断生效代次的 `dims` 是不是同一个向量空间（不加载模型）。
+    current_dims: usize,
     /// 快速路径保留的候选块数上限（#90）。默认 `FAST_SCAN_DEPTH`；量测与测试可以
     /// 临时改它来扫「深度 vs 延迟」曲线（见 `set_semantic_scan_depth_for_test`）。
     semantic_scan_depth: usize,
@@ -297,7 +300,7 @@ impl Core {
         // 历史包袱一次性清账：以前因为没有执行者而进「已放弃 + no_handler」的旧任务，
         // 现在有执行者的放回队列（判据自带幂等，见 `jobs::requeue_legacy_no_handler`）。
         jobs::requeue_legacy_no_handler(&mut conn, support::now())?;
-        Ok(Self {
+        let mut core = Self {
             conn,
             root,
             library_file_name,
@@ -306,6 +309,7 @@ impl Core {
             semantic: semantic::SemanticRuntime::from_env(),
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
             vector_storage: embedding::DEFAULT_VECTOR_STORAGE,
+            current_dims: embedding::EXPECTED_DIMS,
             semantic_scan_depth: semantic::FAST_SCAN_DEPTH,
             secrets,
             transport,
@@ -313,7 +317,12 @@ impl Core {
             asr_config_for_test: None,
             backup_fault: backup::BackupFault::None,
             backup_gate: None,
-        })
+        };
+        // 存量库的 storage/dims 与当前口径不一致时，**核心自己**把语义重建排上：
+        // `reasons` 说「需要重建」，就不能让用户找不到能重建的入口。去重靠
+        // `jobs::enqueue_in_tx` 的业务键，重复 open 返回同一条任务。
+        semantic_index_job::enqueue_for_caliber_mismatch(&mut core)?;
+        Ok(core)
     }
 
     /// 文件库根目录。内存库没有根目录，导入相关方法会因此报错。
@@ -393,6 +402,18 @@ impl Core {
     /// 当前配置的向量存储格式（状态查询与量测用）。
     pub fn vector_storage(&self) -> VectorStorage {
         self.vector_storage
+    }
+
+    /// 当前已知的向量维度：注入/加载嵌入器后是它的维度，否则是产品模型的
+    /// `EXPECTED_DIMS`。状态检查用它比对生效代次的 `dims`（不加载模型）。
+    pub(crate) fn current_dims(&self) -> i64 {
+        self.current_dims as i64
+    }
+
+    /// 当前**已知**的模型版本：已加载嵌入器优先；只配置了模型时读模型文件哈希
+    /// （不建 ORT 会话）；都没有就是 `None`（无从比对，不猜）。
+    pub(crate) fn current_model_version(&self) -> Option<String> {
+        self.semantic.model_version_hint()
     }
 
     /// 仅供量测/测试：改快速路径保留的候选块数上限（#90），用来扫「深度 vs 延迟」。

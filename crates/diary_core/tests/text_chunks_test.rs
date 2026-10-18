@@ -722,10 +722,11 @@ fn status_follows_the_active_generation() {
 
     let conn = open(&path);
     conn.execute_batch(
-        // 默认存储是 int8：夹具也钉成 int8（scale 1.0 + 两个 0），不要再写 f32。
+        // 默认存储是 int8、当前模型是 512 维：夹具也钉成 512 维 int8，
+        // 不要再写 f32 或 2 维（dims 也是口径三字段之一，会被状态检查拦下）。
         "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, storage, \
              vector, created_at) \
-         SELECT chunk_id, 1, 'test-model', 2, 'int8', x'0000803f0000', \
+         SELECT chunk_id, 1, 'test-model', 512, 'int8', x'0000803f' || zeroblob(512), \
                 '2026-10-10T00:00:00.000Z' FROM text_chunks;\
          UPDATE index_meta SET active_generation = 1;",
     )

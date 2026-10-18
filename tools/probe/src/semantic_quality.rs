@@ -507,8 +507,7 @@ fn harness_case(case: &Case, embedder: &dyn Embedder, storage: Storage) -> Resul
     ranked.sort_by(|left, right| {
         right
             .1
-            .partial_cmp(&left.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&left.1)
             .then_with(|| {
                 let left_day = case
                     .sources

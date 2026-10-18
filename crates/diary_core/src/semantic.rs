@@ -65,7 +65,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use rusqlite::types::ValueRef;
@@ -288,6 +288,9 @@ pub(crate) enum EmbedderSlot {
 /// `Core` 上挂的语义运行时状态。
 pub(crate) struct SemanticRuntime {
     pub slot: EmbedderSlot,
+    /// 配置了模型但还没加载时，`model_version` 可以从模型文件哈希算出来（不建 ORT
+    /// 会话）。第一次 `index_status` 算一次就缓存——状态检查不该每次重读 24 MiB 模型。
+    configured_version: OnceLock<Option<String>>,
 }
 
 impl SemanticRuntime {
@@ -302,7 +305,23 @@ impl SemanticRuntime {
                 Err(reason) => EmbedderSlot::Failed(reason),
             },
         };
-        Self { slot }
+        Self {
+            slot,
+            configured_version: OnceLock::new(),
+        }
+    }
+
+    /// 当前**已知**的模型版本：已加载的嵌入器优先；只配了模型时用文件哈希算
+    /// （不建 ORT 会话）；都没配就是 `None`（无从比对，不能猜）。
+    pub(crate) fn model_version_hint(&self) -> Option<String> {
+        match &self.slot {
+            EmbedderSlot::Ready(embedder) => Some(embedder.model_version().to_owned()),
+            EmbedderSlot::Configured(config) => self
+                .configured_version
+                .get_or_init(|| embedding::model_version_for(config).ok())
+                .clone(),
+            EmbedderSlot::NotConfigured | EmbedderSlot::Failed(_) => None,
+        }
     }
 }
 
@@ -317,6 +336,8 @@ pub(crate) enum EmbedderReadiness {
 impl Core {
     /// 显式注入嵌入器（测试与探针用）。注入之后不再读环境变量、不再加载真模型。
     pub fn set_embedder(&mut self, embedder: Box<dyn Embedder>) {
+        self.current_dims = embedder.dims();
+        self.semantic.configured_version = OnceLock::new();
         self.semantic.slot = EmbedderSlot::Ready(Arc::from(embedder));
     }
 
@@ -370,6 +391,7 @@ impl Core {
             {
                 Ok(loaded) => {
                     let embedder: Arc<dyn Embedder> = Arc::new(loaded);
+                    self.current_dims = embedder.dims();
                     self.semantic.slot = EmbedderSlot::Ready(Arc::clone(&embedder));
                     Ok(embedder)
                 }
@@ -542,26 +564,6 @@ fn foreign_row_count(core: &Core, generation: i64, caliber: &Caliber<'_>) -> Res
 /// （或上一种存储格式）留下的半成品，不能在其基础上续算。
 fn has_foreign_vectors(core: &Core, generation: i64, caliber: &Caliber<'_>) -> Result<bool> {
     Ok(foreign_row_count(core, generation, caliber)? > 0)
-}
-
-/// 一个代次里某一列的**去重取值**（有序，便于日志与测试稳定）。
-///
-/// `column` 只由本模块的常量字符串传入（"model_version" / "dims" / "storage"），
-/// 不是调用方数据；这里的字符串拼接因此不构成注入面。
-fn distinct_values<T: rusqlite::types::FromSql>(
-    core: &Core,
-    column: &str,
-    generation: i64,
-) -> Result<Vec<T>> {
-    let mut statement = core
-        .conn
-        .prepare(&format!(
-            "SELECT DISTINCT {column} FROM chunk_vectors WHERE generation = ?1 ORDER BY {column}"
-        ))?;
-    let values = statement
-        .query_map(params![generation], |row| row.get::<_, T>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(values)
 }
 
 /// 丢弃一个代次：按 `generation` 清掉它的**全部**向量。
@@ -1083,6 +1085,9 @@ impl PartialEq for ScoredRow {
 
 impl Eq for ScoredRow {}
 
+/// 保留 `PartialOrd` 只是 `BinaryHeap` / `Ord` 的 trait 适配：真正的排序口径在
+/// `Ord::cmp` 里，已经用 `total_cmp`（见下）。这里**不是**第二套比较规则，也没有
+/// `unwrap_or(Equal)`——不会因为 NaN 退化成「相等」。
 impl PartialOrd for ScoredRow {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -2040,55 +2045,63 @@ fn ranking_with_mode(
     }
 }
 
-/// 生效代次那一批向量的模型口径（状态里要报的**真值**）。
+/// 生效代次那一批向量的**整代口径**：模型版本、维度、存储格式的去重值。
 ///
-/// 为什么不是「读一行 `model_version` 就完事」：`chunk_vectors` 的主键是
-/// `(chunk_id, generation)`，一个代次里理论上可以混进不止一种模型版本（本片修复前的
-/// 「A 写一半 → 换成 B 续跑」就会产出这种代次，历史库里也可能留下）。这时候
-/// 随便挑一行报出去是**撒谎**——它既不代表整代，也掩盖了「这一代不是同一个向量空间」
-/// 这件事（检索路径从 #80 起会整路不作数，绝不拿跨空间的分数）。
+/// 一次 `SELECT DISTINCT model_version, dims, storage` 取全，不再为每一项各扫一遍
+/// 整代向量。三个字段各自去重后**按序**保存，便于状态与日志稳定。
 ///
-/// 本仓库的口径是「宁可如实说、不要假装干净」，所以按整代给三种结果：
-/// `Absent`（没有生效代次，或那一代一行向量都没有——没有版本可报）、
-/// `Single`（整代同一个版本，可以如实报）、
-/// `Mixed`（不止一种版本：调用方把 `model_version` 报成 `None`，并在 `reasons` 里
-/// 点名「口径不一致、需要重建」，而不是挑一行装作干净）。
+/// 为什么不是「读一行就完事」：`chunk_vectors` 的主键是 `(chunk_id, generation)`，
+/// 一个代次里理论上可以混进不止一种口径（本片修复前的「A 写一半 → 换成 B 续跑」
+/// 就会产出这种代次，历史库里也可能留下）。随便挑一行报出去是**撒谎**——它既不代表
+/// 整代，也掩盖了「这一代不是同一个向量空间」这件事（检索路径从 #80 起整路不作数）。
 ///
-/// 同时，**修复路径保证正常操作下再也产不出 `Mixed` 代次**：续跑前核对口径，
-/// 不一致就整代废弃重算；`missing_chunks` 也只认口径一致的行。所以 `Mixed` 只会是
-/// 历史遗留数据，正是要用「如实报出来 + 提示重建」处理的那一种。
-pub(crate) enum ActiveModelVersion {
-    /// 没有生效代次，或生效代次里没有向量：没有版本可报。
-    Absent,
-    /// 整代都是同一个模型版本。
-    Single(String),
-    /// 整代里有不止一种模型版本（去重后按字典序，便于测试与日志稳定）。
-    Mixed(Vec<String>),
+/// 空集 = 没有生效代次，或那一代一行向量都没有：没有口径可报。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ActiveCaliber {
+    /// 整代出现过的 `model_version`（去重、字典序）。
+    pub versions: Vec<String>,
+    /// 整代出现过的 `dims`（去重、升序）。
+    pub dims: Vec<i64>,
+    /// 整代出现过的 `storage`（去重、字典序）。
+    pub storages: Vec<String>,
 }
 
-pub(crate) fn active_model_version(core: &Core) -> Result<ActiveModelVersion> {
-    let Some(generation) = active_generation(core)? else {
-        return Ok(ActiveModelVersion::Absent);
-    };
-    let versions: Vec<String> = distinct_values(core, "model_version", generation)?;
-    Ok(match versions.len() {
-        0 => ActiveModelVersion::Absent,
-        // `len() == 1` 时 `next()` 一定有值。
-        1 => ActiveModelVersion::Single(versions.into_iter().next().expect("长度是 1")),
-        _ => ActiveModelVersion::Mixed(versions),
-    })
+impl ActiveCaliber {
+    /// 有效代次里有没有向量可查。
+    pub(crate) fn is_empty(&self) -> bool {
+        self.versions.is_empty() && self.dims.is_empty() && self.storages.is_empty()
+    }
 }
 
-/// 生效代次里出现过的存储格式（去重、字典序）。
-///
-/// **不加载模型**：`index_status` 只用它判断「库里的格式与当前默认是否同一口径」。
-/// 空 = 没有生效代次或那一代没有向量；长度 > 1 = 历史遗留的混合编码（同样不是
-/// 同一个向量空间，检索路径会整路不作数）。
-pub(crate) fn active_storages(core: &Core) -> Result<Vec<String>> {
+pub(crate) fn active_caliber(core: &Core) -> Result<ActiveCaliber> {
     let Some(generation) = active_generation(core)? else {
-        return Ok(Vec::new());
+        return Ok(ActiveCaliber::default());
     };
-    distinct_values(core, "storage", generation)
+    let mut statement = core.conn.prepare(
+        "SELECT DISTINCT model_version, dims, storage FROM chunk_vectors \
+         WHERE generation = ?1 ORDER BY model_version, dims, storage",
+    )?;
+    let rows = statement.query_map(params![generation], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut caliber = ActiveCaliber::default();
+    for row in rows {
+        let (version, dims, storage) = row?;
+        caliber.versions.push(version);
+        caliber.dims.push(dims);
+        caliber.storages.push(storage);
+    }
+    caliber.versions.sort_unstable();
+    caliber.versions.dedup();
+    caliber.dims.sort_unstable();
+    caliber.dims.dedup();
+    caliber.storages.sort_unstable();
+    caliber.storages.dedup();
+    Ok(caliber)
 }
 
 /// 生效代次与**当前嵌入器**不是同一个向量空间时的如实说法（检索路径唯一的判据来源）。
@@ -2174,10 +2187,11 @@ pub(crate) fn caliber_mismatch(
     if foreign_rows == 0 {
         return Ok(None);
     }
+    let active = active_caliber(core)?;
     Ok(Some(CaliberMismatch {
-        versions: distinct_values(core, "model_version", generation)?,
-        dims: distinct_values(core, "dims", generation)?,
-        storages: distinct_values(core, "storage", generation)?,
+        versions: active.versions,
+        dims: active.dims,
+        storages: active.storages,
         foreign_rows,
         current_version: caliber.model_version.to_owned(),
         current_dims: caliber.dims,

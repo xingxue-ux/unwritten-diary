@@ -149,6 +149,21 @@ struct FusedCandidate {
     semantic: Option<semantic::SemanticCandidate>,
 }
 
+/// 混合融合的全序：`score DESC → day_key DESC → content_key → group_id`。
+///
+/// 分数用 `total_cmp`：融合分是 f32，语义那一路一旦漏进 NaN/Inf（旧库、坏模型输出），
+/// `partial_cmp` 的 `unwrap_or(Equal)` 会让「NaN 等于任何数」——比较器不传递，
+/// `sort_by` 可能乱序甚至 panic。`total_cmp` 给 NaN 确定位置，排序始终是全序；
+/// 正常路径上 `semantic::score_of` 已经拒绝非有限分数，这里是融合层自己的防线。
+fn fused_order(left: &FusedCandidate, right: &FusedCandidate) -> std::cmp::Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| right.day_key.cmp(&left.day_key))
+        .then_with(|| left.content_key.cmp(&right.content_key))
+        .then_with(|| left.group_id.cmp(&right.group_id))
+}
+
 /// 混合会话「升级」到哪一步了（#69）。阶段值不是装饰：只有真的融合过（`Fused`）
 /// 才允许报 `hybrid_ready` / `done`，其余三种必须如实停在 `keyword_ready`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -674,15 +689,7 @@ fn fuse_hybrid(
     // 每个库都不一样；同分时先比它，同一份内容在两个库里就会给出不同的先后。
     // `content_key` 是正文哈希，只由内容决定。真的走到 `groupId` 那一项时，两边的
     // 正文哈希已经相同（内容一样），谁先谁后不影响用户看到什么。
-    fused.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| right.day_key.cmp(&left.day_key))
-            .then_with(|| left.content_key.cmp(&right.content_key))
-            .then_with(|| left.group_id.cmp(&right.group_id))
-    });
+    fused.sort_by(fused_order);
 
     // 走到这里语义候选非空，融合结果必然非空（语义独有那些篇也会进来）。
     debug_assert!(!fused.is_empty());
@@ -1461,7 +1468,52 @@ pub(crate) fn filters_to_params(filters: &SearchFilters) -> Result<(Option<Strin
 
 #[cfg(test)]
 mod rank_tests {
-    use super::next_group_rank;
+    use super::{fused_order, next_group_rank, FusedCandidate};
+
+    fn fused(group_id: &str, score: f32) -> FusedCandidate {
+        FusedCandidate {
+            group_id: group_id.to_owned(),
+            score,
+            day_key: Some("2026-09-20".to_owned()),
+            content_key: "same-content".to_owned(),
+            keyword: None,
+            semantic: None,
+        }
+    }
+
+    /// 回归（评审 #128 复审）：混合融合的排序也必须用 `total_cmp`。
+    /// 旧实现 `partial_cmp(...).unwrap_or(Equal)` 会把 NaN 当成等于任何数——
+    /// 「NaN == 1」「NaN == 2」同时成立、却又「1 < 2」，比较器不传递。
+    #[test]
+    fn fusion_sort_is_a_total_order_with_nan_scores() {
+        let nan = fused("nan", f32::NAN);
+        let one = fused("one", 1.0);
+        let two = fused("two", 2.0);
+        assert!(
+            !(fused_order(&nan, &one) == std::cmp::Ordering::Equal
+                && fused_order(&nan, &two) == std::cmp::Ordering::Equal)
+                || fused_order(&one, &two) == std::cmp::Ordering::Equal,
+            "融合排序必须传递：不能把 NaN 同时当成等于 1 和 2，却又认为 1 != 2"
+        );
+
+        let mut fused = [
+            fused("nan", f32::NAN),
+            fused("inf", f32::INFINITY),
+            fused("one", 1.0),
+            fused("neg_inf", f32::NEG_INFINITY),
+        ];
+        fused.sort_by(fused_order);
+        for pair in fused.windows(2) {
+            assert_ne!(
+                fused_order(&pair[0], &pair[1]),
+                std::cmp::Ordering::Greater,
+                "排序结果必须满足全序"
+            );
+        }
+        assert!(fused[0].score.is_nan(), "total_cmp 把 NaN 排在降序最前");
+        assert_eq!(fused[1].score, f32::INFINITY);
+        assert_eq!(fused[3].score, f32::NEG_INFINITY);
+    }
 
     /// 评审在 #60 上给的场景：第一篇占 5 个命中片段、紧随的第二篇只有 1 个。
     /// 按篇给名次 ⇒ 名次是 1、2；按文档位置 ⇒ 第二篇会变成 6（它的融合分就取决于

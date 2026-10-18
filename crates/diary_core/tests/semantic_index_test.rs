@@ -3195,6 +3195,149 @@ fn reopening_an_f32_library_reports_not_ready_with_a_storage_reason() {
     );
 }
 
+/// 核心自动排队（评审 #128 复审）：口径不一致时 `open` 自己排一条语义重建，
+/// 且**重复 open 仍只有一条**（去重键 `(kind, target_ids=[], snapshot=NULL)`）。
+#[test]
+fn opening_a_mismatched_library_queues_one_deduplicated_semantic_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    assert_eq!(semantic_job_count(&path), 0, "建库时口径一致，不该自动排队");
+    drop(core);
+
+    let first = Core::open(&path).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        1,
+        "open 检测到 f32→int8 口径不一致，要自动排一条语义重建"
+    );
+    assert!(!first.index_status(None).unwrap().semantic_index_ready);
+    let (kind, state) = semantic_job_kind_state(&path);
+    assert_eq!(kind, "semantic_index");
+    assert_eq!(state, "queued");
+    drop(first);
+
+    // 连开第二次：业务键命中，仍然只有 1 条（不能因为 open 两次排 N 条）。
+    let second = Core::open(&path).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        1,
+        "重复 open 不能产生第二条语义重建"
+    );
+    drop(second);
+}
+
+/// 口径的第三项 `dims`（评审 #128 复审）：换过模型但整代只有一种旧版本，
+/// `model_version` 不混、覆盖也完整——旧状态仍会报 ready；现在必须报 false。
+#[test]
+fn reopening_a_library_with_another_model_dimension_reports_not_ready() {
+    const OLD_VERSION: &str = "stub-embedder@old000000000";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        OLD_VERSION,
+        384,
+        &counters,
+        vec![],
+    )));
+    // 存储与当前默认一致，只让 dims 不同：这条测的就是「dims 完全没查」。
+    core.set_vector_storage_for_test(VectorStorage::Int8);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let reopened = Core::open(&path).unwrap();
+    let status = reopened.index_status(None).unwrap();
+    assert_eq!(status.embedded_chunks, status.total_chunks, "覆盖是完整的");
+    assert_eq!(
+        status.model_version.as_deref(),
+        Some(OLD_VERSION),
+        "整代只有一种旧模型版本——旧逻辑正是因此看不出问题"
+    );
+    assert!(
+        !status.semantic_index_ready,
+        "384 维旧代次在 512 维当前模型下不能报就绪：{:?}",
+        status.reasons
+    );
+    let reason = status
+        .reasons
+        .iter()
+        .find(|reason| reason.contains("维度"))
+        .unwrap_or_else(|| panic!("reasons 要写明维度不一致：{:?}", status.reasons));
+    assert!(reason.contains("384") && reason.contains("512"), "{reason}");
+    assert!(reason.contains("需要重建"), "{reason}");
+    // dims 也是口径不一致，自动排队同样要触发。
+    assert_eq!(semantic_job_count(&path), 1, "dims 不一致也要自动排一条");
+}
+
+/// 模型版本变了、但 dims/storage 相同：嵌入器加载后状态也必须报 false。
+#[test]
+fn a_loaded_embedder_with_another_model_version_reports_not_ready() {
+    const OLD_VERSION: &str = "stub-embedder@old111111111";
+    const NEW_VERSION: &str = "stub-embedder@new222222222";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        OLD_VERSION,
+        512,
+        &counters,
+        vec![],
+    )));
+    core.set_vector_storage_for_test(VectorStorage::Int8);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let mut reopened = Core::open(&path).unwrap();
+    // open 时还不知道新模型版本（没加载）；加载之后才比得出来。
+    reopened.set_embedder(Box::new(StubEmbedder::with_dims(
+        NEW_VERSION,
+        512,
+        &counters,
+        vec![],
+    )));
+    let status = reopened.index_status(None).unwrap();
+    assert!(!status.semantic_index_ready, "模型版本不同不能报就绪");
+    let reason = status
+        .reasons
+        .iter()
+        .find(|reason| reason.contains("模型"))
+        .unwrap_or_else(|| panic!("reasons 要写明模型版本不一致：{:?}", status.reasons));
+    assert!(reason.contains(OLD_VERSION) && reason.contains(NEW_VERSION), "{reason}");
+    assert!(reason.contains("需要重建"), "{reason}");
+}
+
+/// 统计库里 `semantic_index` 任务数（自动排队回归用）。
+fn semantic_job_count(path: &Path) -> i64 {
+    open(path)
+        .query_row(
+            "SELECT COUNT(*) FROM jobs WHERE kind = 'semantic_index'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+fn semantic_job_kind_state(path: &Path) -> (String, String) {
+    open(path)
+        .query_row(
+            "SELECT kind, state FROM jobs WHERE kind = 'semantic_index' LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+}
+
 /// 换存储格式 = 换口径：必须**整代重算**，不能把 f32 向量原地当 int8 用。
 ///
 /// 默认已是 int8；为了让「换」这个动作真的存在，这里先把旧代次**显式**建成 f32，

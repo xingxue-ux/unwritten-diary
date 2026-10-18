@@ -14,8 +14,16 @@
 //!
 //! # 排队口径（「什么时候该排」）
 //!
-//! **只有显式请求一个触发器**：这一片不做自动排队。判据都在既有信号里，不另造一份
-//! 「该不该排」的查询 API（第二份口径最容易漂）：
+//! 常规入口仍是**显式请求**（`Core::schedule_semantic_index` / 契约
+//! `indexes.rebuildSemantic`）。**唯一的自动触发**（#128 复审拍板）是：`Core::open`
+//! 时发现生效代次的 `storage`（或 `dims`）与当前口径不一致，且没有 building 代次、
+//! 队列里也没有活着的同类任务——这时核心**自己排一条去重的语义重建**。理由：
+//! `index_status` 已经会对用户说「需要重建」，但 `apps/` 下还没有任何
+//! `rebuildSemanticIndex` 调用点；状态文案不能替代可执行的入口。
+//!
+//! 这条窄条件只依赖**不加载模型**就能读到的两项（`storage` / `dims`），所以 open 不会
+//! 为了发现它去建 ORT 会话。除这条之外的其它情况仍不自动排。判据都在既有信号里，
+//! 不另造一份「该不该排」的查询 API（第二份口径最容易漂）：
 //!
 //! | 情况 | 在哪看得见 | 该怎么办 |
 //! |---|---|---|
@@ -24,16 +32,19 @@
 //! | 换过模型 / 混合代次 | 语义检索的警告「当前生效的向量代次是用另一个模型（或另一套口径）建的」；或 `reasons` 说「有 N 种模型口径」 | 排一条（整代按当前模型重算） |
 //! | 上一次重建中断或让出 | `indexes.status` 的 `reasons` 说「有一代在建（第 N 代）」 | 排一条（**续跑**，不重头） |
 //! | 刚写进新内容 | 由调用方自己知道（导入完成、改过正文）；块表要等重建才有新块 | 要语义检索前先排一条 |
+//! | **存量库 storage/dims 口径不一致** | `indexes.status` 的 `reasons`：「存储格式从 f32 变为 int8，需要重建」/「维度是……需要重建」 | **`open` 自动排一条（去重）** |
 //!
-//! **为什么不自动排**（明确不做，也写进文档）：
+//! **除上面那条窄条件外，为什么不自动排**（明确不做，也写进文档）：
 //!
 //! - 没配模型的库会长期挂着一条 `waiting_configuration` 的任务——那是噪声，不是
-//!   「在等资源」；
+//!   「在等资源」；只有「存量库口径不一致」这种**已经确定需要重建**的情况才自动排，
+//!   不会因为「刚导入完」就替用户决定花模型调用；
 //! - 「什么时候值得花一次模型调用」是产品决定。契约里 `search.upgrade` 也是同一个
 //!   口径：**升级是显式的，不是后台自动任务**。导入完成时自动排队还会让
 //!   「导入 → 提取 → 关键词索引」这条链上多出一条与它争预算的重活；
-//! - 「换过模型」要在**加载模型之后**才知道新口径（`model_version` 由模型文件哈希
-//!   导出）；为了发现它去加载模型，本身就是重活。
+//! - 「换过模型」的 `model_version` 要在**加载模型之后**（或读模型文件哈希）才知道新
+//!   口径；自动触发只查不加载模型就能确定的 `storage` / `dims`，不为了 discovery
+//!   去建 ORT 会话。
 //!
 //! # 幂等（重复排队不产生重复工作）
 //!
@@ -59,6 +70,47 @@ use crate::Core;
 
 /// 幂等回执的 kind。与核心入口同名，便于排查（契约方法名那一层还没有）。
 const RECEIPT_KIND: &str = "semantic_index.rebuild";
+
+/// 核心在 `open` 时检测到**存储格式或维度口径不一致**，自动排一条去重的语义重建：
+/// `semantic_index_ready=false` 时用户看到「需重建」，核心自己把任务排上，不依赖前端
+/// 是否接了按钮。
+///
+/// 只在三个条件同时成立时排：
+/// 1. 有生效代次，且它的 `storage` / `dims` 与当前口径不一致（这两项不加载模型就能查）；
+/// 2. 没有正在建的 building 代次（那说明已经有一次重建在跑/该续跑）；
+/// 3. 队列里没有活着的同类任务——`enqueue_in_tx` 的业务键
+///    `(kind, target_ids=[], snapshot=NULL)` 本身就是去重键，重复 `open` 返回同一条。
+///
+/// **不**在每次 `open` 都无条件排队：口径一致时什么都不做；任务成功重建后口径就一致了；
+/// 任务失败/取消后再 `open` 会重新排一条（用户仍需要一次重建）。
+pub(crate) fn enqueue_for_caliber_mismatch(core: &mut Core) -> Result<Option<Job>> {
+    let (active, building) = crate::chunks::generations(core)?;
+    if active.is_none() || building.is_some() {
+        return Ok(None);
+    }
+    let caliber = crate::semantic::active_caliber(core)?;
+    if caliber.is_empty() {
+        return Ok(None);
+    }
+    let current_storage = core.vector_storage().wire();
+    let current_dims = core.current_dims();
+    let mismatch = caliber.storages.len() > 1
+        || caliber
+            .storages
+            .iter()
+            .any(|storage| storage != current_storage)
+        || caliber.dims.len() > 1
+        || caliber.dims.iter().any(|dims| *dims != current_dims);
+    if !mismatch {
+        return Ok(None);
+    }
+    // 业务键去重：队列里已有活着的 `semantic_index`（整库、无快照）就返回它，不新建。
+    let job = NewJob::new(crate::jobs::KIND_SEMANTIC_INDEX, JobPriority::Maintenance);
+    let tx = core.conn.transaction()?;
+    let queued = crate::jobs::enqueue_in_tx(&tx, job)?;
+    tx.commit()?;
+    Ok(Some(queued))
+}
 
 /// 排一条语义索引重建任务。
 ///

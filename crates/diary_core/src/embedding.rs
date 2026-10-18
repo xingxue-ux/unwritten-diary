@@ -301,6 +301,16 @@ impl EmbeddingConfig {
     }
 }
 
+/// 配置里的模型文件对应的 `model_version`（`MODEL_ID@sha256前12位`）。
+///
+/// **不建 ORT 会话**，只读模型文件算哈希；给 `index_status` 在模型尚未加载时核对
+/// 「生效代次是不是当前模型建的」用。文件读不到就返回原因，调用方如实报错/不比对。
+pub(crate) fn model_version_for(config: &EmbeddingConfig) -> std::result::Result<String, String> {
+    let path = config.model_path()?;
+    let hash = model_hash_prefix(&path)?;
+    Ok(format!("{MODEL_ID}@{hash}"))
+}
+
 /// 模型文件的 sha256 前缀。模型换了 → 版本号必然变 → 必然换代，新旧向量不会混在
 /// 一张表里（这正是「不要写死字符串了事」的原因）。
 fn model_hash_prefix(path: &Path) -> std::result::Result<String, String> {
@@ -383,8 +393,7 @@ fn shared_model(config: &EmbeddingConfig) -> std::result::Result<Arc<SharedModel
             "模型输出维度是 {dims}，与 {MODEL_ID} 的 {EXPECTED_DIMS} 不符（拿错模型了？）"
         ));
     }
-    let hash = model_hash_prefix(&model_path)?;
-    let model_version = format!("{MODEL_ID}@{hash}");
+    let model_version = model_version_for(config)?;
 
     let shared = Arc::new(SharedModel {
         session: Mutex::new(session),

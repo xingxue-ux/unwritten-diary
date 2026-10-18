@@ -107,7 +107,7 @@ fn peak_rss_mib() -> Option<f64> {
 }
 
 fn median(values: &mut [f64]) -> f64 {
-    values.sort_by(|a, b| a.partial_cmp(b).expect("样本不是 NaN"));
+    values.sort_by(f64::total_cmp);
     values[values.len() / 2]
 }
 
@@ -299,7 +299,7 @@ pub fn run() -> Result<()> {
             let vector = embed(&mut model, candidate)?;
             scored.push((cosine(&query_vec, &vector), candidate));
         }
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).expect("分数不是 NaN"));
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
         let top_is_expected = scored[0].1 == candidates[0];
         if top_is_expected {
             passed += 1;

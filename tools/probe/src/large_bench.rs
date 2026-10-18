@@ -1239,7 +1239,7 @@ impl Summary {
             };
         }
         let mut sorted = samples.to_vec();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(f64::total_cmp);
         let percentile = |p: f64| {
             // 最近秩法（nearest-rank）：P95 取第 ceil(0.95*n) 个，样本少时也不虚高。
             let rank = ((p / 100.0) * sorted.len() as f64).ceil() as usize;

@@ -475,7 +475,7 @@ pub(crate) fn median_ms(mut values: Vec<f64>) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
-    values.sort_by(|a, b| a.partial_cmp(b).expect("耗时不是 NaN"));
+    values.sort_by(f64::total_cmp);
     values[values.len() / 2]
 }
 
