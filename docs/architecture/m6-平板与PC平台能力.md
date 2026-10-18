@@ -18,7 +18,7 @@
 | 1 | 真机录 5 秒：3 个片段（64,044 / 64,000 / 31,360 B）→ finalize `state=saved`、`segment_count=3`、`logical_duration_ms=4980`、音频 blob 159,404 B | **实测**（HAD-W32 / API 23） |
 | 2 | 最终化产出的 blob 是**合法单头 PCM WAV**：`RIFF/WAVE`、format=1、1 声道、16000 Hz、16 bit；`data` 长度字段是流式占位 `0xFFFFFFFF` | **实测**（读 blob 前 44 字节） |
 | 3 | **按 Home 退到后台仍能继续录**：8 秒用例在后台完成 4 个片段并 finalize，`logical_duration_ms=8000` | **实测** |
-| 4 | **锁屏（Power 键）后采集停止**：8 秒用例只录到 2.5 秒（2 段 80,044 B），亮屏后也没有恢复；长时任务本身申请成功 | **实测失败**（见 §7.3） |
+| 4 | **锁屏（Power 键）后采集被系统强制停止**：8 秒用例只录到 3.1 秒（2 段 99,244 B），亮屏后也没有恢复；长时任务本身申请成功 | **实测失败**（见 §7.3） |
 | 5 | 进程崩溃（`process.abort()`，不走 `onDestroy`）后重启：`recordings.recover` 返回 `state=recoverable`、`closed_segment_indexes=[0,1,2]`、notes 写明「尾巴时长无法确定」；随后 finalize 成 6 秒完整音频 | **实测** |
 | 6 | 权限被拒时如实返回：`authResults=[-1]`，日志 `PERM DENIED`，**没有**创建草稿/票据、没有开始录音 | **实测** |
 | 7 | C ABI 原本**没有** `recordings.*`（PR #117 只接了 9 条），本片补了 5 条（prepare / registerSegment / updateState / finalize / recover）；`cargo check -p diary_capi --all-targets` 通过 | 实测（编译） |
