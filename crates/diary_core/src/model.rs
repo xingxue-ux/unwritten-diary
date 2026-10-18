@@ -449,8 +449,11 @@ pub struct NativeRecordingStatus {
     pub recording_id: String,
     pub state: RecordingState,
     pub wall_clock: DateTime<Utc>,
+    /// 采集器**实际收到**的 PCM 总时长（只增，不含还没收到的）。
     pub elapsed_ms: i64,
-    /// 已经持久化的位置，恢复时用来判断缺口。
+    /// **已成功登记**片段时长之和；两次登记之间还没封闭的尾巴不能算进来。
+    ///
+    /// 恢复时用 `elapsed_ms - persisted_through_ms` 判断「可能丢失的尾巴」。
     pub persisted_through_ms: i64,
     pub input_device_changed: bool,
     pub message: Option<String>,
@@ -485,6 +488,16 @@ pub struct RecordingRecovery {
     pub recording_id: Option<String>,
     pub state: RecordingState,
     pub closed_segment_indexes: Vec<i64>,
+    /// **已登记**片段时长之和：真正落盘、`finalize` 能拼出来的音频长度。
+    ///
+    /// 只有「已封闭并登记成功」的片段算数；两次登记之间收到的 PCM 还在内存 /
+    /// 未封闭文件里，进程崩溃就没了，绝不能算进来。
+    pub persisted_ms: i64,
+    /// 采集器**最后一次上报**的「已收到 PCM 总时长」（会话的 `elapsed_ms`）。
+    ///
+    /// 这是上报时刻的值（平台层通常一秒上报一次、停止时再补一次），所以只是实际
+    /// 收到量的**下界**；`received_ms - persisted_ms` 就是「可能丢失的尾巴」。
+    pub received_ms: i64,
     /// 已知缺口的总时长；无法估计时为 0 并在 notes 里说明。
     pub gap_ms: i64,
     pub notes: Vec<String>,

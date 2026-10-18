@@ -570,6 +570,20 @@ fn recordings_flow_prepare_register_finalize_and_recover() {
         }),
     ));
 
+    // 采集器最后一次上报：收到 1500 ms，但只有第 0 段（1000 ms）登记成功。
+    expect_ok(&call(
+        handle,
+        "recordings.updateState",
+        json!({
+            "recording_id": recording2,
+            "state": "recording",
+            "wall_clock": "2026-10-18T09:00:03Z",
+            "elapsed_ms": 1500,
+            "persisted_through_ms": 1000,
+            "input_device_changed": false,
+        }),
+    ));
+
     // 关掉唯一句柄 = 核心析构 = 进程被杀；重开同一路径触发 recover_on_open。
     assert_eq!(diary_close(handle), 0);
     let reopened = open(&path);
@@ -577,13 +591,17 @@ fn recordings_flow_prepare_register_finalize_and_recover() {
     assert_eq!(recovery["recording_id"], json!(recording2));
     assert_eq!(recovery["state"], json!("recoverable"));
     assert_eq!(recovery["closed_segment_indexes"], json!([0]));
+    // 已登记 1000 ms 才是「已持久化」；收到的 1500 ms 里有 500 ms 是没登记的尾巴。
+    assert_eq!(recovery["persisted_ms"], json!(1000));
+    assert_eq!(recovery["received_ms"], json!(1500));
     assert!(
         recovery["notes"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|note| note.as_str().unwrap().contains("尾巴")),
-        "恢复结果要如实说明尾巴时长无法确定：{recovery}"
+            .any(|note| note.as_str().unwrap().contains("未封闭的尾巴")
+                && note.as_str().unwrap().contains("500 ms")),
+        "恢复结果要如实说明可能丢掉的尾巴：{recovery}"
     );
 
     // 恢复出来的录音还能救：按已封闭序号最终化。
@@ -598,6 +616,11 @@ fn recordings_flow_prepare_register_finalize_and_recover() {
     ));
     assert_eq!(rescued["state"], json!("saved"));
     assert_eq!(rescued["segment_count"], json!(1));
+    assert_eq!(
+        rescued["logical_duration_ms"],
+        json!(1000),
+        "恢复出的音频 = 已登记片段之和，不是收到的 1500 ms"
+    );
 
     let info = expect_ok(&call(reopened, "core.info", Value::Null));
     assert_eq!(info["recovery"]["open_recordings"], json!(0));
