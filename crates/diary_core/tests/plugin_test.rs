@@ -1117,13 +1117,20 @@ fn example_plugin_wasm_is_reproducible_and_hashes_match() {
             dir.display()
         )
     });
-    assert_eq!(
-        committed,
-        rebuilt,
-        "main.wasm 与 main.wat 不一致：改了 WAT（或换了 wat 版本）必须重新生成并提交 WASM；\
-         运行 `cargo run -p plugin_pack -- build {}`",
-        dir.display()
-    );
+    if committed != rebuilt {
+        let committed_hash = format!("{:x}", Sha256::digest(&committed));
+        let rebuilt_hash = format!("{:x}", Sha256::digest(&rebuilt));
+        let first_diff = committed
+            .iter()
+            .zip(&rebuilt)
+            .position(|(left, right)| left != right);
+        panic!(
+            "main.wasm 与 main.wat 不一致（首个差异字节 {first_diff:?}；仓库 {committed_hash}，\
+             重新编译 {rebuilt_hash}）：改了 WAT（或换了 wat 版本）必须重新生成并提交 WASM；\
+             运行 `cargo run -p plugin_pack -- build {}`",
+            dir.display()
+        );
+    }
 
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
