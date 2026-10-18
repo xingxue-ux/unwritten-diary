@@ -1,8 +1,8 @@
 # M6 ORT 构建与缓存（OHOS / arm64-v8a）
 
 > 状态（2026-10-18，分支 `feat/B8c-ort-ci`）：
-> **脚本的缓存命中路径与前置检查已在本机实测**；**「从零全量」没有跑完**
-> （只验证到源码准备 + 与已验证构建树逐文件对照），**CI job 没有真跑过**。
+> **缓存命中路径、前置检查、以及完整的 CMake configure 已在本机实测**；
+> **`cmake --build`（~24 min 的编译）与 CI job 本身没有跑过**。
 > 未验证项集中列在 [§8](#8-没做到的如实)，不要把它们当成已完成。
 >
 > 相关：[鸿蒙可行性探针](m6-鸿蒙可行性探针.md)（§4 / §23 / §24.5 / §25）、
@@ -254,9 +254,16 @@ key: ort-1.29.1-${{ runner.os }}-${{ hashFiles('tools/ohos/build-ort.sh', 'tools
    在本机等价可跑（缓存命中路径）。`changes` 的 diff 逻辑、`actions/cache` 的 key
    命中行为、NDK 下载分支都**没有实跑**。
 2. **没有从零全量跑完**：为避免占用机器 33 min（本机另有一条 cargo 重线在跑），
-   本次只验证了：源码包下载 + 解压 + 8 处编辑（幂等）——并把编辑结果与**已验证构建树**
-   （`~/.conan2/p/b/onnxrb1d51c7f51392/b`）逐文件对照，8 个文件全部一致；
-   **configure / build 阶段没有执行**。也就是说「一条命令从零到 `.so`」仍未被完整证明。
+   本次验证到 **CMake configure 成功**为止：
+   - 源码包下载（sha256 校验）→ 解压 → 编辑（幂等，第二次全部 `already`）；
+   - 编辑结果与**已验证构建树**（`~/.conan2/p/b/onnxrb1d51c7f51392/b`）逐文件对照一致
+     （受影响的 10 个文件；其中 4 个只是 `--binary --ignore-whitespace → -l` 的选项替换）；
+   - 12 个 FetchContent 依赖从 mirror 复用 / 补齐（sha1 校验）；
+   - 宿主 protoc 用系统 gcc 编出（`libprotoc 3.21.12`），第二次运行复用；
+   - `cmake` configure 在全新构建目录里 **56 s 跑完**，`Patch found` 指向我们的
+     shim，BF16/FP16 `-march` 已进入 `flags.make`，cpuinfo 的 OHOS 分支已打上。
+   **`cmake --build`（真正的 24 min 编译 + 链接）没有执行**，所以
+   「一条命令从零到 `.so`」仍未被完整证明——差的就是最后这一步。
 3. **多 ABI 未做**：只有 `arm64-v8a`；`armeabi-v7a` / x86_64 模拟器都没试。
 4. **没有哈希级可复现**：ELF 的 BuildID 与时间戳未做可复现构建处理，不同机器编出的
    sha256 不保证一致；缓存判定因此用「manifest 记录的 sha256」而不是写死一个期望值。
@@ -282,6 +289,29 @@ $ tools/ohos/build-ort.sh
 ```
 
 第二次运行（已有 manifest）：`== 缓存命中，用时 0s`，`time` 实测 **0.10–0.25 s**。
+
+configure 级验证（不编译；用已准备好的源码树与依赖，从零 configure 到全新构建目录）：
+
+```console
+$ ORT_SOURCE_DIR=$HOME/dev/build/ort-1.29.1/src \
+  ORT_BUILD_DIR=$HOME/dev/build/ort-1.29.1 JOBS=4 \
+  tools/ohos/build-ort.sh --configure-only
+== 复用外部源码树：/home/qianxia/dev/build/ort-1.29.1/src
+== 源码编辑就绪：0 处新应用，11 处已存在
+== 依赖镜像就绪：新下载 0 个，复用 12 个
+== 复用宿主 protoc：…/host-protoc-build/protoc（libprotoc 3.21.12）
+== 补丁 shim：…/hostbin/patch（real patch = /usr/bin/patch）
+== CMake configure（OHOS toolchain，全算子集，非 MINIMAL_BUILD）
+== configure 完成
+    cpuinfo 已补 OHOS 平台分支：…/build/_deps/pytorch_cpuinfo-src/CMakeLists.txt
+== --configure-only 完成（未编译），用时 56s
+```
+
+configure 之后的 CMakeCache 关键项（与探针阶段实际编出成品的那次一致）：
+`CMAKE_TOOLCHAIN_FILE=…/ohos.toolchain.cmake`、`OHOS_ARCH=arm64-v8a`、
+`CMAKE_CXX_STANDARD=20`、`onnxruntime_BUILD_SHARED_LIB=ON`、
+`onnxruntime_MINIMAL_BUILD=OFF`、`ONNX_CUSTOM_PROTOC_EXECUTABLE=…/protoc`、
+`CMAKE_AR/RANLIB=…/llvm-{ar,ranlib}`。
 
 前置检查失败的样子（`NDK=/nonexistent/native`）：
 

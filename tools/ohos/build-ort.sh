@@ -464,7 +464,8 @@ PY
     > "$BUILD_ROOT/protoc-build.log" 2>&1 \
     || { tail -30 "$BUILD_ROOT/protoc-build.log" >&2; die 4 "宿主 protoc 编译失败"; }
 
-  PROTOC="$(find "$BUILD_ROOT/host-protoc-build" -maxdepth 2 -type f -name protoc -perm -u+x -print -quit)"
+  # 注意：protobuf 的 protoc 是符号链接（protoc -> protoc-3.21.12.0），不能用 -type f。
+  PROTOC="$(find "$BUILD_ROOT/host-protoc-build" -maxdepth 2 -name protoc -perm -u+x -print -quit)"
   [[ -n "$PROTOC" ]] || die 4 "编完找不到 protoc"
   say "宿主 protoc：$PROTOC（$("$PROTOC" --version)）"
 }
@@ -578,7 +579,8 @@ if [[ "$MODE" == "check" ]]; then
   exit 0
 fi
 
-if (( FORCE_BUILD == 0 )) && try_cache; then
+# --prepare-only / --configure-only 是显式「走构建路径」的验证模式，不吃缓存。
+if [[ "$MODE" == "full" ]] && (( FORCE_BUILD == 0 )) && try_cache; then
   install_dest
   say "自检（缓存命中，未编译）："
   selfcheck_artifact "$SO" || die 4 "缓存产物自检失败"
