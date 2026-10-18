@@ -6,6 +6,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  # 手动触发：只跑 check 的常规检查。ORT 构建/缓存已拆到独立 workflow
+  # `.github/workflows/ohos-ort.yml`：check 的 run 级 cancel-in-progress 会连坐取消
+  # 33 min 的长任务，而 actions/cache 的 post-step 不会在 cancelled 的 run 里保存。
+  # 详见 docs/architecture/m6-ORT-构建与缓存.md §6。
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,6 +28,7 @@ env:
   FLUTTER_VERSION: "3.44.6"
 
 jobs:
+
   docs:
     name: docs
     runs-on: ubuntu-latest
