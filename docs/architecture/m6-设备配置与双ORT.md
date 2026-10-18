@@ -261,8 +261,9 @@ PR #134 在 2026-10-18 深夜 rebase 到 #130 的 `98ec24d`（模型下载完整
 比验证时多 21,242 B。
 
 按要求这一轮**没有再动产品身份**，所以上面 §3.2–§3.4 的真机数字仍对应 rebase 前的构建；
-探针的取文件路径从「复用 #130 的 `downloadOne`」换成了自己的
-`HapBothFetch.downloadToFile`（`.part` → 2xx → 原子 rename，与 #130 的语义一致），
+探针的取文件路径此后又并成了**一份**：`ModelDownload.downloadToFile`（`.part` → 2xx →
+Content-Length → 实收字节 → sha256 → 原子 rename + 重试），`HapBothFetch` 已删除；
+`hap_both` 的 `core-config.json` 改为探针本地生成、不再经 HTTP。
 **下次动设备时先跑一次 `hap_both` 复核**。
 
 ## 4 PR #130 评审的 P0（顺手修了）
