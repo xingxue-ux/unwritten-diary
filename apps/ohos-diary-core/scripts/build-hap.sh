@@ -17,8 +17,17 @@
 # 环境变量：
 #   SKIP_NATIVE=1   跳过原生产物重建（复用 entry/libs/arm64-v8a/ 里已有的 .so）
 #   SKIP_OHPM=1     跳过 ohpm install
+#   WITH_SEMANTIC=1 构建**含语义**的 HAP：额外要求 libonnxruntime-diary-1.29.1.so
+#                   （先跑 stage-ort-1291.sh），包内两份 ORT 共存
+#   SKIP_ASR_LIBS=1 构建**不含 ASR** 的基线/冒烟包：sherpa/两份 ORT 都临时移出，
+#                   构建后恢复；这种 HAP 不能转写。不能与 WITH_SEMANTIC=1 同用
 #   BUILD_MODE      debug（默认）/ release
 #   OHOS_BUNDLE_NAME / OHOS_VERSION_CODE / OHOS_VERSION_NAME   临时覆盖（构建后还原）
+#
+# 构建矩阵（两份文档必须与这里说同一句话）：
+#   default（不带旗标）  = 只带 sherpa 的 ORT 1.16.3；关键词检索可用，语义检索不可用
+#   WITH_SEMANTIC=1      = 再带自编 ORT 1.29.1；语义检索可用（已真机验通）
+#   SKIP_ASR_LIBS=1      = 两份 ORT 与 sherpa 都不带；不能转写、不能语义
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -30,10 +39,70 @@ MODULE="${MODULE:-entry}"
 
 PROFILE="$HERE/build-profile.json5"
 APPJSON="$HERE/AppScope/app.json5"
-BP_BACKUP="$(mktemp)"; APP_BACKUP="$(mktemp)"
-cp "$PROFILE" "$BP_BACKUP"; cp "$APPJSON" "$APP_BACKUP"
-restore() { cp "$BP_BACKUP" "$PROFILE"; cp "$APP_BACKUP" "$APPJSON"; rm -f "$BP_BACKUP" "$APP_BACKUP"; }
+MODULEJSON="$HERE/entry/src/main/module.json5"
+BP_BACKUP="$(mktemp)"; APP_BACKUP="$(mktemp)"; MOD_BACKUP="$(mktemp)"
+cp "$PROFILE" "$BP_BACKUP"; cp "$APPJSON" "$APP_BACKUP"; cp "$MODULEJSON" "$MOD_BACKUP"
+
+# 构建矩阵用到的库可能已在 entry/libs 里（例如上一轮 WITH_SEMANTIC 构建留下的
+# 1.29.1）。hvigor 会把 arm64-v8a/*.so 全打进包，所以「默认不含 1.29.1」不能只靠
+# 不检查——要在构建期间把它临时移出、构建后原样移回。
+PARK_DIR="$HERE/entry/.build-park-$$"
+PARKED=()
+park_lib() {
+  local file="$1" name
+  [[ -f "$file" ]] || return 0
+  mkdir -p "$PARK_DIR"
+  name="$(basename "$file")"
+  mv -f "$file" "$PARK_DIR/$name"
+  PARKED+=("$file")
+  echo "[build-hap] 临时移出 $name（$MATRIX 构建不打包它）"
+}
+restore_parked() {
+  local file
+  for file in ${PARKED[@]+"${PARKED[@]}"}; do
+    mv -f "$PARK_DIR/$(basename "$file")" "$file"
+  done
+  PARKED=()
+  rmdir "$PARK_DIR" 2>/dev/null || true
+}
+restore() {
+  restore_parked
+  cp "$BP_BACKUP" "$PROFILE"
+  cp "$APP_BACKUP" "$APPJSON"
+  cp "$MOD_BACKUP" "$MODULEJSON"
+  rm -f "$BP_BACKUP" "$APP_BACKUP" "$MOD_BACKUP"
+}
 trap restore EXIT
+
+# INTERNET 只在 **debug** 变体声明：验证期要用 rport 下载模型；release 不声明，
+# 从权限层面保证「release 不联网」。这里在构建期改 module.json5、退出时还原
+# （与 bundleName/签名注入同一套做法）。
+apply_internet_permission() {
+  python3 - "$MODULEJSON" "$BUILD_MODE" <<'PY'
+import re, sys
+path, mode = sys.argv[1], sys.argv[2]
+text = open(path, encoding="utf-8").read()
+if mode == "debug":
+    if "ohos.permission.INTERNET" in text:
+        print("[build-hap] INTERNET 已在 module.json5（debug）")
+        sys.exit(0)
+    marker = '"requestPermissions": ['
+    assert marker in text, "module.json5 里找不到 requestPermissions"
+    block = marker + '\n      {\n        "name": "ohos.permission.INTERNET"\n      },'
+    text = text.replace(marker, block, 1)
+    print("[build-hap] INTERNET 已注入 module.json5（debug 专用）")
+else:
+    if "ohos.permission.INTERNET" not in text:
+        print("[build-hap] INTERNET 未声明（release）")
+        sys.exit(0)
+    text = re.sub(
+        r'\s*\{\s*"name"\s*:\s*"ohos\.permission\.INTERNET"\s*\},?', '', text
+    )
+    text = re.sub(r',(\s*)\]', r'\1]', text)
+    print("[build-hap] INTERNET 已从 module.json5 移除（release）")
+open(path, "w", encoding="utf-8").write(text)
+PY
+}
 
 # ── 0. 原生产物
 if [[ -z "${SKIP_NATIVE:-}" ]]; then
@@ -43,6 +112,41 @@ for so in libdiary_capi.so libdiary_napi.so libc++_shared.so; do
   [[ -f "$HERE/entry/libs/arm64-v8a/$so" ]] \
     || { echo "缺少 entry/libs/arm64-v8a/$so（先跑 scripts/build-native.sh）" >&2; exit 1; }
 done
+
+# ── 0a. 构建矩阵：ASR 引擎库与语义 ORT
+#
+# 为什么不再是「有就带上、没有也照建」：缺引擎的 HAP 曾经能通过 readiness
+# （OHOS 的「按库名加载」被当成正常），转写任务跑起来才在 load_library() 失败，
+# 而且按时间语义是**终态** failed。核心侧的 P0 修复（readiness 真的探测一次 +
+# load_library 错误码归位）已在本 PR（commit 378316c）；构建这边要把矩阵做成
+# **构建期可判定**的，而不是装到设备上才发现。
+#
+# `stage-sherpa.sh --check` 断言：两个文件在、aarch64、sherpa 的 NEEDED 有
+# libonnxruntime.so、符号版本是 OrtGetApiBase@VERS_1.16.3，且 sha256 与钉死值一致。
+# `stage-ort-1291.sh --check` 断言：1.29.1 的包内 sha256、SONAME、符号版本。
+if [[ -n "${SKIP_ASR_LIBS:-}" && -n "${WITH_SEMANTIC:-}" ]]; then
+  echo "[build-hap] SKIP_ASR_LIBS=1 与 WITH_SEMANTIC=1 不能同时用（无 ASR 基线 vs 双 ORT 语义包）" >&2
+  exit 2
+fi
+if [[ -n "${SKIP_ASR_LIBS:-}" ]]; then
+  MATRIX="no-asr"
+  for so in libsherpa-onnx-c-api.so libonnxruntime.so libonnxruntime-diary-1.29.1.so; do
+    park_lib "$HERE/entry/libs/arm64-v8a/$so"
+  done
+  echo "[build-hap] 矩阵 no-asr：不带转写引擎/两份 ORT（这个 HAP 不能转写、不能语义）"
+elif [[ -n "${WITH_SEMANTIC:-}" ]]; then
+  MATRIX="asr+semantic"
+  bash "$HERE/scripts/stage-ort-1291.sh" --check
+  echo "[build-hap] 矩阵 asr+semantic：sherpa ORT 1.16.3 + 自编 ORT 1.29.1（语义检索可用）"
+else
+  MATRIX="asr-only"
+  bash "$HERE/scripts/stage-sherpa.sh" --check
+  park_lib "$HERE/entry/libs/arm64-v8a/libonnxruntime-diary-1.29.1.so"
+  echo "[build-hap] 矩阵 asr-only：只带 sherpa ORT 1.16.3（关键词检索可用；语义检索不可用；WITH_SEMANTIC=1 才含 1.29.1）"
+fi
+
+# ── 0a2. INTERNET 权限：debug 声明（验证期 rport 下载），release 不声明
+apply_internet_permission
 
 # ── 0b. ohpm install（依赖是本地 file: 目录，不需要联网）
 if [[ -z "${SKIP_OHPM:-}" ]]; then

@@ -21,17 +21,24 @@
 //!
 //! # 模型目录：可配置，默认指向随包位置
 //!
-//! 解析顺序（先命中先用，写在 [`EngineConfig::resolve`] 的注释里，测试钉住）：
+//! 解析顺序（逐字段、先命中先用，写在 [`EngineConfig::resolve_with`] 的注释里，
+//! 集成测试钉住）：
 //!
-//! 1. **配置里显式给的目录**（`providers.model`）。没配就留空，见第 3 条；
-//! 2. 环境变量 `DIARY_ASR_MODEL_DIR`（开发、探针、CI 用）；
-//! 3. **随包默认位置**：可执行文件旁边的 `models/asr/sense-voice-int8`
+//! 1. 环境变量 `DIARY_ASR_MODEL_DIR`（开发、探针、CI 用）；
+//! 2. **资料库旁边的 `core-config.json` 的 `asrModelDir`**（鸿蒙产品包设不了环境
+//!    变量，这是产品那条通道，见 `crate::config_file`）；
+//! 3. **配置里显式给的目录**（`providers.model`，按服务的那一行）；
+//! 4. **随包默认位置**：可执行文件旁边的 `models/asr/sense-voice-int8`
 //!    （再退一步是 `models/asr`）。这是产品决定：模型随安装包分发，
 //!    **不要求联网、不依赖首次下载**；找不到就如实降级（见下）。
 //!
-//! 「随包」不等于「写死」：第 1 条让用户能换成自己的模型目录，第 2 条让开发与
-//! 量测能在不重新打包的前提下换模型，分发策略（放资源目录、放 AAB 的 asset pack、
+//! 「随包」不等于「写死」：第 2/3 条让产品与用户都能换目录，第 1 条让开发与量测
+//! 在不重新打包的前提下换模型，分发策略（放资源目录、放 AAB 的 asset pack、
 //! 还是让用户导入）不由核心决定——核心只认「一个目录路径」。
+//!
+//! 引擎动态库的顺序同构：`DIARY_ASR_ENGINE_LIB` → `core-config.json` 的
+//! `asrEngineLib` → 可执行文件旁边的候选 → 按平台库名交给系统解析（鸿蒙的
+//! `libs/arm64` 走这一档）。
 //!
 //! # 缺失就如实降级，绝不假装
 //!
@@ -42,8 +49,20 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::config_file::ConfigOrigin;
 use crate::error::{CoreError, Result};
 use crate::model::{Provider, ProviderCapability, ProviderTestStatus};
+
+/// 一次引擎解析里每个字段的来源（`core.info.runtime_config` 用它）。
+#[derive(Debug, Clone, Default)]
+pub struct EngineOrigins {
+    /// 模型目录来自哪一档（`env` / `file` / `provider` / `bundled`）。
+    pub model_dir: ConfigOrigin,
+    /// 引擎动态库来自哪一档（`env` / `file` / `platform`）。
+    pub engine_lib: ConfigOrigin,
+    /// 解析到的引擎动态库路径；`None` = 按平台库名交给系统解析。
+    pub engine_lib_path: Option<PathBuf>,
+}
 
 /// 内置的本地引擎适配器标识（sherpa-onnx 的 C API）。
 pub const SHERPA_ONNX: &str = "sherpa_onnx";
@@ -162,55 +181,108 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
-    /// 解析一次引擎配置。
+    /// 解析一次引擎配置（**只读环境变量**，等价于 `resolve_with(None, None)`）。
     ///
-    /// `model_override` 是**配置里显式给的目录**（`providers.model`）。三档顺序：
-    /// 显式目录 → `DIARY_ASR_MODEL_DIR` → 随包默认位置。都解析不到就报
-    /// `provider_not_configured`，理由里列清找过哪些位置。
+    /// 保留这个入口是为了不改变既有调用点的语义：没有核心配置文件的进程（Android /
+    /// CI / 探针）走的就是它。产品包那条路走 [`Self::resolve_with`]。
     pub fn resolve(model_override: Option<&str>) -> Result<Self> {
+        Self::resolve_with(model_override, None)
+    }
+
+    /// 解析一次引擎配置，带上核心配置文件（`core-config.json`）这一档。
+    ///
+    /// **逐字段的优先级：环境变量 → 配置文件 → provider 行 → 随包默认**。
+    ///
+    /// - 环境变量在最前：探针/CI 靠 `DIARY_ASR_MODEL_DIR` 换模型，设备上有配置文件
+    ///   也不能让它失效；
+    /// - 配置文件第二：鸿蒙产品包设不了环境变量，它是产品那条通道；
+    /// - provider 行（`providers.model`）第三：它是**按服务**的显式目录，排在全局
+    ///   文件之后（见 `docs/architecture/m3-转写链.md` 的解析顺序一节）；
+    /// - 随包默认最后：可执行文件旁边的 `models/asr/...`。
+    ///
+    /// 都解析不到就报 `provider_not_configured`，理由里列清找过哪些位置。
+    pub fn resolve_with(
+        model_override: Option<&str>,
+        file: Option<&crate::config_file::CoreConfigFile>,
+    ) -> Result<Self> {
+        Self::resolve_report(model_override, file).0
+    }
+
+    /// 与 [`Self::resolve_with`] 同一个解析，额外把「每个字段从哪来」带出来。
+    ///
+    /// `core.info.runtime_config.transcription` 用它——报告与真正加载用的是**同一次
+    /// 解析**，不会出现「报告说 file、执行器读了 env」。
+    pub fn resolve_report(
+        model_override: Option<&str>,
+        file: Option<&crate::config_file::CoreConfigFile>,
+    ) -> (Result<Self>, EngineOrigins) {
+        let mut origins = EngineOrigins::default();
         let explicit = model_override
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(PathBuf::from);
-        let from_env = std::env::var_os(ENV_MODEL_DIR).map(PathBuf::from);
-        let bundled = bundled_model_dir();
+            .map(PathBuf::from)
+            .map(|path| (path, ConfigOrigin::Provider));
+        let from_env = std::env::var_os(ENV_MODEL_DIR)
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| (path, ConfigOrigin::Env));
+        let from_file = file
+            .and_then(|file| file.asr_model_dir_path())
+            .map(|path| (path, ConfigOrigin::File));
+        let bundled = bundled_model_dir().map(|path| (path, ConfigOrigin::Bundled));
 
-        let model_dir = if let Some(dir) = explicit {
-            dir
-        } else if let Some(dir) = from_env {
-            dir
-        } else if let Some(dir) = bundled {
-            dir
-        } else {
-            return Err(CoreError::ProviderNotConfigured {
-                reason: format!(
-                    "本机转写引擎没有可用的模型目录：配置里没给、环境变量 {ENV_MODEL_DIR} 没设，\
-                     可执行文件旁边也没有 {}",
-                    bundled_model_dir_candidates()
-                        .iter()
-                        .map(|path| path.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(" / ")
-                ),
-            });
+        let resolved = from_env
+            .or(from_file)
+            .or(explicit)
+            .or(bundled);
+        let Some((model_dir, origin)) = resolved else {
+            return (
+                Err(CoreError::ProviderNotConfigured {
+                    reason: format!(
+                        "本机转写引擎没有可用的模型目录：环境变量 {ENV_MODEL_DIR} 没设、\
+                         core-config.json 里没有 asrModelDir、转写服务的配置里没给 model，\
+                         可执行文件旁边也没有 {}",
+                        bundled_model_dir_candidates()
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(" / ")
+                    ),
+                }),
+                origins,
+            );
         };
+        origins.model_dir = origin;
 
         let kind = model_kind_for(&model_dir);
-        Ok(Self {
-            engine_lib: resolve_engine_lib(),
-            model_dir,
-            model_file: std::env::var(ENV_MODEL_FILE)
-                .ok()
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty()),
-            kind,
-            language: std::env::var(ENV_LANGUAGE)
-                .ok()
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty()),
-            num_threads: 2,
-            itn: true,
-        })
+        let (engine_lib, engine_lib_origin) = resolve_engine_lib_with(file);
+        origins.engine_lib = engine_lib_origin;
+        origins.engine_lib_path = engine_lib.clone();
+        // OHOS：引擎库只能从 HAP 的 `libs/arm64` 加载，沙箱里的 `.so` 不能 dlopen。
+        // 配置写错要在**解析时**就报清楚，而不是等作业跑起来才拿到一句 dlopen 失败。
+        if let Some(path) = &engine_lib {
+            if let Err(reason) = validate_engine_lib_path(path) {
+                return (Err(CoreError::ProviderNotConfigured { reason }), origins);
+            }
+        }
+        (
+            Ok(Self {
+                engine_lib,
+                model_dir,
+                model_file: std::env::var(ENV_MODEL_FILE)
+                    .ok()
+                    .map(|value| value.trim().to_owned())
+                    .filter(|value| !value.is_empty()),
+                kind,
+                language: std::env::var(ENV_LANGUAGE)
+                    .ok()
+                    .map(|value| value.trim().to_owned())
+                    .filter(|value| !value.is_empty()),
+                num_threads: 2,
+                itn: true,
+            }),
+            origins,
+        )
     }
 
     /// 真正要加载的 ONNX 文件。优先量化版（体积 228 MiB 对 fp32 的 894 MiB）。
@@ -316,17 +388,116 @@ pub fn builtin_local_engine_ids() -> &'static [&'static str] {
     &[SHERPA_ONNX]
 }
 
-/// 引擎库的解析：显式环境变量 → 可执行文件旁边的候选路径 → `None`（按库名加载）。
+/// 引擎库的解析（只读环境变量）：等价于 [`resolve_engine_lib_with`] 传 `None`。
+///
+/// 顺序：`DIARY_ASR_ENGINE_LIB` → 可执行文件旁边的候选路径 → `None`（按库名交给
+/// 系统解析）。
 pub fn resolve_engine_lib() -> Option<PathBuf> {
+    resolve_engine_lib_with(None).0
+}
+
+/// 引擎库的解析，带上核心配置文件。
+///
+/// 顺序：`DIARY_ASR_ENGINE_LIB` → `core-config.json` 的 `asrEngineLib` →
+/// 可执行文件旁边的候选路径 → `None`（按平台库名交给系统解析；鸿蒙的
+/// `libs/arm64` 与 Android 的 native 库目录都走这一档）。
+///
+/// 返回路径与来源：来源是报告用的，`None` 时来源是 `Platform`（不是「缺库」——
+/// 按平台库名加载在移动端是正常的）。
+pub fn resolve_engine_lib_with(
+    file: Option<&crate::config_file::CoreConfigFile>,
+) -> (Option<PathBuf>, ConfigOrigin) {
     if let Some(value) = std::env::var_os(ENV_ENGINE_LIB) {
         let path = PathBuf::from(value);
         if !path.as_os_str().is_empty() {
-            return Some(path);
+            return (Some(path), ConfigOrigin::Env);
         }
     }
-    engine_lib_candidates()
-        .into_iter()
-        .find(|path| path.is_file())
+    if let Some(path) = file.and_then(|file| file.asr_engine_lib_path()) {
+        return (Some(path), ConfigOrigin::File);
+    }
+    if let Some(path) = engine_lib_candidates().into_iter().find(|path| path.is_file()) {
+        return (Some(path), ConfigOrigin::Bundled);
+    }
+    (None, ConfigOrigin::Platform)
+}
+
+/// OHOS 上「应用数据目录」的前缀：这些路径下的 `.so` **不能**在运行时 dlopen。
+///
+/// 对照：安装目录是 `/data/storage/el1/bundle/...`（HAP 里的 `libs/arm64` 就在那儿），
+/// **不**在这个列表里——引擎库本来就该放那里。应用数据（el2 / el1 的 base/database/
+/// cache）是沙箱，linker 不允许从那里加载原生库（探针实测，见
+/// `probes/ohos-core-smoke`）。
+const OHOS_APP_DATA_PREFIXES: &[&str] = &[
+    "/data/storage/el2/",
+    "/data/storage/el1/base/",
+    "/data/storage/el1/database/",
+    "/data/storage/el1/cache/",
+    "/data/app/el2/",
+    "/data/app/el1/base/",
+];
+
+/// 这个路径是不是 OHOS 的应用数据目录（沙箱）。纯字符串判断，宿主上也能测。
+pub fn is_ohos_app_data_path(path: &str) -> bool {
+    OHOS_APP_DATA_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
+/// 校验显式指定的引擎库路径（`DIARY_ASR_ENGINE_LIB` 或 `core-config.json` 的
+/// `asrEngineLib`）。**只在 OHOS 上有限制**：其它平台可以从任意路径 dlopen。
+///
+/// 为什么要在配置层拒绝，而不是等 `load_library` 失败：沙箱路径的 `.so` 是**存在**的
+/// （`is_file()` 为真），`readiness` 会放行，作业跑起来才在 linker 那里炸——错误信息
+/// 会指向一个「明明存在的文件」，用户照着它查不出原因。这里直接点名「沙箱不能加载」
+/// 并给出该放哪儿。
+pub fn validate_engine_lib_path(path: &Path) -> std::result::Result<(), String> {
+    validate_ohos_native_lib_path(
+        path,
+        "asrEngineLib",
+        "引擎库",
+        "libsherpa-onnx-c-api.so",
+    )
+}
+
+/// 校验 ORT 动态库路径（`DIARY_ORT_DYLIB` / `ORT_DYLIB_PATH` / `core-config.json` 的
+/// `ortDylib`）。与 [`validate_engine_lib_path`] 同款：OHOS 上沙箱里的 `.so` 不能
+/// dlopen，必须在 HAP 的 `libs/arm64/`（例如 `libonnxruntime-diary-1.29.1.so`）。
+///
+/// 为什么 ORT 也要拦：`ort` 的 `load-dynamic` 看起来「只是按路径 dlopen」，但 OHOS
+/// 的 linker 限制与引擎库完全相同；不拦的话，`core.info` 会报 `configured`、第一次
+/// 语义索引才在 `init_from` 失败，用户同样查不出是路径问题。
+pub fn validate_ort_dylib_path(path: &Path) -> std::result::Result<(), String> {
+    validate_ohos_native_lib_path(
+        path,
+        "ortDylib",
+        "ORT 动态库",
+        "libonnxruntime-diary-1.29.1.so",
+    )
+}
+
+/// 两种原生库共用的沙箱判定。`cfg(test)` 也打开，这样宿主单测能覆盖「拒绝」那一半；
+/// 非 OHOS 的产品构建不启用（桌面端可以从任意目录 dlopen）。
+fn validate_ohos_native_lib_path(
+    path: &Path,
+    field: &str,
+    what: &str,
+    example: &str,
+) -> std::result::Result<(), String> {
+    #[cfg(any(target_env = "ohos", test))]
+    {
+        let text = path.to_string_lossy();
+        if is_ohos_app_data_path(&text) {
+            return Err(format!(
+                "{field} 指向应用数据目录（{text}）：OHOS 的 linker 只允许从 HAP 的 \
+                 libs/arm64 加载原生库，沙箱（el2 / el1/base）里的 .so 不能 dlopen。\
+                 把{what}打进 HAP 的 libs/arm64/（例如 {example}），配置改成 \
+                 /data/storage/el1/bundle/libs/arm64/<文件名>；模型文件才放沙箱。"
+            ));
+        }
+    }
+    let _ = (path, field, what, example);
+    Ok(())
 }
 
 /// 平台上的引擎库文件名。
@@ -423,11 +594,11 @@ fn model_kind_for(dir: &Path) -> ModelKind {
 
 /// 内建转写服务（合成的一行，不进 `providers` 表）。
 ///
-/// `model` 给出解析到的目录（可能为 `None`：随包目录不在、环境变量也没设），
-/// 这样设置页里能看到「引擎现在打算用哪个目录」——看不到路径的降级提示，
-/// 用户没法照着修。
-pub(crate) fn builtin_provider() -> Provider {
-    let resolved = EngineConfig::resolve(None).ok();
+/// `model` 给出解析到的目录（可能为 `None`：随包目录不在、环境变量与配置文件也
+/// 没给），这样设置页里能看到「引擎现在打算用哪个目录」——看不到路径的降级提示，
+/// 用户没法照着修。`file` 是核心配置文件的四个可选路径（没有就是 `None`）。
+pub(crate) fn builtin_provider(file: Option<&crate::config_file::CoreConfigFile>) -> Provider {
+    let resolved = EngineConfig::resolve_with(None, file).ok();
     Provider {
         id: BUILTIN_LOCAL_ASR_ID.to_owned(),
         label: BUILTIN_LOCAL_ASR_LABEL.to_owned(),
@@ -444,7 +615,7 @@ pub(crate) fn builtin_provider() -> Provider {
 }
 
 /// 一次引擎配置的**唯一**取得方式：测试/量测钉死的配置优先，否则按
-/// 「配置行 → 环境变量 → 随包默认」解析。
+/// 「环境变量 → 核心配置文件 → 配置行 → 随包默认」解析。
 ///
 /// 闸门、连接测试、作业执行者都走这一个函数，所以「用哪个模型目录」只有一处定义
 /// （它们必须一致，否则会出现「闸门说可用、执行者去读另一个目录」）。
@@ -455,7 +626,7 @@ pub(crate) fn config_for(
     if let Some(pinned) = core.asr_engine_config_for_test() {
         return Ok(pinned.clone());
     }
-    EngineConfig::resolve(model_override)
+    EngineConfig::resolve_with(model_override, core.config_file())
 }
 
 /// 引擎就绪检查的统一入口：取配置 → 问实现。
@@ -528,4 +699,64 @@ pub(crate) fn transcription_choice(core: &crate::Core) -> Result<TranscriptionCh
         provider_id: None,
         model_override: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// OHOS 的「沙箱 vs 安装目录」判定：沙箱路径要拒，`libs/arm64` 要放行。
+    ///
+    /// 这个判定只在 `target_env = "ohos"` 时生效（其它平台可以从任意路径 dlopen），
+    /// 但**判定逻辑本身**在宿主上就能测——不测的话，真机第一次发现写错就晚了。
+    #[test]
+    fn ohos_app_data_paths_are_recognised_and_install_paths_are_not() {
+        for path in [
+            "/data/storage/el2/base/haps/entry/files/libsherpa-onnx-c-api.so",
+            "/data/storage/el1/base/files/libsherpa-onnx-c-api.so",
+            "/data/storage/el1/database/x.so",
+            "/data/storage/el1/cache/x.so",
+            "/data/app/el2/100/base/com.example/x.so",
+            "/data/app/el1/base/x.so",
+        ] {
+            assert!(is_ohos_app_data_path(path), "应当识别为沙箱：{path}");
+        }
+        for path in [
+            // HAP 的安装目录：引擎库本来就该放这儿。
+            "/data/storage/el1/bundle/libs/arm64/libsherpa-onnx-c-api.so",
+            "/data/app/el1/bundle/public/com.example/libs/arm64/libsherpa-onnx-c-api.so",
+            "libsherpa-onnx-c-api.so",
+            "/usr/lib/libsherpa-onnx-c-api.so",
+        ] {
+            assert!(!is_ohos_app_data_path(path), "不该识别为沙箱：{path}");
+        }
+    }
+
+    /// 非 OHOS 平台上不限制路径（桌面端可以从任意目录 dlopen）；OHOS 上拒绝沙箱。
+    ///
+    /// `cfg(test)` 让「拒绝」这一半在宿主上也能跑：沙箱路径的判定是纯字符串判断，
+    /// 不依赖真机。安装目录（`el1/bundle/libs/arm64`）必须放行。
+    #[test]
+    fn engine_and_ort_validation_rejects_sandbox_but_allows_install_paths() {
+        let sandbox_engine =
+            Path::new("/data/storage/el2/base/haps/entry/files/libsherpa-onnx-c-api.so");
+        let sandbox_ort =
+            Path::new("/data/storage/el2/base/haps/entry/files/libonnxruntime-diary-1.29.1.so");
+        assert!(
+            validate_engine_lib_path(sandbox_engine).is_err(),
+            "asrEngineLib 指向沙箱必须拒绝"
+        );
+        assert!(
+            validate_ort_dylib_path(sandbox_ort).is_err(),
+            "ortDylib 指向沙箱必须拒绝"
+        );
+
+        let install_engine = Path::new("/data/storage/el1/bundle/libs/arm64/libsherpa-onnx-c-api.so");
+        let install_ort =
+            Path::new("/data/storage/el1/bundle/libs/arm64/libonnxruntime-diary-1.29.1.so");
+        assert!(validate_engine_lib_path(install_engine).is_ok(), "安装目录必须放行");
+        assert!(validate_ort_dylib_path(install_ort).is_ok(), "安装目录必须放行");
+        let relative = Path::new("libsherpa-onnx-c-api.so");
+        assert!(validate_engine_lib_path(relative).is_ok(), "按库名加载必须放行");
+    }
 }

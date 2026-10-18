@@ -10,6 +10,7 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { process } from '@kit.ArkTS';
+import BuildProfile from 'BuildProfile';
 import { DiaryCore } from '../core/DiaryCore';
 
 const DOMAIN: number = 0x0000;
@@ -24,13 +25,17 @@ export default class ProbeIsoAbility extends UIAbility {
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
-    try {
-      this.core = DiaryCore.open(`${this.context.filesDir}/library.sqlite`);
-      hilog.info(DOMAIN, TAG, '%{public}s ISO HOLD open pid=%{public}d handles=%{public}d',
-        MARK, process.pid, DiaryCore.openHandleCount());
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, '%{public}s ISO HOLD failed %{public}s',
-        MARK, (e as Error).message);
+    if (BuildProfile.DEBUG) {
+      try {
+        this.core = DiaryCore.open(`${this.context.filesDir}/library.sqlite`);
+        hilog.info(DOMAIN, TAG, '%{public}s ISO HOLD open pid=%{public}d handles=%{public}d',
+          MARK, process.pid, DiaryCore.openHandleCount());
+      } catch (e) {
+        hilog.error(DOMAIN, TAG, '%{public}s ISO HOLD failed %{public}s',
+          MARK, (e as Error).message);
+      }
+    } else {
+      hilog.warn(DOMAIN, TAG, '%{public}s PROBE_DISABLED ability=ProbeIsoAbility reason=release', MARK);
     }
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {

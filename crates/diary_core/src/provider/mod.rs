@@ -897,7 +897,7 @@ pub(crate) fn capability_gate_for_with(
                 .unwrap_or(false)
         });
     if consider_builtin {
-        providers.push(local_engine::builtin_provider());
+        providers.push(local_engine::builtin_provider(core.config_file()));
     }
 
     if providers.is_empty() {
@@ -1087,7 +1087,7 @@ pub(crate) fn test(
     let provider = if provider_id == local_engine::BUILTIN_LOCAL_ASR_ID
         && load_provider(&core.conn, provider_id).is_err()
     {
-        local_engine::builtin_provider()
+        local_engine::builtin_provider(core.config_file())
     } else {
         load_provider(&core.conn, provider_id)?
     };

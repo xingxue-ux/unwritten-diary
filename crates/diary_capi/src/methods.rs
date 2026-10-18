@@ -19,6 +19,7 @@
 //! | `sources.extract` | `Core::extract_source` | `ExtractedContent` |
 //! | `search.start` | `Core::start_search` | `SearchSnapshot` |
 //! | `indexes.rebuild` | `Core::schedule_index_rebuild` | `Job` |
+//! | `indexes.rebuildSemantic` | `Core::schedule_semantic_index`（只排任务） | `Job` |
 //! | `jobs.runDue` | `Core::run_due_jobs` | `JobRunSummary` |
 //! | `jobs.status` | `Core::job_status` | `JobStatus` |
 //!
@@ -49,7 +50,7 @@
 //!   `sources.locate`；
 //! - 文件：`imports.*`、`assets.open` / `assets.release`；
 //! - 检索：`search.nextPage` / `search.snapshot` / `search.cancel` / `search.upgrade`、
-//!   `indexes.status`、`indexes.rebuildSemantic`；
+//!   `indexes.status`（`indexes.rebuildSemantic` 已接，见上表）；
 //! - 任务与事件：`jobs.list` / `jobs.get` / `jobs.retry` / `jobs.cancel` /
 //!   `jobs.nextWakeup` / `jobs.acknowledgeAttention`、`core.events`；
 //! - 备份与恢复：`backups.create` / `backups.inspect` / `backups.restore`（`diary_bridge`
@@ -64,7 +65,8 @@
 use chrono::Utc;
 use diary_core::model::{NativeRecordingStatus, RecordingState, SegmentManifest};
 use diary_core::{
-    Core, CoreError, CreateDraftInput, JobState, SearchFilters, SearchMode, SearchRequest,
+    Core, CoreError, CreateDraftInput, JobState, Provider, ProviderCapability, SearchFilters,
+    SearchMode, SearchRequest,
 };
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -86,8 +88,13 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "sources.extract",
     "search.start",
     "indexes.rebuild",
+    "indexes.rebuildSemantic",
     "jobs.runDue",
     "jobs.status",
+    "providers.save",
+    "providers.list",
+    "providers.test",
+    "providers.remove",
 ];
 
 /// 一轮 `jobs.runDue` 最多跑几条任务（防御性上限）。
@@ -209,6 +216,14 @@ pub(crate) fn dispatch(
                 core.schedule_index_rebuild(&input.scope, &input.reason, &input.operation_id)?;
             to_value(job)
         }
+        // 语义这一路（契约 4.4 的 `indexes.rebuildSemantic`）。核心与桥接早就有了
+        // （`Core::schedule_semantic_index`），C ABI 之前没接——鸿蒙上就没有任何办法
+        // 建语义索引，语义检索必然空。这里只排一条 `semantic_index` 任务，不重建。
+        "indexes.rebuildSemantic" => {
+            let input: RebuildSemanticParams = parse(params)?;
+            let job = core.schedule_semantic_index(&input.reason, &input.operation_id)?;
+            to_value(job)
+        }
         // ------------------------------------------------------------ 任务
         "jobs.runDue" => {
             let input: RunDueParams = parse(params)?;
@@ -223,6 +238,31 @@ pub(crate) fn dispatch(
         "jobs.status" => {
             no_params(method, params)?;
             to_value(core.job_status()?)
+        }
+        // ------------------------------------------------------------ 本机服务配置
+        // 本机转写引擎（sherpa-onnx）的配置入口。没有这几条，宿主就没法把
+        // 「模型目录」告诉核心：`providers.model` 只能通过 `providers.save` 落库。
+        //
+        // 这里**不加任何业务规则**：适配器校验、endpoint 拒绝、能力声明、
+        // 测试结论作废都在核心 `provider::save` 里（见那条路径的注释）。
+        "providers.save" => {
+            let input: SaveProviderParams = parse(params)?;
+            let saved = core.save_provider(&input.config, input.secret.as_deref())?;
+            to_value(saved)
+        }
+        "providers.list" => {
+            no_params(method, params)?;
+            to_value(core.list_providers()?)
+        }
+        "providers.test" => {
+            let input: TestProviderParams = parse(params)?;
+            let report = core.test_provider(&input.provider_id, &input.scope)?;
+            to_value(report)
+        }
+        "providers.remove" => {
+            let input: ProviderIdParams = parse(params)?;
+            core.remove_provider(&input.provider_id)?;
+            Ok(Value::Null)
         }
         // ------------------------------------------------------------ 测试钩子
         // 只在 `cargo test` 的构建里存在：证明「核心 panic 不会穿过 FFI」。
@@ -239,6 +279,10 @@ pub(crate) fn dispatch(
 ///
 /// 恢复摘要里的数字直接来自库，`pending_jobs` 走精确计数（`list_jobs` 的长度会被它自己的
 /// 分页上限夹住，任务多时会少报）。
+///
+/// `runtime_config` 是**加性扩展**（`diary_bridge::api::LibraryInfo` 没有这一格）：
+/// 鸿蒙产品包设不了环境变量，宿主必须能从 `core.info` 里看到两条能力各自「从哪儿读到
+/// 什么路径、现在到哪一步」——否则配置失败时只能blind 猜。它只 stat、不加载模型。
 fn core_info(core: &Core, library_id: &str) -> Result<Value, CoreError> {
     let recoverable_imports = core.count_imports_in_flight()?;
     let open_recordings = core.count_open_recordings()?;
@@ -266,6 +310,8 @@ fn core_info(core: &Core, library_id: &str) -> Result<Value, CoreError> {
         },
         "capture_count": core.count_captures()?,
         "last_event_sequence": core.last_event_sequence()?,
+        // 两条能力的配置来源与就绪状态（语义/转写）。纯 stat，不建会话。
+        "runtime_config": core.runtime_config(),
     }))
 }
 
@@ -522,6 +568,18 @@ struct RebuildIndexesParams {
     operation_id: String,
 }
 
+/// `indexes.rebuildSemantic`：只排一条**整库**语义重建任务（契约 4.4）。
+///
+/// 没有 `scope`：语义的代次与向量是全局的，范围只决定这一轮重算了哪些块
+/// （见 `Core::schedule_semantic_index` 的说明）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RebuildSemanticParams {
+    reason: String,
+    #[serde(alias = "operationId")]
+    operation_id: String,
+}
+
 /// `jobs.runDue`：毫秒预算 + 唤醒来源（契约第 4.4 节）。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -529,4 +587,35 @@ struct RunDueParams {
     #[serde(alias = "budgetMs")]
     budget_ms: u64,
     trigger: String,
+}
+
+/// `providers.save`：`config` 与 `secret` 的字段名就是核心 `Provider` 的字段名。
+///
+/// `config.test_status` 由核心忽略（只读结论，不能由调用方写成「已验证」）；
+/// 本机引擎的 `model` 是一份**目录**，`endpoint` 必须为空。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SaveProviderParams {
+    config: Provider,
+    /// 明文密钥：只在这一刻经过内存，核心立刻换成凭据引用。本机引擎不需要。
+    #[serde(default)]
+    secret: Option<String>,
+}
+
+/// `providers.remove`：只删配置行，不删任何日记/派生内容。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderIdParams {
+    #[serde(alias = "providerId")]
+    provider_id: String,
+}
+
+/// `providers.test`：`scope` 是用户授权的测试范围（契约要求显式列出）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestProviderParams {
+    #[serde(alias = "providerId")]
+    provider_id: String,
+    #[serde(default)]
+    scope: Vec<ProviderCapability>,
 }
