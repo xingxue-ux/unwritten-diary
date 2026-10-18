@@ -183,11 +183,22 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `sources.extract` | `Core::extract_source`（`source_ref` 可以是来源 id 或修订 id） | `ExtractedContent` |
 | `search.start` | `Core::start_search`（`{"request":{…},"query_revision":N}`） | `SearchSnapshot` |
 | `indexes.rebuild` | `Core::schedule_index_rebuild`（只排任务） | `Job` |
+| `indexes.rebuildSemantic` | `Core::schedule_semantic_index`（只排一条整库语义任务） | `Job` |
 | `jobs.runDue` | `Core::run_due_jobs`（`budget_ms` + `trigger`；`now = Utc::now()`，条数上限 64，与桥上同一个常量口径） | `JobRunSummary` |
 | `jobs.status` | `Core::job_status` | `JobStatus` |
 
-`search.start` 的 `request` 里只有 `query` 必填，`mode`（默认 `keyword`）、`filters`
-（全字段可选）、`page_size`（默认 20，与 `bridge_diary_api.dart` 同口径）都可省。
+`search.start` 的 `request` 里只有 `query` 必填，`mode`（默认 `keyword`；`semantic` 是
+语义那一路）、`filters`（全字段可选）、`page_size`（默认 20，与 `bridge_diary_api.dart`
+同口径）都可省。
+
+`indexes.rebuildSemantic` 是契约 4.4 已有、核心与桥接早就接上的方法，C ABI 之前漏了它
+（鸿蒙上就没有任何办法建语义索引）。参数只有 `reason` + `operation_id`（没有 `scope`：代次
+与向量是全局的），返回 `Job`（只排队，跑还是 `jobs.runDue`）。
+
+`core.info` 在契约字段之外多一格 **`runtime_config`**（加性扩展，`LibraryInfo` 没有它）：
+配置文件状态、语义与转写两条能力各自的 `state` / `configSource` / 每个路径字段的来源 /
+就绪原因。键是 camelCase（与 `core-config.json` 同形），只 stat、不加载模型。设计与真机
+证据见 [M6 · 设备配置与双 ORT](m6-设备配置与双ORT.md)。
 
 **两条超出任务书六条的方法，各有理由（不是凑数）**：
 
@@ -210,7 +221,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 **还没接的（按契约第 4 节分组，代码里带 `TODO(#108)`）**：`captures.get/list/moveDay/trash/
 restore/previewPurge/purge`、`sources.extractedContent/previousRevision/reviseText/locate`、
 `imports.*`、`assets.open/release`、`search.nextPage/snapshot/cancel/upgrade`、
-`indexes.status`、`indexes.rebuildSemantic`、`jobs.list/get/retry/cancel/nextWakeup/
+`indexes.status`、`jobs.list/get/retry/cancel/nextWakeup/
 acknowledgeAttention`、`core.events/snapshot/close/setRuntimeState`、`backups.*`（桥上已有同步
 入口，映射过来即可）、`diary.*` / `styles.*` / `responses.*` / `providers.*` / `settings.*` /
 `plugins.*` / `exports.*`（核心大多还没有对应实现）。

@@ -263,7 +263,7 @@ finalize `state=saved`、`logical_duration_ms=4980`、blob 159,404 B 是合法�
   但「因此只有重编 sherpa 一条路」**不成立**：`ort::init_from` 接受任意路径，自编
   1.29.1 的 SONAME 是 **`libonnxruntime.so.1`**，与 sherpa 的 `NEEDED`
   **`libonnxruntime.so`** 并不同名。**#134（`feat/ohos-hap-config-20261018`，
-  commit `6c45491`）已经按这条思路在真机上验通**：sherpa 继续用 1.16.3 的
+  commit `378316c`）已经按这条思路在真机上验通**：sherpa 继续用 1.16.3 的
   `libonnxruntime.so`，语义索引用 `libonnxruntime-diary-1.29.1.so`（SONAME
   `libonnxruntime.so.1`）显式 `init_from`，同一 HAP 里转写与语义检索可以同时跑。
   **本 PR 不包含这条改动，也不再排除它**；本 PR 只证明「把同一个文件名直接换成
@@ -351,7 +351,7 @@ DIARY_ASR jobs.report {"open_ms":4,"run_ms":3580,...,"processed":1,"succeeded":1
 > **范围口径（别把这张表读大）**：本 PR 的真机结果证明的是**关键词检索**
 > （`matched_by=["keyword"]`），默认 HAP 只带 sherpa 的 ORT 1.16.3（产品 `ort` crate
 > 要求 ORT ≥ 1.17，`crates/diary_core/Cargo.toml:30`）。**语义检索已经由 #134
-> （`feat/ohos-hap-config-20261018`，commit `6c45491`）用双 ORT 打包方案真机验通**：
+> （`feat/ohos-hap-config-20261018`，commit `378316c`）用双 ORT 打包方案真机验通**：
 > 查询「母亲体检的结果怎么样」→ `hits=26`、`matchedBy=["semantic"]`，同一查询关键词
 > 模式 `hits=0`。要语义检索请按 #134 的打包方式（多带一份
 > `libonnxruntime-diary-1.29.1.so`），不要把默认 HAP 读成「检索全通」。
@@ -380,6 +380,151 @@ DIARY_ASR jobs.report {"open_ms":4,"run_ms":3580,...,"processed":1,"succeeded":1
   + 自编 1.29.1，不同文件名；语义查询 `hits=26`）。本 PR 只证明了「把
   `libonnxruntime.so` 直接换成 1.29.1 会符号版本不匹配」；
 - 电源键/锁屏路径（本轮按要求全程没碰）。
+
+## 产品 HAP 的配置能力与双 ORT 共存（#108 收尾片，2026-10-18 夜）
+
+鸿蒙应用**设不了环境变量**，而嵌入器与转写引擎的路径过去只能从 `DIARY_*` 读——产品 HAP 里
+语义检索无法配置、转写只能靠 provider 行。这一片补了**文件配置**，并把**两个 ORT** 装进
+同一个 HAP、在真机上跑通了「语义检索 + 转写」同进程共存。设计、取舍与完整证据见
+[`docs/architecture/m6-设备配置与双ORT.md`](../../docs/architecture/m6-设备配置与双ORT.md)；
+原始日志在 `/mnt/e/ohos/evidence/hapcfg/`。
+
+### `core-config.json`：与库同目录，环境变量仍优先
+
+`<filesDir>/core-config.json`（与 `library.sqlite` 同目录），四个字段全部可选：
+
+```json
+{
+  "modelDir": "/data/storage/el2/base/haps/entry/files/models/bge-small-zh-v1.5-ours",
+  "ortDylib": "/data/storage/el1/bundle/libs/arm64/libonnxruntime-diary-1.29.1.so",
+  "asrEngineLib": "/data/storage/el1/bundle/libs/arm64/libsherpa-onnx-c-api.so",
+  "asrModelDir": "/data/storage/el2/base/haps/entry/files/asr/sense-voice"
+}
+```
+
+- **逐字段**顺序：环境变量 → 文件 → provider 行（仅转写）→ 随包默认；
+- 文件不存在时行为与加它之前**逐位一致**；读不了 / JSON 坏 / 字段类型不对都**不致命**
+  （回落下一档，原因进 `core.info`）；未知字段收进 `ignoredFields`，不静默吞掉；
+- 只在 `Core::open` 时读一次（与 `DIARY_*` 同一语义：打开那一刻的快照）。
+
+`core.info` 多一格 `runtime_config`（camelCase，与配置同形）：
+
+```text
+DIARY_HAP CONFIG label=info.final semantic.state=ready semantic.source=file modelDirSource=file ortDylibSource=file
+  modelDir=/data/storage/el2/base/haps/entry/files/models/bge-small-zh-v1.5-ours
+  ortDylib=/data/storage/el1/bundle/libs/arm64/libonnxruntime-diary-1.29.1.so
+  version=bge-small-zh-v1.5-ours@d44978e451a0
+DIARY_HAP CONFIG label=info.final transcription.state=ready transcription.source=file modelDirSource=file
+  engineLibSource=platform providerId=local_asr_ohos
+  modelDir=/data/storage/el2/base/haps/entry/files/asr/sense-voice
+```
+
+「环境变量仍优先」的证据是宿主测试（`/mnt/e/ohos/evidence/hapcfg/host-test-env-precedence.txt`）：
+两个变量都设 → `configSource=env`；只设模型目录 → 模型目录 `env`、ORT `file`；全撤掉 →
+回到文件那一套。另一半（无文件时行为不变、坏 JSON 不致命、文件压过 provider、缺文件
+`invalid`）在 `core_config_test`。
+
+### 两个 ORT：改名共存 + 绝对路径加载
+
+| 包内文件 | 来源 | 大小 | SONAME | 导出 |
+|---|---|---:|---|---|
+| `libonnxruntime.so` | sherpa 自带 1.16.3 | 12,930,856 | `libonnxruntime.so` | `OrtGetApiBase@@VERS_1.16.3` |
+| `libonnxruntime-diary-1.29.1.so` | 自编 1.29.1 | 19,623,560 | `libonnxruntime.so.1` | `OrtGetApiBase@@VERS_1.29.1` |
+
+sherpa 的 `NEEDED = libonnxruntime.so` 由系统按名解析到 1.16.3；`ort` 的 `load-dynamic`
+按 `init_from` 的**绝对路径**加载自编那份，不依赖文件名与 SONAME 一致。**两者 SONAME
+本来就不同**（PR #130 评审提出、本轮实测确认），`dlopen` 绝对路径与按名解析互不干扰。
+真机上两种加载顺序都验过：先 1.29.1 后 1.16.3（默认）、先 1.16.3 后 1.29.1
+（`--ps order asr_first`）。
+
+```bash
+apps/ohos-diary-core/scripts/stage-sherpa.sh     # 1.16.3 + libsherpa
+apps/ohos-diary-core/scripts/stage-ort-1291.sh   # 自编 1.29.1 → libonnxruntime-diary-1.29.1.so
+```
+
+### 真机结果（HAD-W32 / API 23 / 产品身份 / debug signed）
+
+**同一个 HAP、同一次启动、同一个进程**：
+
+```text
+# 语义（查询与目标正文没有共同词；同一条查询走关键词是 hits=0）
+DIARY_HAP SEARCH label=search.semantic.semantic_first hits=26 phase=done coverage=complete warnings=
+DIARY_HAP HIT label=... i=2 kind=text matchedBy=semantic dayKey=2026-10-17
+  snippet=今天下午陪妈妈去医院复查，医生说骨头愈合得不错，下周再去拍一次片子。
+DIARY_ASR SEARCH query=母亲体检的结果怎么样 hits=0 elapsedMs=3      ← 关键词对照
+
+# 转写（已知 5.592 s 中文 PCM 走平台层录音 API → finalize → 任务）
+DIARY_HAP INJECT SEG index=0 bytes=178988 pcmMs=5592 durable=true
+DIARY_HAP INJECT FINALIZE asset=asset_01a14f60c699741fb7fe432a078f20d9 audioMs=5592 queued=true
+DIARY_HAP JOBS phase=semantic_after_asr processed=3 succeeded=3 failed=0
+DIARY_HAP TRANSCRIPT extractor=local_transcription coverage=complete status=ready
+  text=开饭时间早上9点至下午5点。
+```
+
+三种配置来源各跑一次：只配语义（转写走 provider，`configSource=provider`）、四个字段全给
+且**删掉 provider**（`configSource=file`、`engineLibSource=file`）、四个字段 + provider
+（`providerId=local_asr_ohos`，但模型目录以文件为准——按「环境变量 → 文件 → provider」的链）。
+
+| 项 | 实测 |
+|---|---:|
+| signed HAP（含两个 ORT + sherpa） | 真机验证的构建：**50,067,086 B**（#130 是 30,198,881，+18.95 MiB）；rebase 到 #130 后重构建：**50,088,328 B**（+18.97 MiB） |
+| 语义阶段（bge 加载 + 两条日记切块/向量 + 检索） | 323–401 ms |
+| 转写冷启动（sherpa + 1.16.3 + 228 MB 模型 + 推理 + 语义重建） | 3,440–3,573 ms |
+| 一次启动总耗时 | 4.07–4.46 s |
+| PSS 起步 → bge 就绪 | 42.7–45.1 MB → 128–159 MB（+75–114 MB） |
+| PSS 再加转写引擎 | → 679–695 MB（+525–545 MB） |
+| Private Dirty 增量 | +0.36–0.52 MB |
+
+> **rebase 说明（2026-10-18 深夜）**：上面的设备证据来自 rebase 前的构建（HAP
+> 50,067,086 B / sha256 `e1354cf7…`）。PR #134 之后 rebase 到 #130 的 `98ec24d`
+> （下载完整性重写 + ArkTS 包装），**包内 native 库与两份 ORT 逐字节未变**
+> （`libdiary_capi.so` 11,528,088、sherpa 3,750,328、ORT 12,930,856 与 19,623,560），
+> 只有 `modules.abc` 从 215,928 涨到 229,900（+13,972 B：并入 #130 的下载实现与探针
+> 自带的取文件），重构建 HAP 为 **50,088,328 B / `31d15915…`**。按要求没有再用产品
+> 身份重跑真机；探针的取文件路径换了实现（`.part` + 2xx + 原子 rename），下次动设备
+> 时先跑一次 `hap_both` 复核。
+
+### PR #130 评审的 P0：缺引擎在 OHOS 上现在是「等配置」
+
+`readiness` 在移动端按库名加载时**真 dlopen 探测一次**（`OnceLock` 缓存、成功后不 dlclose），
+缺库 → `provider_not_configured`；`load_library()` 的「加载不到」也归这一类（只有「库在但
+符号不对」仍是 `model_unavailable`）。把引擎库从 HAP 里拿掉再构建，真机任务状态是
+`waiting_configuration` / `provider_not_configured` / `requires_user_action=1`，不再
+`failed`/`model_unavailable`，也不会在同一轮里被反复拉起（修复中途实测过空转满 64 条上限，
+所以闸门与执行者必须同时改）。
+
+`asrEngineLib` 在 OHOS 上**拒绝沙箱路径**（`/data/storage/el2/...`、`/data/storage/el1/base/...`）：
+那儿 `.so` 存在但不能 dlopen，配置解析时直接报清楚「放进 HAP 的 libs/arm64」。
+
+### 复现
+
+```bash
+# 1. 原生库 + 两个 ORT + HAP（签名材料见「用临时 bundleName 做真机验证」一节）
+CARGO_BUILD_JOBS=4 bash apps/ohos-diary-core/scripts/build-native.sh
+SHERPA_LIB_DIR=$HOME/dev/caches/asr-ohos/sherpa-onnx-v1.13.8-ohos-arm64-v8a/lib \
+  bash apps/ohos-diary-core/scripts/stage-sherpa.sh
+bash apps/ohos-diary-core/scripts/stage-ort-1291.sh
+source "$HOME/napi-device-scratch/product-sign.env"
+SKIP_NATIVE=1 bash apps/ohos-diary-core/scripts/build-hap.sh
+
+# 2. 宿主 HTTP（配置 + bge 模型）+ rport
+python3 -m http.server 8000 --bind 127.0.0.1 --directory "$HOME/dev/caches/hap-cfg/serve" &
+hdc rport tcp:8000 tcp:8000
+
+# 3. 装 + 跑（先 force-stop，否则 aa start 不重跑 onWindowStageCreate）
+hdc install -r entry/build/default/outputs/default/entry-default-signed.hap
+hdc shell "aa force-stop com.lingxing.unwrittendiary"
+hdc shell "aa start -a EntryAbility -b com.lingxing.unwrittendiary -m entry --ps verify_mode hap_both"
+hdc shell "hilog -x" | grep DIARY_HAP
+# 顺序反过来：--ps verify_mode hap_both --ps order asr_first
+```
+
+### 没验到的（这一片）
+
+- 产品 Profile / release / 混淆都没重跑；本轮只装 debug；
+- 转写用的是**已知 PCM**（麦克风→文本上一轮验过，声学路径不稳定：本轮第一次真录得到
+  `The.`）；
+- 低内存机型、大库、长时间、两个 ORT 同毫秒并发推理（`Core` 本就串行）、其它 ABI。
 
 ## 真机验证结果（2026-10-18）
 
