@@ -15,6 +15,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { settings } from '@kit.BasicServicesKit';
 import { process, taskpool } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import BuildProfile from 'BuildProfile';
 import { DiaryCore } from '../core/DiaryCore';
 import { RecordingFinalizeResult, RecordingRecovery } from '../core/Models';
 import { ensureMicrophonePermission } from './MicPermission';
@@ -71,6 +72,15 @@ export class RecordingVerify {
   }
 
   static async run(mode: string, context: common.UIAbilityContext, filesDir: string): Promise<void> {
+    // release 里这条入口也必须关掉：示例页 `pages/Index` 的两个按钮直接调本函数
+    // （不走 `EntryAbility` 的 verify_mode 路由），只门控 Ability 会留下一条可达路径。
+    // 放在这里而不是页面里：所有调用方（页面 / 将来别的入口）都走同一条早退。
+    if (!BuildProfile.DEBUG) {
+      hilog.warn(DOMAIN, TAG,
+        '%{public}s PROBE_DISABLED entry=RecordingVerify.run mode=%{public}s reason=release',
+        MARK, mode);
+      return;
+    }
     hilog.info(DOMAIN, TAG, '%{public}s VERIFY mode=%{public}s pid=%{public}d filesDir=%{public}s',
       MARK, mode, process.pid, filesDir);
     logScreenTimeout(context);

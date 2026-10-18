@@ -529,6 +529,11 @@ hdc shell "hilog -x" | grep DIARY_HAP
 - `EntryAbility` / `ProbeAbility` / `ProbeIsoAbility` 都用 `BuildProfile.DEBUG` 门控；
   release 下 `EntryAbility` 直接走 `PROBE_DISABLED` 分支，**不跑** smoke / record* /
   asr_* / hap_both，不写库、不下载、不加载测试库。
+- 示例页 `pages/Index` 的「录 5 秒 / 查看上次未收尾的录音」按钮直接调
+  `RecordingVerify.run`（不走 `EntryAbility` 的路由）；该函数入口同样按
+  `BuildProfile.DEBUG` 早退，release 下点了也不会录音/写库。
+  `onDestroy` 仍会调 `RecordingVerify.shutdown()`，但 release 里 `heldRecorder` /
+  `heldCore` 永远是 null，它只是空操作。
 - **ArkTS 不支持条件 import**：release 的 `ets/modules.abc` 里**仍有探针模块**
   （实测 `strings` 能命中 `HapBothVerify` / `hap_both` / `PROBE_DISABLED`）——**没有裁掉**，
   只是运行时不可达。这是当前构建工具/语言的边界，不声称「已从包里移除」。
