@@ -379,10 +379,7 @@ impl EmbeddingConfig {
                 self.model_dir.display()
             ));
         }
-        if let Err(reason) = crate::provider::local_engine::validate_ort_dylib_path(&self.ort_dylib)
-        {
-            return Err(reason);
-        }
+        crate::provider::local_engine::validate_ort_dylib_path(&self.ort_dylib)?;
         if !self.ort_dylib.is_file() {
             return Err(format!(
                 "ORT 动态库不在：{}（DIARY_ORT_DYLIB / ORT_DYLIB_PATH）",
