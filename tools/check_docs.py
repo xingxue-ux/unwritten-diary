@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -46,8 +48,39 @@ problems: list[str] = []
 notes: list[str] = []
 
 
+# 遍历时要跳过的目录：构建产物与依赖缓存不在仓库里，但工作区里常有。
+# 不跳过会在有大 target/ 的工作区上把 18 GB 构建目录也扫一遍——在 /mnt/e（drvfs）上
+# 实测会抛 `OSError: [Errno 12] Cannot allocate memory`（2026-10-18 踩过）。
+# 注意 CI 上没有这些目录，所以**绿了也不代表本地能过**，这一条只能靠本地跑。
+SKIP_DIRS = frozenset({
+    ".git",
+    "target",
+    "node_modules",
+    "oh_modules",
+    ".hvigor",
+    "build",
+    "dist",
+    ".dart_tool",
+    "Pods",
+})
+
+
 def repo_files(pattern: str) -> list[Path]:
-    return sorted(p for p in ROOT.rglob(pattern) if ".git" not in p.parts)
+    """在仓库里找匹配的文件，**遍历时就剪掉构建目录**。
+
+    `Path.rglob` 会先把整棵树走完再让人过滤，所以在有 `target/` 的工作区上照样会
+    进 18 GB 的构建目录——在 `/mnt/e`（drvfs）上实测抛
+    `OSError: [Errno 12] Cannot allocate memory`（2026-10-18 踩过）。
+    因此这里用 `os.walk` 并在 `dirs` 上原地剪枝。
+    """
+    name = Path(pattern).name
+    found: list[Path] = []
+    for root, dirs, files in os.walk(ROOT):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for f in files:
+            if fnmatch.fnmatch(f, name):
+                found.append(Path(root) / f)
+    return sorted(found)
 
 
 def strip_code(text: str) -> str:
