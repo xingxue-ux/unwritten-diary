@@ -98,6 +98,9 @@ pub(crate) struct SandboxRequest {
     pub transport: Arc<dyn Transport>,
     pub state: BTreeMap<String, String>,
     pub context_json: String,
+    /// 墙钟上限。生产路径固定为 [`WALL_TIMEOUT_MS`]；测试可以调短，验证
+    /// `expired()` 真的在宿主函数边界生效。
+    pub wall_timeout_ms: u64,
 }
 
 /// 尚未落盘的导出物。写文件由核心做（限域目录），沙箱只拿字节。
@@ -179,6 +182,7 @@ impl SandboxState {
 /// 执行一个 Wasm 插件。**不返回 Err**：插件失败/超时/越权都落进结果，核心照常活着。
 pub(crate) fn run(module_bytes: &[u8], request: SandboxRequest) -> SandboxOutcome {
     let started = Instant::now();
+    let wall_timeout_ms = request.wall_timeout_ms;
     let state = SandboxState {
         limits: StoreLimitsBuilder::new()
             .memory_size(MEMORY_LIMIT_BYTES)
@@ -208,7 +212,7 @@ pub(crate) fn run(module_bytes: &[u8], request: SandboxRequest) -> SandboxOutcom
         denials: Vec::new(),
         errors: Vec::new(),
         provider_failures: Vec::new(),
-        deadline: Instant::now() + Duration::from_millis(WALL_TIMEOUT_MS),
+        deadline: Instant::now() + Duration::from_millis(wall_timeout_ms),
         last_error: None,
         fatal_error: None,
     };
@@ -541,11 +545,22 @@ fn outcome(
 
 // ------------------------------------------------------------------ 宿主函数
 
+/// 每个宿主函数入口都先检查墙钟。fuel 只约束 Wasm 指令，慢磁盘读/慢 Provider
+/// 只能靠宿主函数边界拦住；返回 `-4` 后插件继续跑也没关系，run 结束会判超时。
+macro_rules! wall_guard {
+    ($caller:expr, $op:literal) => {
+        if $caller.data().expired() {
+            return Ok(budget(&mut $caller, $op));
+        }
+    };
+}
+
 fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
     linker.func_wrap(
         "unwritten",
         "context_utf8",
         |mut caller: Caller<'_, SandboxState>, ptr: i32, cap: i32| -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "context_utf8");
             let value = caller.data().context_json.clone();
             Ok(write_bytes(&mut caller, ptr, cap, value.as_bytes()))
         },
@@ -554,6 +569,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
         "unwritten",
         "selected_diary_count",
         |mut caller: Caller<'_, SandboxState>| -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "selected_diary_count");
             Ok(if caller.data().has(super::manifest::PERM_READ_SELECTED) {
                 caller.data().selected.len() as i32
             } else {
@@ -573,6 +589,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
          ptr: i32,
          cap: i32|
          -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "selected_diary_day");
             if !caller.data().has(super::manifest::PERM_READ_SELECTED) {
                 return Ok(deny(
                     &mut caller,
@@ -594,6 +611,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
          ptr: i32,
          cap: i32|
          -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "selected_diary_body");
             if !caller.data().has(super::manifest::PERM_READ_SELECTED) {
                 return Ok(deny(
                     &mut caller,
@@ -611,6 +629,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
         "unwritten",
         "range_diary_count",
         |mut caller: Caller<'_, SandboxState>| -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "range_diary_count");
             Ok(if caller.data().has(super::manifest::PERM_READ_RANGE) {
                 caller.data().range.len() as i32
             } else {
@@ -630,6 +649,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
          ptr: i32,
          cap: i32|
          -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "range_diary_day");
             if !caller.data().has(super::manifest::PERM_READ_RANGE) {
                 return Ok(deny(
                     &mut caller,
@@ -651,6 +671,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
          ptr: i32,
          cap: i32|
          -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "range_diary_body");
             if !caller.data().has(super::manifest::PERM_READ_RANGE) {
                 return Ok(deny(
                     &mut caller,
@@ -673,6 +694,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
          ptr: i32,
          cap: i32|
          -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "source_text");
             if !caller.data().has(super::manifest::PERM_READ_SELECTED) {
                 return Ok(deny(
                     &mut caller,
@@ -704,6 +726,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
          ptr: i32,
          cap: i32|
          -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "asset_range");
             if !caller.data().has(super::manifest::PERM_READ_SELECTED) {
                 return Ok(deny(
                     &mut caller,
@@ -750,9 +773,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
          out_ptr: i32,
          out_cap: i32|
          -> Result<i32, wasmi::Error> {
-            if caller.data().expired() {
-                return Ok(budget(&mut caller, "provider_invoke"));
-            }
+            wall_guard!(caller, "provider_invoke");
             let Ok(provider_id) = read_string(&caller, id_ptr, id_len, 128) else {
                 return Ok(invalid(&mut caller, "provider_invoke", "providerId 参数不合法"));
             };
@@ -935,6 +956,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
          refs_ptr: i32,
          refs_len: i32|
          -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "emit_derived");
             if !caller.data().has(super::manifest::PERM_DERIVED) {
                 return Ok(deny(
                     &mut caller,
@@ -1018,6 +1040,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
          content_ptr: i32,
          content_len: i32|
          -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "export_write");
             if !caller.data().has(super::manifest::PERM_EXPORT) {
                 return Ok(deny(
                     &mut caller,
@@ -1100,6 +1123,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
         "unwritten",
         "state_get",
         |mut caller: Caller<'_, SandboxState>, key_ptr: i32, key_len: i32, out_ptr: i32, cap: i32| -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "state_get");
             let Ok(key) = read_string(&caller, key_ptr, key_len, 64) else {
                 return Ok(invalid(&mut caller, "state_get", "key 参数不合法"));
             };
@@ -1122,6 +1146,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
          value_ptr: i32,
          value_len: i32|
          -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "state_put");
             let Ok(key) = read_string(&caller, key_ptr, key_len, 64) else {
                 return Ok(invalid(&mut caller, "state_put", "key 参数不合法"));
             };
@@ -1166,6 +1191,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
         "unwritten",
         "emit_output",
         |mut caller: Caller<'_, SandboxState>, ptr: i32, len: i32| -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "emit_output");
             let Ok(text) = read_string(&caller, ptr, len, MAX_MESSAGE_BYTES) else {
                 return Ok(invalid(
                     &mut caller,
@@ -1181,6 +1207,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
         "unwritten",
         "report_progress",
         |mut caller: Caller<'_, SandboxState>, done: i32, total: i32| -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "report_progress");
             if done < 0 || total < 0 || done > total {
                 return Ok(invalid(
                     &mut caller,
@@ -1196,6 +1223,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
         "unwritten",
         "log",
         |mut caller: Caller<'_, SandboxState>, level: i32, ptr: i32, len: i32| -> Result<i32, wasmi::Error> {
+            wall_guard!(caller, "log");
             let Ok(message) = read_string(&caller, ptr, len, MAX_LOG_BYTES) else {
                 return Ok(invalid(&mut caller, "log", "日志超过 2 KiB 或参数不合法"));
             };
@@ -1369,3 +1397,67 @@ fn sanitize_file_name(value: &str) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::transport::PanicTransport;
+
+    /// 一个不干别的、只在循环里反复调宿主函数的插件。宿主函数返回负数（墙钟
+    /// 超限时是 -4）就立刻结束，所以测试不会等 20M 次循环跑完。
+    fn host_call_loop_wasm() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+                 (import "unwritten" "selected_diary_count" (func $count (result i32)))
+                 (memory (export "memory") 1)
+                 (func (export "run") (result i32)
+                   (local $i i32)
+                   (local $r i32)
+                   (block $done
+                     (loop $again
+                       (local.set $r (call $count))
+                       (br_if $done (i32.lt_s (local.get $r) (i32.const 0)))
+                       (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                       (br_if $again (i32.lt_u (local.get $i) (i32.const 20000000)))))
+                   (i32.const 0)))"#,
+        )
+        .expect("测试用 WAT 必须能编译")
+    }
+
+    fn request(wall_timeout_ms: u64) -> SandboxRequest {
+        SandboxRequest {
+            permissions: [crate::plugin::manifest::PERM_READ_SELECTED.to_owned()]
+                .into_iter()
+                .collect(),
+            selected: Vec::new(),
+            range: Vec::new(),
+            sources: HashMap::new(),
+            assets: HashMap::new(),
+            providers: HashMap::new(),
+            transport: Arc::new(PanicTransport::default()),
+            state: BTreeMap::new(),
+            context_json: "{}".to_owned(),
+            wall_timeout_ms,
+        }
+    }
+
+    #[test]
+    fn wall_clock_is_checked_at_host_function_boundary() {
+        // 20ms 远短于 20M fuel 在 wasmi 下的执行时间。没有宿主函数入口检查时，
+        // 插件会一直跑到 fuel 耗尽（约 3 秒），最终消息是「指令预算耗尽」；
+        // 有检查时，第一次超时的宿主调用返回 -4，插件立刻退出，消息是墙钟超限。
+        let outcome = run(&host_call_loop_wasm(), request(20));
+        assert_eq!(outcome.status, "timeout", "{:?}", outcome.error_message);
+        assert_eq!(outcome.error_code.as_deref(), Some("quota_exceeded"));
+        let used = outcome.instructions_used.expect("应有指令计数");
+        assert!(
+            used < FUEL_BUDGET as i64 / 2,
+            "墙钟应在 fuel 耗尽前生效，实际用了 {used} 条指令"
+        );
+        let message = outcome.error_message.unwrap_or_default();
+        assert!(
+            message.contains("调用超过墙钟上限"),
+            "应是墙钟超限而不是 fuel 耗尽：{message}"
+        );
+        assert!(!message.contains("指令预算耗尽"), "{message}");
+    }
+}

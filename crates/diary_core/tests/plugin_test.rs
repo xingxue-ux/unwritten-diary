@@ -425,6 +425,74 @@ fn incompatible_api_platform_and_tampered_hash_are_rejected_with_reasons() {
     assert!(error.to_string().contains("哈希"), "{error}");
 }
 
+/// 恶意/写坏的包可以让 `entryFile` 为空、不在包里，或者包里只有 manifest。
+/// 这条路径曾经在 `manifest::validate` 之前 `expect`，会 panic；现在必须是
+/// `PluginPackageInvalid`（wire: `integrity_failed`），而且不能 panic。
+fn assert_bad_entry_is_rejected(core: &mut Core, package: &Path, case: &str) {
+    let inspected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        core.inspect_plugin_package(package, "linux")
+    }));
+    let error = match inspected {
+        Ok(Ok(_)) => panic!("{case}: inspect_plugin_package 应该拒绝这个包"),
+        Ok(Err(error)) => error,
+        Err(_) => panic!("{case}: inspect_plugin_package 触发了宿主 panic"),
+    };
+    assert_eq!(error.code(), ErrorCode::IntegrityFailed, "{case}: {error}");
+    assert!(error.to_string().contains("entryFile"), "{case}: {error}");
+
+    let installed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        core.install_plugin(package, "linux", &[])
+    }));
+    let error = match installed {
+        Ok(Ok(_)) => panic!("{case}: install_plugin 应该拒绝这个包"),
+        Ok(Err(error)) => error,
+        Err(_) => panic!("{case}: install_plugin 触发了宿主 panic"),
+    };
+    assert_eq!(error.code(), ErrorCode::IntegrityFailed, "{case}: {error}");
+    assert!(error.to_string().contains("entryFile"), "{case}: {error}");
+}
+
+#[test]
+fn package_with_missing_entry_file_is_rejected_without_panicking() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let wasm = wat::parse_str(
+        r#"(module (memory (export "memory") 1) (func (export "run") (result i32) i32.const 0))"#,
+    )
+    .unwrap();
+
+    // (1) entryFile 为空。
+    let package = Package::new(dir.path(), "test.entry-empty");
+    package.write("main.wasm", &wasm);
+    let package = package.finish("wasm", "", &[], &["command:test"], ">=1.0 <2.0", &["linux"]);
+    assert_bad_entry_is_rejected(&mut core, &package.path, "entryFile 为空");
+
+    // (2) entryFile 不在包里：packageHashes 只列实际存在的 main.wasm。
+    let package = Package::new(dir.path(), "test.entry-missing");
+    package.write("main.wasm", &wasm);
+    let package = package.finish(
+        "wasm",
+        "ghost.wasm",
+        &[],
+        &["command:test"],
+        ">=1.0 <2.0",
+        &["linux"],
+    );
+    assert_bad_entry_is_rejected(&mut core, &package.path, "entryFile 不在包里");
+
+    // (3) 包里只有 manifest.json：actual 与 listed 都是空集，集合比较会通过。
+    let package = Package::new(dir.path(), "test.entry-only-manifest");
+    let package = package.finish(
+        "wasm",
+        "main.wasm",
+        &[],
+        &["command:test"],
+        ">=1.0 <2.0",
+        &["linux"],
+    );
+    assert_bad_entry_is_rejected(&mut core, &package.path, "包里只有 manifest.json");
+}
+
 #[test]
 fn zip_package_installs_and_zip_slip_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
@@ -463,6 +531,31 @@ fn zip_package_installs_and_zip_slip_is_rejected() {
     let error = core.install_plugin(&evil_path, "linux", &[]).unwrap_err();
     assert_eq!(error.code(), ErrorCode::IntegrityFailed);
     assert!(error.to_string().contains("越界"), "{error}");
+}
+
+#[test]
+fn zip_entry_count_is_rejected_before_reading_contents() {
+    // 129 个条目（上限 128）：必须在解压内容之前按条目数拒绝。旧实现会先
+    // 逐条按未信任的 entry.size() 预分配、读完所有条目，最后才在 load() 里
+    // 发现文件数超限。
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let zip_path = dir.path().join("too-many.zip");
+    let file = std::fs::File::create(&zip_path).unwrap();
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+    for index in 0..129 {
+        writer.start_file(format!("f{index}.txt"), options).unwrap();
+        writer.write_all(b"").unwrap();
+    }
+    writer.finish().unwrap();
+    let error = core.install_plugin(&zip_path, "linux", &[]).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::IntegrityFailed);
+    assert!(
+        error.to_string().contains("超过 128 个文件条目"),
+        "应在读取内容前按条目数拒绝：{error}"
+    );
 }
 
 #[test]
@@ -1094,6 +1187,30 @@ fn upgrading_with_a_new_permission_requires_a_new_grant() {
 }
 
 // ------------------------------------------------- 示例插件：WAT → WASM 防漂移
+
+/// 示例包的文本文件必须是 **LF**：`packageHashes` 是按磁盘字节算的 SHA-256，
+/// Windows 的 `core.autocrlf=true` 会把 checkout 转成 CRLF，让两个示例都安装失败。
+/// 仓库根 `.gitattributes` 把 `plugins/examples/**` 钉死为 `eol=lf`；这个测试是
+/// 那条策略的回归哨兵（在 CRLF checkout 上会红）。
+#[test]
+fn example_package_text_files_are_checked_out_with_lf() {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/examples");
+    for example in ["export-diary-markdown", "style-daily-note"] {
+        let dir = examples.join(example);
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if !path.is_file() || path.extension().is_some_and(|ext| ext == "wasm") {
+                continue;
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(
+                !bytes.contains(&b'\r'),
+                "{} 含 CR：Windows 干净 checkout 会把文本转成 CRLF，packageHashes 将不再匹配",
+                path.display()
+            );
+        }
+    }
+}
 
 /// 示例插件是**随仓库分发**的：`main.wasm` 必须入库，并且在干净 checkout 上
 /// 能从 `main.wat` 逐字节复现。这里用 `wat`（dev-dependency，纯 Rust，不需要

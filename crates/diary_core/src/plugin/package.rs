@@ -110,12 +110,13 @@ pub(crate) fn load(path: &Path, platform: &str) -> Result<PackageContents> {
         if name == "manifest.json" {
             continue;
         }
-        let expected = manifest::normalize_sha256(
-            manifest
-                .package_hashes
-                .get(name)
-                .expect("上面的集合比较已经保证存在"),
-        );
+        let expected = manifest
+            .package_hashes
+            .get(name)
+            .ok_or_else(|| CoreError::PluginPackageInvalid {
+                reason: format!("packageHashes 缺少「{name}」"),
+            })?;
+        let expected = manifest::normalize_sha256(expected);
         let actual_hash = sha256_hex(bytes);
         if expected != actual_hash {
             return Err(CoreError::PluginPackageInvalid {
@@ -126,9 +127,13 @@ pub(crate) fn load(path: &Path, platform: &str) -> Result<PackageContents> {
         }
     }
 
+    // 先做清单结构/兼容性校验，再取入口文件：entryFile 为空或不在包里时
+    // 必须落到 `PluginPackageInvalid`，不能让坏包/恶意包触发宿主 panic。
+    let mut issues = manifest::validate(&manifest, platform);
+
     // Wasm 只做静态检查（魔数 + 版本），**不实例化**。
     if manifest.entry_kind == PluginEntryKind::Wasm {
-        let entry = files.get(&manifest.entry_file).expect("清单校验过存在");
+        let entry = entry_bytes(&files, &manifest)?;
         if entry.len() < 8 || &entry[..4] != b"\0asm" || entry[4..8] != [1, 0, 0, 0] {
             return Err(CoreError::PluginPackageInvalid {
                 reason: format!(
@@ -140,13 +145,12 @@ pub(crate) fn load(path: &Path, platform: &str) -> Result<PackageContents> {
     }
 
     let templates = if manifest.entry_kind == PluginEntryKind::Declarative {
-        let entry = files.get(&manifest.entry_file).expect("清单校验过存在");
+        let entry = entry_bytes(&files, &manifest)?;
         template::parse_declarative(&manifest.id, entry)?
     } else {
         Vec::new()
     };
 
-    let mut issues = manifest::validate(&manifest, platform);
     issues.extend(manifest::validate_templates(&manifest, &templates));
 
     let package_hash = package_hash(&files);
@@ -158,6 +162,25 @@ pub(crate) fn load(path: &Path, platform: &str) -> Result<PackageContents> {
         package_hash,
         issues,
     })
+}
+
+/// 取入口文件。`packageHashes` 的集合比较只保证「列的」与「实际的」一致，
+/// 不保证 `entryFile` 一定在其中；空串/不在包内/包里只有 manifest 都是恶意包
+/// 能构造出来的输入，所以这里必须返回 `PluginPackageInvalid`，不能 panic。
+fn entry_bytes<'a>(
+    files: &'a BTreeMap<String, Vec<u8>>,
+    manifest: &PluginManifest,
+) -> Result<&'a [u8]> {
+    files
+        .get(&manifest.entry_file)
+        .map(Vec::as_slice)
+        .ok_or_else(|| CoreError::PluginPackageInvalid {
+            reason: format!(
+                "entryFile「{}」不在包里（实际文件：{:?}）",
+                manifest.entry_file,
+                files.keys().collect::<Vec<_>>()
+            ),
+        })
 }
 
 /// 目录包：递归读取普通文件，拒绝符号链接、越界路径与重复项。
@@ -208,6 +231,10 @@ fn read_directory(root: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
 }
 
 /// zip 包：用 `enclosed_name` 挡住 `..`/绝对路径，并限制解压大小。
+///
+/// 两遍扫描：第一遍只读中央目录，先卡条目数/路径；第二遍才真正解压。
+/// 解压时**不按 `entry.size()` 预分配**（那是未信任的声明值），而是按实际
+/// 读到的字节逐步增长，读到上限立即停。
 fn read_zip(path: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
     let file = fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(file).map_err(|error| {
@@ -215,7 +242,37 @@ fn read_zip(path: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
             reason: format!("不是可读的 zip：{error}"),
         }
     })?;
+
+    // 第一遍：条目数/路径先卡住，避免「129 条声明 8 MiB」在被拒绝前逐条分配。
+    let mut file_entries = 0usize;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|error| {
+            CoreError::PluginPackageInvalid {
+                reason: format!("zip 第 {index} 项读不出来：{error}"),
+            }
+        })?;
+        if entry.is_dir() {
+            continue;
+        }
+        file_entries += 1;
+        if file_entries > MAX_PACKAGE_FILES {
+            return Err(CoreError::PluginPackageInvalid {
+                reason: format!(
+                    "zip 里有超过 {MAX_PACKAGE_FILES} 个文件条目，拒绝继续解压"
+                ),
+            });
+        }
+        let name = entry.name();
+        if !manifest::valid_relative_path(name) {
+            return Err(CoreError::PluginPackageInvalid {
+                reason: format!("zip 里有越界或不合法的路径「{name}」"),
+            });
+        }
+    }
+
+    // 第二遍：按实际读取量分配，读到上限立即停，不信 `entry.size()`。
     let mut files = BTreeMap::new();
+    let mut chunk = [0u8; 64 * 1024];
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|error| {
             CoreError::PluginPackageInvalid {
@@ -226,22 +283,25 @@ fn read_zip(path: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
             continue;
         }
         let name = entry.name().to_owned();
-        if !manifest::valid_relative_path(&name) {
-            return Err(CoreError::PluginPackageInvalid {
-                reason: format!("zip 里有越界或不合法的路径「{name}」"),
-            });
-        }
-        let declared = entry.size() as usize;
+        let declared = usize::try_from(entry.size()).unwrap_or(usize::MAX);
         if declared > MAX_FILE_BYTES {
             return Err(CoreError::PluginPackageInvalid {
                 reason: format!("zip 里的「{name}」有 {declared} 字节，超过单文件上限"),
             });
         }
-        let mut bytes = Vec::with_capacity(declared.min(MAX_FILE_BYTES));
-        entry
-            .by_ref()
-            .take((MAX_FILE_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)?;
+        let mut bytes = Vec::new();
+        loop {
+            let remaining = (MAX_FILE_BYTES + 1).saturating_sub(bytes.len());
+            if remaining == 0 {
+                break;
+            }
+            let want = remaining.min(chunk.len());
+            let read = entry.read(&mut chunk[..want])?;
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+        }
         if bytes.len() > MAX_FILE_BYTES {
             return Err(CoreError::PluginPackageInvalid {
                 reason: format!("zip 里的「{name}」解压后超过单文件上限"),
@@ -260,6 +320,14 @@ fn insert_file(
     if !manifest::valid_relative_path(&name) {
         return Err(CoreError::PluginPackageInvalid {
             reason: format!("包里有不合法的路径「{name}」"),
+        });
+    }
+    if bytes.len() > MAX_FILE_BYTES {
+        return Err(CoreError::PluginPackageInvalid {
+            reason: format!(
+                "文件「{name}」有 {} 字节，超过单文件上限 {MAX_FILE_BYTES}",
+                bytes.len()
+            ),
         });
     }
     let total: usize = files.values().map(Vec::len).sum();

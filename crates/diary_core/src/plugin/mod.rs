@@ -669,6 +669,7 @@ impl Core {
             transport: self.transport_arc(),
             state,
             context_json,
+            wall_timeout_ms: sandbox::WALL_TIMEOUT_MS,
         };
         let outcome = sandbox::run(&entry, request);
         for failure in &outcome.provider_failures {

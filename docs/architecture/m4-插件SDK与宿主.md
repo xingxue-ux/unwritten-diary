@@ -51,7 +51,7 @@ assets/...             # 可选资源；每个文件都要在 packageHashes 里
 | `version` | string | 三段数字，如 `1.0.0` |
 | `author` / `license` | string | 非空，≤ 120 字符 |
 | `apiRange` | string | `1.0`、`^1.0` 或 `>=1.0 <2.0`；宿主 ABI 版本是 `1.0` |
-| `supportedPlatforms` | string[] | `windows` / `linux` / `macos` / `android` / `ios`；必须包含当前平台 |
+| `supportedPlatforms` | string[] | `windows` / `linux` / `macos` / `android` / `ios` / `ohos`（`harmonyos` 同义）；必须包含当前平台 |
 | `entryKind` | string | `wasm` 或 `declarative` |
 | `entryFile` | string | 包内相对路径；wasm 必须 `.wasm`，declarative 必须 `.json` |
 | `activationEvents` | string[] | `command:<id>`、`materials_pending:<kind>`、`export.start`、`organize.template.select`；**不支持 startup** |
@@ -107,7 +107,7 @@ JSON Schema 在 `plugins/manifest.schema.json`。字段是加性的：本构建�
 |---|---|---|
 | 指令预算 | 20,000,000 fuel | `Config::consume_fuel` + `Store::set_fuel`；耗尽 → `OutOfFuel` |
 | 线性内存 | 32 MiB | `StoreLimitsBuilder::memory_size` + `trap_on_grow_failure` |
-| 墙钟 | 5,000 ms | 宿主函数边界检查 + 调用结束后检查；纯计算死循环由 fuel 兜底 |
+| 墙钟 | 5,000 ms | **每个** `unwritten` 宿主函数入口检查 + 调用结束后检查；纯计算死循环由 fuel 兜底 |
 | 单次消息/输出/导出物 | 1 MiB | 宿主函数读写前检查 |
 | 插件私有状态 | 16 KiB | `state_put` 配额 |
 | 派生内容 | 32 条 / 256 KiB | `emit_derived` 配额 |
