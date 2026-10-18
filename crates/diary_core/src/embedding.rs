@@ -307,23 +307,32 @@ pub fn resolve(file: Option<&crate::config_file::CoreConfigFile>) -> EmbeddingRe
             ConfigOrigin::Absent
         };
 
-    let state = match (&model_dir, &ort_dylib) {
-        (None, None) => EnvEmbedding::Unset,
-        (Some(_), None) => EnvEmbedding::Invalid(format!(
-            "有模型目录（来自 {}）但没有 ORT 动态库：设 {ENV_ORT_DYLIB}（或 \
-             {ENV_ORT_DYLIB_COMPAT}），或在 core-config.json 里写 ortDylib",
-            model_dir_origin.wire()
-        )),
-        (None, Some(_)) => EnvEmbedding::Invalid(format!(
-            "有 ORT 动态库（来自 {}）但没有模型目录：设 {ENV_MODEL_DIR}，或在 \
-             core-config.json 里写 modelDir",
-            ort_dylib_origin.wire()
-        )),
-        (Some(dir), Some(lib)) => EnvEmbedding::Ready(EmbeddingConfig {
-            model_dir: dir.clone(),
-            ort_dylib: lib.clone(),
-            model_file: std::env::var("DIARY_MODEL_FILE").ok(),
-        }),
+    let state = if let Some(reason) = ort_dylib
+        .as_ref()
+        .and_then(|lib| crate::provider::local_engine::validate_ort_dylib_path(lib).err())
+    {
+        // OHOS 上沙箱里的 .so 存在但不能 dlopen：配置解析时就报清楚，
+        // 不要等第一次语义索引才在 ort::init_from 里失败。
+        EnvEmbedding::Invalid(reason)
+    } else {
+        match (&model_dir, &ort_dylib) {
+            (None, None) => EnvEmbedding::Unset,
+            (Some(_), None) => EnvEmbedding::Invalid(format!(
+                "有模型目录（来自 {}）但没有 ORT 动态库：设 {ENV_ORT_DYLIB}（或 \
+                 {ENV_ORT_DYLIB_COMPAT}），或在 core-config.json 里写 ortDylib",
+                model_dir_origin.wire()
+            )),
+            (None, Some(_)) => EnvEmbedding::Invalid(format!(
+                "有 ORT 动态库（来自 {}）但没有模型目录：设 {ENV_MODEL_DIR}，或在 \
+                 core-config.json 里写 modelDir",
+                ort_dylib_origin.wire()
+            )),
+            (Some(dir), Some(lib)) => EnvEmbedding::Ready(EmbeddingConfig {
+                model_dir: dir.clone(),
+                ort_dylib: lib.clone(),
+                model_file: std::env::var("DIARY_MODEL_FILE").ok(),
+            }),
+        }
     };
 
     EmbeddingResolution {
@@ -369,6 +378,10 @@ impl EmbeddingConfig {
                 "{} 里没有 tokenizer.json（上游 MIT 权重的分词器，随模型包一起放）",
                 self.model_dir.display()
             ));
+        }
+        if let Err(reason) = crate::provider::local_engine::validate_ort_dylib_path(&self.ort_dylib)
+        {
+            return Err(reason);
         }
         if !self.ort_dylib.is_file() {
             return Err(format!(
@@ -815,6 +828,32 @@ mod tests {
             return;
         }
         assert!(matches!(config_from_env(), EnvEmbedding::Unset));
+    }
+
+    #[test]
+    fn sandbox_ort_dylib_is_invalid_at_resolution() {
+        // 环境变量优先；量测机若设了，就跳过这一条（与上一条同样的理由）。
+        if std::env::var_os("DIARY_ORT_DYLIB").is_some()
+            || std::env::var_os("ORT_DYLIB_PATH").is_some()
+        {
+            return;
+        }
+        let file = crate::config_file::CoreConfigFile {
+            model_dir: Some("/nonexistent-model".to_owned()),
+            ort_dylib: Some(
+                "/data/storage/el2/base/haps/entry/files/libonnxruntime-diary-1.29.1.so"
+                    .to_owned(),
+            ),
+            ..Default::default()
+        };
+        let resolution = resolve(Some(&file));
+        match resolution.state {
+            EnvEmbedding::Invalid(reason) => {
+                assert!(reason.contains("ortDylib"), "{reason}");
+                assert!(reason.contains("libs/arm64"), "要告诉用户放哪儿：{reason}");
+            }
+            other => panic!("沙箱里的 ortDylib 必须在解析时拒绝，实际 {other:?}"),
+        }
     }
 
     #[test]

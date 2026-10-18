@@ -452,19 +452,51 @@ pub fn is_ohos_app_data_path(path: &str) -> bool {
 /// 会指向一个「明明存在的文件」，用户照着它查不出原因。这里直接点名「沙箱不能加载」
 /// 并给出该放哪儿。
 pub fn validate_engine_lib_path(path: &Path) -> std::result::Result<(), String> {
-    #[cfg(target_env = "ohos")]
+    validate_ohos_native_lib_path(
+        path,
+        "asrEngineLib",
+        "引擎库",
+        "libsherpa-onnx-c-api.so",
+    )
+}
+
+/// 校验 ORT 动态库路径（`DIARY_ORT_DYLIB` / `ORT_DYLIB_PATH` / `core-config.json` 的
+/// `ortDylib`）。与 [`validate_engine_lib_path`] 同款：OHOS 上沙箱里的 `.so` 不能
+/// dlopen，必须在 HAP 的 `libs/arm64/`（例如 `libonnxruntime-diary-1.29.1.so`）。
+///
+/// 为什么 ORT 也要拦：`ort` 的 `load-dynamic` 看起来「只是按路径 dlopen」，但 OHOS
+/// 的 linker 限制与引擎库完全相同；不拦的话，`core.info` 会报 `configured`、第一次
+/// 语义索引才在 `init_from` 失败，用户同样查不出是路径问题。
+pub fn validate_ort_dylib_path(path: &Path) -> std::result::Result<(), String> {
+    validate_ohos_native_lib_path(
+        path,
+        "ortDylib",
+        "ORT 动态库",
+        "libonnxruntime-diary-1.29.1.so",
+    )
+}
+
+/// 两种原生库共用的沙箱判定。`cfg(test)` 也打开，这样宿主单测能覆盖「拒绝」那一半；
+/// 非 OHOS 的产品构建不启用（桌面端可以从任意目录 dlopen）。
+fn validate_ohos_native_lib_path(
+    path: &Path,
+    field: &str,
+    what: &str,
+    example: &str,
+) -> std::result::Result<(), String> {
+    #[cfg(any(target_env = "ohos", test))]
     {
         let text = path.to_string_lossy();
         if is_ohos_app_data_path(&text) {
             return Err(format!(
-                "asrEngineLib 指向应用数据目录（{text}）：OHOS 的 linker 只允许从 HAP 的 \
+                "{field} 指向应用数据目录（{text}）：OHOS 的 linker 只允许从 HAP 的 \
                  libs/arm64 加载原生库，沙箱（el2 / el1/base）里的 .so 不能 dlopen。\
-                 把引擎库打进 HAP 的 libs/arm64/，配置改成 \
-                 /data/storage/el1/bundle/libs/arm64/<库名>；模型文件才放沙箱。"
+                 把{what}打进 HAP 的 libs/arm64/（例如 {example}），配置改成 \
+                 /data/storage/el1/bundle/libs/arm64/<文件名>；模型文件才放沙箱。"
             ));
         }
     }
-    let _ = path;
+    let _ = (path, field, what, example);
     Ok(())
 }
 
@@ -702,12 +734,28 @@ mod tests {
 
     /// 非 OHOS 平台上不限制路径（桌面端可以从任意目录 dlopen）；OHOS 上拒绝沙箱。
     ///
-    /// 这条在宿主上跑时只覆盖「不误伤」那一半；OHOS 那一半由真机的
-    /// `hap_both` 探针（`asrEngineLib` 指向 `libs/arm64`）+ 上面那条判定测试共同钉住。
+    /// `cfg(test)` 让「拒绝」这一半在宿主上也能跑：沙箱路径的判定是纯字符串判断，
+    /// 不依赖真机。安装目录（`el1/bundle/libs/arm64`）必须放行。
     #[test]
-    fn engine_lib_validation_does_not_reject_install_paths() {
-        let install = Path::new("/data/storage/el1/bundle/libs/arm64/libsherpa-onnx-c-api.so");
-        assert!(validate_engine_lib_path(install).is_ok(), "安装目录必须放行");
+    fn engine_and_ort_validation_rejects_sandbox_but_allows_install_paths() {
+        let sandbox_engine =
+            Path::new("/data/storage/el2/base/haps/entry/files/libsherpa-onnx-c-api.so");
+        let sandbox_ort =
+            Path::new("/data/storage/el2/base/haps/entry/files/libonnxruntime-diary-1.29.1.so");
+        assert!(
+            validate_engine_lib_path(sandbox_engine).is_err(),
+            "asrEngineLib 指向沙箱必须拒绝"
+        );
+        assert!(
+            validate_ort_dylib_path(sandbox_ort).is_err(),
+            "ortDylib 指向沙箱必须拒绝"
+        );
+
+        let install_engine = Path::new("/data/storage/el1/bundle/libs/arm64/libsherpa-onnx-c-api.so");
+        let install_ort =
+            Path::new("/data/storage/el1/bundle/libs/arm64/libonnxruntime-diary-1.29.1.so");
+        assert!(validate_engine_lib_path(install_engine).is_ok(), "安装目录必须放行");
+        assert!(validate_ort_dylib_path(install_ort).is_ok(), "安装目录必须放行");
         let relative = Path::new("libsherpa-onnx-c-api.so");
         assert!(validate_engine_lib_path(relative).is_ok(), "按库名加载必须放行");
     }
