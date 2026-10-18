@@ -1093,6 +1093,73 @@ fn upgrading_with_a_new_permission_requires_a_new_grant() {
     assert_eq!(versions.count(), 1);
 }
 
+// ------------------------------------------------- 示例插件：WAT → WASM 防漂移
+
+/// 示例插件是**随仓库分发**的：`main.wasm` 必须入库，并且在干净 checkout 上
+/// 能从 `main.wat` 逐字节复现。这里用 `wat`（dev-dependency，纯 Rust，不需要
+/// 额外的 wasm 工具链）现场编译再比对，同时逐个校验 `packageHashes`。
+///
+/// 红了怎么办：
+/// - WAT/WASM 不一致 → `cargo run -p plugin_pack -- build plugins/examples/export-diary-markdown`
+/// - 哈希不一致 → 同上（`build` 会重算哈希），然后一起提交。
+#[test]
+fn example_plugin_wasm_is_reproducible_and_hashes_match() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins/examples/export-diary-markdown");
+    let wat_text = std::fs::read_to_string(dir.join("main.wat")).expect("示例插件必须有 main.wat");
+    let rebuilt = wat::parse_str(&wat_text).expect("main.wat 必须能编译成 Wasm");
+    let wasm_path = dir.join("main.wasm");
+    let committed = std::fs::read(&wasm_path).unwrap_or_else(|error| {
+        panic!(
+            "缺少 {}（{error}）：示例插件随仓库分发，二进制必须入库，不能靠本地残留；\
+             运行 `cargo run -p plugin_pack -- build {}` 生成后提交",
+            wasm_path.display(),
+            dir.display()
+        )
+    });
+    assert_eq!(
+        committed,
+        rebuilt,
+        "main.wasm 与 main.wat 不一致：改了 WAT（或换了 wat 版本）必须重新生成并提交 WASM；\
+         运行 `cargo run -p plugin_pack -- build {}`",
+        dir.display()
+    );
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["entryKind"].as_str(), Some("wasm"));
+    assert_eq!(manifest["entryFile"].as_str(), Some("main.wasm"));
+
+    let mut files = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if path.is_file() && name != "manifest.json" {
+            files.insert(name, std::fs::read(&path).unwrap());
+        }
+    }
+    let hashes = manifest["packageHashes"]
+        .as_object()
+        .expect("packageHashes 必须是对象");
+    assert_eq!(
+        hashes.len(),
+        files.len(),
+        "packageHashes 必须恰好覆盖除 manifest.json 外的每个文件"
+    );
+    for (name, bytes) in &files {
+        let expected = hashes
+            .get(name)
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| panic!("packageHashes 缺少 {name}"));
+        let actual = format!("{:x}", Sha256::digest(bytes));
+        assert_eq!(
+            expected.trim_start_matches("sha256:").to_ascii_lowercase(),
+            actual,
+            "packageHashes 与文件内容不一致：{name}（运行 plugin-pack build 重算）"
+        );
+    }
+}
+
 #[test]
 fn materials_pending_activation_is_supported() {
     let dir = tempfile::tempdir().unwrap();

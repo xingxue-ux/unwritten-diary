@@ -12,7 +12,7 @@
   "manifestVersion": 1,
   "name": "选定日记导出 Markdown",
   "packageHashes": {
-    "README.md": "34ae8e0b33b384bc03a9a483a165ccdba541d6145cc2946466a63f7aeb0d1266",
+    "README.md": "674e197584fe983b6b4a6c8d5a32357317fe448a80cc1b7289fbae9f80f3a64b",
     "main.wasm": "81d6cfbde7fcfbd877d8c148980477953162a6d9b4c65a8ac57bb020e905ded7",
     "main.wat": "bb792c071db5bad19f5ec5b7f4611740295587a959451e466a1b94835a2d7caa"
   },

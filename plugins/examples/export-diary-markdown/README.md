@@ -32,6 +32,37 @@ python3 plugins/tools/check_package.py plugins/examples/export-diary-markdown
 `build` 会重新生成 `main.wasm` 并重算 `packageHashes`（`main.wat` 也被哈希，便于
 审计源码与字节的对应关系）。
 
+## 为什么 `main.wasm` 入库
+
+示例插件是**随仓库分发**的安装包，不是只在开发机上生成的构建产物：
+
+- 干净 checkout 上只有 `main.wat` 时，安装会因 `packageHashes` 声明了
+  `main.wasm`、包里却没有该文件而报 `PluginPackageInvalid`（CI 与普通用户都会中招）；
+- 跑测试/装示例不该额外要求 `wat2wasm` / `wasm-tools`。`main.wasm` 入库后，
+  `cargo test --workspace` 只需要 Rust 工具链。
+
+因此仓库里 `main.wat` 与 `main.wasm` 同时存在，并由 `.gitignore` 为
+`plugins/examples/**/main.wasm` 开白名单。
+
+## 防漂移
+
+`crates/diary_core/tests/plugin_test.rs` 的
+`example_plugin_wasm_is_reproducible_and_hashes_match` 会在 `cargo test` 里：
+
+1. 用 `wat` crate（纯 Rust，dev-dependency，不需要外部 wasm 工具链）把
+   `main.wat` 重新编译成 Wasm；
+2. 与仓库里的 `main.wasm` **逐字节比对**；
+3. 逐个校验 `packageHashes`（含 `main.wat`/`main.wasm`）的 sha256。
+
+只改 `main.wat` 而不重新生成 `main.wasm`、或改了文件不更新哈希，这条测试就会红。
+修复方式统一为：
+
+```bash
+cargo run -p plugin_pack -- build plugins/examples/export-diary-markdown
+```
+
+然后把 `main.wat`、`main.wasm`、`manifest.json` 一起提交。
+
 ## 输出
 
 给定选中的 `2026-10-16` 日记版本，输出：

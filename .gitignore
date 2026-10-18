@@ -74,6 +74,10 @@ models/**/*.bin
 models/**/*.gguf
 plugins/**/*.wasm
 !plugins/examples/**/fixtures/*
+# 示例插件随仓库分发：干净 checkout 不装 wat2wasm/wasm-tools 也要能安装、能测，
+# 所以示例入口 main.wasm（由 main.wat 编译）必须入库；
+# 防漂移测试会在 cargo test 里从 WAT 重新编译并逐字节比对。
+!plugins/examples/**/main.wasm
 
 # ---------- 测试与验收产物 ----------
 coverage/

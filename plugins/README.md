@@ -110,6 +110,17 @@ cargo run -p plugin_pack -- check plugins/examples/export-diary-markdown
 python3 plugins/tools/check_package.py plugins/examples/export-diary-markdown
 ```
 
+**示例的 `main.wasm` 与 `main.wat` 都入库**：示例是随仓库分发的安装包，干净
+checkout 上必须不需要 `wat2wasm` / `wasm-tools` 就能安装、能跑测试。只保留
+`.wat` 会让 `packageHashes` 指向不存在的文件，安装直接报 `PluginPackageInvalid`。
+`.gitignore` 因此对 `plugins/examples/**/main.wasm` 开白名单。
+
+`cargo test` 里的
+`plugin_test::example_plugin_wasm_is_reproducible_and_hashes_match` 负责防漂移：
+用 `wat` crate 从 `main.wat` 重新编译并与入库的 `main.wasm` 逐字节比对，同时校验
+`packageHashes`。改了 WAT 却没重新生成 WASM/哈希，会直接红。修复就是重新跑
+`plugin_pack -- build` 并一起提交。
+
 ## 示例
 
 - [`examples/style-daily-note`](examples/style-daily-note/README.md)：声明式风格模板。

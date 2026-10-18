@@ -220,6 +220,13 @@ cargo run -p plugin_pack -- check plugins/examples/export-diary-markdown
 python3 plugins/tools/check_package.py plugins/examples/export-diary-markdown
 ```
 
+示例的 `main.wasm` 与 `main.wat` **都入库**：示例随仓库分发，干净 checkout 上
+不装 `wat2wasm` / `wasm-tools` 也必须能装、能测；只有 `.wat` 会让清单指向不存在的
+入口而报 `PluginPackageInvalid`。防漂移由
+`plugin_test::example_plugin_wasm_is_reproducible_and_hashes_match` 保证：`cargo test`
+里用 `wat` crate 从 WAT 重新编译、与入库 WASM 逐字节比对，并逐个校验
+`packageHashes`。改了 WAT 未重新生成 WASM/哈希即红；修复后把三个文件一起提交。
+
 ## 9. Schema 13 → 14 迁移
 
 `schema.rs` 的 `SCHEMA_VERSION = 14`；新增 `V13` 迁移：
