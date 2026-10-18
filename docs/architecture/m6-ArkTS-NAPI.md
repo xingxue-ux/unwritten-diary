@@ -16,16 +16,16 @@
 |---|---|---|
 | 1 | C ABI **不在 main 里**（PR #117 未合）⇒ 本分支从 `origin/main` = `e4e3c0a` 起步，**merge** 了 `origin/feat/B8a-core-c-abi`（`29a076e`），没有改写 C ABI 的任何一行 | 实测（`git log --oneline`） |
 | 2 | 模块形状是**三层**：`libdiary_capi.so`（Rust，6 个 C 符号）→ `libdiary_napi.so`（C++，7 个 JS 函数）→ `DiaryCore.ets`（9 条契约方法）；JSON **一进一出**，中间不拆不拼 | 实测（能编 + 静态核对） |
-| 3 | NAPI 层**只在「调用没能发生」时抛 JS 异常**（`ERR_DIARY_LIB/ARGS/HANDLE/OPEN/CALL`）；业务错误仍返回 `ok:false` 信封，由 ArkTS 侧统一转成 `DiaryError` 异常 | 实测（代码 + 契约核对） / 设备未验 |
+| 3 | NAPI 层**只在「调用没能发生」时抛 JS 异常**（`ERR_DIARY_LIB/ARGS/HANDLE/OPEN/CALL`）；业务错误仍返回 `ok:false` 信封，由 ArkTS 侧统一转成 `DiaryError` 异常 | 实测（代码 + 契约核对） / 真机已验（临时身份） |
 | 4 | **错误码一个没新增**：21 个核心码原样透传；唯一的宿主码 `native_unavailable` 表示「调用没能发生」，不进核心码表 | 实测（`tools/check_arkts_capi_contract.py`） |
 | 5 | 交叉编译 + shim 编译过：`libdiary_capi.so` 11,369,880 B（`NEEDED` 只有 `libc.so`）、`libdiary_napi.so` 46,824 B（`NEEDED` = `libace_napi.z.so` / `libc++_shared.so` / `libc.so`）、6 个 C 符号全在 | 实测（见 §8.1） |
 | 6 | **ArkTS 真的编过了**：`hvigorw assembleHap` `BUILD SUCCESSFUL`，`CompileArkTS` 8 s，unsigned HAP 12,815,707 B，包内三个 `.so`（含 `libc++_shared.so`） | 实测（见 §8.2） |
 | 7 | `index.d.ts` **没有退化成 any**：把 `diaryNapi.open(123)` 故意写错 → 编译报 2 条类型错误（红证据见 §8.3） | 实测 |
 | 8 | 静态契约核对：9 个方法名、21 个错误码、6 个 C 符号、7 个 JS 函数、打包三件套全部一致（改坏一处就红，见 §8.4） | 实测 |
-| 9 | **真机没验**：`hdc list targets` 为空 ⇒ `dlopen`、沙箱建库、HAP 安装、hilog 输出、性能全部未验证（§9 逐条） | 明确未做 |
+| 9 | **真机已验**（2026-10-18，HAD-W32 / API 23，临时 bundleName `com.example.myapplication`）：`dlopen`/`dlsym`、沙箱建库（schema 13）、HAP 安装启动、hilog、性能、并发、多 Ability/多进程、错误路径、release/混淆、升级保留全部跑过；产品名 `com.lingxing.unwrittendiary` 仍未验（Profile 未生成） | 实测（见工程 README「真机验证结果」） |
 
-**一句话**：ArkTS 现在有一份**能编、能打包、契约对得上**的 `DiaryCore`；离「设备上真的跑通」
-只差一台设备——不是代码。
+**一句话**：ArkTS 现在有一份**能编、能打包、契约对得上**的 `DiaryCore`；2026-10-18 已在
+HAD-W32 真机（临时 bundleName）上跑通，产品身份/产品规模仍待验。
 
 ## 2 基线：为什么先 merge 了 B8a
 
@@ -464,6 +464,14 @@ $ python3 tools/check_arkts_capi_contract.py
 ```
 
 ## 9 未验证清单（如实）
+
+> **2026-10-18 更新**：以下 14 项已在 HAD-W32 / API 23 真机上逐条验证（临时 bundleName
+> `com.example.myapplication`；产品名 `com.lingxing.unwrittendiary` 的 Profile 尚未生成）。
+> 逐项结论、原始 hilog 片段、性能表、问题清单与设备还原证明见
+> [`apps/ohos-diary-core/README.md`](../../apps/ohos-diary-core/README.md#真机验证结果2026-10-18)。
+> 本节保留当时的未验清单作为历史记录；**当前状态以 README 为准**（其中 1–13 已验，
+> 14 仍是「已知未修」；另发现并修复了 `open` 失败错误码被降级的问题）。
+
 
 1. **真机 `dlopen` / `dlsym`**：`hdc list targets` 为空，没跑过。探针在**它自己的**
    `libdiary_core_smoke.so` 上验过 dlopen，**不是这一份** `libdiary_capi.so`；
