@@ -229,7 +229,7 @@ python3 plugins/tools/check_package.py plugins/examples/export-diary-markdown
 
 ## 9. Schema 13 → 14 迁移
 
-`schema.rs` 的 `SCHEMA_VERSION = 14`；新增 `V13` 迁移：
+`schema.rs` 的 `SCHEMA_VERSION` 现在是 **15**：本节记录的是插件引入时的 v13 → 14；v15 是 #128 复审的加性改动（`index_meta.auto_rebuild_marker` + 整代口径覆盖索引），见 [`m2-向量索引与换代.md`](m2-向量索引与换代.md) 与 `schema::V15`。插件引入的 `V13` 迁移是：
 
 ```sql
 CREATE TABLE IF NOT EXISTS plugin_installations (...);
