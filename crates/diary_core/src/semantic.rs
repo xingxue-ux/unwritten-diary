@@ -63,7 +63,7 @@ use rusqlite::{params, OptionalExtension};
 
 use crate::chunks;
 use crate::embedding::{
-    self, Embedder, EmbeddingConfig, EnvEmbedding,
+    self, Embedder, EmbeddingConfig, EnvEmbedding, TokenTruncation,
 };
 use crate::error::{CoreError, Result};
 use crate::model::{
@@ -92,6 +92,14 @@ pub struct SemanticBuildReport {
     /// 上一次中断留下的、本代次里已经有的**口径一致**向量数（同模型续跑时不为 0；
     /// 换过模型时那一批被整代清掉、这里回到 0）。
     pub resumed_chunks: i64,
+    /// **本次调用**里正文超长、被 token 截断后才算的块数（issue #109）。
+    ///
+    /// 产品切块按 400 字符，实测最多 402 token（数字见
+    /// `docs/architecture/m2-质量集与分块.md`），正常永远是 0；不为 0 就说明有别的
+    /// 入口把超长正文递给了嵌入器，或者切块规则/分词器换了——这就是「不静默」的信号。
+    pub truncated_chunks: i64,
+    /// 本次调用里这些块一共被截掉多少 token（`truncated_chunks` 的 token 之和）。
+    pub truncated_tokens: i64,
 }
 
 /// 嵌入器在 `Core` 上的状态。懒加载：`Core::open` 只读环境变量与 stat 文件，
@@ -290,6 +298,8 @@ pub(crate) fn build_with_deadline(
             reused_chunks: 0,
             embedded_chunks: 0,
             resumed_chunks: 0,
+            truncated_chunks: 0,
+            truncated_tokens: 0,
         }));
     }
     // 先拿嵌入器：拿不到就在这里失败，**不改任何状态**（块也不重建）。
@@ -472,8 +482,17 @@ fn build_generation(
     let resumed_chunks = (total_chunks - reused_chunks - missing.len() as i64).max(0);
     let started_with: i64 = reused_chunks + resumed_chunks;
     let mut embedded_this_run: i64 = 0;
+    // #109：整块算向量时如果入口做了 token 截断，这里如实累计（向量仍然写、索引仍然
+    // 能用；但不能假装「这一块完整参与了向量」）。
+    let mut truncated_chunks: i64 = 0;
+    let mut truncated_tokens: i64 = 0;
     for (chunk_id, text) in &missing {
-        let vector = embedder.embed_document(text)?;
+        let embedding = embedder.embed_document(text)?;
+        if let Some(truncation) = embedding.truncation {
+            truncated_chunks += 1;
+            truncated_tokens += truncation.dropped_tokens as i64;
+        }
+        let vector = embedding.vector;
         if vector.len() as i64 != caliber.dims {
             return Err(CoreError::InvalidState {
                 entity: "语义嵌入",
@@ -531,6 +550,8 @@ fn build_generation(
         reused_chunks,
         embedded_chunks: missing.len() as i64,
         resumed_chunks,
+        truncated_chunks,
+        truncated_tokens,
     }))
 }
 
@@ -606,6 +627,15 @@ pub(crate) enum SemanticCandidates {
     ForeignSpace(CaliberMismatch),
 }
 
+/// 一次语义候选计算的结果：候选 + 查询侧有没有被 token 截断（issue #109）。
+///
+/// 查询超长不再是错误：入口截到 510 个正文 token 再算，[`TokenTruncation`] 由这里
+/// 带出去，让检索会话在 `warnings` 里如实说一句（而不是让用户以为整句都参与了检索）。
+pub(crate) struct SemanticOutcome {
+    pub candidates: SemanticCandidates,
+    pub query_truncation: Option<TokenTruncation>,
+}
+
 /// 一条「块 × 篇」候选。分数属于整块，按 span 归属到各自的篇。
 #[derive(Debug, Clone)]
 pub(crate) struct SemanticCandidate {
@@ -645,17 +675,28 @@ pub(crate) fn candidates(
     embedder: &dyn Embedder,
     query: &str,
     filters: &SearchFilters,
-) -> Result<SemanticCandidates> {
+) -> Result<SemanticOutcome> {
     let Some(generation) = active_generation(core)? else {
-        return Ok(SemanticCandidates::Scored(Vec::new()));
+        return Ok(SemanticOutcome {
+            candidates: SemanticCandidates::Scored(Vec::new()),
+            query_truncation: None,
+        });
     };
     if let Some(mismatch) = caliber_mismatch(core, embedder)? {
-        return Ok(SemanticCandidates::ForeignSpace(mismatch));
+        return Ok(SemanticOutcome {
+            candidates: SemanticCandidates::ForeignSpace(mismatch),
+            query_truncation: None,
+        });
     }
     if query.trim().is_empty() {
-        return Ok(SemanticCandidates::Scored(Vec::new()));
+        return Ok(SemanticOutcome {
+            candidates: SemanticCandidates::Scored(Vec::new()),
+            query_truncation: None,
+        });
     }
-    let query_vector = embedder.embed_query(query)?;
+    let query_embedding = embedder.embed_query(query)?;
+    let query_truncation = query_embedding.truncation;
+    let query_vector = query_embedding.vector;
     if query_vector.len() != embedder.dims() {
         return Err(CoreError::InvalidState {
             entity: "语义检索",
@@ -803,7 +844,10 @@ pub(crate) fn candidates(
         .into_iter()
         .filter(|candidate| seen.insert(candidate.group_id.clone()))
         .collect();
-    Ok(SemanticCandidates::Scored(folded))
+    Ok(SemanticOutcome {
+        candidates: SemanticCandidates::Scored(folded),
+        query_truncation,
+    })
 }
 
 /// 余弦相似度。向量已经 L2 归一化，所以正常情况下就是内积；仍然按真余弦算，
@@ -1001,7 +1045,7 @@ pub fn ranking(
     let embedder = core.embedder()?;
     // 口径不一致时给**空排名**：与产品路径「语义这一路不作数」同一口径，
     // 而不是把跨空间的分数当成量测结果报出去。
-    match candidates(core, &*embedder, query, filters)? {
+    match candidates(core, &*embedder, query, filters)?.candidates {
         SemanticCandidates::ForeignSpace(_) => Ok(Vec::new()),
         SemanticCandidates::Scored(candidates) => Ok(candidates
             .into_iter()

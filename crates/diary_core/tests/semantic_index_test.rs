@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, TimeZone, Utc};
 use diary_core::{
-    Core, CreateDraftInput, EmbedOptions, Embedder, ImportManifest, ImportOrigin, ImportRequest,
-    MatchedBy, SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
-    SourceKind,
+    Core, CreateDraftInput, EmbedOptions, Embedder, Embedding, ImportManifest, ImportOrigin,
+    ImportRequest, MatchedBy, SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest,
+    SearchSnapshot, SourceKind, TokenTruncation,
 };
 use rusqlite::params;
 use sha2::{Digest, Sha256};
@@ -109,19 +109,23 @@ impl Embedder for StubEmbedder {
         EmbedOptions::default()
     }
 
-    fn embed_document(&self, text: &str) -> diary_core::Result<Vec<f32>> {
+    fn embed_document(&self, text: &str) -> diary_core::Result<diary_core::Embedding> {
         self.counters.documents.fetch_add(1, Ordering::SeqCst);
-        Ok(self.vector_for(text, &self.rules))
+        Ok(diary_core::Embedding::untruncated(
+            self.vector_for(text, &self.rules),
+        ))
     }
 
-    fn embed_query(&self, text: &str) -> diary_core::Result<Vec<f32>> {
+    fn embed_query(&self, text: &str) -> diary_core::Result<diary_core::Embedding> {
         self.counters.queries.fetch_add(1, Ordering::SeqCst);
         let rules = if self.query_rules.is_empty() {
             &self.rules
         } else {
             &self.query_rules
         };
-        Ok(self.vector_for(text, rules))
+        Ok(diary_core::Embedding::untruncated(
+            self.vector_for(text, rules),
+        ))
     }
 }
 
@@ -1827,11 +1831,11 @@ fn a_vector_of_the_wrong_length_is_rejected() {
         fn options(&self) -> EmbedOptions {
             EmbedOptions::default()
         }
-        fn embed_document(&self, _text: &str) -> diary_core::Result<Vec<f32>> {
-            Ok(vec![0.0; 8])
+        fn embed_document(&self, _text: &str) -> diary_core::Result<diary_core::Embedding> {
+            Ok(diary_core::Embedding::untruncated(vec![0.0; 8]))
         }
-        fn embed_query(&self, _text: &str) -> diary_core::Result<Vec<f32>> {
-            Ok(vec![0.0; 8])
+        fn embed_query(&self, _text: &str) -> diary_core::Result<diary_core::Embedding> {
+            Ok(diary_core::Embedding::untruncated(vec![0.0; 8]))
         }
     }
 
@@ -1900,8 +1904,187 @@ fn keyword_search_is_untouched_by_building_semantics() {
     );
 }
 
-// ------------------------------------------------------------ 真模型（不进 CI）
+// ------------------------------------------------------------ #109：超长正文的截断与报告
 
+/// 嵌入器报告了截断时，`SemanticBuildReport` 要**如实累计**块数与 token 数。
+///
+/// 只打日志不算报告：上层（作业进度、探针）拿到的必须是可断言的数字。这里用 2 块
+/// × 每块 107 个 token 构造，断言 2 / 214。
+#[test]
+fn a_truncated_chunk_is_counted_in_the_build_report() {
+    struct TruncatingEmbedder;
+
+    impl Embedder for TruncatingEmbedder {
+        fn model_version(&self) -> &str {
+            "stub-embedder@truncated"
+        }
+
+        fn dims(&self) -> usize {
+            512
+        }
+
+        fn options(&self) -> EmbedOptions {
+            EmbedOptions::default()
+        }
+
+        fn embed_document(&self, text: &str) -> diary_core::Result<Embedding> {
+            Ok(Embedding {
+                vector: diary_core::text_hash_vector(text, 512),
+                truncation: Some(TokenTruncation {
+                    original_tokens: 617,
+                    kept_tokens: diary_core::MAX_BODY_TOKENS,
+                    dropped_tokens: 107,
+                }),
+            })
+        }
+
+        fn embed_query(&self, text: &str) -> diary_core::Result<Embedding> {
+            Ok(Embedding::untruncated(diary_core::text_hash_vector(text, 512)))
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    core.set_embedder(Box::new(TruncatingEmbedder));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "op-trunc-a");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "op-trunc-b");
+
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.embedded_chunks, 2);
+    assert_eq!(
+        report.truncated_chunks, 2,
+        "两块都被截断，报告里必须是 2（只打日志就等于没报）"
+    );
+    assert_eq!(
+        report.truncated_tokens, 214,
+        "107 × 2：报告要给出被截掉的 token 总数"
+    );
+
+    // 向量照写、检索照用：截断不是错误，也不该让索引失效。
+    let status = core.index_status(None).unwrap();
+    assert!(status.semantic_index_ready);
+    assert!(
+        !search_mode(&mut core, "妈妈", SearchMode::Semantic, 20)
+            .results
+            .is_empty(),
+        "截断过的块仍然要能被语义召回"
+    );
+}
+
+/// #109：一篇超长正文被切成多块之后，关键词、语义、混合三路都不报错、都还能召回。
+///
+/// 这条钉的是「修复不能把检索弄坏」：入口加了截断、报告加了字段，检索那条路的
+/// 向量仍然是 512 维、块仍然按篇折叠。
+#[test]
+fn a_long_capture_stays_searchable_on_both_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    // 规则把「含妈妈」的块与查询都映射到同一个单位向量：余弦 1，混合那一路才有
+    // 证据过门槛（纯哈希向量的相似度只有 0.06，会被证据门槛挡掉）。
+    core.set_embedder(stub(&counters, vec![("妈妈", unit(0))]));
+
+    // 16 字 × 200 = 3200 字：按 400 字一块会切成 8 块以上（带 48 字重叠）。
+    let text = "妈妈打电话来说她最近身体不太好。".repeat(200);
+    let capture_id = write_capture(&mut core, at(2026, 9, 20), &text, "op-long");
+
+    let report = core.build_semantic_index(None).unwrap();
+    assert!(
+        report.total_chunks > 1,
+        "这么长的正文必须被切成多块（实际 {} 块）",
+        report.total_chunks
+    );
+    assert_eq!(
+        report.truncated_chunks, 0,
+        "产品切块（400 字符）在 512 token 以内，正常不该有截断"
+    );
+    assert_eq!(report.embedded_chunks, report.total_chunks);
+
+    let keyword = search_mode(&mut core, "妈妈", SearchMode::Keyword, 20);
+    assert_eq!(
+        keyword.results.first().map(|hit| hit.group_id.as_str()),
+        Some(capture_id.as_str()),
+        "关键词那一路不报错、仍能命中：{:?}",
+        keyword.warnings
+    );
+
+    let semantic = search_mode(&mut core, "妈妈", SearchMode::Semantic, 20);
+    assert!(
+        !semantic.results.is_empty(),
+        "语义那一路不报错、仍能命中：{:?}",
+        semantic.warnings
+    );
+    assert!(
+        semantic
+            .results
+            .iter()
+            .all(|hit| hit.group_id == capture_id),
+        "同一篇的多个块要按篇折叠成一条"
+    );
+
+    let hybrid = hybrid_mode(&mut core, "妈妈", 20);
+    assert_eq!(
+        hybrid.phase,
+        SearchPhase::HybridReady,
+        "混合那一路要能完成融合：{:?}",
+        hybrid.warnings
+    );
+    assert!(!hybrid.results.is_empty(), "融合后不该凭空丢结果");
+}
+
+/// #109：查询超长被截断时，检索快照的 `warnings` 必须如实说出来（不是只打日志）。
+#[test]
+fn a_truncated_query_is_reported_in_the_search_warnings() {
+    struct TruncatingQueryEmbedder;
+
+    impl Embedder for TruncatingQueryEmbedder {
+        fn model_version(&self) -> &str {
+            "stub-embedder@truncated-query"
+        }
+
+        fn dims(&self) -> usize {
+            512
+        }
+
+        fn options(&self) -> EmbedOptions {
+            EmbedOptions::default()
+        }
+
+        fn embed_document(&self, text: &str) -> diary_core::Result<Embedding> {
+            Ok(Embedding::untruncated(diary_core::text_hash_vector(text, 512)))
+        }
+
+        fn embed_query(&self, text: &str) -> diary_core::Result<Embedding> {
+            Ok(Embedding {
+                vector: diary_core::text_hash_vector(text, 512),
+                truncation: Some(TokenTruncation {
+                    original_tokens: 617,
+                    kept_tokens: diary_core::MAX_BODY_TOKENS,
+                    dropped_tokens: 107,
+                }),
+            })
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    core.set_embedder(Box::new(TruncatingQueryEmbedder));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "op-query");
+    core.build_semantic_index(None).unwrap();
+
+    let semantic = search_mode(&mut core, "很长很长的查询", SearchMode::Semantic, 20);
+    let warning = semantic
+        .warnings
+        .iter()
+        .find(|warning| warning.contains("查询太长"))
+        .unwrap_or_else(|| panic!("查询截断必须在 warnings 里说：{:?}", semantic.warnings));
+    assert!(
+        warning.contains("107"),
+        "警告里要带被截掉的 token 数：{warning}"
+    );
+}
+
+// ------------------------------------------------------------ 真模型（不进 CI）
 /// 真模型端到端：加载 bge-small-zh-v1.5、建向量、语义检索、按篇折叠。
 ///
 /// **不进 CI**（CI 上没有模型、没有 ORT 动态库），手动跑：
