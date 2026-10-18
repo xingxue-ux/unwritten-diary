@@ -3577,6 +3577,141 @@ fn a_loaded_embedder_with_another_model_version_queues_one_auto_rebuild() {
     );
 }
 
+/// 评审 #128 复审：v15 是**真的**加性迁移——空库直接建到 15；把库退回 v14 再打开，
+/// 向量一行不丢、新列默认 NULL、覆盖索引建出来、重复 open 幂等。
+///
+/// 为什么这条必须存在：`SCHEMA_VERSION` 是持久化的契约（Dart 端到端测试也断言它），
+/// 升版本就要证明「数据不丢、新结构可用、重复迁移不炸」，而不是为了改断言。
+#[test]
+fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    assert_eq!(
+        core.schema_version().unwrap(),
+        diary_core::SCHEMA_VERSION,
+        "空库直接建到最新"
+    );
+    assert_eq!(diary_core::SCHEMA_VERSION, 15, "本轮升到 15");
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+    let vectors_before: i64 = open(&path)
+        .query_row("SELECT COUNT(*) FROM chunk_vectors", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(vectors_before, 2, "前提：两篇各一块、各一行向量");
+    drop(core);
+
+    // 退回**真正的 v14 样子**：没有 v15 的列与索引，版本号也退回去。
+    {
+        let conn = open(&path);
+        conn.execute_batch(
+            "DROP INDEX idx_chunk_vectors_caliber;
+             ALTER TABLE index_meta DROP COLUMN auto_rebuild_marker;
+             UPDATE schema_migrations SET version = 14;
+             PRAGMA user_version = 14;",
+        )
+        .unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 14);
+        assert!(
+            conn.query_row("SELECT auto_rebuild_marker FROM index_meta", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .is_err(),
+            "先确认 v14 库里真的没有这一列"
+        );
+    }
+
+    let migrated = Core::open(&path).unwrap();
+    assert_eq!(
+        migrated.schema_version().unwrap(),
+        diary_core::SCHEMA_VERSION,
+        "v14 → v15"
+    );
+    // 旧数据一行不丢：向量数与生效代次的口径都还在。
+    let status = migrated.index_status(None).unwrap();
+    assert_eq!(status.total_chunks, 2);
+    assert_eq!(status.embedded_chunks, 2);
+    assert_eq!(
+        status.model_version.as_deref(),
+        Some("stub-embedder@000000000000"),
+        "向量行原样保留"
+    );
+    assert_eq!(
+        open(&path)
+            .query_row("SELECT COUNT(*) FROM chunk_vectors", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        vectors_before
+    );
+    {
+        let conn = open(&path);
+        // 新列默认 NULL（不回填），而且可写。
+        let marker: Option<String> = conn
+            .query_row(
+                "SELECT auto_rebuild_marker FROM index_meta WHERE id = 1",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap();
+        assert!(marker.is_none(), "迁移不回填自动尝试标记");
+        conn.execute(
+            "UPDATE index_meta SET auto_rebuild_marker = '1:probe' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        // 覆盖索引建出来，而且口径核对真的用它。
+        let plan: Vec<String> = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT DISTINCT model_version, dims, storage \
+                 FROM chunk_vectors WHERE generation = 1",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.join(" | ").contains("COVERING INDEX idx_chunk_vectors_caliber"),
+            "v15 的覆盖索引要真的被用上：{plan:?}"
+        );
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 15",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, 1, "schema_migrations 记下 15");
+    }
+    drop(migrated);
+
+    // 幂等：再 open 不重复建、不报错、也不把标记重置。
+    let again = Core::open(&path).unwrap();
+    assert_eq!(again.schema_version().unwrap(), 15);
+    assert_eq!(
+        open(&path)
+            .query_row("SELECT COUNT(*) FROM chunk_vectors", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        vectors_before,
+        "重复迁移不动向量"
+    );
+    let marker: Option<String> = open(&path)
+        .query_row(
+            "SELECT auto_rebuild_marker FROM index_meta WHERE id = 1",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap();
+    assert_eq!(marker.as_deref(), Some("1:probe"), "重复 open 不重置标记");
+}
+
 /// 统计库里 `semantic_index` 任务数（自动排队回归用）。
 fn semantic_job_count(path: &Path) -> i64 {    open(path)
         .query_row(

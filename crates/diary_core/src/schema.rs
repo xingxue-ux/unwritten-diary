@@ -137,10 +137,11 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 也就没有东西可搬；更不能在迁移里替用户预设一个插件或一条授权。迁移后
         // `plugin_installations` 为空，和刚建的新库一样。
     }
-    // v15 的守卫只看**列在不在**（不看版本号）：测试会把库手工退回旧版本再升上来，
-    // 那些库的 `index_meta` 可能已经有这一列——再 `ALTER TABLE` 会报重复列。
-    // `CREATE INDEX IF NOT EXISTS` 让同一段重复跑也幂等。
-    if !column_exists(&tx, "index_meta", "auto_rebuild_marker")? {
+    // v15 的守卫与 v12 同一写法：**版本号 + 结构**两重判断。只靠版本号不够——测试会
+    // 把库手工退回旧版本再升上来，那些库的 `index_meta` 可能已经有这一列，再
+    // `ALTER TABLE` 会报重复列；只靠结构也不够（`current < 15` 才该动）。所以是
+    // `current < 15 && 列不在`。`CREATE INDEX IF NOT EXISTS` 让同一段重复跑也幂等。
+    if current < 15 && !column_exists(&tx, "index_meta", "auto_rebuild_marker")? {
         tx.execute_batch(V15)?;
         // **不回填标记**（NULL = 从未自动尝试）**、不用回填索引**（SQLite 从既有行建）。
         // 没有「替用户记一次自动尝试」这种默认：升级后的第一次 `open` 仍会按当时的
