@@ -118,21 +118,27 @@ pub(crate) enum EmbedderSlot {
 /// `Core` 上挂的语义运行时状态。
 pub(crate) struct SemanticRuntime {
     pub slot: EmbedderSlot,
+    /// 解析结果（每条路径从哪来）。`core.info.runtime_config` 直接用它，不再重算一遍
+    /// ——重算就会读第二次环境变量，而环境变量是打开库那一刻的快照。
+    pub resolution: embedding::EmbeddingResolution,
 }
 
 impl SemanticRuntime {
-    /// 从环境变量初始化。只 stat 文件，不加载模型。
-    pub(crate) fn from_env() -> Self {
-        let slot = match embedding::config_from_env() {
+    /// 从「环境变量 + 可选的核心配置文件」初始化。只 stat 文件，不加载模型。
+    ///
+    /// 顺序是 `embedding::resolve` 里钉死的：环境变量逐字段优先，文件补空缺。
+    pub(crate) fn from_config_file(file: Option<&crate::config_file::CoreConfigFile>) -> Self {
+        let resolution = embedding::resolve(file);
+        let slot = match &resolution.state {
             EnvEmbedding::Unset => EmbedderSlot::NotConfigured,
-            EnvEmbedding::Invalid(reason) => EmbedderSlot::Failed(reason),
+            EnvEmbedding::Invalid(reason) => EmbedderSlot::Failed(reason.clone()),
             EnvEmbedding::Ready(config) => match config.check_files() {
-                Ok(()) => EmbedderSlot::Configured(config),
+                Ok(()) => EmbedderSlot::Configured(config.clone()),
                 // 缺文件也是**诚实的原因**，不是「未就绪」。
                 Err(reason) => EmbedderSlot::Failed(reason),
             },
         };
-        Self { slot }
+        Self { slot, resolution }
     }
 }
 
@@ -187,8 +193,9 @@ impl Core {
             EmbedderSlot::NotConfigured => {
                 self.semantic.slot = EmbedderSlot::NotConfigured;
                 Err(semantic_unavailable(
-                    "没有配置本地模型：设 DIARY_MODEL_DIR（模型目录）与 DIARY_ORT_DYLIB（ORT 动态库）\
-                     之后才能建语义索引；现在只有关键词索引可用"
+                    "没有配置本地模型：设 DIARY_MODEL_DIR（模型目录）与 DIARY_ORT_DYLIB（ORT 动态库），\
+                     或在资料库旁边的 core-config.json 里写 modelDir 与 ortDylib，之后才能建语义索引；\
+                     现在只有关键词索引可用"
                         .to_owned(),
                 ))
             }

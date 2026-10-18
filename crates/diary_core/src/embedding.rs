@@ -238,22 +238,101 @@ pub enum EnvEmbedding {
 }
 
 /// 从环境变量读配置。`DIARY_ORT_DYLIB` 优先，兼容探针一直在用的 `ORT_DYLIB_PATH`。
+///
+/// 这是「只有环境变量」的那一档，等价于 [`resolve`] 传 `None`：**行为与加文件配置
+/// 之前逐位一致**（两个都设才是 Ready、只设一个是 Invalid、都不设是 Unset）。
 pub fn config_from_env() -> EnvEmbedding {
-    let model_dir = std::env::var_os("DIARY_MODEL_DIR");
-    let dylib = std::env::var_os("DIARY_ORT_DYLIB").or_else(|| std::env::var_os("ORT_DYLIB_PATH"));
-    match (model_dir, dylib) {
+    resolve(None).state
+}
+
+/// 环境变量名：模型目录。
+pub const ENV_MODEL_DIR: &str = "DIARY_MODEL_DIR";
+
+/// 环境变量名：ORT 动态库（首选）。
+pub const ENV_ORT_DYLIB: &str = "DIARY_ORT_DYLIB";
+
+/// 环境变量名：ORT 动态库（兼容探针的旧名字）。
+pub const ENV_ORT_DYLIB_COMPAT: &str = "ORT_DYLIB_PATH";
+
+/// 一次解析的完整结果：不只是「能不能用」，还包括**每个字段从哪来**。
+///
+/// `Core::open` 把它存进 `SemanticRuntime`，`core.info.runtime_config.semantic`
+/// 原样报出去——产品与探针看到的是同一条链，不是另写一套「状态查询」。
+#[derive(Debug, Clone)]
+pub struct EmbeddingResolution {
+    /// 三态结论（Unset / Invalid / Ready）。
+    pub state: EnvEmbedding,
+    /// 整条链的摘要：任一字段来自文件就是 `File`，否则全来自环境变量就是 `Env`。
+    pub source: crate::config_file::ConfigOrigin,
+    /// 解析到的模型目录（`Invalid`/`Unset` 时可能只解析到一半）。
+    pub model_dir: Option<PathBuf>,
+    pub model_dir_origin: crate::config_file::ConfigOrigin,
+    /// 解析到的 ORT 动态库。
+    pub ort_dylib: Option<PathBuf>,
+    pub ort_dylib_origin: crate::config_file::ConfigOrigin,
+}
+
+/// 按「环境变量 → 配置文件」逐字段解析（**没有 provider 这一档**：嵌入器不对应某条
+/// 服务，它是核心自己的能力）。
+///
+/// 逐字段是刻意的：`modelDir` 用环境变量、`ortDylib` 用文件这种混搭是合法的，
+/// 哪一格来自哪儿会如实写进 `core.info`。文件缺失/解析失败由调用方传 `None`
+/// （见 `config_file::load`），这里只看到「有没有可用字段」。
+pub fn resolve(file: Option<&crate::config_file::CoreConfigFile>) -> EmbeddingResolution {
+    use crate::config_file::ConfigOrigin;
+
+    let env_model = std::env::var_os(ENV_MODEL_DIR).map(PathBuf::from);
+    let env_dylib = std::env::var_os(ENV_ORT_DYLIB)
+        .or_else(|| std::env::var_os(ENV_ORT_DYLIB_COMPAT))
+        .map(PathBuf::from);
+    let file_model = file.and_then(|file| file.model_dir_path());
+    let file_dylib = file.and_then(|file| file.ort_dylib_path());
+
+    let (model_dir, model_dir_origin) = match (env_model, file_model) {
+        (Some(path), _) => (Some(path), ConfigOrigin::Env),
+        (None, Some(path)) => (Some(path), ConfigOrigin::File),
+        (None, None) => (None, ConfigOrigin::Absent),
+    };
+    let (ort_dylib, ort_dylib_origin) = match (env_dylib, file_dylib) {
+        (Some(path), _) => (Some(path), ConfigOrigin::Env),
+        (None, Some(path)) => (Some(path), ConfigOrigin::File),
+        (None, None) => (None, ConfigOrigin::Absent),
+    };
+    let source =
+        if model_dir_origin == ConfigOrigin::File || ort_dylib_origin == ConfigOrigin::File {
+            ConfigOrigin::File
+        } else if model_dir_origin == ConfigOrigin::Env || ort_dylib_origin == ConfigOrigin::Env {
+            ConfigOrigin::Env
+        } else {
+            ConfigOrigin::Absent
+        };
+
+    let state = match (&model_dir, &ort_dylib) {
         (None, None) => EnvEmbedding::Unset,
-        (Some(_), None) => EnvEmbedding::Invalid(
-            "设了 DIARY_MODEL_DIR，但没有设 DIARY_ORT_DYLIB（ORT 动态库路径）".to_owned(),
-        ),
-        (None, Some(_)) => EnvEmbedding::Invalid(
-            "设了 DIARY_ORT_DYLIB，但没有设 DIARY_MODEL_DIR（模型目录）".to_owned(),
-        ),
+        (Some(_), None) => EnvEmbedding::Invalid(format!(
+            "有模型目录（来自 {}）但没有 ORT 动态库：设 {ENV_ORT_DYLIB}（或 \
+             {ENV_ORT_DYLIB_COMPAT}），或在 core-config.json 里写 ortDylib",
+            model_dir_origin.wire()
+        )),
+        (None, Some(_)) => EnvEmbedding::Invalid(format!(
+            "有 ORT 动态库（来自 {}）但没有模型目录：设 {ENV_MODEL_DIR}，或在 \
+             core-config.json 里写 modelDir",
+            ort_dylib_origin.wire()
+        )),
         (Some(dir), Some(lib)) => EnvEmbedding::Ready(EmbeddingConfig {
-            model_dir: PathBuf::from(dir),
-            ort_dylib: PathBuf::from(lib),
+            model_dir: dir.clone(),
+            ort_dylib: lib.clone(),
             model_file: std::env::var("DIARY_MODEL_FILE").ok(),
         }),
+    };
+
+    EmbeddingResolution {
+        state,
+        source,
+        model_dir,
+        model_dir_origin,
+        ort_dylib,
+        ort_dylib_origin,
     }
 }
 

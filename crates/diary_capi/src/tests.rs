@@ -389,6 +389,74 @@ fn end_to_end_draft_to_search_to_jobs() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// `indexes.rebuildSemantic`（契约 4.4，C ABI 之前没接）+ `core.info.runtime_config` 的形状。
+///
+/// 语义任务只是**排上**，没有模型时它会等配置（`waiting_configuration`），
+/// 所以这里不跑 `jobs.runDue`——那会把一条等模型的任务写进队列状态，与本测试无关。
+#[test]
+fn semantic_rebuild_and_runtime_config_are_wired() {
+    let (dir, _path, handle) = open_temp("semantic-config");
+
+    let info = expect_ok(&call(handle, "core.info", Value::Null));
+    let capabilities = info["capabilities"].as_array().unwrap();
+    assert!(capabilities
+        .iter()
+        .any(|name| name == "indexes.rebuildSemantic"));
+
+    // 配置报告的形状：三个对象 + 每格的来源字符串。
+    let config = &info["runtime_config"];
+    assert!(config["file"].is_object(), "{config}");
+    assert!(config["file"]["present"].is_boolean());
+    assert!(config["semantic"]["state"].is_string());
+    assert!(config["semantic"]["configSource"].is_string());
+    assert!(config["semantic"]["modelDirSource"].is_string());
+    assert!(config["semantic"]["ortDylibSource"].is_string());
+    assert!(config["transcription"]["state"].is_string());
+    assert!(config["transcription"]["configSource"].is_string());
+    assert!(config["transcription"]["engineLibSource"].is_string());
+    let env_clean = ["DIARY_MODEL_DIR", "DIARY_ORT_DYLIB", "DIARY_ASR_MODEL_DIR", "DIARY_ASR_ENGINE_LIB"]
+        .iter()
+        .all(|key| std::env::var_os(key).is_none());
+    if env_clean {
+        assert_eq!(config["semantic"]["configSource"], json!("absent"));
+        assert_eq!(config["semantic"]["state"], json!("absent"));
+        assert_eq!(config["file"]["present"], json!(false));
+    }
+
+    let job = expect_ok(&call(
+        handle,
+        "indexes.rebuildSemantic",
+        json!({"reason": "capi semantic", "operation_id": "op-capi-semantic"}),
+    ));
+    assert_eq!(job["kind"], json!("semantic_index"));
+    assert_eq!(job["state"], json!("queued"));
+    // 幂等：同一个 (原因, operationId) 重放返回同一条任务。
+    let replay = expect_ok(&call(
+        handle,
+        "indexes.rebuildSemantic",
+        json!({"reason": "capi semantic", "operation_id": "op-capi-semantic"}),
+    ));
+    assert_eq!(replay["id"], job["id"]);
+
+    // 缺参数要报 invalid_argument，不能静默排队。
+    expect_error(
+        &call(handle, "indexes.rebuildSemantic", json!({"reason": "x"})),
+        "invalid_argument",
+    );
+    // 不认识的字段也要报错（deny_unknown_fields）。
+    expect_error(
+        &call(
+            handle,
+            "indexes.rebuildSemantic",
+            json!({"reason": "x", "operation_id": "y", "scope": "all"}),
+        ),
+        "invalid_argument",
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// 录音交接：prepare → registerSegment → updateState → finalize → 重开 → recover。
 ///
 /// 片段文件按平台层约定写：第 0 段是「44 字节 PCM WAV 头 + PCM」，后续段是裸 PCM。

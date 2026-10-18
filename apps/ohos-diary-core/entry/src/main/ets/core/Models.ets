@@ -26,6 +26,62 @@ export interface LibraryInfo {
   recovery: RecoverySummary;
   capture_count: number;
   last_event_sequence: number;
+  /**
+   * 两条能力的配置来源与就绪状态（C ABI 加性字段，`core.info.runtime_config`）。
+   *
+   * **键是 camelCase**——它与 `core-config.json` 的字段同名同形（`modelDir` /
+   * `ortDylib` / `asrEngineLib` / `asrModelDir`）；`core.info` 的外层键仍是 snake_case。
+   * 只 stat、不加载模型，宿主可以随手调。
+   */
+  runtime_config?: RuntimeConfig;
+}
+
+/** `core.info.runtime_config.file`：配置文件本身（不是配置项）的状态。 */
+export interface ConfigFileReport {
+  /** 期望位置；内存库（没有根目录）是 null。 */
+  path: string | null;
+  /** 文件存在且读到了（解析失败也算存在）。 */
+  present: boolean;
+  /** 读不了/解析失败的原因；正常时为 null。 */
+  error: string | null;
+  /** 文件里不认识的字段名（拼错字段时就是它）。 */
+  ignoredFields: string[];
+}
+
+/** 语义（嵌入器）的配置状态。 */
+export interface SemanticConfigReport {
+  /** `absent` / `configured` / `ready` / `invalid`。 */
+  state: string;
+  /** `env` / `file` / `absent`。 */
+  configSource: string;
+  modelDir: string | null;
+  modelDirSource: string;
+  ortDylib: string | null;
+  ortDylibSource: string;
+  /** 已加载时的模型版本。 */
+  modelVersion: string | null;
+  reason: string | null;
+}
+
+/** 转写的配置状态。 */
+export interface TranscriptionConfigReport {
+  /** `absent` / `configured` / `ready`。 */
+  state: string;
+  /** 模型目录的来源：`env` / `file` / `provider` / `bundled` / `absent`。 */
+  configSource: string;
+  modelDir: string | null;
+  modelDirSource: string;
+  engineLib: string | null;
+  /** `env` / `file` / `platform` / `absent`。 */
+  engineLibSource: string;
+  providerId: string | null;
+  reason: string | null;
+}
+
+export interface RuntimeConfig {
+  file: ConfigFileReport;
+  semantic: SemanticConfigReport;
+  transcription: TranscriptionConfigReport;
 }
 
 export interface ProcessingSummary {
@@ -286,6 +342,16 @@ export interface SearchParams {
 /** `indexes.rebuild` 的参数；`scope` 编码是 `all` 或 `sources:<id>[,<id>]*`。 */
 export interface RebuildIndexParams {
   scope: string;
+  reason: string;
+  operation_id: string;
+}
+
+/**
+ * `indexes.rebuildSemantic` 的参数：没有 scope。
+ *
+ * 语义的代次与向量是全局的，范围只决定这一轮重算了哪些块（与关键词那条不同）。
+ */
+export interface RebuildSemanticParams {
   reason: string;
   operation_id: string;
 }

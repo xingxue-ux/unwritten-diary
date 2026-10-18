@@ -16,6 +16,11 @@ mod assets;
 mod backup;
 mod chunker;
 mod chunks;
+/// 设备配置文件 `core-config.json`（与 `library.sqlite` 同目录）。
+///
+/// 公开是为了让 C ABI 与集成测试能读同一份类型（`RuntimeConfigReport` /
+/// `ConfigOrigin`）；产品代码只通过 `Core::runtime_config()` 看它。
+pub mod config_file;
 /// 日记生成与版本（B4b）：冻结输入快照、候选/当前语义、防注入、两步走、去重。
 ///
 /// 公开是为了让集成测试能直接断言提示词拼装（`SYSTEM_INSTRUCTIONS` /
@@ -68,6 +73,10 @@ pub use extractors::{
     TEXT_DIRECT_EXTRACTOR_VERSION,
 };
 pub use error::{CoreError, ErrorCode, Result};
+pub use config_file::{
+    ConfigFileReport, ConfigOrigin, CoreConfigFile, RuntimeConfigReport, SemanticConfigReport,
+    TranscriptionConfigReport, CONFIG_FILE_NAME,
+};
 pub use provider::adapter::{
     adapter_for, builtin_adapter_ids, GenerateOutcome, GenerateRequest, ProtocolAdapter,
     CALL_TIMEOUT_MS, OPENAI_COMPATIBLE, PROBE_TIMEOUT_MS,
@@ -124,10 +133,11 @@ pub use chunker::{
     MAX_CHUNK_CHARS,
 };
 pub use embedding::{
-    bytes_to_vector, config_from_env, load as load_embedder, text_hash_vector, vector_bytes,
-    EmbedOptions, Embedder, Embedding, EmbeddingConfig, EnvEmbedding, OrtEmbedder, Pooling,
-    TokenTruncation, DEFAULT_POOLING, DEFAULT_QUERY_INSTRUCTION, EXPECTED_DIMS, MAX_BODY_TOKENS,
-    MAX_SEQ_TOKENS, MODEL_ID, QUERY_INSTRUCTION,
+    bytes_to_vector, config_from_env, load as load_embedder, resolve as resolve_embedding_config,
+    text_hash_vector, vector_bytes, EmbedOptions, Embedder, Embedding, EmbeddingConfig,
+    EmbeddingResolution, EnvEmbedding, OrtEmbedder, Pooling, TokenTruncation, ENV_MODEL_DIR,
+    ENV_ORT_DYLIB, ENV_ORT_DYLIB_COMPAT, DEFAULT_POOLING, DEFAULT_QUERY_INSTRUCTION, EXPECTED_DIMS,
+    MAX_BODY_TOKENS, MAX_SEQ_TOKENS, MODEL_ID, QUERY_INSTRUCTION,
 };
 pub use schema::SCHEMA_VERSION;
 pub use search::TOKENIZER_VERSION;
@@ -191,6 +201,13 @@ pub struct Core {
     backup_fault: backup::BackupFault,
     /// 仅供测试的备份会合点，默认不设（见 `set_backup_gate_for_test`）。
     backup_gate: Option<Arc<backup::BackupGate>>,
+    /// 资料库旁边的 `core-config.json`（四个可选路径）。`None` = 没有/不可用。
+    ///
+    /// 只在 `open` 时读一次：与 `DIARY_*` 环境变量同一语义（打开那一刻的快照）。
+    /// 读不了/解析失败**不是错误**：`config_report.error` 如实记下原因，配置回落。
+    config_file: Option<config_file::CoreConfigFile>,
+    /// 配置文件本身的状态（路径、是否存在、解析错误、不认识的字段）。
+    config_report: config_file::ConfigFileReport,
 }
 
 /// 契约 1.2 节的 API 版本。
@@ -280,13 +297,16 @@ impl Core {
         // 历史包袱一次性清账：以前因为没有执行者而进「已放弃 + no_handler」的旧任务，
         // 现在有执行者的放回队列（判据自带幂等，见 `jobs::requeue_legacy_no_handler`）。
         jobs::requeue_legacy_no_handler(&mut conn, support::now())?;
+        // 设备配置文件：与库文件同目录的 `core-config.json`。读失败/解析失败都不致命，
+        // 只是这一档不生效（原因记在 `config_report` 里，`core.info` 会如实报出）。
+        let loaded_config = config_file::load(root.as_deref());
         Ok(Self {
             conn,
             root,
             library_file_name,
             leases: HashMap::new(),
             search_sessions: HashMap::new(),
-            semantic: semantic::SemanticRuntime::from_env(),
+            semantic: semantic::SemanticRuntime::from_config_file(loaded_config.file.as_ref()),
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
             secrets,
             transport,
@@ -294,7 +314,14 @@ impl Core {
             asr_config_for_test: None,
             backup_fault: backup::BackupFault::None,
             backup_gate: None,
+            config_file: loaded_config.file,
+            config_report: loaded_config.report,
         })
+    }
+
+    /// 打开时读到的核心配置文件（`core-config.json` 的四个可选字段）。
+    pub(crate) fn config_file(&self) -> Option<&config_file::CoreConfigFile> {
+        self.config_file.as_ref()
     }
 
     /// 文件库根目录。内存库没有根目录，导入相关方法会因此报错。

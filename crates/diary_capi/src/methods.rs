@@ -19,6 +19,7 @@
 //! | `sources.extract` | `Core::extract_source` | `ExtractedContent` |
 //! | `search.start` | `Core::start_search` | `SearchSnapshot` |
 //! | `indexes.rebuild` | `Core::schedule_index_rebuild` | `Job` |
+//! | `indexes.rebuildSemantic` | `Core::schedule_semantic_index`（只排任务） | `Job` |
 //! | `jobs.runDue` | `Core::run_due_jobs` | `JobRunSummary` |
 //! | `jobs.status` | `Core::job_status` | `JobStatus` |
 //!
@@ -49,7 +50,7 @@
 //!   `sources.locate`；
 //! - 文件：`imports.*`、`assets.open` / `assets.release`；
 //! - 检索：`search.nextPage` / `search.snapshot` / `search.cancel` / `search.upgrade`、
-//!   `indexes.status`、`indexes.rebuildSemantic`；
+//!   `indexes.status`（`indexes.rebuildSemantic` 已接，见上表）；
 //! - 任务与事件：`jobs.list` / `jobs.get` / `jobs.retry` / `jobs.cancel` /
 //!   `jobs.nextWakeup` / `jobs.acknowledgeAttention`、`core.events`；
 //! - 备份与恢复：`backups.create` / `backups.inspect` / `backups.restore`（`diary_bridge`
@@ -87,6 +88,7 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "sources.extract",
     "search.start",
     "indexes.rebuild",
+    "indexes.rebuildSemantic",
     "jobs.runDue",
     "jobs.status",
     "providers.save",
@@ -214,6 +216,14 @@ pub(crate) fn dispatch(
                 core.schedule_index_rebuild(&input.scope, &input.reason, &input.operation_id)?;
             to_value(job)
         }
+        // 语义这一路（契约 4.4 的 `indexes.rebuildSemantic`）。核心与桥接早就有了
+        // （`Core::schedule_semantic_index`），C ABI 之前没接——鸿蒙上就没有任何办法
+        // 建语义索引，语义检索必然空。这里只排一条 `semantic_index` 任务，不重建。
+        "indexes.rebuildSemantic" => {
+            let input: RebuildSemanticParams = parse(params)?;
+            let job = core.schedule_semantic_index(&input.reason, &input.operation_id)?;
+            to_value(job)
+        }
         // ------------------------------------------------------------ 任务
         "jobs.runDue" => {
             let input: RunDueParams = parse(params)?;
@@ -269,6 +279,10 @@ pub(crate) fn dispatch(
 ///
 /// 恢复摘要里的数字直接来自库，`pending_jobs` 走精确计数（`list_jobs` 的长度会被它自己的
 /// 分页上限夹住，任务多时会少报）。
+///
+/// `runtime_config` 是**加性扩展**（`diary_bridge::api::LibraryInfo` 没有这一格）：
+/// 鸿蒙产品包设不了环境变量，宿主必须能从 `core.info` 里看到两条能力各自「从哪儿读到
+/// 什么路径、现在到哪一步」——否则配置失败时只能blind 猜。它只 stat、不加载模型。
 fn core_info(core: &Core, library_id: &str) -> Result<Value, CoreError> {
     let recoverable_imports = core.count_imports_in_flight()?;
     let open_recordings = core.count_open_recordings()?;
@@ -296,6 +310,8 @@ fn core_info(core: &Core, library_id: &str) -> Result<Value, CoreError> {
         },
         "capture_count": core.count_captures()?,
         "last_event_sequence": core.last_event_sequence()?,
+        // 两条能力的配置来源与就绪状态（语义/转写）。纯 stat，不建会话。
+        "runtime_config": core.runtime_config(),
     }))
 }
 
@@ -547,6 +563,18 @@ impl From<SearchFiltersParams> for SearchFilters {
 #[serde(deny_unknown_fields)]
 struct RebuildIndexesParams {
     scope: String,
+    reason: String,
+    #[serde(alias = "operationId")]
+    operation_id: String,
+}
+
+/// `indexes.rebuildSemantic`：只排一条**整库**语义重建任务（契约 4.4）。
+///
+/// 没有 `scope`：语义的代次与向量是全局的，范围只决定这一轮重算了哪些块
+/// （见 `Core::schedule_semantic_index` 的说明）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RebuildSemanticParams {
     reason: String,
     #[serde(alias = "operationId")]
     operation_id: String,

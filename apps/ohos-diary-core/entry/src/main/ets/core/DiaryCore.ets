@@ -37,6 +37,7 @@ import {
   ProviderIdParams,
   ProviderTestReport,
   RebuildIndexParams,
+  RebuildSemanticParams,
   RecoverRecordingParams,
   RecordingFinalizeResult,
   RecordingRecovery,
@@ -237,6 +238,16 @@ export class DiaryCore {
   /** `indexes.rebuild`：只排任务，不同步建索引（真正跑要 `runDueJobs()`）。 */
   rebuildIndex(params: RebuildIndexParams): Job {
     return this.invokeData('indexes.rebuild', params) as Job;
+  }
+
+  /**
+   * `indexes.rebuildSemantic`：只排一条**整库**语义重建任务（契约 4.4）。
+   *
+   * 与 `rebuildIndex` 是两条独立的索引路：这条建向量（要模型与 ORT），那条建关键词。
+   * 同样不同步重建——真正跑要 `runDueJobs()`。
+   */
+  rebuildSemanticIndex(params: RebuildSemanticParams): Job {
+    return this.invokeData('indexes.rebuildSemantic', params) as Job;
   }
 
   /** `jobs.runDue`：把到期的任务跑一轮（预算 + 条数上限，见 C ABI 文档 §6.1）。 */
