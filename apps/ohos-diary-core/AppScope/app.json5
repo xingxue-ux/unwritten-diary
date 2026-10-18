@@ -2,7 +2,7 @@
   "app": {
     // 参考工程的临时 bundleName（不是产品最终值）。要与调试 Profile（.p7b）里的
     // bundle-info.bundle-name 一致才能安装，见 probes/ohos-hap-smoke/README.md。
-    "bundleName": "com.xingxue.unwrittendiary.arktscore",
+    "bundleName": "com.lingxing.unwrittendiary",
     "vendor": "xingxue",
     "versionCode": 1000000,
     "versionName": "1.0.0",
