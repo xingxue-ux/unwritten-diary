@@ -381,8 +381,9 @@ DIARY_REC VERIFY ABORT permission_not_granted
   输密码/指纹。需要人工解锁后设备才回到可操作状态；应用本身仍是安装好的；
 - 最终 HAP（sha256 `abe0a094…`，比实测构建多了「系统中断置 `interrupted` 并写进
   `end_reason`」这一小段）已 `hdc install -r` 成功，但**因为设备锁屏后 `aa start`
-  被系统拒绝，安装后没有再次启动录制**；§7 的数字来自它的前一版构建 `3b4ab1b8…`
-  （除这段标记外的逻辑相同），最终版只做了 `assembleHap` + 安装。解锁后建议复跑
+  被系统拒绝，安装后没有再次启动录制**；§7 的数字来自它的前两个同源构建
+  （`8dd85f6f…` 的 5 秒/后台用例、`3b4ab1b8…` 的锁屏状态日志；除 interrupted 标记外
+  逻辑相同），最终版只做了 `assembleHap` + 安装。解锁后建议复跑
   `verify_mode record` 一次再签收。
 
 ## 9 没有做到的（如实）
