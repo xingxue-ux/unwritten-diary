@@ -24,6 +24,12 @@
 //! # 然后另起一个进程量查询（两个阶段分开，查询内存才不会混进构建的峰值）：
 //! DIARY_MODEL_DIR=... DIARY_ORT_DYLIB=... \
 //! cargo run --release -p diary_probe -- large-bench query 10000 --storage f32 --dir "$HOME/big90-scratch/bench-10k-f32"
+//!
+//! # 可选：--profile 打「1.5 秒花在哪」的分段计时；--scan-depth 改快速路径的候选
+//! # 上限（默认见 semantic::FAST_SCAN_DEPTH）；--mmap-mib 试 SQLite mmap（默认关）。
+//! # 这三个都只影响量测，不是产品配置。
+//! cargo run --release -p diary_probe -- large-bench query 100000 --storage int8 \
+//!   --dir "$HOME/big90-scratch/bench-100k-int8-hash" --queries 40 --profile
 //! ```
 
 use std::collections::BTreeMap;
@@ -59,7 +65,7 @@ const WORDS: [&str; 48] = [
 
 pub fn run(args: &[String]) -> Result<()> {
     let Some(command) = args.first().map(String::as_str) else {
-        bail!("用法：large-bench <build|query|recall-quality> <块数> [--storage f32|int8] [--dir DIR] [--queries N]");
+        bail!("用法：large-bench <build|query|recall-quality> <块数> [--storage f32|int8] [--dir DIR] [--queries N] [--profile] [--scan-depth N] [--mmap-mib N]");
     };
     match command {
         "build" => {
