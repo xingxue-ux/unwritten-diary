@@ -4,6 +4,7 @@ import { window } from '@kit.ArkUI';
 import { process } from '@kit.ArkTS';
 import { DiaryCoreSmoke } from '../core/Smoke';
 import { DeviceVerify } from '../verify/DeviceVerify';
+import { RecordingVerify } from '../recording/RecordingVerify';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryCore';
@@ -20,6 +21,15 @@ const MARK: string = 'DIARY_SMOKE';
  *   aa start -a EntryAbility -b <bundle> -m entry --ps verify_mode concurrency
  *   aa start -a EntryAbility -b <bundle> -m entry --ps verify_mode persist
  *   aa start -a EntryAbility -b <bundle> -m entry --ps verify_mode diag
+ *
+ * 录音验证入口（#108 ⑦，实现在 `recording/`）：
+ *   --ps verify_mode record        录 5 秒 → finalize → 试着跑转写任务
+ *   --ps verify_mode record_bg     录 8 秒（配合 Home 键验证后台仍能录）
+ *   --ps verify_mode record_hold   一直录（配合 aa force-stop 验证下次启动 recover）
+ *   --ps verify_mode record_crash  录 6 秒后 process.abort()（真·进程崩溃）
+ *   --ps verify_mode recover       只查「上次没走完的录音」
+ *   --ps verify_mode recover_finalize  查询并把恢复出来的会话最终化
+ *
  * 不带参数时就是原来的同步 Smoke（用于量主线程阻塞）。
  */
 export default class EntryAbility extends UIAbility {
@@ -39,7 +49,14 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     const filesDir = this.context.filesDir;
-    if (this.mode === 'smoke') {
+    if (this.mode === 'record' || this.mode === 'record_bg' ||
+      this.mode === 'record_hold' || this.mode === 'record_crash' ||
+      this.mode === 'recover' || this.mode === 'recover_finalize') {
+      RecordingVerify.run(this.mode, this.context, filesDir).catch((err: Object) => {
+        hilog.error(DOMAIN, TAG, '%{public}s RECORDING_VERIFY failed %{public}s',
+          MARK, JSON.stringify(err));
+      });
+    } else if (this.mode === 'smoke') {
       this.runSmokeWithMetrics(filesDir);
     } else {
       DeviceVerify.run(this.mode, filesDir);
@@ -85,5 +102,9 @@ export default class EntryAbility extends UIAbility {
 
   onDestroy(): void {
     hilog.info(DOMAIN, TAG, '%{public}s onDestroy', MARK);
+    RecordingVerify.shutdown().catch((err: Object) => {
+      hilog.warn(DOMAIN, TAG, '%{public}s SHUTDOWN failed %{public}s',
+        MARK, JSON.stringify(err));
+    });
   }
 }

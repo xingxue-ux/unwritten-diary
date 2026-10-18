@@ -7,13 +7,11 @@
 设计与验证记录在 [`docs/architecture/m6-ArkTS-NAPI.md`](../../docs/architecture/m6-ArkTS-NAPI.md)；
 C ABI 本身见 [`docs/architecture/m6-核心-C-ABI.md`](../../docs/architecture/m6-核心-C-ABI.md)。
 
-> ✅ **2026-10-18 真机验证通过（临时身份）**：HAD-W32 / API 23 / arm64-v8a，
-> 逐条结果、原始 hilog 片段、性能数字与问题清单见本文
-> [「真机验证结果」](#真机验证结果2026-10-18)。
->
-> ⚠️ 设备上用的是**临时 bundleName `com.example.myapplication`**（现有调试 Profile 只绑它），
-> **不是**产品名 `com.lingxing.unwrittendiary`。产品 Profile 尚未生成，所以产品身份下的
-> 安装/启动未验证；本文所有设备结论都只对临时身份成立。
+> ✅ **2026-10-18 真机验证通过**：HAD-W32 / API 23 / arm64-v8a。
+> NAPI/烟测部分最初用临时身份 `com.example.myapplication`；**录音这一片（#108 ⑦）已改用
+> 产品身份 `com.lingxing.unwrittendiary`** 安装、授权、录音并 finalize（见
+> [`docs/architecture/m6-平板与PC平台能力.md`](../../docs/architecture/m6-平板与PC平台能力.md)）。
+> 逐条结果、原始 hilog、性能数字与问题清单见本文[「真机验证结果」](#真机验证结果2026-10-18)。
 
 ## 目录
 
@@ -25,7 +23,7 @@ apps/ohos-diary-core/
 │       ├── index.d.ts
 │       └── oh-package.json5
 ├── entry/src/main/ets/
-│   ├── core/DiaryCore.ets                  # 薄封装：9 条契约方法 + rawCall/rawEnvelope
+│   ├── core/DiaryCore.ets                  # 薄封装：14 条契约方法 + rawCall/rawEnvelope
 │   ├── core/DiaryError.ets                 # 21 个核心码 + native_unavailable
 │   ├── core/Envelope.ets                   # 请求拼装 / 响应拆封
 │   ├── core/Models.ets                     # data 与参数的 ArkTS 类型（snake_case）
@@ -193,6 +191,28 @@ hap_verify_v2.cpp(VerifyAppPkcs7:163) GetCertChains from pkcs7 failed
 5. 若 AGC 不认识新包名，会报 `Bundle name ... does not exist` / 「没有被识别为 HarmonyOS 应用」⇒ **先在 AGC 建这个应用**，再回来重复第 4 步；
 6. 产物落在 `C:\Users\<你>\.ohos\config\default_a_<hash>.p12/.cer/.p7b` + `material\`（`<hash>` 以弹窗里 `Profile File` 栏为准）；之后 `Build > Build Hap(s)` 出 `entry-default-signed.hap`。
 
+## 录音（#108 ⑦ 第一片）
+
+`recording/` 下是**语音日记的采集链路**：`AudioCapturer`（PCM 16 kHz / 单声道 / 16 bit）
+→ 每 2 秒封一段写进核心给的 `staging_ticket` → `recordings.registerSegment` → 停止时
+`recordings.finalize`（拼逻辑音频、建 Asset、同事务排转写任务）。完整设计、权限、长时任务、
+真机数字与「没做到的」见
+[`docs/architecture/m6-平板与PC平台能力.md`](../../docs/architecture/m6-平板与PC平台能力.md)。
+
+真机命令（**先 force-stop**，否则 `aa start` 只触发 onNewWant，不会重跑 `onWindowStageCreate`）：
+
+```bash
+hdc shell "aa force-stop com.lingxing.unwrittendiary"
+hdc shell "aa start -a EntryAbility -b com.lingxing.unwrittendiary -m entry --ps verify_mode record"
+hdc shell "hilog -x -T DiaryRec" | grep DIARY_REC
+```
+
+真机结果（2026-10-18，产品身份）：5 秒录出 3 段（64,044 / 64,000 / 31,360 B），
+finalize `state=saved`、`logical_duration_ms=4980`、blob 159,404 B 是合法单头 PCM WAV；
+首包延迟 37.5 ms、录音期间 CPU 5.15%。**Home 后台能继续录**（8 秒/4 段/finalize 成功）；
+**Power 锁屏后系统强制 STOP 采集、亮屏不恢复**（8 秒只录到 3.1 秒，`InterruptHint=STOP`）；转写任务排上了但设备没有
+ASR 引擎/模型，停在 `waiting_configuration`，**转写未验**。
+
 ## 真机验证结果（2026-10-18）
 
 ### 环境与身份
@@ -290,7 +310,7 @@ rc=0
 
 `DiaryCore.ets` 的 `import diaryNapi from 'libdiary_napi.so'` 在设备上拿到的是可用对象，
 不是 `undefined`：`version()`、`selfDir()`、`open()`、`call()`、`close()`、`lastError()`、
-`openHandleCount()` 都被真实调用；`DiaryCore` 的 9 条契约方法全部返回了核心 JSON。
+`openHandleCount()` 都被真实调用；`DiaryCore` 的 9 条契约方法（当时）全部返回了核心 JSON；录音这一片又补了 5 条，共 14 条。
 没有出现探针 §24.1 那种「export objects of native so is undefined」。
 
 ### 第 5 项：`libc++_shared` 随包
