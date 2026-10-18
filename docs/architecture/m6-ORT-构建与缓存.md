@@ -210,6 +210,16 @@ if: needs.ohos_ort_cache.outputs.enabled == 'true'
 改了 `probes/ohos-*` / `apps/ohos-*` / `tools/ohos/**` ≠ 有 NDK/缓存。文件变更只影响提示
 文案（告诉人「这次改了 ohos，但 ORT 没验证」），不影响跑不跑。
 
+相关仓库变量（都可选，在 Settings → Secrets and variables → Actions → Variables 里设）：
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `vars.OHOS_CLT_URL` | 空 | NDK 下载地址。**非空 = 允许 `ohos-ort` 在普通 PR 上运行**；空 = 只有 `workflow_dispatch` 才跑 |
+| `vars.OHOS_CLT_SHA256` | 空 | 下载包的 sha256；建议设，不设只打 warning |
+| `vars.OHOS_RUNNER` | `ubuntu-latest` | `ohos-ort` 的 runner label；有 NDK 的自托管 runner 填 `self-hosted` |
+| `vars.OHOS_NDK` | 脚本默认路径 | 自托管 runner 上 OHOS NDK 的 `native` 目录；不设则用 `~/command-line-tools/sdk/default/openharmony/native` |
+| `vars.ORT_CACHE_REV` | `v1` | 缓存代次；bump 它让 key 变掉，用于刷新/作废旧缓存（§6.4） |
+
 > 旧设计（本 PR 修复前）用 `changes` job 的 diff 结果触发：只要改了 ohos 路径就进入
 > `ohos-ort`，缓存未命中又没有 NDK 时脚本 `exit 1`，普通 PR 因此稳定报红。评审 #126
 > 要求「未配置时不要稳定报红」——现在改成 **skipped**，由 `ohos-ort-cache` 说明为什么没跑。
@@ -264,10 +274,10 @@ key: ort-${{ env.ORT_VERSION }}-${{ runner.os }}-${{ hashFiles('tools/ohos/build
 **A. 有 NDK 的自托管 runner（推荐）**
 
 1. 注册 runner，打 label（如 `self-hosted`）；装 Command Line Tools，NDK 在
-   `~/command-line-tools/sdk/default/openharmony/native`（或在 runner 环境里设 `NDK`）。
+   `~/command-line-tools/sdk/default/openharmony/native`（或用 `vars.OHOS_NDK` 指定）。
 2. 仓库变量 `vars.OHOS_RUNNER=self-hosted`（job 的 `runs-on` 用它；不设则 `ubuntu-latest`）。
 3. Actions → `check` → Run workflow。**不配 `OHOS_CLT_URL` 也可以**：dispatch 本身就是
-   允许运行的条件。
+   允许运行的条件（前提是 `OHOS_RUNNER` 已指到有 NDK 的 runner，否则会 fail-fast）。
 4. 缓存未命中 → ~33 min 构建 → post-step 按当前 key 保存 `~/.cache/dsh-ort`。
    之后普通 PR 仍然 skip（未配 URL），但手动 dispatch 命中缓存只需几秒。
 

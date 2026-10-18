@@ -111,7 +111,7 @@ jobs:
 
           # 未配置 ⇒ 下面的 ohos-ort 会 skipped。把「没跑」显式说出来。
           if [[ "$OHOS_CHANGED" == "true" ]]; then
-            msg="本次变更改到了 OHOS/ORT 相关路径，但 ohos-ort 已被跳过（$why），因此 ORT 构建/缓存**没有**被验证。请本地跑 tools/ohos/build-ort.sh，或配好 OHOS_CLT_URL / 自托管 NDK 后手动 dispatch。"
+            msg="本次变更改到了 OHOS/ORT 相关路径，但 ohos-ort 已被跳过（$why），因此 ORT 构建/缓存**没有**被验证。请本地跑 tools/ohos/build-ort.sh；或在配置 OHOS_CLT_URL / OHOS_RUNNER（有 NDK 的自托管）后手动 dispatch。"
           else
             msg="本次变更未涉及 OHOS/ORT 路径，ohos-ort 已被跳过（$why）。这是预期行为；它不代表 ORT 验证通过，也不阻塞合入。"
           fi
@@ -373,6 +373,7 @@ jobs:
       - name: 缓存未命中 / 强制重建 → 准备 NDK（没有就 fail-fast 并给指引）
         if: steps.cache.outputs.cache-hit != 'true' || github.event.inputs.force_build == 'true'
         env:
+          NDK: ${{ vars.OHOS_NDK }}
           OHOS_CLT_URL: ${{ vars.OHOS_CLT_URL }}
           OHOS_CLT_SHA256: ${{ vars.OHOS_CLT_SHA256 }}
         run: |
@@ -392,9 +393,9 @@ jobs:
           要让它真正构建，任选一条：
 
           1. **自托管 runner**：装好 Command Line Tools，NDK 在
-             `~/command-line-tools/sdk/default/openharmony/native`（或 runner 环境里设 `NDK`），
-             用仓库变量 `OHOS_RUNNER` 指定它的 label（如 `self-hosted`），再手动 dispatch 一次。
-             构建产物会写入 Actions 缓存，之后命中缓存只需几秒。
+             `~/command-line-tools/sdk/default/openharmony/native`（或用仓库变量 `OHOS_NDK`
+             指定 native 目录），用仓库变量 `OHOS_RUNNER` 指定它的 label（如 `self-hosted`），
+             再手动 dispatch 一次。构建产物会写入 Actions 缓存，之后命中缓存只需几秒。
           2. **仓库变量**：设 `OHOS_CLT_URL` 指向 Command Line Tools（linux-x64）压缩包的
              可下载地址，建议同时设 `OHOS_CLT_SHA256`。job 会自动解压并找到
              `*/openharmony/native`。配了它之后普通 PR 也会跑本 job（未命中则 ~33 min）。
