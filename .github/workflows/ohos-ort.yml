@@ -14,8 +14,9 @@ name: ohos-ort
 # 跑不跑：
 #   enabled      := vars.OHOS_CLT_URL != '' || inputs.run_build == true
 #   should_build := enabled && (非 PR || 同仓库 PR && 打了 ci:ohos-ort label)
-#   普通 PR / push main（未配变量）不触发本 workflow（paths 不匹配）或 gate 绿 + notice、
-#   ohos-ort **skipped**；普通 dispatch（不勾 run_build）⇒ skipped；勾了 ⇒ 真跑/失败指引。
+#   普通 PR（未配变量）不命中 paths 就根本不触发，命中则 gate 绿 + notice、ohos-ort
+#   **skipped**；push main 不触发本 workflow；普通 dispatch（不勾 run_build）⇒ skipped；
+#   勾了 ⇒ 真跑/失败指引。
 #   未配置时它永远不会因为「没缓存/没 NDK」把普通 PR 弄红。
 #
 # 长度：16 核 33 min（实测）；4 核 ubuntu-latest 约 1.5–2 h（推算，未实测）。
@@ -31,7 +32,7 @@ on:
         type: boolean
         default: false
       force_build:
-        description: "忽略 Actions 缓存强制重建（需同时勾 run_build）"
+        description: "忽略 Actions 缓存强制重建（未配 vars.OHOS_CLT_URL 时需同时勾 run_build）"
         type: boolean
         default: false
   pull_request:

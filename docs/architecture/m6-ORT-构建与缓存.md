@@ -350,7 +350,8 @@ key: ort-${{ env.ORT_VERSION }}-${{ runner.os }}-${{ hashFiles('tools/ohos/build
 **刷新 / 作废旧缓存**
 
 1. bump `vars.ORT_CACHE_REV`（如 `v1` → `v2`）；
-2. 可选：dispatch 勾 `force_build`（需同时勾 `run_build`；即使 key 意外命中，也强制重编）；
+2. 可选：dispatch 勾 `force_build`（未配 `OHOS_CLT_URL` 时需同时勾 `run_build`；即使 key
+   意外命中，也强制重编）；
 3. 新 key 的 run 成功后，旧缓存用 `gh cache list` / `gh cache delete <id|key>` 清理。
 
 > 只勾 `force_build` 而不 bump `ORT_CACHE_REV` 不会更新缓存（key 已存在、缓存不可变）。
