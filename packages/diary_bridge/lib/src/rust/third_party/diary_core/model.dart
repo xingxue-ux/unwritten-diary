@@ -7,8 +7,8 @@ import '../../frb_generated.dart';
 import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NewJob`, `OrganizePlanSummary`, `SourceItem`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`, `partial_cmp`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `NewJob`, `OrganizePlanSummary`, `PluginProviderFailure`, `SourceItem`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`, `partial_cmp`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
 
 /// 独立保存的 AI 回应，契约第 4.3 节 `responses.get`。
@@ -1662,9 +1662,13 @@ class NativeRecordingStatus {
   final String recordingId;
   final RecordingState state;
   final DateTime wallClock;
+
+  /// 采集器**实际收到**的 PCM 总时长（只增，不含还没收到的）。
   final PlatformInt64 elapsedMs;
 
-  /// 已经持久化的位置，恢复时用来判断缺口。
+  /// **已成功登记**片段时长之和；两次登记之间还没封闭的尾巴不能算进来。
+  ///
+  /// 恢复时用 `elapsed_ms - persisted_through_ms` 判断「可能丢失的尾巴」。
   final PlatformInt64 persistedThroughMs;
   final bool inputDeviceChanged;
   final String? message;
@@ -2185,6 +2189,664 @@ class OrganizeTemplateParam {
           description == other.description;
 }
 
+/// 一次插件运行产出的文件。
+class PluginArtifact {
+  final String fileName;
+  final String mediaType;
+  final PlatformInt64 byteSize;
+  final String sha256;
+
+  /// 文件库里的绝对路径；内存库没有落盘时为 None。
+  final String? path;
+
+  /// 文本内容的副本（最多 1 MiB），方便界面直接展示/保存；二进制为 None。
+  final String? content;
+
+  const PluginArtifact({
+    required this.fileName,
+    required this.mediaType,
+    required this.byteSize,
+    required this.sha256,
+    this.path,
+    this.content,
+  });
+
+  @override
+  int get hashCode =>
+      fileName.hashCode ^
+      mediaType.hashCode ^
+      byteSize.hashCode ^
+      sha256.hashCode ^
+      path.hashCode ^
+      content.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PluginArtifact &&
+          runtimeType == other.runtimeType &&
+          fileName == other.fileName &&
+          mediaType == other.mediaType &&
+          byteSize == other.byteSize &&
+          sha256 == other.sha256 &&
+          path == other.path &&
+          content == other.content;
+}
+
+/// 插件返回的候选派生内容。**不会自动写进日记**；核心校验后随运行结果交给调用方，
+/// 并把摘要记在 `plugin_installations.last_run_json` 供审计。
+class PluginDerivedContent {
+  final String kind;
+  final String text;
+  final List<PluginSourceRef> sourceRefs;
+
+  const PluginDerivedContent({
+    required this.kind,
+    required this.text,
+    required this.sourceRefs,
+  });
+
+  @override
+  int get hashCode => kind.hashCode ^ text.hashCode ^ sourceRefs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PluginDerivedContent &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          text == other.text &&
+          sourceRefs == other.sourceRefs;
+}
+
+/// 插件入口形态：声明式（纯数据，宿主解释）或 Wasm（受限沙箱）。
+enum PluginEntryKind {
+  /// `main.json`：只有模板，宿主按固定占位符解释，**没有可执行代码**。
+  declarative,
+
+  /// `main.wasm`：在 `wasmi` 解释器里跑，权限与预算由宿主强制。
+  wasm;
+
+  static Future<PluginEntryKind?> fromWire({required String value}) =>
+      RustLib.instance.api.diaryCoreModelPluginEntryKindFromWire(value: value);
+
+  Future<void> wire() =>
+      RustLib.instance.api.diaryCoreModelPluginEntryKindWire(that: this);
+}
+
+/// 一次包检查的结论。**不执行包内容**：只读文件、校验清单/哈希/版本/平台/权限。
+class PluginInspection {
+  final String packagePath;
+
+  /// 包的来源形态：`directory` 或 `zip`。
+  final String packageKind;
+
+  /// 对清单与全部文件算出的稳定包哈希（换一个字节就变）。
+  final String packageHash;
+  final PluginManifest manifest;
+
+  /// 声明的模板（声明式插件）；Wasm 插件为空。
+  final List<PluginTemplate> templates;
+
+  /// 清单声明的权限，带中文说明。
+  final List<PluginPermission> permissions;
+
+  /// 调用方这次没有授予的权限（安装会因此被拒，并说清缺哪几项）。
+  final List<String> missingPermissions;
+
+  /// 本构建能不能安装：版本范围、平台、清单版本、结构都算。
+  final bool compatible;
+
+  /// 不能安装/需要用户注意的原因。机器可读前缀：`incompatible:` / `invalid:`。
+  final List<String> issues;
+
+  /// 已安装的版本（没有就是 None）。
+  final String? installedVersion;
+
+  /// 这次安装会不会是一次升级。
+  final bool isUpgrade;
+
+  const PluginInspection({
+    required this.packagePath,
+    required this.packageKind,
+    required this.packageHash,
+    required this.manifest,
+    required this.templates,
+    required this.permissions,
+    required this.missingPermissions,
+    required this.compatible,
+    required this.issues,
+    this.installedVersion,
+    required this.isUpgrade,
+  });
+
+  @override
+  int get hashCode =>
+      packagePath.hashCode ^
+      packageKind.hashCode ^
+      packageHash.hashCode ^
+      manifest.hashCode ^
+      templates.hashCode ^
+      permissions.hashCode ^
+      missingPermissions.hashCode ^
+      compatible.hashCode ^
+      issues.hashCode ^
+      installedVersion.hashCode ^
+      isUpgrade.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PluginInspection &&
+          runtimeType == other.runtimeType &&
+          packagePath == other.packagePath &&
+          packageKind == other.packageKind &&
+          packageHash == other.packageHash &&
+          manifest == other.manifest &&
+          templates == other.templates &&
+          permissions == other.permissions &&
+          missingPermissions == other.missingPermissions &&
+          compatible == other.compatible &&
+          issues == other.issues &&
+          installedVersion == other.installedVersion &&
+          isUpgrade == other.isUpgrade;
+}
+
+/// 一个已安装插件。**全部来自缓存清单与授权表**，启动时不需要碰插件文件。
+class PluginInstallation {
+  final String pluginId;
+  final String name;
+  final String version;
+  final PlatformInt64 manifestVersion;
+  final PluginEntryKind entryKind;
+  final String apiRange;
+  final bool enabled;
+
+  /// 用户**已经授予**的权限（不是清单声明的全集；两者取交集后存这里）。
+  final List<String> permissions;
+
+  /// 清单声明的权限（授权前展示用；与 `permissions` 对照能看出撤权/升级新增）。
+  final List<String> requestedPermissions;
+
+  /// 清单声明的支持平台（缓存，不读入口文件）。
+  final List<String> supportedPlatforms;
+  final List<String> activationEvents;
+
+  /// 缓存下来的模板（声明式插件）；启动时直接从缓存读，不读入口文件。
+  final List<PluginTemplate> templates;
+  final String packageHash;
+  final DateTime installedAt;
+  final DateTime updatedAt;
+  final DateTime? lastRunAt;
+  final String? lastError;
+
+  const PluginInstallation({
+    required this.pluginId,
+    required this.name,
+    required this.version,
+    required this.manifestVersion,
+    required this.entryKind,
+    required this.apiRange,
+    required this.enabled,
+    required this.permissions,
+    required this.requestedPermissions,
+    required this.supportedPlatforms,
+    required this.activationEvents,
+    required this.templates,
+    required this.packageHash,
+    required this.installedAt,
+    required this.updatedAt,
+    this.lastRunAt,
+    this.lastError,
+  });
+
+  @override
+  int get hashCode =>
+      pluginId.hashCode ^
+      name.hashCode ^
+      version.hashCode ^
+      manifestVersion.hashCode ^
+      entryKind.hashCode ^
+      apiRange.hashCode ^
+      enabled.hashCode ^
+      permissions.hashCode ^
+      requestedPermissions.hashCode ^
+      supportedPlatforms.hashCode ^
+      activationEvents.hashCode ^
+      templates.hashCode ^
+      packageHash.hashCode ^
+      installedAt.hashCode ^
+      updatedAt.hashCode ^
+      lastRunAt.hashCode ^
+      lastError.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PluginInstallation &&
+          runtimeType == other.runtimeType &&
+          pluginId == other.pluginId &&
+          name == other.name &&
+          version == other.version &&
+          manifestVersion == other.manifestVersion &&
+          entryKind == other.entryKind &&
+          apiRange == other.apiRange &&
+          enabled == other.enabled &&
+          permissions == other.permissions &&
+          requestedPermissions == other.requestedPermissions &&
+          supportedPlatforms == other.supportedPlatforms &&
+          activationEvents == other.activationEvents &&
+          templates == other.templates &&
+          packageHash == other.packageHash &&
+          installedAt == other.installedAt &&
+          updatedAt == other.updatedAt &&
+          lastRunAt == other.lastRunAt &&
+          lastError == other.lastError;
+}
+
+/// `plugins.invoke` 的入参。
+///
+/// 激活点必须是清单声明的字符串之一：`command:<id>`、`materials_pending:<kind>`、
+/// `export.start`、`organize.template.select`。`export.start` 的格式与日期范围
+/// 沿用契约 `ExportRequest` 的 `format` 与 dayKey 语义（#113 的现有形状）。
+class PluginInvocation {
+  final String pluginId;
+  final String activation;
+
+  /// 声明式模板 id；Wasm 插件与命令激活可以为空。
+  final String? templateId;
+
+  /// 用户选定的日记版本（读当前选中材料权限）。
+  final List<String> selectedVersionIds;
+
+  /// 用户选定的材料/记录（读当前选中材料权限）。
+  final List<String> selectedCaptureIds;
+
+  /// 明确日期范围（读日期范围权限）；闭区间，最多 366 天。
+  final String? fromDayKey;
+  final String? toDayKey;
+
+  /// 风格模板的输入（#114 的 `StyleProfile` 形状）。
+  final PluginStyleProfile? styleProfile;
+
+  /// 导出格式：`markdown` / `plain_text`；声明式模板必须与模板的 format 一致。
+  final String? format;
+
+  /// 命令的附加文字；有 1 MiB 上限，作为**数据**交给插件，不是指令。
+  final String? inputText;
+
+  const PluginInvocation({
+    required this.pluginId,
+    required this.activation,
+    this.templateId,
+    required this.selectedVersionIds,
+    required this.selectedCaptureIds,
+    this.fromDayKey,
+    this.toDayKey,
+    this.styleProfile,
+    this.format,
+    this.inputText,
+  });
+
+  @override
+  int get hashCode =>
+      pluginId.hashCode ^
+      activation.hashCode ^
+      templateId.hashCode ^
+      selectedVersionIds.hashCode ^
+      selectedCaptureIds.hashCode ^
+      fromDayKey.hashCode ^
+      toDayKey.hashCode ^
+      styleProfile.hashCode ^
+      format.hashCode ^
+      inputText.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PluginInvocation &&
+          runtimeType == other.runtimeType &&
+          pluginId == other.pluginId &&
+          activation == other.activation &&
+          templateId == other.templateId &&
+          selectedVersionIds == other.selectedVersionIds &&
+          selectedCaptureIds == other.selectedCaptureIds &&
+          fromDayKey == other.fromDayKey &&
+          toDayKey == other.toDayKey &&
+          styleProfile == other.styleProfile &&
+          format == other.format &&
+          inputText == other.inputText;
+}
+
+/// 插件清单。字段名与任务书 §8.2 的 camelCase 一致（缓存 JSON 也用它）。
+///
+/// `package_hashes` 覆盖包内**除 `manifest.json` 之外**的每一个文件；清单自身无法
+/// 自哈希，由安装时的结构校验与包哈希（`PluginInspection.package_hash`）兜住。
+class PluginManifest {
+  final PlatformInt64 manifestVersion;
+  final String id;
+  final String name;
+  final String version;
+  final String author;
+  final String license;
+  final String apiRange;
+  final List<String> supportedPlatforms;
+  final PluginEntryKind entryKind;
+  final String entryFile;
+  final List<String> activationEvents;
+  final List<String> permissions;
+
+  /// 设置声明的 JSON 文本（对象）。这一片只做保存与展示，不据此自动授权。
+  final String? settingsSchemaJson;
+  final Map<String, String> packageHashes;
+  final String? description;
+  final String? homepage;
+
+  const PluginManifest({
+    required this.manifestVersion,
+    required this.id,
+    required this.name,
+    required this.version,
+    required this.author,
+    required this.license,
+    required this.apiRange,
+    required this.supportedPlatforms,
+    required this.entryKind,
+    required this.entryFile,
+    required this.activationEvents,
+    required this.permissions,
+    this.settingsSchemaJson,
+    required this.packageHashes,
+    this.description,
+    this.homepage,
+  });
+
+  @override
+  int get hashCode =>
+      manifestVersion.hashCode ^
+      id.hashCode ^
+      name.hashCode ^
+      version.hashCode ^
+      author.hashCode ^
+      license.hashCode ^
+      apiRange.hashCode ^
+      supportedPlatforms.hashCode ^
+      entryKind.hashCode ^
+      entryFile.hashCode ^
+      activationEvents.hashCode ^
+      permissions.hashCode ^
+      settingsSchemaJson.hashCode ^
+      packageHashes.hashCode ^
+      description.hashCode ^
+      homepage.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PluginManifest &&
+          runtimeType == other.runtimeType &&
+          manifestVersion == other.manifestVersion &&
+          id == other.id &&
+          name == other.name &&
+          version == other.version &&
+          author == other.author &&
+          license == other.license &&
+          apiRange == other.apiRange &&
+          supportedPlatforms == other.supportedPlatforms &&
+          entryKind == other.entryKind &&
+          entryFile == other.entryFile &&
+          activationEvents == other.activationEvents &&
+          permissions == other.permissions &&
+          settingsSchemaJson == other.settingsSchemaJson &&
+          packageHashes == other.packageHashes &&
+          description == other.description &&
+          homepage == other.homepage;
+}
+
+/// 一项权限的展示信息。权限的**判定**在核心，界面只负责让用户看清再授权。
+class PluginPermission {
+  /// wire 名，例如 `read_selected_material` 或 `invoke_provider:<providerId>`。
+  final String id;
+  final String label;
+  final String description;
+
+  /// `low` / `medium` / `high`；只用于界面提示，不参与判定。
+  final String risk;
+
+  const PluginPermission({
+    required this.id,
+    required this.label,
+    required this.description,
+    required this.risk,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^ label.hashCode ^ description.hashCode ^ risk.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PluginPermission &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          label == other.label &&
+          description == other.description &&
+          risk == other.risk;
+}
+
+/// 一次插件运行的结果。`status` 只有 `succeeded` / `failed` / `denied` / `timeout` /
+/// `budget_exceeded` 五种；`error_code` 用契约第 7 节的既有码，不新增 wire 码。
+class PluginRunResult {
+  final String runId;
+  final String pluginId;
+  final String activation;
+  final String status;
+  final String? output;
+  final List<PluginArtifact> artifacts;
+  final List<PluginDerivedContent> derivedContents;
+  final List<String> logs;
+  final List<String> warnings;
+  final String? errorCode;
+  final String? errorMessage;
+  final PlatformInt64 durationMs;
+
+  /// 这一轮实际消耗的 Wasm 指令预算（fuel）；声明式插件为 None。
+  final PlatformInt64? instructionsUsed;
+
+  const PluginRunResult({
+    required this.runId,
+    required this.pluginId,
+    required this.activation,
+    required this.status,
+    this.output,
+    required this.artifacts,
+    required this.derivedContents,
+    required this.logs,
+    required this.warnings,
+    this.errorCode,
+    this.errorMessage,
+    required this.durationMs,
+    this.instructionsUsed,
+  });
+
+  @override
+  int get hashCode =>
+      runId.hashCode ^
+      pluginId.hashCode ^
+      activation.hashCode ^
+      status.hashCode ^
+      output.hashCode ^
+      artifacts.hashCode ^
+      derivedContents.hashCode ^
+      logs.hashCode ^
+      warnings.hashCode ^
+      errorCode.hashCode ^
+      errorMessage.hashCode ^
+      durationMs.hashCode ^
+      instructionsUsed.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PluginRunResult &&
+          runtimeType == other.runtimeType &&
+          runId == other.runId &&
+          pluginId == other.pluginId &&
+          activation == other.activation &&
+          status == other.status &&
+          output == other.output &&
+          artifacts == other.artifacts &&
+          derivedContents == other.derivedContents &&
+          logs == other.logs &&
+          warnings == other.warnings &&
+          errorCode == other.errorCode &&
+          errorMessage == other.errorMessage &&
+          durationMs == other.durationMs &&
+          instructionsUsed == other.instructionsUsed;
+}
+
+/// 派生内容的来源定位（必须是本次授权范围内的材料/日记）。
+class PluginSourceRef {
+  final String sourceId;
+  final String? sourceRevisionId;
+
+  /// 可读定位的 JSON 文本（例如 `{"type":"text_range",...}`）；没有就是 None。
+  final String? locatorJson;
+
+  const PluginSourceRef({
+    required this.sourceId,
+    this.sourceRevisionId,
+    this.locatorJson,
+  });
+
+  @override
+  int get hashCode =>
+      sourceId.hashCode ^ sourceRevisionId.hashCode ^ locatorJson.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PluginSourceRef &&
+          runtimeType == other.runtimeType &&
+          sourceId == other.sourceId &&
+          sourceRevisionId == other.sourceRevisionId &&
+          locatorJson == other.locatorJson;
+}
+
+/// 风格输入：字段与契约 `StyleProfile` 对齐（#114 的现有形状），但**不落库**。
+///
+/// 这一片把渲染好的文本交回调用方；`styles.*` 的存储仍是 #114 的未完成部分，
+/// 不在这里另造一套风格表。
+class PluginStyleProfile {
+  final String id;
+  final String label;
+  final PlatformInt64 revision;
+  final DateTime updatedAt;
+  final String? lengthPreference;
+  final String? person;
+  final String? tone;
+  final String? emotionalTemperature;
+  final String? rhetoricLevel;
+  final List<String> examples;
+  final List<String> bannedExpressions;
+
+  const PluginStyleProfile({
+    required this.id,
+    required this.label,
+    required this.revision,
+    required this.updatedAt,
+    this.lengthPreference,
+    this.person,
+    this.tone,
+    this.emotionalTemperature,
+    this.rhetoricLevel,
+    required this.examples,
+    required this.bannedExpressions,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      label.hashCode ^
+      revision.hashCode ^
+      updatedAt.hashCode ^
+      lengthPreference.hashCode ^
+      person.hashCode ^
+      tone.hashCode ^
+      emotionalTemperature.hashCode ^
+      rhetoricLevel.hashCode ^
+      examples.hashCode ^
+      bannedExpressions.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PluginStyleProfile &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          label == other.label &&
+          revision == other.revision &&
+          updatedAt == other.updatedAt &&
+          lengthPreference == other.lengthPreference &&
+          person == other.person &&
+          tone == other.tone &&
+          emotionalTemperature == other.emotionalTemperature &&
+          rhetoricLevel == other.rhetoricLevel &&
+          examples == other.examples &&
+          bannedExpressions == other.bannedExpressions;
+}
+
+/// 声明式插件里的一个模板。纯数据，宿主只做白名单占位符替换。
+class PluginTemplate {
+  final String pluginId;
+  final String id;
+
+  /// `style`（风格模板）或 `export`（导出模板）。
+  final String kind;
+  final String label;
+  final String description;
+
+  /// `style_instruction` / `markdown` / `plain_text`。
+  final String format;
+
+  /// 模板正文（有大小上限，进缓存清单供预览）。
+  final String body;
+
+  const PluginTemplate({
+    required this.pluginId,
+    required this.id,
+    required this.kind,
+    required this.label,
+    required this.description,
+    required this.format,
+    required this.body,
+  });
+
+  @override
+  int get hashCode =>
+      pluginId.hashCode ^
+      id.hashCode ^
+      kind.hashCode ^
+      label.hashCode ^
+      description.hashCode ^
+      format.hashCode ^
+      body.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PluginTemplate &&
+          runtimeType == other.runtimeType &&
+          pluginId == other.pluginId &&
+          id == other.id &&
+          kind == other.kind &&
+          label == other.label &&
+          description == other.description &&
+          format == other.format &&
+          body == other.body;
+}
+
 /// 派生内容的处理状态。取值沿用契约第 3 节「索引」行。
 enum ProcessingStatus {
   pending,
@@ -2472,6 +3134,18 @@ class RecordingRecovery {
   final RecordingState state;
   final Int64List closedSegmentIndexes;
 
+  /// **已登记**片段时长之和：真正落盘、`finalize` 能拼出来的音频长度。
+  ///
+  /// 只有「已封闭并登记成功」的片段算数；两次登记之间收到的 PCM 还在内存 /
+  /// 未封闭文件里，进程崩溃就没了，绝不能算进来。
+  final PlatformInt64 persistedMs;
+
+  /// 采集器**最后一次上报**的「已收到 PCM 总时长」（会话的 `elapsed_ms`）。
+  ///
+  /// 这是上报时刻的值（平台层通常一秒上报一次、停止时再补一次），所以只是实际
+  /// 收到量的**下界**；`received_ms - persisted_ms` 就是「可能丢失的尾巴」。
+  final PlatformInt64 receivedMs;
+
   /// 已知缺口的总时长；无法估计时为 0 并在 notes 里说明。
   final PlatformInt64 gapMs;
   final List<String> notes;
@@ -2480,6 +3154,8 @@ class RecordingRecovery {
     this.recordingId,
     required this.state,
     required this.closedSegmentIndexes,
+    required this.persistedMs,
+    required this.receivedMs,
     required this.gapMs,
     required this.notes,
   });
@@ -2489,6 +3165,8 @@ class RecordingRecovery {
       recordingId.hashCode ^
       state.hashCode ^
       closedSegmentIndexes.hashCode ^
+      persistedMs.hashCode ^
+      receivedMs.hashCode ^
       gapMs.hashCode ^
       notes.hashCode;
 
@@ -2500,6 +3178,8 @@ class RecordingRecovery {
           recordingId == other.recordingId &&
           state == other.state &&
           closedSegmentIndexes == other.closedSegmentIndexes &&
+          persistedMs == other.persistedMs &&
+          receivedMs == other.receivedMs &&
           gapMs == other.gapMs &&
           notes == other.notes;
 }

@@ -123,6 +123,19 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// `corrupted_backup`。界面据此先展示问题，再决定要不要恢复。
   Future<BackupInspection> inspectBackup({required String packagePath});
 
+  /// 检查插件包（目录或 zip）。不执行任何包内容。
+  Future<PluginInspection> inspectPluginPackage({
+    required String packagePath,
+    required String platform,
+  });
+
+  /// 安装/升级插件。`grants` 是用户在这次安装里显式勾选的权限。
+  Future<PluginInstallation> installPlugin({
+    required String packagePath,
+    required String platform,
+    required List<String> grants,
+  });
+
   /// 任务面板状态：各状态计数、到期积压、下次唤醒与最近错误。
   ///
   /// 最近错误只有 kind + 错误码 + 时间（外加不透明的任务 ID），**没有用户内容**。
@@ -144,6 +157,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
 
   /// 按状态列出任务；不传状态就列全部。
   Future<List<Job>> listJobs({List<JobState>? states, required int limit});
+
+  /// 已安装插件。只读缓存清单，不读、不执行插件入口。
+  Future<List<PluginInstallation>> listPlugins();
 
   /// 列出脱敏后的服务配置，契约 `providers.list`。
   ///
@@ -197,6 +213,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 模板的规则是**产品指令**（只在 system 消息里），参数只接受整数与布尔——
   /// 两者都不接受自由文本，所以「把材料里的文字变成指令」没有入口。
   Future<List<OrganizeTemplate>> organizeTemplates();
+
+  /// 声明式模板缓存（可按插件过滤）。启动/列表路径不会碰插件文件。
+  Future<List<PluginTemplate>> pluginTemplates({String? pluginId});
 
   /// 申请导入暂存位置。平台层只能往票据指向的文件里写。
   Future<ImportTicket> prepareImport({
@@ -319,6 +338,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String trigger,
   });
 
+  /// 运行插件（`plugins.invoke`）。激活点、权限、预算与隔离都由核心收口。
+  Future<PluginRunResult> runPlugin({required PluginInvocation invocation});
+
   /// 保存人工编辑：新写一条 `user_edit` 版本并让它成为当前，契约 `diary.saveEdit`。
   ///
   /// **不原地改基版**（基版一个字节都不动），旧当前版退成候选。`expectedRevision`
@@ -368,6 +390,12 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required PlatformInt64 expectedRevision,
   });
 
+  /// 启用/停用。停用后新的调用被拒，历史日记与导出物保留。
+  Future<PluginInstallation> setPluginEnabled({
+    required String pluginId,
+    required bool enabled,
+  });
+
   /// 发起一次检索，契约第 4.4 节 `search.start`。
   Future<SearchSnapshot> startSearch({
     required SearchRequest request,
@@ -383,6 +411,12 @@ abstract class BridgeSession implements RustOpaqueInterface {
   Future<ProviderTestReport> testProvider({
     required String providerId,
     required List<ProviderCapability> scope,
+  });
+
+  /// 卸载。`remove_private_state` 对齐契约的「可选择的私有缓存」；执行文件总会清理。
+  Future<void> uninstallPlugin({
+    required String pluginId,
+    required bool removePrivateState,
   });
 
   /// 更新整理设置（契约 `settings.update` 的整理那一段）：整份替换 + `expectedRevision`。

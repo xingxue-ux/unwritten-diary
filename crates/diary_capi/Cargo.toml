@@ -1,0 +1,24 @@
+[package]
+name = "diary_capi"
+description = "「不写日记」核心的稳定 C ABI：句柄 + JSON 进 / JSON 出，给非 Flutter 宿主（ArkTS/NAPI、CLI、测试）。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+# cdylib 给 ArkTS/NAPI 侧 dlopen（随 HAP 打包，见 docs/architecture/m6-鸿蒙可行性探针.md），
+# staticlib 给静态链接的宿主，rlib 给本 crate 自己的测试（与 diary_bridge 同一口径）。
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+# 只依赖核心：桥面不放业务规则，也不碰 flutter_rust_bridge。
+diary_core = { path = "../diary_core" }
+# 下面三个都是 workspace 里已有的依赖（不引入任何新 crate，Cargo.lock 只多本包一行）。
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+# 只给测试算片段哈希用（核心会自己重算并核对，桥面不碰业务规则）。
+sha2.workspace = true

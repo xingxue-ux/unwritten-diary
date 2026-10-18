@@ -32,6 +32,11 @@ flutter:
   uses-material-design: true
   assets:
     - assets/brand/app_icon.png
+    # Third-party license texts and notices travel with the binary. Keeping
+    # them as Flutter assets puts them in the APK/AAB and in the Windows
+    # data/flutter_assets tree; release scripts also copy them beside the app.
+    - assets/legal/
+    - assets/fonts/OFL.txt
   fonts:
     - family: DiaryDisplay
       fonts:

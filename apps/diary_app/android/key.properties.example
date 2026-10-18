@@ -1,0 +1,7 @@
+# Copy to android/key.properties (git-ignored) and fill in real values.
+# storeFile is resolved from the android/ project directory. Absolute paths
+# also work. Never commit the .jks/.keystore or this file.
+storePassword=REPLACE_WITH_STORE_PASSWORD
+keyPassword=REPLACE_WITH_KEY_PASSWORD
+keyAlias=REPLACE_WITH_KEY_ALIAS
+storeFile=release-keystore.jks

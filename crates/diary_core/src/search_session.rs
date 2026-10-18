@@ -319,7 +319,16 @@ fn semantic_search(
             return Ok((Vec::new(), coverage, SearchPhase::Done));
         }
     };
-    let candidates = match semantic::candidates(core, &*embedder, needle, &request.filters)? {
+    let outcome = semantic::candidates(core, &*embedder, needle, &request.filters)?;
+    // 查询超长被 token 截断：**不算错误**（#109），但必须说清「只有前 510 个 token
+    // 参与了匹配」，否则用户会以为整句都参与了语义匹配。
+    if let Some(truncation) = outcome.query_truncation {
+        warnings.push(format!(
+            "查询太长，只有前 {} 个 token 参与了语义匹配（{truncation}），结果可能不完整",
+            truncation.kept_tokens
+        ));
+    }
+    let candidates = match outcome.candidates {
         // 口径不一致（生效代次是另一个模型建的）：**不进入计算**，也不拿跨空间的分数
         // 冒充结果。空结果 + 明确、可执行的原因——与「语义未就绪」同一条「不假装」的路。
         semantic::SemanticCandidates::ForeignSpace(mismatch) => {
@@ -575,7 +584,14 @@ fn fuse_hybrid(
     let keyword_groups = keyword_groups(core, needle, filters)?;
 
     // —— 语义那一路：候选已按篇折叠，过门槛，再截断 ——
-    let mut semantic_candidates = match semantic::candidates(core, embedder, needle, filters)? {
+    let semantic_outcome = semantic::candidates(core, embedder, needle, filters)?;
+    if let Some(truncation) = semantic_outcome.query_truncation {
+        warnings.push(format!(
+            "查询太长，只有前 {} 个 token 参与了语义匹配（{truncation}），结果可能不完整",
+            truncation.kept_tokens
+        ));
+    }
+    let mut semantic_candidates = match semantic_outcome.candidates {
         // 兜底（正常走不到：`hybrid_evidence` 与 `upgrade` 都先在加载模型之后核对过口径）。
         // 口径不一致 ⇒ 语义这一路不作数：**不融合**，保留关键词那份快照，
         // 原因写进 `warnings`（调用方据此停在 `keyword_ready`）。

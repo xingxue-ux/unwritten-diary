@@ -17,7 +17,11 @@ import '../diary_bridge.dart' as bridge;
 /// **语义索引重建**（`rebuildSemanticIndex`，契约 `indexes.rebuildSemantic`：设置页
 /// 要在换过模型之后触发「重建语义索引」，所以这一条必须真的能调），
 /// **日记生成与版本**：`getDay` / `generateDiary` / `listVersions` / `getVersion` /
-/// `saveDiaryEdit` / `setCurrentVersion` / `mergeDiary`。其余契约方法一律抛
+/// `saveDiaryEdit` / `setCurrentVersion` / `mergeDiary`。
+/// **插件管理**：`inspectPluginPackage` / `installPlugin` / `enablePlugin` /
+/// `disablePlugin` / `uninstallPlugin` / `listPlugins`（B6，#88）。`invokePlugin` 仍是
+/// 契约里的**票据式**形状（返回 `jobId`），而核心的 `run_plugin` 是同步返回完整结果的；
+/// 这条任务化接线没做，所以 `plugins.invoke` 不在能力清单里。其余契约方法一律抛
 /// [UnsupportedError]（和 `diary_mock` 的做法一致），并且**不出现在
 /// [api.CoreInfo.capabilities] 里**——能力清单是窄化过的，界面据此决定显示哪些入口。
 ///
@@ -103,6 +107,12 @@ class BridgeDiaryApi implements api.DiaryApi {
     'diary.setCurrent',
     'diary.merge',
     'indexes.rebuildSemantic',
+    'plugins.inspectPackage',
+    'plugins.install',
+    'plugins.enable',
+    'plugins.disable',
+    'plugins.uninstall',
+    'plugins.list',
   };
 
   /// 幂等地初始化 frb 运行时。
@@ -872,6 +882,75 @@ class BridgeDiaryApi implements api.DiaryApi {
     return api.JobTicket(jobId: job.id);
   }
 
+  // ------------------------------------------------------------ 插件（B6，#88）
+
+  /// 检查插件包（目录或 zip），**不执行包内容**。
+  ///
+  /// 契约的 `ticket` 在这里就是用户选中的包路径（平台票据层未接入前由调用方给出）。
+  /// 平台由核心按宿主自动判定（桥接传空串时用 `host_platform()`）。
+  @override
+  Future<api.PluginPackageReport> inspectPluginPackage(String ticket) async {
+    final report = await _translate(
+      () => _open.inspectPluginPackage(packagePath: ticket, platform: ''),
+    );
+    return api.PluginPackageReport(
+      packageId: report.manifest.id,
+      version: report.manifest.version,
+      apiRange: report.manifest.apiRange,
+      compatible: report.compatible,
+      supportedPlatforms: report.manifest.supportedPlatforms,
+      requestedPermissions: report.manifest.permissions.toSet(),
+      entryKind: _pluginEntryKind(report.manifest.entryKind),
+      issues: report.issues,
+    );
+  }
+
+  @override
+  Future<api.Plugin> installPlugin({
+    required String ticket,
+    required Set<String> grantedPermissions,
+  }) async {
+    final installed = await _translate(
+      () => _open.installPlugin(
+        packagePath: ticket,
+        platform: '',
+        grants: grantedPermissions.toList(growable: false),
+      ),
+    );
+    return _plugin(installed);
+  }
+
+  @override
+  Future<api.Plugin> enablePlugin(String pluginId) async {
+    final installed = await _translate(
+      () => _open.setPluginEnabled(pluginId: pluginId, enabled: true),
+    );
+    return _plugin(installed);
+  }
+
+  @override
+  Future<api.Plugin> disablePlugin(String pluginId) async {
+    final installed = await _translate(
+      () => _open.setPluginEnabled(pluginId: pluginId, enabled: false),
+    );
+    return _plugin(installed);
+  }
+
+  @override
+  Future<void> uninstallPlugin(String pluginId) async {
+    // 私有状态就在安装行里，卸载必然清理；没有额外缓存可留，故传 false。
+    await _translate(
+      () =>
+          _open.uninstallPlugin(pluginId: pluginId, removePrivateState: false),
+    );
+  }
+
+  @override
+  Future<List<api.Plugin>> listPlugins() async {
+    final plugins = await _translate(() => _open.listPlugins());
+    return plugins.map(_plugin).toList(growable: false);
+  }
+
   /// 没接的方法一律明确报错——照 `diary_mock` 的做法，避免悄悄返回空数据。
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
@@ -987,6 +1066,24 @@ class BridgeDiaryApi implements api.DiaryApi {
   static bridge.ProviderCapability _bridgeCapability(
     api.ProviderCapability capability,
   ) => bridge.ProviderCapability.values.byName(capability.name);
+
+  api.PluginEntryKind _pluginEntryKind(bridge.PluginEntryKind value) =>
+      value == bridge.PluginEntryKind.wasm
+      ? api.PluginEntryKind.code
+      : api.PluginEntryKind.declarative;
+
+  api.Plugin _plugin(bridge.PluginInstallation value) => api.Plugin(
+    id: value.pluginId,
+    version: value.version,
+    apiRange: value.apiRange,
+    entryKind: _pluginEntryKind(value.entryKind),
+    state: value.enabled ? api.PluginState.enabled : api.PluginState.disabled,
+    supportedPlatforms: value.supportedPlatforms,
+    activationEvents: value.activationEvents,
+    requestedPermissions: value.requestedPermissions.toSet(),
+    grantedPermissions: value.permissions.toSet(),
+    lastError: value.lastError,
+  );
 
   api.Capture _capture(bridge.Capture value) => api.Capture(
     id: value.id,
