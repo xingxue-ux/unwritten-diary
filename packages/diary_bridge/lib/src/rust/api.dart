@@ -15,6 +15,9 @@ import 'third_party/diary_core/model.dart';
 abstract class BridgeSession implements RustOpaqueInterface {
   Future<void> cancelImport({required String importId});
 
+  /// User cancellation keeps captured material and version history intact.
+  Future<Job> cancelJob({required String jobId, required String operationId});
+
   /// 取消后续处理；不删除任何原件。
   Future<SearchSnapshot> cancelSearch({required String sessionId});
 
@@ -284,6 +287,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String packagePath,
     required String targetDir,
   });
+
+  /// Retry a failed job with an idempotent user action identifier.
+  Future<Job> retryJob({required String jobId, required String operationId});
 
   /// 修改某一篇来源的原始文字：新建一个修订，旧修订保留。
   ///

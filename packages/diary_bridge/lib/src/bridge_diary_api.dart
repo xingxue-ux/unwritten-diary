@@ -75,6 +75,10 @@ class BridgeDiaryApi implements api.DiaryApi {
     'search.cancel',
     'jobs.nextWakeup',
     'jobs.runDue',
+    'jobs.get',
+    'jobs.list',
+    'jobs.cancel',
+    'jobs.retry',
     'imports.prepare',
     'imports.finish',
     'imports.status',
@@ -458,6 +462,52 @@ class BridgeDiaryApi implements api.DiaryApi {
     return _diaryDay(day);
   }
 
+  @override
+  Future<api.Job> getJob(String id) async =>
+      _job(await _translate(() => _open.getJob(jobId: id)));
+
+  @override
+  Future<api.JobPage> listJobs({
+    Set<api.JobState>? states,
+    String? cursor,
+    int pageSize = 20,
+  }) async {
+    // The current bridge exposes a bounded recent list, without pagination.
+    if (cursor != null) {
+      throw const api.DiaryException(
+        code: api.DiaryErrorCode.invalidArgument,
+        message: '当前核心暂不支持继续翻页任务列表。',
+      );
+    }
+    final rows = await _translate(
+      () => _open.listJobs(
+        states: states
+            ?.map((state) => bridge.JobState.values.byName(state.name))
+            .toList(),
+        limit: pageSize,
+      ),
+    );
+    return api.JobPage(jobs: rows.map(_job).toList(growable: false));
+  }
+
+  @override
+  Future<api.Job> cancelJob({
+    required String id,
+    required String operationId,
+  }) async => _job(
+    await _translate(
+      () => _open.cancelJob(jobId: id, operationId: operationId),
+    ),
+  );
+
+  @override
+  Future<api.Job> retryJob({
+    required String id,
+    required String operationId,
+  }) async => _job(
+    await _translate(() => _open.retryJob(jobId: id, operationId: operationId)),
+  );
+
   /// 生成一篇日记。**输入在返回前已冻结**；真正的调用由 `runDueJobs` 执行。
   ///
   /// 首次生成可成为当前版本，之后一律候选（`regenerate` 是用户明确再要一版的例外）。
@@ -816,10 +866,8 @@ class BridgeDiaryApi implements api.DiaryApi {
     required String operationId,
   }) async {
     final job = await _translate(
-      () => _open.rebuildSemanticIndex(
-        reason: reason,
-        operationId: operationId,
-      ),
+      () =>
+          _open.rebuildSemanticIndex(reason: reason, operationId: operationId),
     );
     return api.JobTicket(jobId: job.id);
   }
@@ -861,6 +909,27 @@ class BridgeDiaryApi implements api.DiaryApi {
     }
   }
 
+  api.Job _job(bridge.Job value) => api.Job(
+    id: value.id,
+    kind: value.kind,
+    state: api.JobState.values.byName(value.state.name),
+    targetIds: value.targetIds,
+    inputSnapshotHash: value.inputSnapshotHash,
+    progress: value.progress == null
+        ? null
+        : api.JobProgress(
+            completed: value.progress!.completed.toInt(),
+            total: value.progress!.total.toInt(),
+          ),
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    attemptCount: value.attemptCount.toInt(),
+    nextAttemptAt: value.nextAttemptAt,
+    errorCode: value.errorCode == null ? null : _errorCode(value.errorCode!),
+    requiresUserAction: value.requiresUserAction,
+    attentionKey: value.attentionKey,
+  );
+
   Future<api.CoreSnapshot> _snapshot(bridge.BridgeSession session) async {
     final info = await _translate(() => session.info());
     return api.CoreSnapshot(
@@ -891,7 +960,9 @@ class BridgeDiaryApi implements api.DiaryApi {
     label: value.label,
     adapterId: value.adapterId,
     capabilities: value.capabilities
-        .map((capability) => api.ProviderCapability.values.byName(capability.name))
+        .map(
+          (capability) => api.ProviderCapability.values.byName(capability.name),
+        )
         .toSet(),
     enabled: value.enabled,
     endpoint: value.endpoint,
@@ -905,9 +976,7 @@ class BridgeDiaryApi implements api.DiaryApi {
     id: value.id,
     label: value.label,
     adapterId: value.adapterId,
-    capabilities: value.capabilities
-        .map(_bridgeCapability)
-        .toSet(),
+    capabilities: value.capabilities.map(_bridgeCapability).toSet(),
     enabled: value.enabled,
     endpoint: value.endpoint,
     model: value.model,
@@ -1059,10 +1128,9 @@ class BridgeDiaryApi implements api.DiaryApi {
             providerId: value.generationInfo!.providerId,
             model: value.generationInfo!.model,
             generationOptions: value.generationInfo!.generationOptions,
-            coveredSourceCount: value.generationInfo!.coveredSourceCount.toInt(),
-            unprocessedSourceCount: value
-                .generationInfo!
-                .unprocessedSourceCount
+            coveredSourceCount: value.generationInfo!.coveredSourceCount
+                .toInt(),
+            unprocessedSourceCount: value.generationInfo!.unprocessedSourceCount
                 .toInt(),
           ),
     provenanceLinks: value.provenanceLinks

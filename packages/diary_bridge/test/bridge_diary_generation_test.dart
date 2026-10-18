@@ -83,17 +83,19 @@ void main() {
     expect(ticket.jobId, isNotEmpty);
     expect(ticket.sourceSnapshotId, isNotEmpty);
 
-    // 任务停在「等配置」这件事由 `jobs.get` 看（适配层还没有接 jobs.*，
-    // 那一路在 `bridge_diary_job_test.dart` 用原始会话钉住）。
-    // 这里断言的是适配层能看到的：没有版本、更没有空正文冒充成功；检索照常可用。
+    // The production adapter now exposes the job to the UI without a raw
+    // bridge session. Cancellation must preserve both capture and diary data.
+    final queued = await api.getJob(ticket.jobId);
+    expect(queued.state, JobState.queued);
+    final jobs = await api.listJobs(states: {JobState.queued});
+    expect(jobs.jobs.map((job) => job.id), contains(ticket.jobId));
+
+    // No version or placeholder body is emitted before a provider runs.
     final page = await api.listVersions('2026-10-16');
     expect(page.versions, isEmpty);
     expect(page.nextCursor, isNull);
     final hits = await api.startSearch(
-      request: const SearchRequest(
-        query: '公园',
-        mode: SearchMode.keyword,
-      ),
+      request: const SearchRequest(query: '公园', mode: SearchMode.keyword),
       queryRevision: 1,
     );
     expect(hits.results, isNotEmpty, reason: '用户自己写的文字照常搜得到');
@@ -106,6 +108,14 @@ void main() {
     );
     expect(again.jobId, ticket.jobId);
     expect(again.sourceSnapshotId, ticket.sourceSnapshotId);
+
+    final cancelled = await api.cancelJob(
+      id: ticket.jobId,
+      operationId: 'op-d-cancel',
+    );
+    expect(cancelled.state, JobState.cancelled);
+    expect((await api.getDay('2026-10-16')).materialCounts.captures, 1);
+    expect((await api.listVersions('2026-10-16')).versions, isEmpty);
 
     // 读一条不存在的版本：契约的错误码，不是崩溃。
     await expectLater(
