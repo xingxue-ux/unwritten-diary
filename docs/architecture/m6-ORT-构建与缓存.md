@@ -313,6 +313,18 @@ configure 之后的 CMakeCache 关键项（与探针阶段实际编出成品的�
 `onnxruntime_MINIMAL_BUILD=OFF`、`ONNX_CUSTOM_PROTOC_EXECUTABLE=…/protoc`、
 `CMAKE_AR/RANLIB=…/llvm-{ar,ranlib}`。
 
+同一次 configure 里，FetchContent 的 patch step **真的执行了**（不是只打印计划）：
+
+```text
+# _deps/date-subbuild/CMakeFiles/date-populate.dir/build.make
+cd .../date-src && .../hostbin/patch -l -p1 < .../cmake/patches/date/date.patch
+# 打完后戳存在：_deps/date-subbuild/.../date-populate-patch
+```
+
+也就是说 patch shim 的「真打补丁」路径被实际走过；同时 flatbuffers 的构建规则显示
+`No patch step for 'flatbuffers-populate'`——说明编辑 #3（OHOS 跳过 flatbuffers 补丁）
+也生效了。
+
 前置检查失败的样子（`NDK=/nonexistent/native`）：
 
 ```console
