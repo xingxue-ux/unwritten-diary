@@ -258,6 +258,13 @@ impl EngineConfig {
         let (engine_lib, engine_lib_origin) = resolve_engine_lib_with(file);
         origins.engine_lib = engine_lib_origin;
         origins.engine_lib_path = engine_lib.clone();
+        // OHOS：引擎库只能从 HAP 的 `libs/arm64` 加载，沙箱里的 `.so` 不能 dlopen。
+        // 配置写错要在**解析时**就报清楚，而不是等作业跑起来才拿到一句 dlopen 失败。
+        if let Some(path) = &engine_lib {
+            if let Err(reason) = validate_engine_lib_path(path) {
+                return (Err(CoreError::ProviderNotConfigured { reason }), origins);
+            }
+        }
         (
             Ok(Self {
                 engine_lib,
@@ -413,6 +420,52 @@ pub fn resolve_engine_lib_with(
         return (Some(path), ConfigOrigin::Bundled);
     }
     (None, ConfigOrigin::Platform)
+}
+
+/// OHOS 上「应用数据目录」的前缀：这些路径下的 `.so` **不能**在运行时 dlopen。
+///
+/// 对照：安装目录是 `/data/storage/el1/bundle/...`（HAP 里的 `libs/arm64` 就在那儿），
+/// **不**在这个列表里——引擎库本来就该放那里。应用数据（el2 / el1 的 base/database/
+/// cache）是沙箱，linker 不允许从那里加载原生库（探针实测，见
+/// `probes/ohos-core-smoke`）。
+const OHOS_APP_DATA_PREFIXES: &[&str] = &[
+    "/data/storage/el2/",
+    "/data/storage/el1/base/",
+    "/data/storage/el1/database/",
+    "/data/storage/el1/cache/",
+    "/data/app/el2/",
+    "/data/app/el1/base/",
+];
+
+/// 这个路径是不是 OHOS 的应用数据目录（沙箱）。纯字符串判断，宿主上也能测。
+pub fn is_ohos_app_data_path(path: &str) -> bool {
+    OHOS_APP_DATA_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
+/// 校验显式指定的引擎库路径（`DIARY_ASR_ENGINE_LIB` 或 `core-config.json` 的
+/// `asrEngineLib`）。**只在 OHOS 上有限制**：其它平台可以从任意路径 dlopen。
+///
+/// 为什么要在配置层拒绝，而不是等 `load_library` 失败：沙箱路径的 `.so` 是**存在**的
+/// （`is_file()` 为真），`readiness` 会放行，作业跑起来才在 linker 那里炸——错误信息
+/// 会指向一个「明明存在的文件」，用户照着它查不出原因。这里直接点名「沙箱不能加载」
+/// 并给出该放哪儿。
+pub fn validate_engine_lib_path(path: &Path) -> std::result::Result<(), String> {
+    #[cfg(target_env = "ohos")]
+    {
+        let text = path.to_string_lossy();
+        if is_ohos_app_data_path(&text) {
+            return Err(format!(
+                "asrEngineLib 指向应用数据目录（{text}）：OHOS 的 linker 只允许从 HAP 的 \
+                 libs/arm64 加载原生库，沙箱（el2 / el1/base）里的 .so 不能 dlopen。\
+                 把引擎库打进 HAP 的 libs/arm64/，配置改成 \
+                 /data/storage/el1/bundle/libs/arm64/<库名>；模型文件才放沙箱。"
+            ));
+        }
+    }
+    let _ = path;
+    Ok(())
 }
 
 /// 平台上的引擎库文件名。
@@ -614,4 +667,48 @@ pub(crate) fn transcription_choice(core: &crate::Core) -> Result<TranscriptionCh
         provider_id: None,
         model_override: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// OHOS 的「沙箱 vs 安装目录」判定：沙箱路径要拒，`libs/arm64` 要放行。
+    ///
+    /// 这个判定只在 `target_env = "ohos"` 时生效（其它平台可以从任意路径 dlopen），
+    /// 但**判定逻辑本身**在宿主上就能测——不测的话，真机第一次发现写错就晚了。
+    #[test]
+    fn ohos_app_data_paths_are_recognised_and_install_paths_are_not() {
+        for path in [
+            "/data/storage/el2/base/haps/entry/files/libsherpa-onnx-c-api.so",
+            "/data/storage/el1/base/files/libsherpa-onnx-c-api.so",
+            "/data/storage/el1/database/x.so",
+            "/data/storage/el1/cache/x.so",
+            "/data/app/el2/100/base/com.example/x.so",
+            "/data/app/el1/base/x.so",
+        ] {
+            assert!(is_ohos_app_data_path(path), "应当识别为沙箱：{path}");
+        }
+        for path in [
+            // HAP 的安装目录：引擎库本来就该放这儿。
+            "/data/storage/el1/bundle/libs/arm64/libsherpa-onnx-c-api.so",
+            "/data/app/el1/bundle/public/com.example/libs/arm64/libsherpa-onnx-c-api.so",
+            "libsherpa-onnx-c-api.so",
+            "/usr/lib/libsherpa-onnx-c-api.so",
+        ] {
+            assert!(!is_ohos_app_data_path(path), "不该识别为沙箱：{path}");
+        }
+    }
+
+    /// 非 OHOS 平台上不限制路径（桌面端可以从任意目录 dlopen）；OHOS 上拒绝沙箱。
+    ///
+    /// 这条在宿主上跑时只覆盖「不误伤」那一半；OHOS 那一半由真机的
+    /// `hap_both` 探针（`asrEngineLib` 指向 `libs/arm64`）+ 上面那条判定测试共同钉住。
+    #[test]
+    fn engine_lib_validation_does_not_reject_install_paths() {
+        let install = Path::new("/data/storage/el1/bundle/libs/arm64/libsherpa-onnx-c-api.so");
+        assert!(validate_engine_lib_path(install).is_ok(), "安装目录必须放行");
+        let relative = Path::new("libsherpa-onnx-c-api.so");
+        assert!(validate_engine_lib_path(relative).is_ok(), "按库名加载必须放行");
+    }
 }

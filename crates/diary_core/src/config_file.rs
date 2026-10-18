@@ -310,16 +310,54 @@ impl Core {
                 Some(error.to_string()),
             ),
             Ok(config) => {
-                let readiness = self.asr_engine().readiness(&config);
+                // **刻意不调 `readiness`**：移动端「按库名加载」那一路会用 dlopen 真探测
+                // 一次引擎库（见 `sherpa::engine_library_by_name_ready`），而 `core.info`
+                // 是启动路径上的常用调用，不该为了报状态把 16 MB 的引擎库拉进进程。
+                // 这里只做**能 stat 的**判断；「库到底能不能加载」由第一次转写任务/
+                // 连接测试回答（`state` 会停在 `configured` 并写清原因）。
                 let dir = Some(config.model_dir.display().to_string());
-                if readiness.ready {
-                    ("ready".to_owned(), dir, None)
-                } else {
-                    let reason = match readiness.next_step {
-                        Some(next) => format!("{}；{next}", readiness.reason),
-                        None => readiness.reason,
-                    };
-                    ("configured".to_owned(), dir, Some(reason))
+                let model = config.check_files();
+                let lib = match &config.engine_lib {
+                    Some(path) if !path.is_file() => {
+                        Some(format!("引擎动态库不在：{}", path.display()))
+                    }
+                    Some(path) => {
+                        let _ = path;
+                        None
+                    }
+                    None if cfg!(any(target_os = "android", target_env = "ohos")) => {
+                        // 探测过一次就照实报（成功 → `None`，即 ready）；没探测过就如实说
+                        // 「还不知道」，绝不谎报 ready。
+                        match crate::transcription::sherpa::engine_library_by_name_probe() {
+                            Some(Ok(())) => None,
+                            Some(Err(error)) => Some(format!(
+                                "按库名加载引擎库（{}）失败：{error}",
+                                crate::provider::local_engine::engine_lib_file_name()
+                            )),
+                            None => Some(format!(
+                                "引擎库按库名从应用的 libs/<abi>/ 解析（{}）；还没有探测过\
+                                 ——第一次转写任务或连接测试才会真去加载",
+                                crate::provider::local_engine::engine_lib_file_name()
+                            )),
+                        }
+                    }
+                    None => Some(format!(
+                        "没有解析到引擎库（{}）：可在可执行文件旁边放它，或用 {} 指定",
+                        crate::provider::local_engine::engine_lib_file_name(),
+                        crate::provider::local_engine::ENV_ENGINE_LIB
+                    )),
+                };
+                match (model, lib) {
+                    (Ok(()), None) => ("ready".to_owned(), dir, None),
+                    (Ok(()), Some(note)) => ("configured".to_owned(), dir, Some(note)),
+                    (Err(model_reason), None) => {
+                        ("configured".to_owned(), dir, Some(model_reason))
+                    }
+                    (Err(model_reason), Some(lib_note)) => (
+                        "configured".to_owned(),
+                        dir,
+                        Some(format!("{model_reason}；{lib_note}")),
+                    ),
                 }
             }
         };
