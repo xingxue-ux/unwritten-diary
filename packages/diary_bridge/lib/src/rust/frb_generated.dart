@@ -5869,14 +5869,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RecordingRecovery dco_decode_recording_recovery(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return RecordingRecovery(
       recordingId: dco_decode_opt_String(arr[0]),
       state: dco_decode_recording_state(arr[1]),
       closedSegmentIndexes: dco_decode_list_prim_i_64_strict(arr[2]),
-      gapMs: dco_decode_i_64(arr[3]),
-      notes: dco_decode_list_String(arr[4]),
+      persistedMs: dco_decode_i_64(arr[3]),
+      receivedMs: dco_decode_i_64(arr[4]),
+      gapMs: dco_decode_i_64(arr[5]),
+      notes: dco_decode_list_String(arr[6]),
     );
   }
 
@@ -8282,12 +8284,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_closedSegmentIndexes = sse_decode_list_prim_i_64_strict(
       deserializer,
     );
+    var var_persistedMs = sse_decode_i_64(deserializer);
+    var var_receivedMs = sse_decode_i_64(deserializer);
     var var_gapMs = sse_decode_i_64(deserializer);
     var var_notes = sse_decode_list_String(deserializer);
     return RecordingRecovery(
       recordingId: var_recordingId,
       state: var_state,
       closedSegmentIndexes: var_closedSegmentIndexes,
+      persistedMs: var_persistedMs,
+      receivedMs: var_receivedMs,
       gapMs: var_gapMs,
       notes: var_notes,
     );
@@ -10439,6 +10445,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.recordingId, serializer);
     sse_encode_recording_state(self.state, serializer);
     sse_encode_list_prim_i_64_strict(self.closedSegmentIndexes, serializer);
+    sse_encode_i_64(self.persistedMs, serializer);
+    sse_encode_i_64(self.receivedMs, serializer);
     sse_encode_i_64(self.gapMs, serializer);
     sse_encode_list_String(self.notes, serializer);
   }

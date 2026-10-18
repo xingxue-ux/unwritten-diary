@@ -296,3 +296,113 @@ export interface RunDueParams {
   /** 唤醒来源，例如 `startup` / `foreground` / `manual`。 */
   trigger: string;
 }
+
+// ---------------------------------------------------------------- 录音（契约 4.2）
+
+/** `recordings.prepare` 的结果：平台层只能往 `staging_ticket` 这个目录里写片段。 */
+export interface RecordingTicket {
+  recording_id: string;
+  asset_id: string;
+  /** 应用私有目录里的**绝对路径**（核心已经建好）。 */
+  staging_ticket: string;
+}
+
+/** 一个已封闭片段的描述（`register_segment` 的 `segment` 参数）。 */
+export interface SegmentManifest {
+  segment_id: string;
+  /** 相对暂存目录的文件名，不是绝对路径。 */
+  relative_file_name: string;
+  duration_ms: number;
+  /** 小写/大写十六进制都行；核心会自己重算并忽略大小写比较。 */
+  sha256: string;
+  byte_size: number;
+  /** RFC 3339；不给就由核心用当前时间。 */
+  closed_at?: string | null;
+}
+
+/** `recordings.registerSegment` 的回执；`durable === true` 才算落库。 */
+export interface SegmentReceipt {
+  segment_id: string;
+  segment_index: number;
+  durable: boolean;
+  recorded_at: string;
+}
+
+/** 录音会话快照（`recordings.updateState` 的返回）。 */
+export interface RecordingSession {
+  recording_id: string;
+  asset_id: string;
+  /** `idle` / `preparing` / `recording` / `paused` / `stopping` / `saved` /
+   *  `interrupted` / `recoverable` / `error`。 */
+  state: string;
+  /** 最后一次上报的「已收到」时长（`received_ms` 的同源值）。 */
+  elapsed_ms: number;
+  /** 最后一次上报的「已登记」时长；与 `elapsed_ms` 的差就是可能丢掉的尾巴。 */
+  durable_through_ms: number;
+  segment_count: number;
+  last_error: string | null;
+}
+
+/** `recordings.finalize` 的结果。转写任务与最终化同一个事务，`transcription_queued` 为 true。 */
+export interface RecordingFinalizeResult {
+  recording_id: string;
+  asset_id: string;
+  state: string;
+  segment_count: number;
+  transcription_queued: boolean;
+  logical_duration_ms: number;
+}
+
+/** `recordings.recover` 的结果：缺口、已登记/已收到的时长与「尾巴未知」都在 notes 里如实写。 */
+export interface RecordingRecovery {
+  recording_id: string | null;
+  state: string;
+  /** 真实已登记的片段序号（没登记成功的尾巴不在里面）。 */
+  closed_segment_indexes: number[];
+  /** **已登记**片段时长之和：真正落盘、`finalize` 能拼出来的音频长度。 */
+  persisted_ms: number;
+  /** 采集器**最后一次上报**的「已收到 PCM 总时长」；可能落后，是实际收到量的下界。 */
+  received_ms: number;
+  /** 已知缺口的总时长（按平均段长估算）；没有缺口信息时为 0，并在 notes 里说明。 */
+  gap_ms: number;
+  notes: string[];
+}
+
+/** `recordings.prepare` 的参数。 */
+export interface PrepareRecordingParams {
+  capture_id: string;
+  operation_id: string;
+}
+
+/** `recordings.registerSegment` 的参数。 */
+export interface RegisterSegmentParams {
+  recording_id: string;
+  segment_index: number;
+  segment: SegmentManifest;
+}
+
+/** `recordings.updateState` 的参数（核心不虚构麦克风状态，全部由平台层上报）。 */
+export interface NativeRecordingStatusParams {
+  recording_id: string;
+  state: string;
+  /** RFC 3339 的墙上时间。 */
+  wall_clock: string;
+  /** 采集器**实际收到**的 PCM 总时长（只增，含还没封闭的尾巴）。 */
+  elapsed_ms: number;
+  /** **已成功登记**片段时长之和；只能用它当 `durable_through_ms`，不能用 `elapsed_ms`。 */
+  persisted_through_ms: number;
+  input_device_changed: boolean;
+  message?: string | null;
+}
+
+/** `recordings.finalize` 的参数。 */
+export interface FinalizeRecordingParams {
+  recording_id: string;
+  last_segment_index: number;
+  end_reason: string;
+}
+
+/** `recordings.recover` 的参数；`recording_id` 省略时恢复最近一条未收尾的录音。 */
+export interface RecoverRecordingParams {
+  recording_id?: string | null;
+}

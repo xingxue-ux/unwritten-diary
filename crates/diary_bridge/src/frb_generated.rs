@@ -5181,6 +5181,8 @@ const _: fn() = || {
         let _: Option<String> = RecordingRecovery.recording_id;
         let _: diary_core::model::RecordingState = RecordingRecovery.state;
         let _: Vec<i64> = RecordingRecovery.closed_segment_indexes;
+        let _: i64 = RecordingRecovery.persisted_ms;
+        let _: i64 = RecordingRecovery.received_ms;
         let _: i64 = RecordingRecovery.gap_ms;
         let _: Vec<String> = RecordingRecovery.notes;
     }
@@ -7333,12 +7335,16 @@ impl SseDecode for diary_core::model::RecordingRecovery {
         let mut var_recordingId = <Option<String>>::sse_decode(deserializer);
         let mut var_state = <diary_core::model::RecordingState>::sse_decode(deserializer);
         let mut var_closedSegmentIndexes = <Vec<i64>>::sse_decode(deserializer);
+        let mut var_persistedMs = <i64>::sse_decode(deserializer);
+        let mut var_receivedMs = <i64>::sse_decode(deserializer);
         let mut var_gapMs = <i64>::sse_decode(deserializer);
         let mut var_notes = <Vec<String>>::sse_decode(deserializer);
         return diary_core::model::RecordingRecovery {
             recording_id: var_recordingId,
             state: var_state,
             closed_segment_indexes: var_closedSegmentIndexes,
+            persisted_ms: var_persistedMs,
+            received_ms: var_receivedMs,
             gap_ms: var_gapMs,
             notes: var_notes,
         };
@@ -9575,6 +9581,8 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::RecordingRe
             self.0.recording_id.into_into_dart().into_dart(),
             self.0.state.into_into_dart().into_dart(),
             self.0.closed_segment_indexes.into_into_dart().into_dart(),
+            self.0.persisted_ms.into_into_dart().into_dart(),
+            self.0.received_ms.into_into_dart().into_dart(),
             self.0.gap_ms.into_into_dart().into_dart(),
             self.0.notes.into_into_dart().into_dart(),
         ]
@@ -11625,6 +11633,8 @@ impl SseEncode for diary_core::model::RecordingRecovery {
         <Option<String>>::sse_encode(self.recording_id, serializer);
         <diary_core::model::RecordingState>::sse_encode(self.state, serializer);
         <Vec<i64>>::sse_encode(self.closed_segment_indexes, serializer);
+        <i64>::sse_encode(self.persisted_ms, serializer);
+        <i64>::sse_encode(self.received_ms, serializer);
         <i64>::sse_encode(self.gap_ms, serializer);
         <Vec<String>>::sse_encode(self.notes, serializer);
     }

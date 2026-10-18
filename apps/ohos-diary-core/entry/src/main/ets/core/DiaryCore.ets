@@ -26,15 +26,25 @@ import {
   DraftSaveResult,
   ExtractedContent,
   ExtractParams,
+  FinalizeRecordingParams,
   Job,
   JobRunSummary,
   JobStatus,
   LibraryInfo,
+  NativeRecordingStatusParams,
+  PrepareRecordingParams,
   RebuildIndexParams,
+  RecoverRecordingParams,
+  RecordingFinalizeResult,
+  RecordingRecovery,
+  RecordingSession,
+  RecordingTicket,
+  RegisterSegmentParams,
   RunDueParams,
   SaveDraftParams,
   SearchParams,
   SearchSnapshot,
+  SegmentReceipt,
 } from './Models';
 
 /** 默认资料库文件名；与 Flutter 侧 `apps/diary_app/lib/src/app_services.dart` 用的是同一个。 */
@@ -142,7 +152,7 @@ export class DiaryCore {
     return diaryNapi.openHandleCount();
   }
 
-  // ---------------------------------------------------------------- 契约方法（9 条）
+  // ---------------------------------------------------------------- 契约方法（14 条）
   //
   // 一一对应 `crates/diary_capi/src/methods.rs` 的 `WIRED_METHODS`。方法名与方法体里的
   // 字符串必须一致；`tools/check_arkts_capi_contract.py` 会核对。
@@ -170,6 +180,43 @@ export class DiaryCore {
   /** `captures.commit`：草稿转正式记录，并生成原文修订（之后才能 `extract` / 检索到）。 */
   commit(params: CommitParams): CommitResult {
     return this.invokeData('captures.commit', params) as CommitResult;
+  }
+
+  // ---------------------------------------------------------------- 录音（契约 4.2）
+  //
+  // 这里只做「参数/回执的类型化 + 信封拆封」；**收音、分片、前台服务都在
+  // `recording/VoiceRecorder.ets`**，核心只负责登记与最终化，不虚构麦克风状态。
+
+  /** `recordings.prepare`：申请录音票据与限域暂存目录（只能往 `staging_ticket` 里写）。 */
+  prepareRecording(params: PrepareRecordingParams): RecordingTicket {
+    return this.invokeData('recordings.prepare', params) as RecordingTicket;
+  }
+
+  /** `recordings.registerSegment`：登记一个已封闭片段；核心会重算文件哈希与字节数。 */
+  registerSegment(params: RegisterSegmentParams): SegmentReceipt {
+    return this.invokeData('recordings.registerSegment', params) as SegmentReceipt;
+  }
+
+  /** `recordings.updateState`：上报原生录音状态（进度、暂停、错误都由平台层给）。 */
+  updateRecordingState(params: NativeRecordingStatusParams): RecordingSession {
+    return this.invokeData('recordings.updateState', params) as RecordingSession;
+  }
+
+  /**
+   * `recordings.finalize`：把已封闭片段拼成逻辑音频、建音频资产，
+   * **同一个事务里**排一条转写任务。转写不阻塞完成。
+   */
+  finalizeRecording(params: FinalizeRecordingParams): RecordingFinalizeResult {
+    return this.invokeData('recordings.finalize', params) as RecordingFinalizeResult;
+  }
+
+  /**
+   * `recordings.recover`：恢复最近一条（或指定）未收尾的录音。
+   *
+   * 不假设最后一段完好：已封闭序号、缺口估算、尾巴未知都在返回里如实写。
+   */
+  recoverRecording(params: RecoverRecordingParams): RecordingRecovery {
+    return this.invokeData('recordings.recover', params) as RecordingRecovery;
   }
 
   /** `sources.extract`：抽取正文；`source_ref` 可以是来源 id 或修订 id。 */

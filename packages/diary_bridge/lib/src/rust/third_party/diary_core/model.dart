@@ -1662,9 +1662,13 @@ class NativeRecordingStatus {
   final String recordingId;
   final RecordingState state;
   final DateTime wallClock;
+
+  /// 采集器**实际收到**的 PCM 总时长（只增，不含还没收到的）。
   final PlatformInt64 elapsedMs;
 
-  /// 已经持久化的位置，恢复时用来判断缺口。
+  /// **已成功登记**片段时长之和；两次登记之间还没封闭的尾巴不能算进来。
+  ///
+  /// 恢复时用 `elapsed_ms - persisted_through_ms` 判断「可能丢失的尾巴」。
   final PlatformInt64 persistedThroughMs;
   final bool inputDeviceChanged;
   final String? message;
@@ -2472,6 +2476,18 @@ class RecordingRecovery {
   final RecordingState state;
   final Int64List closedSegmentIndexes;
 
+  /// **已登记**片段时长之和：真正落盘、`finalize` 能拼出来的音频长度。
+  ///
+  /// 只有「已封闭并登记成功」的片段算数；两次登记之间收到的 PCM 还在内存 /
+  /// 未封闭文件里，进程崩溃就没了，绝不能算进来。
+  final PlatformInt64 persistedMs;
+
+  /// 采集器**最后一次上报**的「已收到 PCM 总时长」（会话的 `elapsed_ms`）。
+  ///
+  /// 这是上报时刻的值（平台层通常一秒上报一次、停止时再补一次），所以只是实际
+  /// 收到量的**下界**；`received_ms - persisted_ms` 就是「可能丢失的尾巴」。
+  final PlatformInt64 receivedMs;
+
   /// 已知缺口的总时长；无法估计时为 0 并在 notes 里说明。
   final PlatformInt64 gapMs;
   final List<String> notes;
@@ -2480,6 +2496,8 @@ class RecordingRecovery {
     this.recordingId,
     required this.state,
     required this.closedSegmentIndexes,
+    required this.persistedMs,
+    required this.receivedMs,
     required this.gapMs,
     required this.notes,
   });
@@ -2489,6 +2507,8 @@ class RecordingRecovery {
       recordingId.hashCode ^
       state.hashCode ^
       closedSegmentIndexes.hashCode ^
+      persistedMs.hashCode ^
+      receivedMs.hashCode ^
       gapMs.hashCode ^
       notes.hashCode;
 
@@ -2500,6 +2520,8 @@ class RecordingRecovery {
           recordingId == other.recordingId &&
           state == other.state &&
           closedSegmentIndexes == other.closedSegmentIndexes &&
+          persistedMs == other.persistedMs &&
+          receivedMs == other.receivedMs &&
           gapMs == other.gapMs &&
           notes == other.notes;
 }

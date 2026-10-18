@@ -389,6 +389,356 @@ fn end_to_end_draft_to_search_to_jobs() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// 录音交接：prepare → registerSegment → updateState → finalize → 重开 → recover。
+///
+/// 片段文件按平台层约定写：第 0 段是「44 字节 PCM WAV 头 + PCM」，后续段是裸 PCM。
+/// 头里的两个长度字段用流式 WAV 的 `0xFFFFFFFF`（总长要到停止时才确定）；核心的
+/// `recordings.finalize` 只把字节按序拼接，所以拼出来仍是一条**单头**的 PCM WAV。
+#[test]
+fn recordings_flow_prepare_register_finalize_and_recover() {
+    let (dir, path, handle) = open_temp("recordings");
+
+    let capture = expect_ok(&call(
+        handle,
+        "captures.createDraft",
+        json!({
+            "occurred_at": "2026-10-18T09:00:00Z",
+            "time_zone": "Asia/Shanghai",
+            "utc_offset_minutes": 480,
+            "operation_id": "op-capi-rec-capture",
+        }),
+    ));
+    let capture_id = capture["id"].as_str().unwrap().to_owned();
+
+    let ticket = expect_ok(&call(
+        handle,
+        "recordings.prepare",
+        json!({"capture_id": capture_id, "operation_id": "op-capi-rec-prepare"}),
+    ));
+    let recording_id = ticket["recording_id"].as_str().unwrap().to_owned();
+    let asset_id = ticket["asset_id"].as_str().unwrap().to_owned();
+    let staging = PathBuf::from(ticket["staging_ticket"].as_str().unwrap());
+    assert!(
+        staging.starts_with(&dir),
+        "暂存目录必须在资料库根目录下：{}",
+        staging.display()
+    );
+
+    // 第 0 段：WAV 头 + 1 秒 16 kHz/单声道/16 bit PCM（32,000 B）。
+    let mut first = pcm_wav_header();
+    first.extend(vec![0x5A_u8; 32_000]);
+    std::fs::write(staging.join("segment-000000.wav"), &first).unwrap();
+
+    let first_receipt = expect_ok(&call(
+        handle,
+        "recordings.registerSegment",
+        json!({
+            "recording_id": recording_id,
+            "segment_index": 0,
+            "segment": {
+                "segment_id": "seg-0",
+                "relative_file_name": "segment-000000.wav",
+                "duration_ms": 1000,
+                "sha256": sha256_hex(&first),
+                "byte_size": first.len(),
+                "closed_at": "2026-10-18T09:00:01Z",
+            },
+        }),
+    ));
+    assert_eq!(first_receipt["segment_index"], json!(0));
+    assert_eq!(first_receipt["durable"], json!(true));
+
+    // 同序号、同内容重复登记：返回原回执（幂等由核心保证，不是桥面假装成功）。
+    let replay = expect_ok(&call(
+        handle,
+        "recordings.registerSegment",
+        json!({
+            "recording_id": recording_id,
+            "segment_index": 0,
+            "segment": {
+                "segment_id": "seg-0",
+                "relative_file_name": "segment-000000.wav",
+                "duration_ms": 1000,
+                "sha256": sha256_hex(&first),
+                "byte_size": first.len(),
+                "closed_at": "2026-10-18T09:00:01Z",
+            },
+        }),
+    ));
+    assert_eq!(replay["recorded_at"], first_receipt["recorded_at"]);
+
+    let session = expect_ok(&call(
+        handle,
+        "recordings.updateState",
+        json!({
+            "recording_id": recording_id,
+            "state": "recording",
+            "wall_clock": "2026-10-18T09:00:01Z",
+            "elapsed_ms": 1000,
+            "persisted_through_ms": 1000,
+            "input_device_changed": false,
+            "message": Value::Null,
+        }),
+    ));
+    assert_eq!(session["state"], json!("recording"));
+    assert_eq!(session["segment_count"], json!(1));
+
+    // 第 1 段：裸 PCM（0.5 秒）。拼接后应是一条完整 WAV。
+    let second = vec![0x33_u8; 16_000];
+    std::fs::write(staging.join("segment-000001.pcm"), &second).unwrap();
+    expect_ok(&call(
+        handle,
+        "recordings.registerSegment",
+        json!({
+            "recording_id": recording_id,
+            "segment_index": 1,
+            "segment": {
+                "segment_id": "seg-1",
+                "relative_file_name": "segment-000001.pcm",
+                "duration_ms": 500,
+                "sha256": sha256_hex(&second),
+                "byte_size": second.len(),
+            },
+        }),
+    ));
+
+    let finalized = expect_ok(&call(
+        handle,
+        "recordings.finalize",
+        json!({
+            "recording_id": recording_id,
+            "last_segment_index": 1,
+            "end_reason": "user_stop",
+        }),
+    ));
+    assert_eq!(finalized["recording_id"], json!(recording_id));
+    assert_eq!(finalized["asset_id"], json!(asset_id));
+    assert_eq!(finalized["state"], json!("saved"));
+    assert_eq!(finalized["segment_count"], json!(2));
+    assert_eq!(finalized["transcription_queued"], json!(true));
+    assert_eq!(finalized["logical_duration_ms"], json!(1500));
+    // 逻辑音频落到 blobs/ 下（按内容哈希分桶）；大小 = 44 字节头 + 48,000 字节 PCM。
+    let logical_bytes = 44 + 32_000 + 16_000;
+    let blob = find_file_with_len(&dir.join("blobs"), logical_bytes as u64)
+        .expect("finalize 之后应当有一条完整的逻辑音频 blob");
+    let blob_bytes = std::fs::read(&blob).unwrap();
+    assert_eq!(&blob_bytes[0..4], b"RIFF");
+    assert_eq!(&blob_bytes[8..12], b"WAVE");
+    assert_eq!(blob_bytes.len(), logical_bytes);
+
+    // 最终化之后不能再上报状态（核心会拒绝，桥面不吞掉）。
+    let closed_session = expect_error(
+        &call(
+            handle,
+            "recordings.updateState",
+            json!({
+                "recording_id": recording_id,
+                "state": "saved",
+                "wall_clock": "2026-10-18T09:00:02Z",
+                "elapsed_ms": 1500,
+                "persisted_through_ms": 1500,
+            }),
+        ),
+        "invalid_state",
+    );
+    assert!(closed_session.contains("最终化"), "{closed_session}");
+
+    // 第二条录音：登记一段后直接关库（模拟进程被杀），重开后 recover 必须如实报告。
+    let ticket2 = expect_ok(&call(
+        handle,
+        "recordings.prepare",
+        json!({"capture_id": capture_id, "operation_id": "op-capi-rec-prepare-2"}),
+    ));
+    let recording2 = ticket2["recording_id"].as_str().unwrap().to_owned();
+    let staging2 = PathBuf::from(ticket2["staging_ticket"].as_str().unwrap());
+    let mut first2 = pcm_wav_header();
+    first2.extend(vec![0x11_u8; 32_000]);
+    std::fs::write(staging2.join("segment-000000.wav"), &first2).unwrap();
+    expect_ok(&call(
+        handle,
+        "recordings.registerSegment",
+        json!({
+            "recording_id": recording2,
+            "segment_index": 0,
+            "segment": {
+                "segment_id": "seg-0",
+                "relative_file_name": "segment-000000.wav",
+                "duration_ms": 1000,
+                "sha256": sha256_hex(&first2),
+                "byte_size": first2.len(),
+            },
+        }),
+    ));
+
+    // 采集器最后一次上报：收到 1500 ms，但只有第 0 段（1000 ms）登记成功。
+    expect_ok(&call(
+        handle,
+        "recordings.updateState",
+        json!({
+            "recording_id": recording2,
+            "state": "recording",
+            "wall_clock": "2026-10-18T09:00:03Z",
+            "elapsed_ms": 1500,
+            "persisted_through_ms": 1000,
+            "input_device_changed": false,
+        }),
+    ));
+
+    // 关掉唯一句柄 = 核心析构 = 进程被杀；重开同一路径触发 recover_on_open。
+    assert_eq!(diary_close(handle), 0);
+    let reopened = open(&path);
+    let recovery = expect_ok(&call(reopened, "recordings.recover", json!({})));
+    assert_eq!(recovery["recording_id"], json!(recording2));
+    assert_eq!(recovery["state"], json!("recoverable"));
+    assert_eq!(recovery["closed_segment_indexes"], json!([0]));
+    // 已登记 1000 ms 才是「已持久化」；收到的 1500 ms 里有 500 ms 是没登记的尾巴。
+    assert_eq!(recovery["persisted_ms"], json!(1000));
+    assert_eq!(recovery["received_ms"], json!(1500));
+    assert!(
+        recovery["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("未封闭的尾巴")
+                && note.as_str().unwrap().contains("500 ms")),
+        "恢复结果要如实说明可能丢掉的尾巴：{recovery}"
+    );
+
+    // 恢复出来的录音还能救：按已封闭序号最终化。
+    let rescued = expect_ok(&call(
+        reopened,
+        "recordings.finalize",
+        json!({
+            "recording_id": recording2,
+            "last_segment_index": 0,
+            "end_reason": "recovered",
+        }),
+    ));
+    assert_eq!(rescued["state"], json!("saved"));
+    assert_eq!(rescued["segment_count"], json!(1));
+    assert_eq!(
+        rescued["logical_duration_ms"],
+        json!(1000),
+        "恢复出的音频 = 已登记片段之和，不是收到的 1500 ms"
+    );
+
+    let info = expect_ok(&call(reopened, "core.info", Value::Null));
+    assert_eq!(info["recovery"]["open_recordings"], json!(0));
+    assert!(
+        info["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "recordings.finalize"),
+        "能力清单要如实列出录音方法：{info}"
+    );
+
+    assert_eq!(diary_close(reopened), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 录音参数错误：拼错字段、字节数不符、未知录音都要报核心码，不能静默成功。
+#[test]
+fn recordings_bad_input_reports_core_errors() {
+    let (dir, _path, handle) = open_temp("recordings-errors");
+    let capture = expect_ok(&call(
+        handle,
+        "captures.createDraft",
+        json!({
+            "time_zone": "Asia/Shanghai",
+            "utc_offset_minutes": 480,
+            "operation_id": "op-capi-rec-err",
+        }),
+    ));
+    let capture_id = capture["id"].as_str().unwrap().to_owned();
+    let ticket = expect_ok(&call(
+        handle,
+        "recordings.prepare",
+        json!({"capture_id": capture_id, "operation_id": "op-capi-rec-err-prepare"}),
+    ));
+    let recording_id = ticket["recording_id"].as_str().unwrap().to_owned();
+    let staging = PathBuf::from(ticket["staging_ticket"].as_str().unwrap());
+
+    let text = expect_error(
+        &call(
+            handle,
+            "recordings.registerSegment",
+            json!({"recording_id": recording_id, "segment_index": 0, "segment": {"segmentId": "s", "relativeFileName": "missing.pcm", "durationMs": 10, "sha256": "00", "byteSize": 1}}),
+        ),
+        "integrity_failed",
+    );
+    assert!(text.contains("不可读"), "{text}");
+
+    let body = b"not-that-long".to_vec();
+    std::fs::write(staging.join("actual.pcm"), &body).unwrap();
+    let text = expect_error(
+        &call(
+            handle,
+            "recordings.registerSegment",
+            json!({"recording_id": recording_id, "segment_index": 0, "segment": {"segmentId": "s", "relativeFileName": "actual.pcm", "durationMs": 10, "sha256": sha256_hex(&body), "byteSize": body.len() + 1}}),
+        ),
+        "integrity_failed",
+    );
+    assert!(text.contains("字节数不符"), "{text}");
+
+    let text = expect_error(
+        &call(handle, "recordings.recover", json!({"recording_id": "rec_missing"})),
+        "not_found",
+    );
+    assert!(text.contains("录音"), "{text}");
+
+    let text = expect_error(
+        &call(
+            handle,
+            "recordings.prepare",
+            json!({"capture_id": capture_id, "operation_id": "op", "extra": 1}),
+        ),
+        "invalid_argument",
+    );
+    assert!(text.contains("unknown field"), "{text}");
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 44 字节 PCM WAV 头：16 kHz / 单声道 / 16 bit，长度字段用流式占位（总长停止时才定）。
+fn pcm_wav_header() -> Vec<u8> {
+    let mut header = Vec::with_capacity(44);
+    header.extend_from_slice(b"RIFF");
+    header.extend_from_slice(&0xFFFF_FFFF_u32.to_le_bytes());
+    header.extend_from_slice(b"WAVEfmt ");
+    header.extend_from_slice(&16_u32.to_le_bytes());
+    header.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+    header.extend_from_slice(&1_u16.to_le_bytes()); // 单声道
+    header.extend_from_slice(&16_000_u32.to_le_bytes());
+    header.extend_from_slice(&32_000_u32.to_le_bytes()); // byte rate
+    header.extend_from_slice(&2_u16.to_le_bytes()); // block align
+    header.extend_from_slice(&16_u16.to_le_bytes()); // bits per sample
+    header.extend_from_slice(b"data");
+    header.extend_from_slice(&0xFFFF_FFFF_u32.to_le_bytes());
+    header
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// 在 `dir` 下递归找一个大小恰好为 `len` 的普通文件（只用于小目录自检）。
+fn find_file_with_len(dir: &Path, len: u64) -> Option<PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()? {
+        let path = entry.ok()?.path();
+        if path.is_dir() {
+            if let Some(found) = find_file_with_len(&path, len) {
+                return Some(found);
+            }
+        } else if std::fs::metadata(&path).ok()?.len() == len {
+            return Some(path);
+        }
+    }
+    None
+}
+
 /// 生命周期：同一路径共享核心、最后一个句柄关闭后核心真的析构、关闭后再用是明确错误。
 #[test]
 fn close_releases_the_core_only_after_the_last_handle() {

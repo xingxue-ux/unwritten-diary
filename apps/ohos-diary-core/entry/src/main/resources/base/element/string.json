@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "Diary Core"
+    },
+    {
+      "name": "microphone_reason",
+      "value": "录制语音日记需要麦克风"
     }
   ]
 }
