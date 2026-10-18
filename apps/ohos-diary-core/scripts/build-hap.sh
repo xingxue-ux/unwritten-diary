@@ -57,7 +57,7 @@ done
 # `stage-sherpa.sh --check` 会断言：两个文件在、aarch64、sherpa 的 NEEDED 有
 # libonnxruntime.so、符号版本是 OrtGetApiBase@VERS_1.16.3，且 sha256 与钉死值一致。
 if [[ -z "${SKIP_ASR_LIBS:-}" ]]; then
-  "$HERE/scripts/stage-sherpa.sh" --check
+  bash "$HERE/scripts/stage-sherpa.sh" --check
 else
   echo "[build-hap] SKIP_ASR_LIBS=1：跳过转写引擎库检查（这个 HAP 不能转写）"
 fi
