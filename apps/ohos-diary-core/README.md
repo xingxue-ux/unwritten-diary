@@ -215,7 +215,129 @@ finalize `state=saved`、`logical_duration_ms=4980`、blob 159,404 B 是合法�
 录音期间会 `setWindowKeepScreenOn(true)`（`ScreenKeepOn.ets`），停止/异常时释放；
 真机 8 秒用例 `KEEP_SCREEN_ON ok=true`、4 段/8000 ms、停止后 `KEEP_SCREEN_ON released`。
 当前系统息屏超时 **30,000 ms**（只读），8 秒没有跨过该阈值，所以「超过 30 秒仍不熄屏」
-**未验**。转写任务排上了但设备没有 ASR 引擎/模型，停在 `waiting_configuration`，**转写未验**。
+**未验**。转写任务排上了但设备没有 ASR 引擎/模型，停在 `waiting_configuration`；
+这一条已在下一节（2026-10-18 夜）补验：引擎与模型都就位，`waiting_configuration → succeeded` 跑通。
+
+## 转写（#108 第三片）：真机「录音 → 转写 → 可检索」已跑通
+
+2026-10-18 夜，HAD-W32 / API 23 / arm64-v8a / HarmonyOS PC，产品身份
+`com.lingxing.unwrittendiary`，debug signed HAP。**全程不联网**：引擎是包里的
+`sherpa-onnx-c-api.so`，模型在应用沙箱，转写走本机推理。
+
+### 打进 HAP 的库与体积（同一份代码，四种打包）
+
+| 打包 | `libs/arm64-v8a` 里的原生库 | signed HAP | 相对基线 |
+|---|---|---:|---:|
+| 基线（只有我们自己的库） | `libdiary_capi` 11,507,312 / `libdiary_napi` 30,824 / `libc++_shared` 1,262,504 | **13,374,010** | — |
+| 只加引擎 | + `libsherpa-onnx-c-api.so` 3,750,328 | **17,158,353** | **+3,784,343** |
+| 引擎 + **自编 ORT 1.29.1** | + `libonnxruntime.so` 19,623,560 | 36,946,694 | +23,572,684 |
+| **最终采用**：引擎 + sherpa 自带 ORT 1.16.3 | + `libonnxruntime.so` 12,930,856 | **30,198,881** | **+16,824,871** |
+
+**为什么最终是 sherpa 自带的 ORT，而不是自编 1.29.1**（实测，不是推测）：
+
+- 只加 `libsherpa-onnx-c-api.so`（HAP 里没有 ORT）⇒ 连接测试直接失败：
+  `加载本机转写引擎库失败：dlopen failed（试过 libsherpa-onnx-c-api.so）`；
+- 换成自编 **ORT 1.29.1**（`OrtGetApiBase@@VERS_1.29.1`）⇒ 仍然失败，
+  这次拿到了加载器的原始报错：
+
+  ```text
+  W MUSL-LDSO: relocating failed: symbol not found.
+      dso=/data/storage/el1/bundle/libs/arm64/libsherpa-onnx-c-api.so
+      s=OrtGetApiBase use_vna_hash=1 van_hash=27bf083
+  E DiaryAsr: DIARY_ASR FAILED mode=asr_test error=模型或端点不可用：加载本机转写引擎库失败：dlopen failed（试过 libsherpa-onnx-c-api.so）
+  ```
+
+  `llvm-readelf` 对照：sherpa 1.13.8 的 OHOS 预编译库引用的是
+  **`OrtGetApiBase@VERS_1.16.3`**，自编 ORT 只导出 `@@VERS_1.29.1`；OHOS 的
+  musl-ldso 按版本哈希（`use_vna_hash=1`）解析，版本串不一致就是「符号找不到」。
+  ORT 的 C API 表本身是稳定的（只要 `GetApi(16)` 还在），**卡的是符号版本串**。
+  ⇒ 要用 1.29.1，必须**用 1.29.1 重编 sherpa-onnx**，不能只换 `.so`。
+
+### 模型怎么进沙箱（`hdc file send` 不通，走 rport）
+
+应用沙箱 `/data/app/el2/100/base/<bundle>/haps/entry/files` 属于 app uid，
+即便子目录 `chmod 0777`，shell 域仍写不进去：
+
+```text
+$ hdc file send tokens.txt /data/app/el2/100/base/.../asr/sense-voice/tokens-probe.txt
+[Fail]Error opening file: permission denied, path:/data/app/el2/100/base/.../tokens-probe.txt
+```
+
+（`hdc file recv` 读得到，`sha256sum` 也算得了，只有写不行。）
+
+验证期用的通道：宿主机 `hdc rport tcp:8000 tcp:8000` + `python3 -m http.server`，
+应用侧 `http.requestInStream` 边收边写（`TranscriptionVerify.downloadModels`），
+不把 239 MB 打进 HAP。真机实测：
+
+| 文件 | 字节 | 耗时 | 速率 | 设备侧 sha256 |
+|---|---:|---:|---:|---|
+| `model.int8.onnx` | 239,233,841 | **8,818 ms** | 25.87 MB/s | `c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51` |
+| `tokens.txt` | 315,894 | 51 ms | 5.91 MB/s | `f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc` |
+
+两个 sha256 与宿主机 `sha256sum $HOME/dev/caches/asr-ohos/sense-voice/*` **逐字节一致**。
+
+### provider 配置（`providers.save`）
+
+`adapter_id` 用本地引擎的 id **`sherpa_onnx`**（`provider/adapter.rs` 的
+`local_engine::SHERPA_ONNX`）；`model` 指向沙箱模型目录：
+
+```json
+{"id":"local_asr_ohos","label":"本机转写（OHOS 沙箱模型）","adapter_id":"sherpa_onnx",
+ "endpoint":null,"model":"/data/storage/el2/base/haps/entry/files/asr/sense-voice",
+ "capabilities":["transcribe_audio"],"credential_ref":null,"enabled":true,"test_status":"untested"}
+```
+
+`provider_not_configured → waiting_configuration` 与 `succeeded` 的对照（同一份代码）：
+
+```text
+# 没有 provider 时录 5 秒、finalize 之后
+DIARY_REC jobs.status ... "succeeded":17,"waiting_configuration":1
+DIARY_REC TRANSCRIBE queued=true waitingConfiguration=1 ... runMs=3
+
+# 存了 provider 再跑一轮 jobs.runDue
+DIARY_ASR jobs.report {"open_ms":4,"run_ms":3580,...,"processed":1,"succeeded":1,
+  "status":{"succeeded":18,"waiting_configuration":0,...}}
+```
+
+### 真机结果（5 秒中文录音）
+
+链路：设备扬声器播 sherpa 的 `zh.wav`（5.59 s）→ `record` 录 5 s → 每 2 s 一段共 3 段
+→ `recordings.finalize`（4,980 ms，3 段）→ `jobs.runDue` → `local_transcription` 派生文本 → 检索。
+
+| 项 | 实测 |
+|---|---|
+| 录音 | 3 段（64,044 / 64,000 / 31,360 B），首包 41.2 ms，CPU 5.6%，wall 5,111 ms |
+| 任务 | `waiting_configuration=1` →（存 provider 后）`succeeded=1`，`attempt_count=1`，`job_attempts` 13:41:30.901Z→13:41:34.481Z |
+| 冷转写耗时（含加载 228 MiB 模型） | **3,580 ms**（另两次 3,582 / 3,697 ms） |
+| 其中「加载模型 + 0.05 s 静音探针」 | **3,384 ms**（`asr_warm` 同进程先跑连接测试） |
+| **热转写耗时**（模型已加载，4.98 s 音频） | **346 ms**（`run_ms`；同一轮的 `totalMs=3,764`） |
+| 内存 PSS（冷） | 22,127 → 613,501 kB（**+591 MB**）；私有脏页 1,200 → 2,400 kB（**+1.2 MB**） |
+| 内存 PSS（热态再加一条） | 549,641 → 612,935 kB（+63 MB） |
+| 派生文本（原文） | **「开饭时间早上9点至下午。」** |
+| 检索 | `search.start query=开饭` → `hits=2 elapsedMs=2`；`query=下午` → `hits=4`；命中项 `matched_by=["keyword"]`，locator 是音频 `[0, 4980) ms` |
+
+同一段音频四次录音的识别结果（说明可复现 + 偏差来自声学，不是链路）：
+
+| 录音 | 采集 RMS / 峰值 | 派生文本 |
+|---|---:|---|
+| 21:29 | 7,120 / 32,176 | 开饭时间早上9点至下午5点。（全对） |
+| 21:33 | 1,220 / 13,037 | 快饭时间早上9点至下午10点。（系统安全音量把媒体音量从 15 档降到 4 档，采集变小声） |
+| 21:37 | 7,368 / 30,869 | 派饭时间早上9点至下午5点。 |
+| 21:40 | 6,782 / 32,104 | 开饭时间早上9点至下午。（5 s 采集窗装不下 5.59 s 素材，句尾被截） |
+
+> 结论口径：**链路与引擎是通的**（同一条音频能出正确全文，任务状态、派生文本、检索全对上），
+> 但「扬声器 → 麦克风」这条声学路径会把字听错，不能拿它评价模型质量。
+> 真人口述的样本在上一轮（`db-after-zhhuman`）里是全对的：
+> 「我说这个游戏上不去分。」（`ext_01a14f1ec21072b38802aa616bed4ec1`）。
+
+### 「没验到」的（别当成验过）
+
+- **真人现场口述**（这一轮没人在设备旁；验证用的是设备扬声器回放）；
+- **长音频**（>60 s）与多段拼接的转写耗时/内存；本机只有 5 s 一条的完整数字；
+- **release / 混淆构建**带 sherpa 的包（这轮只装 debug）；
+- **低内存机型**：592 MB PSS 增量在 31 GB 的 HAD-W32 上没问题，4–8 GB 手机未测；
+- **用 ORT 1.29.1 重编 sherpa**（只证明了「直接换 .so 不行」）；
+- 电源键/锁屏路径（本轮按要求全程没碰）。
 
 ## 真机验证结果（2026-10-18）
 
