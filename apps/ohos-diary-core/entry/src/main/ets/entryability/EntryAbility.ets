@@ -6,6 +6,7 @@ import { DiaryCoreSmoke } from '../core/Smoke';
 import { DeviceVerify } from '../verify/DeviceVerify';
 import { RecordingVerify } from '../recording/RecordingVerify';
 import { TranscriptionVerify } from '../recording/TranscriptionVerify';
+import { HapBothVerify } from '../verify/HapBothVerify';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryCore';
@@ -44,6 +45,10 @@ const MARK: string = 'DIARY_SMOKE';
  *       可加 --ps base=http://127.0.0.1:8001 指向另一个宿主端口（默认 8000）；
  *       验证「Content-Length / sha256 不对时保留旧文件并报错」时用它避免挤占 8000。
  *
+ * 「配置 + 两个 ORT 共存」入口（#108 收尾片，实现在 `verify/HapBothVerify.ets`）：
+ *   --ps verify_mode hap_both --ps query=<语义查询>   下 core-config.json 与 bge 模型
+ *       → 语义索引/语义检索 → 录音转写 → 再重建语义索引并检索转写文本（同一次启动）
+ *
  * 不带参数时就是原来的同步 Smoke（用于量主线程阻塞）。
  */
 export default class EntryAbility extends UIAbility {
@@ -57,6 +62,8 @@ export default class EntryAbility extends UIAbility {
    * 不同的 HTTP 服务，故意返回错的 Content-Length / sha256），不影响默认路径。
    */
   private baseUrl: string = 'http://127.0.0.1:8000';
+  /** `hap_both` 的加载顺序：空 = 语义先跑；`asr_first` = 先转写再语义。 */
+  private order: string = '';
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     const params = want.parameters;
@@ -73,6 +80,10 @@ export default class EntryAbility extends UIAbility {
       if (typeof base === 'string' && base.length > 0) {
         this.baseUrl = base;
       }
+      const order = params['order'];
+      if (typeof order === 'string') {
+        this.order = order;
+      }
     }
     hilog.info(DOMAIN, TAG, '%{public}s onCreate mode=%{public}s pid=%{public}d',
       MARK, this.mode, process.pid);
@@ -80,7 +91,12 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     const filesDir = this.context.filesDir;
-    if (this.mode.startsWith('asr_')) {
+    if (this.mode === 'hap_both') {
+      HapBothVerify.run(this.mode, this.context, filesDir, this.query, this.order).catch((err: Object) => {
+        hilog.error(DOMAIN, TAG, '%{public}s HAP_BOTH failed %{public}s',
+          MARK, JSON.stringify(err));
+      });
+    } else if (this.mode.startsWith('asr_')) {
       TranscriptionVerify.run(this.mode, this.context, filesDir, this.query, this.baseUrl).catch((err: Object) => {
         hilog.error(DOMAIN, TAG, '%{public}s ASR_VERIFY failed %{public}s',
           MARK, JSON.stringify(err));
