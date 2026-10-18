@@ -26,7 +26,7 @@
 #
 # Environment:
 #   OHOS_PROJECT_DIR   default probes/ohos-bge-smoke
-#   BUILD_MODE         debug|release, default release
+#   BUILD_MODE         debug|release, default debug (use release only with a release Profile)
 #   HVIGORW            default $HOME/command-line-tools/bin/hvigorw
 #   OHPM               default $HOME/command-line-tools/bin/ohpm
 #   NDK                OpenHarmony native SDK (default ~/command-line-tools/sdk/default/openharmony/native)
@@ -37,7 +37,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PROJECT_DIR="${OHOS_PROJECT_DIR:-$ROOT/probes/ohos-bge-smoke}"
 BUNDLE_NAME="com.lingxing.unwrittendiary"
-BUILD_MODE="${BUILD_MODE:-release}"
+BUILD_MODE="${BUILD_MODE:-debug}"
 HVIGORW="${HVIGORW:-$HOME/command-line-tools/bin/hvigorw}"
 OHPM="${OHPM:-$HOME/command-line-tools/bin/ohpm}"
 NDK="${NDK:-$HOME/command-line-tools/sdk/default/openharmony/native}"
@@ -123,7 +123,9 @@ VERIFY_JSON="$WORK_DIR/profile-verify.json"
 if ((DRY_RUN)); then
   echo "[dry-run] java -jar $SIGN_TOOL verify-profile -inFile $OHOS_SIGN_PROFILE_FILE -outFile $VERIFY_JSON"
 else
-  java -jar "$SIGN_TOOL" verify-profile -inFile "$OHOS_SIGN_PROFILE_FILE" -outFile "$VERIFY_JSON" >/dev/null
+  if ! java -jar "$SIGN_TOOL" verify-profile -inFile "$OHOS_SIGN_PROFILE_FILE" -outFile "$VERIFY_JSON" >/dev/null; then
+    fail "verify-profile 失败：Profile 可能损坏、未签名或不是 .p7b。先重新从 DevEco/AGC 导出。"
+  fi
   python3 - "$VERIFY_JSON" "$BUNDLE_NAME" <<'PY'
 import json, re, sys
 path, expected = sys.argv[1], sys.argv[2]
