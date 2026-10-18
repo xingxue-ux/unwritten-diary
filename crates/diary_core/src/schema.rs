@@ -21,7 +21,20 @@ use rusqlite::{params, Connection};
 /// 14 是 B6（插件 SDK 与宿主，#88）抬的号：只加 `plugin_installations` /
 /// `plugin_grants` 两张全新的表，**不回填**任何旧数据（升级前没有插件，也没有
 /// 「替用户装一个」这种默认）。
-pub const SCHEMA_VERSION: i64 = 14;
+///
+/// 15 是 #128 复审（B5f 大库）抬的号：给 `index_meta` 加一列
+/// `auto_rebuild_marker`（`open` 自动重建「同一口径最多自动尝试两次」的持久标记），
+/// 并给 `chunk_vectors` 加一条**整代口径覆盖索引**（让 `open` 的整代口径核对从
+/// 全表扫变成覆盖索引扫描）。两件都是**加性**的：标记默认 NULL（= 从未自动尝试），
+/// 索引由 SQLite 从既有行建出来；用户的资料一行都不动，也不回填任何业务数据。
+///
+/// 为什么标记必须占 schema 版本、而不是搭 `jobs` 的既有字段：那个「同一口径只试一次」
+/// 的标记要**跨重启、按库**存在，而 `jobs` 的业务键
+/// `(kind, target_ids, input_snapshot_hash)` 正是去重键——把标记塞进
+/// `input_snapshot_hash` 会让同一个库按口径碎成好几条「活着」的任务，正好破坏
+/// 「至多一条活着的整代重建」。v1–v14 也没有一张键值表可借用；`index_meta` 是
+/// 单行的索引元数据，这一列与它同一个主题，所以升版本、写迁移是诚实的代价。
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -123,6 +136,15 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // **不回填、不迁移任何旧数据**：v13 只加两张全新的插件表。升级前没有插件，
         // 也就没有东西可搬；更不能在迁移里替用户预设一个插件或一条授权。迁移后
         // `plugin_installations` 为空，和刚建的新库一样。
+    }
+    // v15 的守卫只看**列在不在**（不看版本号）：测试会把库手工退回旧版本再升上来，
+    // 那些库的 `index_meta` 可能已经有这一列——再 `ALTER TABLE` 会报重复列。
+    // `CREATE INDEX IF NOT EXISTS` 让同一段重复跑也幂等。
+    if !column_exists(&tx, "index_meta", "auto_rebuild_marker")? {
+        tx.execute_batch(V15)?;
+        // **不回填标记**（NULL = 从未自动尝试）**、不用回填索引**（SQLite 从既有行建）。
+        // 没有「替用户记一次自动尝试」这种默认：升级后的第一次 `open` 仍会按当时的
+        // 口径如实判断该不该自动排一条。
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.execute(
@@ -841,4 +863,30 @@ CREATE TABLE IF NOT EXISTS plugin_grants (
     granted_at TEXT NOT NULL,
     PRIMARY KEY (plugin_id, permission)
 );
+"#;
+
+/// v15：#128 复审的两处加性改动。
+///
+/// 1. `index_meta.auto_rebuild_marker`：`open` 自动排队「同一口径最多自动尝试两次」的
+///    持久标记，编码为 `<次数>:<口径指纹>`（见 `semantic_index_job`）。为什么放
+///    `index_meta`：它是**单行的索引元数据**，与「这一代的自动重建尝试」同一个主题；
+///    而 `jobs` 的 `input_snapshot_hash` 是业务去重键的一部分，借它存标记会让同一个库
+///    按口径碎成多条「活着」的重建任务，正好破坏「至多一条活着的整代重建」。
+///    默认 NULL = 从未自动尝试；**不回填**。
+/// 2. `idx_chunk_vectors_caliber`：让 `SELECT DISTINCT model_version, dims, storage
+///    FROM chunk_vectors WHERE generation = ?` 变成**覆盖索引扫描**。`open` 的自动
+///    排队要在每次打开库时核对整代口径（storage / dims / 已知时的 model_version），
+///    没有这条索引时那是**整表扫描**——大库上会与「启动不做重活」冲突，也会污染
+///    迁移回放/探针里 open 的计时。索引列的顺序与 `active_caliber` 的
+///    `WHERE generation = ? ORDER BY model_version, dims, storage` 对齐，扫描即有序。
+///    这条索引顺带让 `COUNT(*) ... WHERE generation = ?` 也走覆盖索引。
+///
+/// 为什么加索引不会把语义检索的全代扫描拖慢：正常代次里口径只有一个，索引项在
+/// `(generation, model_version, dims, storage)` 之后按 rowid 排列，`SELECT ... WHERE
+/// generation = ?`（要读 `vector`）拿到的 rowid 仍是近似升序的，回表基本是顺序的；
+/// 混合代次（历史遗留）才可能乱序，而那种库本来就要整代重算。
+const V15: &str = r#"
+ALTER TABLE index_meta ADD COLUMN auto_rebuild_marker TEXT;
+CREATE INDEX IF NOT EXISTS idx_chunk_vectors_caliber
+    ON chunk_vectors(generation, model_version, dims, storage);
 "#;

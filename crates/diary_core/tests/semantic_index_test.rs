@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, TimeZone, Utc};
 use diary_core::{
-    Core, CreateDraftInput, EmbedOptions, Embedder, Embedding, ImportManifest, ImportOrigin,
-    ImportRequest, MatchedBy, SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest,
-    SearchSnapshot, SourceKind, TokenTruncation, VectorStorage,
+    Core, CreateDraftInput, EmbedOptions, Embedder, Embedding, EmbeddingConfig, ImportManifest,
+    ImportOrigin, ImportRequest, JobState, MatchedBy, SearchFilters, SearchHit, SearchMode, SearchPhase,
+    SearchRequest, SearchSnapshot, SourceKind, TokenTruncation, VectorStorage,
 };
 use rusqlite::params;
 use sha2::{Digest, Sha256};
@@ -3197,6 +3197,10 @@ fn reopening_an_f32_library_reports_not_ready_with_a_storage_reason() {
 
 /// 核心自动排队（评审 #128 复审）：口径不一致时 `open` 自己排一条语义重建，
 /// 且**重复 open 仍只有一条**（去重键 `(kind, target_ids=[], snapshot=NULL)`）。
+///
+/// 自动排队只在模型 `Configured` / `Ready` 时生效（没配模型不排），而测试不能设进程
+/// 环境变量来造这个状态，所以用 `open_with_embedding_config_for_test` 显式钉住
+/// 「配了、文件都在、还没加载」——与产品里设置好模型后的 open 同一条判据。
 #[test]
 fn opening_a_mismatched_library_queues_one_deduplicated_semantic_rebuild() {
     let dir = tempfile::tempdir().unwrap();
@@ -3210,7 +3214,9 @@ fn opening_a_mismatched_library_queues_one_deduplicated_semantic_rebuild() {
     assert_eq!(semantic_job_count(&path), 0, "建库时口径一致，不该自动排队");
     drop(core);
 
-    let first = Core::open(&path).unwrap();
+    let configured = configured_model(dir.path());
+    let first =
+        Core::open_with_embedding_config_for_test(&path, Some(configured.clone())).unwrap();
     assert_eq!(
         semantic_job_count(&path),
         1,
@@ -3223,7 +3229,8 @@ fn opening_a_mismatched_library_queues_one_deduplicated_semantic_rebuild() {
     drop(first);
 
     // 连开第二次：业务键命中，仍然只有 1 条（不能因为 open 两次排 N 条）。
-    let second = Core::open(&path).unwrap();
+    let second =
+        Core::open_with_embedding_config_for_test(&path, Some(configured)).unwrap();
     assert_eq!(
         semantic_job_count(&path),
         1,
@@ -3254,7 +3261,11 @@ fn reopening_a_library_with_another_model_dimension_reports_not_ready() {
     core.build_semantic_index(None).unwrap();
     drop(core);
 
-    let reopened = Core::open(&path).unwrap();
+    let reopened = Core::open_with_embedding_config_for_test(
+        &path,
+        Some(configured_model(dir.path())),
+    )
+    .unwrap();
     let status = reopened.index_status(None).unwrap();
     assert_eq!(status.embedded_chunks, status.total_chunks, "覆盖是完整的");
     assert_eq!(
@@ -3317,9 +3328,257 @@ fn a_loaded_embedder_with_another_model_version_reports_not_ready() {
     assert!(reason.contains("需要重建"), "{reason}");
 }
 
+/// 「文件都在、但还没加载」的模型配置：`Configured` 只 stat 文件，不建 ORT 会话。
+///
+/// 自动排队只在模型 `Configured` / `Ready` 时生效；测试用显式配置钉住这个状态，
+/// 不去改进程环境变量（并行测试会互相踩）。
+fn configured_model(dir: &Path) -> EmbeddingConfig {
+    let model_dir = dir.join("fake-model");
+    std::fs::create_dir_all(&model_dir).unwrap();
+    std::fs::write(model_dir.join("model.onnx"), b"not-a-real-model").unwrap();
+    std::fs::write(model_dir.join("tokenizer.json"), b"{}").unwrap();
+    let ort_dylib = dir.join("libonnxruntime.so");
+    std::fs::write(&ort_dylib, b"not-a-real-ort").unwrap();
+    EmbeddingConfig {
+        model_dir,
+        ort_dylib,
+        model_file: Some("model.onnx".to_owned()),
+    }
+}
+
+/// 评审 #128 第 1 条：没配模型的库**不自动排队**——否则会长期挂一条
+/// `waiting_configuration` + `requires_user_action` 的噪声任务，取消后还会复活。
+///
+/// 显式请求仍然照旧落 `waiting_configuration`（那是用户/导入链自己排的，不是噪声）；
+/// 这里要钉的是：**自动触发**不排、取消之后重开也不复活。
+#[test]
+fn an_unconfigured_library_never_auto_queues_and_a_cancelled_job_does_not_come_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    // 没配模型（显式 None，不受开发机环境变量影响）：口径不一致也不自动排。
+    let mut core = Core::open_with_embedding_config_for_test(&path, None).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        0,
+        "没配模型的库不自动排队：那是长期噪声，不是在等资源"
+    );
+    assert_eq!(
+        core.job_status().unwrap().waiting_configuration, 0,
+        "自动触发不该造出等配置的任务"
+    );
+    // 状态仍如实说「需要重建」：没有自动入口 ≠ 状态闭嘴。
+    let status = core.index_status(None).unwrap();
+    assert!(!status.semantic_index_ready);
+    assert!(
+        status
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("存储格式从 f32 变为 int8")),
+        "要保持可执行的说明：{:?}",
+        status.reasons
+    );
+
+    // 显式排一条：它会等配置（既有语义，不是这条要改的东西）。
+    let explicit = core
+        .schedule_semantic_index("显式排上，等模型", "op-explicit")
+        .unwrap();
+    core.run_due_jobs(Utc::now(), 60_000, "foreground", 64)
+        .unwrap();
+    let waiting = core.get_job(&explicit.id).unwrap();
+    assert_eq!(waiting.state, JobState::WaitingConfiguration);
+    assert!(waiting.requires_user_action, "显式任务等配置要提示用户");
+    // 取消它，再重开：不能复活。
+    core.cancel_job(&explicit.id, "op-cancel").unwrap();
+    drop(core);
+    let reopened = Core::open_with_embedding_config_for_test(&path, None).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        1,
+        "取消之后重开不能再冒出一条（取消的那条还在，但不是新排的）"
+    );
+    let state: String = open(&path)
+        .query_row(
+            "SELECT state FROM jobs WHERE kind = 'semantic_index'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "cancelled");
+    assert_eq!(reopened.job_status().unwrap().waiting_configuration, 0);
+}
+
+/// 评审 #128 第 3 条（**死角落复现**）：失败/取消不会清 `building_generation`，
+/// 旧判据一看到它就早退，自动重建再也不会排。
+///
+/// 现在「正在建」的判据是**没有活着的 `semantic_index` 任务**：任务终态后，即使
+/// `building_generation` 还留着，也再排一次（执行者会续跑/整代废弃重算）。同一口径
+/// 最多自动尝试两次（首次 + 失败/取消后的一次重排），第三次起不再排。
+#[test]
+fn a_failed_rebuild_with_leftover_building_generation_gets_one_more_auto_attempt() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let configured = configured_model(dir.path());
+    // 第一次 open：自动排一条（自动尝试 1/2）。
+    let mut first =
+        Core::open_with_embedding_config_for_test(&path, Some(configured.clone())).unwrap();
+    assert_eq!(semantic_job_count(&path), 1);
+    let job = first.claim_next_due_job(Utc::now()).unwrap().unwrap();
+    drop(first);
+    {
+        // 模拟「跑到一半失败/被取消」：任务终态，building_generation 留着（续跑进度）。
+        let conn = open(&path);
+        conn.execute(
+            "UPDATE jobs SET state = 'failed', error_code = 'io' WHERE id = ?1",
+            params![job.id],
+        )
+        .unwrap();
+        conn.execute_batch("UPDATE index_meta SET building_generation = active_generation + 1;")
+            .unwrap();
+    }
+
+    // 第二次 open：没有**活着的**任务，building 不该再挡路 → 再排一次（2/2）。
+    let second =
+        Core::open_with_embedding_config_for_test(&path, Some(configured.clone())).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        2,
+        "失败后要能再排一条；否则 building_generation 永远挡着，这就是新的死角落"
+    );
+    let (kind, state) = open(&path)
+        .query_row(
+            "SELECT kind, state FROM jobs WHERE kind = 'semantic_index' \
+             AND state NOT IN ('failed', 'cancelled') LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "semantic_index");
+    assert_eq!(state, "queued");
+    drop(second);
+
+    // 把第二条也置成终态：同一口径已经自动尝试两次 → 第三次起交给显式入口。
+    open(&path)
+        .execute_batch(
+            "UPDATE jobs SET state = 'failed', error_code = 'io' \
+             WHERE kind = 'semantic_index' AND state NOT IN ('succeeded','failed','cancelled');",
+        )
+        .unwrap();
+    let _third =
+        Core::open_with_embedding_config_for_test(&path, Some(configured)).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        2,
+        "同一口径最多自动尝试两次：失败行不能随每次 open 增长"
+    );
+}
+
+/// 评审 #128 第 5 条：成功重建之后 reopen **不再排**——口径已经一致，自动触发无事可做。
+#[test]
+fn a_successful_rebuild_stops_the_auto_queue_on_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let mut reopened =
+        Core::open_with_embedding_config_for_test(&path, Some(configured_model(dir.path())))
+            .unwrap();
+    assert_eq!(semantic_job_count(&path), 1, "f32 存量库先自动排一条");
+    // 让它真的跑完：注入同口径的嵌入器并驱动一轮。
+    reopened.set_embedder(stub(&counters, vec![]));
+    let round = reopened
+        .run_due_jobs(Utc::now(), 60_000, "foreground", 64)
+        .unwrap();
+    assert_eq!(round.succeeded, 1);
+    assert!(
+        reopened.index_status(None).unwrap().semantic_index_ready,
+        "按当前口径整代重算之后就绪"
+    );
+    drop(reopened);
+
+    let again = Core::open_with_embedder_for_test(&path, stub(&counters, vec![])).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        1,
+        "成功重建后口径一致，reopen 不该再排一条"
+    );
+    assert!(again.index_status(None).unwrap().semantic_index_ready);
+}
+
+/// 评审 #128 第 4 条：`model_version` 也要纳入自动触发——换了一份同维度、同存储的
+/// 模型文件，`index_status` 会说「需要重建」，自动触发也必须给出可执行的入口。
+///
+/// 只在嵌入器**已经加载**（内存里有 `model_version`）时比：这里用
+/// `open_with_embedder_for_test` 把「open 时模型已加载」那一刻造出来，不比文件哈希。
+#[test]
+fn a_loaded_embedder_with_another_model_version_queues_one_auto_rebuild() {
+    const OLD_VERSION: &str = "stub-embedder@old333333333";
+    const NEW_VERSION: &str = "stub-embedder@new444444444";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        OLD_VERSION,
+        512,
+        &counters,
+        vec![],
+    )));
+    core.set_vector_storage_for_test(VectorStorage::Int8);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let reopened = Core::open_with_embedder_for_test(
+        &path,
+        Box::new(StubEmbedder::with_dims(
+            NEW_VERSION,
+            512,
+            &counters,
+            vec![],
+        )),
+    )
+    .unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        1,
+        "模型版本不同（维度/存储相同）也要自动排一条"
+    );
+    let status = reopened.index_status(None).unwrap();
+    assert!(!status.semantic_index_ready);
+    assert!(
+        status
+            .reasons
+            .iter()
+            .any(|reason| reason.contains(OLD_VERSION) && reason.contains(NEW_VERSION)),
+        "状态要同时点名两边的版本：{:?}",
+        status.reasons
+    );
+}
+
 /// 统计库里 `semantic_index` 任务数（自动排队回归用）。
-fn semantic_job_count(path: &Path) -> i64 {
-    open(path)
+fn semantic_job_count(path: &Path) -> i64 {    open(path)
         .query_row(
             "SELECT COUNT(*) FROM jobs WHERE kind = 'semantic_index'",
             [],

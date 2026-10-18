@@ -354,6 +354,10 @@ fn semantic_search(
         // 口径不一致（生效代次是另一个模型建的）：**不进入计算**，也不拿跨空间的分数
         // 冒充结果。空结果 + 明确、可执行的原因——与「语义未就绪」同一条「不假装」的路。
         semantic::SemanticCandidates::ForeignSpace(mismatch) => {
+            // 发现跨空间就是自动重建的入口：`apps/` 没有 rebuildSemantic 的调用点，
+            // 而「换了一份同维度、同存储的模型文件」只有加载模型之后才比得出来。
+            // 去重与「同一口径最多自动尝试两次」在 `semantic_index_job` 里统一处理。
+            crate::semantic_index_job::enqueue_for_detected_mismatch(core, &mismatch)?;
             warnings.push(format!(
                 "语义检索没有结果：{}；这次没有结果（没有退化成关键词，\
                  也没有拿跨空间的分数当结果）",
@@ -402,6 +406,10 @@ fn hybrid_start(
     }
 
     if let Some(reason) = hybrid_evidence(core)? {
+        // 语义这一路不可用/不一致时也可能是一个「该重建」的事实（尤其是模型已经加载、
+        // 在 `hybrid_evidence` 里当场比出口径不一致的情形）。让自动触发按同一套判据
+        // 决定要不要排一条；不可用的原因不是口径不一致时它什么都不做。
+        crate::semantic_index_job::enqueue_for_caliber_mismatch(core)?;
         let (ordered, coverage, _) =
             keyword_search(core, request, needle, request.page_size, warnings)?;
         let ordered = as_keyword_only_hybrid(ordered);
@@ -785,6 +793,9 @@ pub(crate) fn upgrade(core: &mut Core, session_id: &str) -> Result<SearchSnapsho
         // 挡住，不是逐行 dims 兜底。`hybrid_evidence` 已经拦下 `Ready` 的情形，
         // 这里补的是「模型刚被这一次调用加载出来」的常见真实路径。
         if let Some(mismatch) = semantic::caliber_mismatch(core, &*embedder)? {
+            // 模型刚被这一次调用加载出来：这里才知道 `model_version`，也就是自动重建
+            // 该被排上的时刻（与 open 共用判据/去重/尝试上限）。
+            crate::semantic_index_job::enqueue_for_detected_mismatch(core, &mismatch)?;
             return mark_unavailable(core, &mut state, mismatch.reason());
         }
 

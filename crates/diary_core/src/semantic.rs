@@ -296,10 +296,21 @@ pub(crate) struct SemanticRuntime {
 impl SemanticRuntime {
     /// 从环境变量初始化。只 stat 文件，不加载模型。
     pub(crate) fn from_env() -> Self {
-        let slot = match embedding::config_from_env() {
-            EnvEmbedding::Unset => EmbedderSlot::NotConfigured,
-            EnvEmbedding::Invalid(reason) => EmbedderSlot::Failed(reason),
-            EnvEmbedding::Ready(config) => match config.check_files() {
+        match embedding::config_from_env() {
+            EnvEmbedding::Unset => Self::configured(None),
+            EnvEmbedding::Invalid(reason) => Self::failed(reason),
+            EnvEmbedding::Ready(config) => Self::configured(Some(config)),
+        }
+    }
+
+    /// 按一份**显式**配置初始化（测试用；产品路径只走 `from_env`）。
+    ///
+    /// `None` 固定为「一个环境变量都没设」的合法退化——测试不能依赖进程环境变量
+    /// （它是进程级的，多个测试并行时会互相踩）。
+    pub(crate) fn configured(config: Option<EmbeddingConfig>) -> Self {
+        let slot = match config {
+            None => EmbedderSlot::NotConfigured,
+            Some(config) => match config.check_files() {
                 Ok(()) => EmbedderSlot::Configured(config),
                 // 缺文件也是**诚实的原因**，不是「未就绪」。
                 Err(reason) => EmbedderSlot::Failed(reason),
@@ -307,6 +318,21 @@ impl SemanticRuntime {
         };
         Self {
             slot,
+            configured_version: OnceLock::new(),
+        }
+    }
+
+    /// 直接给一个**已加载**的嵌入器（测试用）：`open` 时就能比 `model_version`。
+    pub(crate) fn ready(embedder: Box<dyn Embedder>) -> Self {
+        Self {
+            slot: EmbedderSlot::Ready(Arc::from(embedder)),
+            configured_version: OnceLock::new(),
+        }
+    }
+
+    fn failed(reason: String) -> Self {
+        Self {
+            slot: EmbedderSlot::Failed(reason),
             configured_version: OnceLock::new(),
         }
     }
@@ -321,6 +347,26 @@ impl SemanticRuntime {
                 .get_or_init(|| embedding::model_version_for(config).ok())
                 .clone(),
             EmbedderSlot::NotConfigured | EmbedderSlot::Failed(_) => None,
+        }
+    }
+
+    /// 当前**已经加载**的模型版本（内存里的真值，不读文件、不算哈希）。
+    ///
+    /// `open` 的自动排队只用它：`Configured` 时算哈希要读一遍模型文件（24 MiB），
+    /// 与「启动不做重活」冲突。没加载就返回 `None`——那时宁可不比，也不为 discovery
+    /// 去读文件；状态路径（`index_status`）另走 `model_version_hint`。
+    pub(crate) fn loaded_model_version(&self) -> Option<String> {
+        match &self.slot {
+            EmbedderSlot::Ready(embedder) => Some(embedder.model_version().to_owned()),
+            _ => None,
+        }
+    }
+
+    /// 当前嵌入器的维度（已加载时以它为准；否则是产品默认）。
+    pub(crate) fn current_dims(&self) -> usize {
+        match &self.slot {
+            EmbedderSlot::Ready(embedder) => embedder.dims(),
+            _ => embedding::EXPECTED_DIMS,
         }
     }
 }

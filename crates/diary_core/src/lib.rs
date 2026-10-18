@@ -273,10 +273,27 @@ impl Core {
     }
 
     fn prepare(
+        conn: Connection,
+        root: Option<PathBuf>,
+        library_file_name: Option<String>,
+        transport: std::sync::Arc<dyn provider::transport::Transport>,
+    ) -> Result<Self> {
+        Self::prepare_with_semantic(
+            conn,
+            root,
+            library_file_name,
+            transport,
+            semantic::SemanticRuntime::from_env(),
+        )
+    }
+
+    /// `prepare` 的实现体，语义运行时可注入（产品路径只从环境变量来）。
+    fn prepare_with_semantic(
         mut conn: Connection,
         root: Option<PathBuf>,
         library_file_name: Option<String>,
         transport: std::sync::Arc<dyn provider::transport::Transport>,
+        semantic: semantic::SemanticRuntime,
     ) -> Result<Self> {
         // WAL 提高并发读写表现；synchronous=FULL 保证「提交了就是落盘了」，
         // 只用 NORMAL 会让进程崩溃时丢掉最后几个事务，与 durable 承诺不符。
@@ -300,16 +317,18 @@ impl Core {
         // 历史包袱一次性清账：以前因为没有执行者而进「已放弃 + no_handler」的旧任务，
         // 现在有执行者的放回队列（判据自带幂等，见 `jobs::requeue_legacy_no_handler`）。
         jobs::requeue_legacy_no_handler(&mut conn, support::now())?;
+        // 已加载的嵌入器可能带着自己的维度（测试注入 384 维的桩）；其余情形是产品默认。
+        let current_dims = semantic.current_dims();
         let mut core = Self {
             conn,
             root,
             library_file_name,
             leases: HashMap::new(),
             search_sessions: HashMap::new(),
-            semantic: semantic::SemanticRuntime::from_env(),
+            semantic,
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
             vector_storage: embedding::DEFAULT_VECTOR_STORAGE,
-            current_dims: embedding::EXPECTED_DIMS,
+            current_dims,
             semantic_scan_depth: semantic::FAST_SCAN_DEPTH,
             secrets,
             transport,
@@ -318,11 +337,66 @@ impl Core {
             backup_fault: backup::BackupFault::None,
             backup_gate: None,
         };
-        // 存量库的 storage/dims 与当前口径不一致时，**核心自己**把语义重建排上：
-        // `reasons` 说「需要重建」，就不能让用户找不到能重建的入口。去重靠
-        // `jobs::enqueue_in_tx` 的业务键，重复 open 返回同一条任务。
+        // 存量库的口径（storage / dims / 已知时的 model_version）与当前不一致时，
+        // **核心自己**把语义重建排上：`reasons` 说「需要重建」，就不能让用户找不到
+        // 能重建的入口。判据、去重与「同一口径最多自动尝试两次」见
+        // `semantic_index_job::enqueue_for_caliber_mismatch`。
         semantic_index_job::enqueue_for_caliber_mismatch(&mut core)?;
         Ok(core)
+    }
+
+    /// 仅供测试：用一份**显式**的模型配置打开资料库，不读进程环境变量。
+    ///
+    /// 为什么要这个入口：自动排队只在模型 `Configured` / `Ready` 时生效，而测试不能
+    /// 靠设环境变量来造这个状态（环境变量是进程级的，并行测试会互相踩）。`None`
+    /// 固定成「没配」的合法退化；`Some(config)` 走与 `from_env` 同一条 `check_files`
+    /// 路径（缺文件就是 `Failed`，不是 `Configured`）。
+    #[doc(hidden)]
+    pub fn open_with_embedding_config_for_test(
+        path: impl AsRef<std::path::Path>,
+        config: Option<embedding::EmbeddingConfig>,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let root = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        Self::prepare_with_semantic(
+            Connection::open(path)?,
+            Some(root),
+            file_name,
+            std::sync::Arc::new(provider::transport::PanicTransport {}),
+            semantic::SemanticRuntime::configured(config),
+        )
+    }
+
+    /// 仅供测试：打开资料库时就把一个**已加载**的嵌入器挂上（`Ready`）。
+    ///
+    /// 自动排队的 `model_version` 一项只在「内存里已有版本」时才比——产品冷启动做
+    /// 不到这一点（见 `semantic_index_job` 的说明），测试用这个入口把那一刻提前。
+    #[doc(hidden)]
+    pub fn open_with_embedder_for_test(
+        path: impl AsRef<std::path::Path>,
+        embedder: Box<dyn embedding::Embedder>,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let root = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        Self::prepare_with_semantic(
+            Connection::open(path)?,
+            Some(root),
+            file_name,
+            std::sync::Arc::new(provider::transport::PanicTransport {}),
+            semantic::SemanticRuntime::ready(embedder),
+        )
     }
 
     /// 文件库根目录。内存库没有根目录，导入相关方法会因此报错。
@@ -414,6 +488,14 @@ impl Core {
     /// （不建 ORT 会话）；都没有就是 `None`（无从比对，不猜）。
     pub(crate) fn current_model_version(&self) -> Option<String> {
         self.semantic.model_version_hint()
+    }
+
+    /// 当前**已经加载**的模型版本（内存里的真值）：没加载就是 `None`，不读文件。
+    ///
+    /// `open` 的自动排队只用这一项——为 discovery 去读 24 MiB 模型文件与「启动不做
+    /// 重活」冲突。状态路径（`index_status`）仍用 `current_model_version`。
+    pub(crate) fn loaded_model_version(&self) -> Option<String> {
+        self.semantic.loaded_model_version()
     }
 
     /// 仅供量测/测试：改快速路径保留的候选块数上限（#90），用来扫「深度 vs 延迟」。
