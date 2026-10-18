@@ -25,7 +25,7 @@ use std::time::Instant;
 use anyhow::{bail, Result};
 use diary_core::{
     config_from_env, load_embedder, Core, EmbedOptions, EnvEmbedding, SearchFilters, SearchMode,
-    SearchRequest,
+    SearchRequest, VectorStorage,
 };
 
 use crate::quality::{self, Case, CaseOutcome, QualitySet, TOP_K};
@@ -96,6 +96,9 @@ pub fn run() -> Result<()> {
             let embedder = load_embedder(&config, EmbedOptions::default())
                 .map_err(|reason| anyhow::anyhow!(reason))?;
             core.set_embedder(Box::new(embedder));
+            // 这份混合检索基线是在 f32 下测的；默认已改成 int8，显式钉回 f32，
+            // 保证重跑出来的阈值表与文档里的数字同一口径。
+            core.set_vector_storage_for_test(VectorStorage::F32);
             core.build_semantic_index(None)?;
 
             // 语义一路的分数分布：阈值扫描表的读法要用它（期望来源多少分、

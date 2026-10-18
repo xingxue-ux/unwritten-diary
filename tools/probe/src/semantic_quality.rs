@@ -7,7 +7,7 @@
 //! 2. **pooling（CLS / mean）× 指令前缀（加 / 不加）四组**：同一个模型、同一个前向
 //!    输出，只改取哪一位与查询侧要不要拼前缀。量的是**怎么用这个模型**，不是换模型；
 //! 3. **f32 vs int8**：对已经算出来的 f32 向量做 int8 量化模拟，报召回变化与体积。
-//!    只有数字支持才在存储上采纳 int8。
+//!    数字支持后默认存储已改为 int8（见 `docs/architecture/m5-大库可用性.md`）。
 //!
 //! 需要真模型与 ORT 动态库：
 //!
@@ -32,7 +32,7 @@ use std::time::Instant;
 use anyhow::{bail, Result};
 use diary_core::{
     config_from_env, load_embedder, pack_pieces, Core, EmbedOptions, Embedder, EmbeddingConfig,
-    EnvEmbedding, Piece, Pooling, SearchFilters, SearchMode, SearchRequest,
+    EnvEmbedding, Piece, Pooling, SearchFilters, SearchMode, SearchRequest, VectorStorage,
 };
 
 use crate::quality::{self, Case, CaseOutcome, QualitySet, TOP_K};
@@ -108,6 +108,9 @@ fn product_outcomes(
             let embedder =
                 load_embedder(config, options).map_err(|reason| anyhow::anyhow!(reason))?;
             core.set_embedder(Box::new(embedder));
+            // 质量基线是在 f32 下测的；默认已改成 int8，这里显式钉回 f32，
+            // 让 `[1] 产品路径` 的数字与文档里的基线可比。
+            core.set_vector_storage_for_test(VectorStorage::F32);
             let built = core.build_semantic_index(None)?;
             let request = SearchRequest {
                 query: case.query.clone(),
@@ -324,11 +327,12 @@ fn summarize(outcomes: &[CaseOutcome]) -> (f64, f64, f64, f64, f64) {
 
 fn f32_vs_int8(set: &QualitySet, config: &EmbeddingConfig, dims: usize) -> Result<()> {
     println!("\n[4] f32 vs int8（对算出来的 f32 向量做 int8 量化模拟）");
-    println!("  这一节走探针自己的打分循环：产品路径只实现 f32，int8 只能对已有 f32 向量模拟；");
+    println!("  这一节走探针自己的打分循环，对已有 f32 向量做 int8 量化；产品路径的 int8");
+    println!("  写入/查询由 large-bench recall-quality 真跑（默认存储已是 int8）。");
     println!("  分块、嵌入器与余弦都是同一份，差别只在存储格式。");
     let embedder = load_embedder(config, EmbedOptions::default())
         .map_err(|reason| anyhow::anyhow!(reason))?;
-    for (label, storage) in [("f32（当前实现）", Storage::F32), ("int8（模拟）", Storage::I8)] {
+    for (label, storage) in [("f32（显式指定）", Storage::F32), ("int8（模拟）", Storage::I8)] {
         let outcomes = harness(set, &embedder, storage)?;
         let (top1, bottom) = cosine_drift(set, &embedder)?;
         println!("\n  存储：{label} · 向量间余弦平均 {top1:.4} · 最差 {bottom:.4}");
