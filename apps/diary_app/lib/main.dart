@@ -51,10 +51,26 @@ class DiaryApp extends StatelessWidget {
       // text shade legible in system dark mode without changing its shapes.
       return ColorFiltered(
         colorFilter: const ColorFilter.matrix(<double>[
-          0, 0, -.88, 0, 245,
-          0, -.88, 0, 0, 245,
-          -.88, 0, 0, 0, 245,
-          0, 0, 0, 1, 0,
+          0,
+          0,
+          -.88,
+          0,
+          245,
+          0,
+          -.88,
+          0,
+          0,
+          245,
+          -.88,
+          0,
+          0,
+          0,
+          245,
+          0,
+          0,
+          0,
+          1,
+          0,
         ]),
         child: child!,
       );
@@ -123,79 +139,80 @@ class _BootGateState extends State<_BootGate> {
   @override
   Widget build(BuildContext context) =>
       FutureBuilder<({DiaryApi api, CoreSnapshot snapshot})>(
-    future: _opening,
-    builder: (context, result) {
-      if (result.hasData) {
-        return ExperienceShell(
-          api: result.data!.api,
-          demoMode: widget.demoMode,
-          supportsHybridUpgrade: result.data!.snapshot.coreInfo.capabilities
-              .contains('search.upgrade'),
-        );
-      }
-      if (result.hasError) {
-        final failure = result.error;
-        final message = switch (failure) {
-          _CoreUnavailable(:final message) => message,
-          ProductionCoreUnavailable(:final message) => message,
-          DiaryException(:final message) => message,
-          _ => '资料库暂时没能打开，请稍后再试。',
-        };
-        final retryable = switch (failure) {
-          _CoreUnavailable() => false,
-          ProductionCoreUnavailable() => false,
-          DiaryException(:final retryable) => retryable,
-          _ => true,
-        };
-        return Scaffold(
-          backgroundColor: SketchColors.canvas,
-          body: Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const CatMark(size: 100),
-                const SizedBox(height: 20),
-                Text(message, textAlign: TextAlign.center),
-                const SizedBox(height: 16),
-                if (retryable)
-                  SketchAction(
-                    label: '重试',
-                    onPressed: () => setState(() {
-                      _opening = _open();
-                    }),
-                  ),
-              ],
-            ),
-          ),
-        );
-      }
-      return const Scaffold(
-        backgroundColor: SketchColors.canvas,
-        body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              WritingCat(size: 270),
-              SizedBox(height: 18),
-              Text(
-                '小纸团在整理今天',
-                style: TextStyle(
-                  color: SketchColors.ink,
-                  fontSize: 24,
-                  fontWeight: FontWeight.w700,
+        future: _opening,
+        builder: (context, result) {
+          if (result.hasData) {
+            return ExperienceShell(
+              api: result.data!.api,
+              demoMode: widget.demoMode,
+              snapshot: result.data!.snapshot,
+              supportsHybridUpgrade: result.data!.snapshot.coreInfo.capabilities
+                  .contains('search.upgrade'),
+            );
+          }
+          if (result.hasError) {
+            final failure = result.error;
+            final message = switch (failure) {
+              _CoreUnavailable(:final message) => message,
+              ProductionCoreUnavailable(:final message) => message,
+              DiaryException(:final message) => message,
+              _ => '资料库暂时没能打开，请稍后再试。',
+            };
+            final retryable = switch (failure) {
+              _CoreUnavailable() => false,
+              ProductionCoreUnavailable() => false,
+              DiaryException(:final retryable) => retryable,
+              _ => true,
+            };
+            return Scaffold(
+              backgroundColor: SketchColors.canvas,
+              body: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CatMark(size: 100),
+                    const SizedBox(height: 20),
+                    Text(message, textAlign: TextAlign.center),
+                    const SizedBox(height: 16),
+                    if (retryable)
+                      SketchAction(
+                        label: '重试',
+                        onPressed: () => setState(() {
+                          _opening = _open();
+                        }),
+                      ),
+                  ],
                 ),
               ),
-              SizedBox(height: 7),
-              Text(
-                '稍等一下，就可以开始记录了。',
-                style: TextStyle(color: SketchColors.muted),
+            );
+          }
+          return const Scaffold(
+            backgroundColor: SketchColors.canvas,
+            body: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  WritingCat(size: 270),
+                  SizedBox(height: 18),
+                  Text(
+                    '小纸团在整理今天',
+                    style: TextStyle(
+                      color: SketchColors.ink,
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  SizedBox(height: 7),
+                  Text(
+                    '稍等一下，就可以开始记录了。',
+                    style: TextStyle(color: SketchColors.muted),
+                  ),
+                ],
               ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       );
-    },
-  );
 }
 
 class _CoreUnavailable implements Exception {
