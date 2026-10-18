@@ -30,7 +30,7 @@
     "pooling": "mean pooling，只对 attention_mask 为 1 的位置求平均",
     "normalization": "L2 归一化，归一化后内积即余弦相似度",
     "queryPrefix": "候选模型文档建议检索查询加指令前缀；M0 实测未使用前缀，只有 3 条虚构样例，不足以判断前缀是否必要",
-    "maxInputTokens": "未验证。实测长文本样例为 482 token。上限与截断策略需要按模型文档确认并写入本文件"
+    "maxInputTokens": "512（含 [CLS]/[SEP]；正文最多 510）。导出的 ONNX 图位置编码固定 512，超过会报 Add 节点的 broadcast 错误（512 by N）；#109 起 embedding::prepare_input 在入口截断并如实报告截掉的 token 数，见 docs/architecture/m2-向量索引与换代.md 的「输入长度」"
   },
   "fetch": {
     "command": "python3 tools/model-export/export_bge_small_zh.py --out models/bge-small-zh-v1.5-ours",
