@@ -287,6 +287,20 @@ class _ExperienceShellState extends State<ExperienceShell>
         children: [
           Text(entry.file.name, maxLines: 2, overflow: TextOverflow.ellipsis),
           Text(entry.message ?? state),
+          if (entry.phase == FileImportPhase.saved && entry.captureId != null)
+            TextButton(
+              onPressed: () async {
+                try {
+                  final capture = await widget.api.getCapture(entry.captureId!);
+                  if (mounted) {
+                    _openDiaryFor(_dayKey(capture.occurredAt.toLocal()));
+                  }
+                } on Object {
+                  if (mounted) _toast('暂时无法读取这份材料的日期，请稍后重试。');
+                }
+              },
+              child: const Text('查看这一天的日记'),
+            ),
           if (entry.phase == FileImportPhase.copying ||
               entry.phase == FileImportPhase.queued)
             TextButton(
