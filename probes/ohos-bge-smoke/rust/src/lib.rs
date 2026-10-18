@@ -110,7 +110,11 @@ fn corpus() -> Vec<ProbeText> {
 }
 
 /// 越界文本（>512 token，超过 bge 的位置上限）：**单独、最后、可失败地**测。
-/// `embedding.rs` 里没有截断逻辑，所以这条是真实的产品风险点，只如实记录结果。
+///
+/// issue #109 之前 `embedding.rs` 没有截断，这条是真实的产品风险点：617 token 会让
+/// ORT 报 `Attempting to broadcast an axis by a dimension other than 1. 512 by 617`。
+/// #109 之后入口会截到 510 个正文 token（两端保留 `[CLS]` / `[SEP]`）并如实报告
+/// 截掉多少——本探针的第 6 步就是把修复后的行为记录下来。
 ///
 /// 取 `LONG_UNIT`（42 字）× 15 ≈ 630 字；实测 tokenizer 给出 617 token（> 512）。
 fn overlength_text() -> String {
@@ -456,7 +460,7 @@ fn run(params: &Value) -> Value {
     for t in &texts {
         let t0 = Instant::now();
         let v = match embedder.embed_document(t.text.as_str()) {
-            Ok(v) => v,
+            Ok(v) => v.vector,
             Err(e) => {
                 errors.push(format!("embed_document({}) 失败：{e}", t.key));
                 continue;
@@ -475,6 +479,7 @@ fn run(params: &Value) -> Value {
             let t0 = Instant::now();
             match embedder.embed_document(t.text.as_str()) {
                 Ok(x) => {
+                    let x = x.vector;
                     hots.push(ms(t0.elapsed()));
                     bit_identical &= x == v;
                     last = x;
@@ -581,18 +586,27 @@ fn run(params: &Value) -> Value {
     r.insert("proc_rss_kb_after_embed".into(), json!(proc_kb("VmRSS")));
     r.insert("proc_hwm_kb_after_embed".into(), json!(proc_kb("VmHWM")));
 
-    // ── 6. 越界文本（>512 token）：embedding.rs 没有截断逻辑，如实记录行为 ──
+    // ── 6. 越界文本（>512 token）：#109 之后 embedding.rs 会截断并报告 ─────────
     let over = overlength_text();
     let over_res = catch_unwind(AssertUnwindSafe(|| embedder.embed_document(over.as_str())));
     match over_res {
-        Ok(Ok(v)) => {
+        Ok(Ok(embedding)) => {
+            let v = &embedding.vector;
+            let truncation = embedding.truncation.map(|t| {
+                json!({
+                    "original_tokens": t.original_tokens,
+                    "kept_tokens": t.kept_tokens,
+                    "dropped_tokens": t.dropped_tokens,
+                })
+            });
             r.insert(
                 "overlength".into(),
                 json!({
                     "ok": true,
                     "dims": v.len(),
-                    "norm": norm(&v),
-                    "note": "超 512 token 仍然返回了向量（是否语义有效未验证）",
+                    "norm": norm(v),
+                    "truncation": truncation,
+                    "note": "超 512 token 不再报错：#109 的入口截断到 510 个正文 token + [CLS]/[SEP]，并如实报告截掉多少",
                 }),
             );
         }

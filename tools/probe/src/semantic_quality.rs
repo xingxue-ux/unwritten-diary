@@ -357,7 +357,7 @@ fn cosine_drift(set: &QualitySet, embedder: &dyn Embedder) -> Result<(f64, f64)>
             })
             .collect();
         for chunk in pack_pieces(&pieces) {
-            let vector = embedder.embed_document(&chunk.text)?;
+            let vector = embedder.embed_document(&chunk.text)?.vector;
             let quantized = quantize_i8(&vector);
             values.push(f64::from(cosine(&vector, &quantized)));
         }
@@ -428,7 +428,7 @@ fn harness_case(case: &Case, embedder: &dyn Embedder, storage: Storage) -> Resul
     // 建索引那一半（不计入查询延迟）。
     let mut indexed: Vec<(&str, &str, Vec<f32>)> = Vec::new();
     for chunk in &chunks {
-        let vector = embedder.embed_document(&chunk.text)?;
+        let vector = embedder.embed_document(&chunk.text)?.vector;
         let vector = match storage {
             Storage::F32 => vector,
             Storage::I8 => quantize_i8(&vector),
@@ -445,7 +445,7 @@ fn harness_case(case: &Case, embedder: &dyn Embedder, storage: Storage) -> Resul
 
     // 查询那一半：算查询向量 → 打分 → 折叠 → 排序。
     let start = Instant::now();
-    let query = embedder.embed_query(&case.query)?;
+    let query = embedder.embed_query(&case.query)?.vector;
     let mut best: BTreeMap<&str, f32> = BTreeMap::new();
     for (name, day_key, vector) in &indexed {
         if let Some(from) = &case.filters.from_day_key {
