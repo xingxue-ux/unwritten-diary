@@ -81,8 +81,8 @@ coverage/
 test-results/
 performance-reports/*.json
 !performance-reports/README.md
-dist/
-release/
+/dist/
+/release/
 *.msix
 *.apk
 *.aab
