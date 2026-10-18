@@ -523,11 +523,13 @@ $ python3 tools/check_arkts_capi_contract.py
 8. **OHOS 构建进不进 CI**：本机命令已经跑通（约 2–3 分钟首次、增量 ~15 秒），但 CI 要有
    OHOS NDK + hvigor + ohpm。要进 CI 得先决定 runner 镜像。
 
-## 11 后续（本块没做，按优先级）
+## 11 后续（按优先级）
 
-1. 真机上跑一遍（装签名 HAP → 抓 hilog → 确认 `DIARY_SMOKE DONE` 与 `CLOSED handles=0`）；
-2. 把示例链路挪到 TaskPool（异步包装），量 UI 线程阻塞；
-3. 补 `open` 失败 / `revision_conflict` / 权限拒绝的设备侧用例；
-4. 性能：库加载、JSON 往返、检索首屏；
+1. ~~真机上跑一遍（装签名 HAP → 抓 hilog → 确认 `DIARY_SMOKE DONE` 与 `CLOSED handles=0`）~~
+   **2026-10-18 已完成**（临时 bundleName `com.example.myapplication`，见工程 README）；
+2. 把示例链路挪到 TaskPool（异步包装）——**仍未做，且是产品接入前必须做的**：
+   真机 Smoke 同步阻塞 268 ms / 约 17 帧，`runDueJobs` 一轮 687 ms；
+3. 补大库/权限拒绝/磁盘满的设备侧用例（`open` 错误码已修，`revision_conflict`/损坏库已验）；
+4. 性能：库加载、JSON 往返、检索首屏——**2026-10-18 已测出中位数**（见工程 README 性能表）；
 5. 方法面继续接（`captures.list` / `jobs.list` / `indexes.status` …），ArkTS 侧同步加；
-6. 决定 HAR 化与 CI。
+6. 决定 HAR 化与 CI；补 C++ OOM 兜底（`bad_alloc`）。
