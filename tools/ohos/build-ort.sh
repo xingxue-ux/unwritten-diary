@@ -36,6 +36,7 @@
 #   ORT_GITHUB_PROXY   GitHub 代理前缀，默认 https://gh-proxy.com/
 #   HOST_CC/HOST_CXX   编宿主 protoc 用的编译器（默认 cc/c++，没有就用 NDK 里的宿主 clang）
 #   ORT_PROTOC         直接指定宿主 protoc（跳过编译）
+#   ORT_FORCE_BUILD    1=忽略缓存强制重建（等价 --force-build；本地/脚本调用用）
 #
 # 退出码：0 成功；2 前置检查/参数错误；3 下载失败；4 configure/build/自检失败。
 #
@@ -55,7 +56,11 @@ FETCH_DEPS="${ORT_FETCH_DEPS:-1}"
 GITHUB_PROXY="${ORT_GITHUB_PROXY:-https://gh-proxy.com/}"
 
 DEST=""
-FORCE_BUILD=0
+# 环境变量与命令行开关等价（本地/脚本调用方便）；CI 的 force_build 输入传的是 --force-build。
+case "${ORT_FORCE_BUILD:-0}" in
+  1|true|yes|on) FORCE_BUILD=1 ;;
+  *)             FORCE_BUILD=0 ;;
+esac
 MODE="full"   # full | check | prepare | configure
 
 SO="$CACHE_DIR/libonnxruntime.so"
@@ -95,7 +100,8 @@ usage() {
 
 常用环境变量：ORT_VERSION / ORT_CACHE_DIR / ORT_BUILD_DIR / NDK / JOBS /
               ORT_SOURCE_URL / ORT_SOURCE_SHA256 / ORT_SOURCE_DIR /
-              ORT_FETCH_DEPS / ORT_GITHUB_PROXY / HOST_CC / HOST_CXX / ORT_PROTOC
+              ORT_FETCH_DEPS / ORT_GITHUB_PROXY / HOST_CC / HOST_CXX / ORT_PROTOC /
+              ORT_FORCE_BUILD
 详见脚本文档头与 docs/architecture/m6-ORT-构建与缓存.md。
 EOF
 }
