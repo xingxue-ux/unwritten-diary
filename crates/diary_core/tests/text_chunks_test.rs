@@ -45,6 +45,17 @@ fn new_core(dir: &Path) -> Core {
     Core::open(dir.join("library.sqlite")).unwrap()
 }
 
+/// 这个进程配了本地模型吗？配了就跳过「手写 model_version」的用例。
+///
+/// 环境变量是**进程级**的：CI 上没有，开发机跑量测时可能有。`status_follows_...`
+/// 直接把夹具写成 `test-model`，而在配了模型的机器上当前版本是真实模型的哈希，
+/// 新的 `model_mismatch` 判据会把它判成「需要重建」——那是对的，测试因此要跳过。
+fn model_configured() -> bool {
+    std::env::var_os("DIARY_MODEL_DIR").is_some()
+        || std::env::var_os("DIARY_ORT_DYLIB").is_some()
+        || std::env::var_os("ORT_DYLIB_PATH").is_some()
+}
+
 /// 固定用 UTC+8 的上午：`day_key` 与 occurred_at 的本地日期一致。
 fn at(year: i32, month: u32, day: u32) -> DateTime<Utc> {
     at_hour(year, month, day, 4)
@@ -707,6 +718,13 @@ fn keyword_search_is_untouched_by_chunks_without_a_model() {
 /// 激活之后状态会自己跟上，不必回来改常量。
 #[test]
 fn status_follows_the_active_generation() {
+    if model_configured() {
+        eprintln!(
+            "跳过 status_follows_the_active_generation：这个进程配了本地模型，\
+             手写的 test-model 会被 model_mismatch 判成「需要重建」"
+        );
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("library.sqlite");
     let mut core = new_core(dir.path());
