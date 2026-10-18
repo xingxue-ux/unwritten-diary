@@ -165,6 +165,34 @@ hdc shell "aa start -a ProbeAbility -b com.example.myapplication -m entry --ps v
 hdc shell "aa start -a ProbeIsoAbility -b com.example.myapplication -m entry"
 ```
 
+## 签名：必须用 DevEco / AGC 申请，**自签不可行（已实测）**
+
+2026-10-18 实测结论：**用自建 CA 签发的 debug Profile 装不上这台 HAD-W32**，而且不是 bundleName/UDID 的问题——**卡在 App 签名 PKCS#7 的证书链信任层**，Profile 内容还没被读到。
+
+```text
+# hdc install 自己签的 HAP（rc 仍是 0，必须看 stdout）
+msg:error: failed to install bundle. code:9568257 error: fail to verify pkcs7 file.
+
+# hilog 定位
+HapVerify hap_cert_verify_openssl_utils.cpp(GetCertsChain:322)
+  it do not come from trusted root,
+  issuer: C=CN,O=SelfSignLab,OU=HarmonyOS Experiment,CN=SelfSignLab Root CA
+hap_verify_v2.cpp(VerifyAppPkcs7:163) GetCertChains from pkcs7 failed
+```
+
+设备 `/system/etc/security/trusted_root_ca.json` 里只有 **Huawei CBG Root CA G2** 与 **OpenHarmony Application Root CA**；自建根不在其中。**对照实验**：改用 SDK 自带的 `OpenHarmony.p12` + `OpenHarmonyProfileDebug.pem`（设备信任列表里确实有 OpenHarmony 根）走同一链路，**仍然 `9568257`**，hilog 的 issuer 变成 `OpenHarmony Application Root CA` ⇒ **这台 HarmonyOS 的 App 签名链实际只认 Huawei CBG 根**，CLI 全自动自签这条路是死的。
+
+**所以：** 调试/发布签名只能用 **DevEco「自动生成签名」** 或 **AGC 控制台**（两者都是用已登录的华为账号向 AGC 换取绑了 `bundleName` + 设备 UDID 的 Profile）。CI 若要自动装 HAP，签名材料必须由人**先申请一次**再放进 secrets。
+
+### DevEco 获取 Profile 的步骤（3–5 下）
+
+1. 确认 `AppScope/app.json5` 的 `bundleName` 是 **`com.lingxing.unwrittendiary`**（本仓库已是），DevEco 里 **Sync** 一次；
+2. 右上角 **Sign In** 登录华为开发者账号（**未实名需先签协议**）；
+3. **设备保持连接**（自动签名会用 `hdc shell bm get -u` 自己取 UDID 并通过 AGC 加设备，**不用手填**）；
+4. `File > Project Structure...`（`Ctrl+Alt+Shift+S`）→ **Project > Signing Configs** → 勾 **`Automatically generate signature`**（中文「自动生成签名文件」）→ 选设备/团队 → **OK**；
+5. 若 AGC 不认识新包名，会报 `Bundle name ... does not exist` / 「没有被识别为 HarmonyOS 应用」⇒ **先在 AGC 建这个应用**，再回来重复第 4 步；
+6. 产物落在 `C:\Users\<你>\.ohos\config\default_a_<hash>.p12/.cer/.p7b` + `material\`（`<hash>` 以弹窗里 `Profile File` 栏为准）；之后 `Build > Build Hap(s)` 出 `entry-default-signed.hap`。
+
 ## 真机验证结果（2026-10-18）
 
 ### 环境与身份
