@@ -2977,7 +2977,8 @@ fn long_piece_with_tag(tag: &str) -> String {
 #[test]
 fn equal_score_across_pieces_is_ordered_by_content_across_libraries() {
     const ROUNDS: usize = 16;
-    let mut evidence: Vec<Vec<(Option<String>, Option<i64>, Option<i64>)>> = Vec::new();
+    type Evidence = (Option<String>, Option<i64>, Option<i64>);
+    let mut evidence: Vec<Vec<Evidence>> = Vec::new();
 
     for round in 0..ROUNDS {
         let dir = tempfile::tempdir().unwrap();
