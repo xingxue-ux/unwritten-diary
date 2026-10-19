@@ -83,6 +83,7 @@ class BridgeDiaryApi implements api.DiaryApi {
     'jobs.list',
     'jobs.cancel',
     'jobs.retry',
+    'indexes.status',
     'imports.prepare',
     'imports.finish',
     'imports.status',
@@ -858,6 +859,23 @@ class BridgeDiaryApi implements api.DiaryApi {
   }
 
   // ------------------------------------------------------------ 索引
+
+  @override
+  Future<api.IndexStatus> indexesStatus({Set<String>? sourceScope}) async {
+    final status = await _translate(
+      () => _open.indexStatus(sourceScope: sourceScope?.toList()),
+    );
+    return api.IndexStatus(
+      coverage: api.Coverage.values.byName(status.coverage.name),
+      keywordIndexReady: status.keywordIndexReady,
+      semanticIndexReady: status.semanticIndexReady,
+      modelVersion: status.modelVersion,
+      chunkerVersion: status.chunkerVersion,
+      pendingCount: status.pendingSegments.toInt(),
+      failedCount: status.failedSources.toInt(),
+      reasons: status.reasons,
+    );
+  }
 
   /// 排一条**语义索引**重建任务，契约第 4.4 节 `indexes.rebuildSemantic`。
   ///

@@ -326,13 +326,12 @@ void main() {
     final snapshot = await api.snapshot();
     expect(snapshot.coreInfo.capabilities, contains('captures.list'));
     expect(snapshot.coreInfo.capabilities, contains('search.start'));
-    expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.status')));
+    expect(snapshot.coreInfo.capabilities, contains('indexes.status'));
+    expect(snapshot.coreInfo.capabilities, contains('jobs.get'));
+    expect(snapshot.coreInfo.capabilities, contains('jobs.list'));
     // **语义**重建这一条接了（设置页要在换过模型之后触发「重建语义索引」）：
     // 核心入口 → 桥接 → 适配层 → 能力项都在。
-    expect(
-      snapshot.coreInfo.capabilities,
-      contains('indexes.rebuildSemantic'),
-    );
+    expect(snapshot.coreInfo.capabilities, contains('indexes.rebuildSemantic'));
     // **关键词**那条照旧没接：核心与桥接都通了（能力项进了 wired_capabilities），
     // 但适配层的 `_wiredMethods` 仍然不含它，所以这里必须是「没有」。
     expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.rebuild')));
@@ -352,11 +351,24 @@ void main() {
 
   test('语义索引重建经契约接口排得上，重放拿到同一个 jobId', () async {
     await api.open();
+    final before = await api.indexesStatus();
+    expect(before.semanticIndexReady, isFalse);
     final ticket = await api.rebuildSemanticIndex(
       reason: '适配层端到端',
       operationId: 'adapter-semantic-1',
     );
     expect(ticket.jobId, isNotEmpty, reason: '拿到的是真实任务 id，不是编出来的');
+    final queued = await api.getJob(ticket.jobId);
+    expect(queued.kind, 'semantic_index');
+    expect(queued.state.isTerminal, isFalse);
+    final active = await api.listJobs(
+      states: {
+        JobState.queued,
+        JobState.waitingConfiguration,
+        JobState.waitingDependency,
+      },
+    );
+    expect(active.jobs.map((job) => job.id), contains(ticket.jobId));
 
     // 同一个 (reason, operationId)：同一条任务。
     final replay = await api.rebuildSemanticIndex(

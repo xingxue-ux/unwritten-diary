@@ -27,6 +27,47 @@ class CountingMockDiaryApi extends MockDiaryApi {
   }
 }
 
+class IndexSettingsUiApi extends MockDiaryApi {
+  int rebuildCount = 0;
+
+  @override
+  Future<CoreSnapshot> snapshot({Set<String>? scopes}) async {
+    final base = await super.snapshot(scopes: scopes);
+    return CoreSnapshot(
+      coreInfo: CoreInfo(
+        apiVersion: base.coreInfo.apiVersion,
+        dataSchemaVersion: base.coreInfo.dataSchemaVersion,
+        buildVersion: base.coreInfo.buildVersion,
+        libraryId: base.coreInfo.libraryId,
+        capabilities: {
+          ...base.coreInfo.capabilities,
+          'indexes.status',
+          'indexes.rebuildSemantic',
+        },
+      ),
+      recovery: base.recovery,
+      captureCount: base.captureCount,
+    );
+  }
+
+  @override
+  Future<IndexStatus> indexesStatus({Set<String>? sourceScope}) async =>
+      const IndexStatus(
+        coverage: Coverage.complete,
+        semanticIndexReady: false,
+        reasons: ['本地模型已更换，需要重建'],
+      );
+
+  @override
+  Future<JobTicket> rebuildSemanticIndex({
+    required String reason,
+    required String operationId,
+  }) async {
+    rebuildCount++;
+    return const JobTicket(jobId: 'ui-index-job');
+  }
+}
+
 class RetryableOpenFailureApi extends MockDiaryApi {
   int attempts = 0;
 
@@ -788,6 +829,24 @@ void main() {
     expect(find.textContaining('自动整理尚未接入'), findsOneWidget);
   });
 
+  testWidgets('unready semantic index has a visible working settings action', (
+    tester,
+  ) async {
+    final api = IndexSettingsUiApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('搜索索引 · 需要处理'));
+    await tester.tap(find.text('搜索索引 · 需要处理'));
+    await tester.pumpAndSettle();
+    expect(find.text('语义检索暂不可用'), findsOneWidget);
+    await tester.tap(find.text('重建语义索引'));
+    await tester.pumpAndSettle();
+    expect(api.rebuildCount, 1);
+    expect(find.textContaining('已加入本地队列'), findsOneWidget);
+  });
+
   testWidgets('main routes fit a narrow screen at two times text scale', (
     tester,
   ) async {
@@ -823,6 +882,7 @@ void main() {
     await openApp(tester, MockDiaryApi());
 
     for (final label in [
+      '搜索索引',
       '风格偏好',
       '模型服务',
       '整理时机',
