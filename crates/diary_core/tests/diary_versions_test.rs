@@ -1105,8 +1105,9 @@ fn v10_library_migrates_to_latest_with_revision_backfilled() {
     assert_eq!(core.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
     assert_eq!(
         diary_core::SCHEMA_VERSION,
-        14,
-        "11（整理表）+ 12（revision 列）合并成 13，B6 的插件两张表把它抬到 14"
+        15,
+        "11（整理表）+ 12（revision 列）合并成 13，B6 插件表抬到 14，\
+         #128 复审的自动重建标记 + 口径索引抬到 15"
     );
     // 两段迁移都跑了：v11 的两张表在，v12 的列在（下面用行为断言 revision）。
     {

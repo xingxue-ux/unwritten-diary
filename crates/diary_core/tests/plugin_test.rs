@@ -1046,7 +1046,7 @@ fn wasm_out_of_bounds_memory_access_traps_without_taking_down_core() {
 // ------------------------------------------------------------------ 迁移
 
 #[test]
-fn schema_13_migrates_to_14_with_plugin_tables_and_no_backfill() {
+fn schema_13_migrates_to_latest_with_plugin_tables_and_no_backfill() {
     let dir = tempfile::tempdir().unwrap();
     let (mut core, _transport) = core_with_transport(dir.path(), vec![chat_ok("升级前的正文。")]);
     save_provider(&mut core);
@@ -1058,6 +1058,8 @@ fn schema_13_migrates_to_14_with_plugin_tables_and_no_backfill() {
         conn.execute_batch(
             "DROP TABLE plugin_grants;
              DROP TABLE plugin_installations;
+             DROP INDEX idx_chunk_vectors_caliber;
+             ALTER TABLE index_meta DROP COLUMN auto_rebuild_marker;
              UPDATE schema_migrations SET version = 13;
              PRAGMA user_version = 13;",
         )
@@ -1066,12 +1068,41 @@ fn schema_13_migrates_to_14_with_plugin_tables_and_no_backfill() {
             .query_row("SELECT COUNT(*) FROM plugin_installations", [], |row| row
                 .get::<_, i64>(0))
             .is_err());
+        assert!(conn
+            .query_row("SELECT auto_rebuild_marker FROM index_meta", [], |row| row
+                .get::<_, i64>(0))
+            .is_err());
     }
     let mut core = Core::open(dir.path().join("library.sqlite")).unwrap();
     assert_eq!(core.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
-    assert_eq!(diary_core::SCHEMA_VERSION, 14, "13 → 14 只加插件两张表");
+    assert_eq!(
+        diary_core::SCHEMA_VERSION,
+        15,
+        "13 → 15：v14 是合并占位，v15 加自动重建标记与整代口径索引"
+    );
     assert!(core.list_plugins().unwrap().is_empty(), "迁移不回填插件");
     assert!(core.plugin_grants("anything").unwrap().is_empty());
+    // v15 的加性改动真的落库了：标记默认 NULL（没替用户记一次自动尝试），
+    // 覆盖索引从既有行建出来（不回填业务数据）。
+    let marker: Option<String> = Connection::open(dir.path().join("library.sqlite"))
+        .unwrap()
+        .query_row(
+            "SELECT auto_rebuild_marker FROM index_meta WHERE id = 1",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap();
+    assert!(marker.is_none(), "迁移不回填自动尝试标记");
+    let index_exists: i64 = Connection::open(dir.path().join("library.sqlite"))
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' \
+             AND name = 'idx_chunk_vectors_caliber'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(index_exists, 1, "v15 要建整代口径覆盖索引");
     assert_eq!(
         core.get_diary_version(&version.id).unwrap().body,
         "升级前的正文。"

@@ -591,21 +591,43 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
     // ——那是「库里的真值」，不是「这一片还没接模型」这种会被时间打脸的话。
     let (active_generation, building_generation) = crate::chunks::generations(core)?;
     let chunk_counts = crate::chunks::counts(core, source_scope)?;
-    // 生效代次那一批向量的口径。**不能只看任意一行**：整代一致才报一个版本；混了不止
-    // 一种就是历史遗留的混合代次（`Mixed`）——既不给单一 `model_version`，也不说「就绪」。
-    // 混合代次不是同一个向量空间，说就绪等于骗人；检索路径从 #80 起也**不拿它的分数**
-    // （整路不作数，见 `semantic::caliber_mismatch`）。详见
-    // `semantic::ActiveModelVersion` 的说明。
-    let (model_version, mixed_versions) = match crate::semantic::active_model_version(core)? {
-        crate::semantic::ActiveModelVersion::Absent => (None, None),
-        crate::semantic::ActiveModelVersion::Single(version) => (Some(version), None),
-        crate::semantic::ActiveModelVersion::Mixed(versions) => (None, Some(versions)),
+    // 生效代次那一批向量的**整代口径**：模型版本 / 维度 / 存储格式一次取全。
+    // **不能只看任意一行**：整代一致才报一个值；混了不止一种就是历史遗留的混合代次
+    // ——既不给单一 `model_version`，也不说「就绪」。混合代次不是同一个向量空间，
+    // 说就绪等于骗人；检索路径从 #80 起也**不拿它的分数**（整路不作数，见
+    // `semantic::caliber_mismatch`）。详见 `semantic::ActiveCaliber` 的说明。
+    let active_caliber = crate::semantic::active_caliber(core)?;
+    let (model_version, mixed_versions) = match active_caliber.versions.as_slice() {
+        [] => (None, None),
+        [only] => (Some(only.clone()), None),
+        versions => (None, Some(versions.to_vec())),
     };
-    // 「就绪」要求有一代向量在服务、这一代把范围内的块都覆盖了，**并且**整代口径一致。
+    // 三项都与当前口径比：**storage** 是 f32→int8 的存量库，**dims** 是换过模型但
+    // 整代只有一种旧版本，**model_version** 是模型文件变了（已加载/已配置时才知道）。
+    // `storage` 与 `dims` 不加载模型就能查；`model_version` 在嵌入器已加载、或只配了
+    // 模型（读文件哈希）时可查，都没有就是 `None`（无从比对，不猜）。
+    let stored_storages = &active_caliber.storages;
+    let current_storage = core.vector_storage().wire();
+    let storage_mismatch = stored_storages.len() > 1
+        || stored_storages
+            .first()
+            .is_some_and(|storage| storage != current_storage);
+    let current_dims = core.current_dims();
+    let dims_mismatch = active_caliber.dims.len() > 1
+        || active_caliber.dims.iter().any(|dims| *dims != current_dims);
+    let current_model_version = core.current_model_version();
+    let model_mismatch = active_caliber.versions.len() == 1
+        && current_model_version
+            .as_deref()
+            .is_some_and(|current| active_caliber.versions[0] != current);
+    let caliber_mismatch = storage_mismatch || dims_mismatch || model_mismatch;
+    // 「就绪」要求有一代向量在服务、这一代把范围内的块都覆盖了，**并且**整代口径一致
+    // （模型版本、维度、存储格式三项都算）。
     let semantic_index_ready = active_generation.is_some()
         && chunk_counts.total > 0
         && chunk_counts.embedded == chunk_counts.total
-        && mixed_versions.is_none();
+        && mixed_versions.is_none()
+        && !caliber_mismatch;
 
     let mut reasons = Vec::new();
     if total_segments == 0 && total_captures == 0 {
@@ -644,7 +666,7 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
     //
     // 「模型加载失败」与「还没有配置模型」是**两件事**，前者必须把失败原因原样说出来
     // ——把错误盖成「未就绪」等于骗人（见 `embedding` 模块的说明）。
-    // 五段与上面 `semantic_index_ready` 的取值**严格互补**：就绪时没有原因，
+    // 这些分支与上面 `semantic_index_ready` 的取值**严格互补**：就绪时没有原因，
     // 有原因时一定不就绪。
     let semantic_reason = if active_generation.is_none() {
         match core.embedder_readiness() {
@@ -665,6 +687,53 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
     } else if chunk_counts.total == 0 {
         // 有生效代次却没有任何块：要么还没重建过块，要么范围内的内容本来就没有正文。
         Some("语义索引未就绪：范围内还没有文本块".to_owned())
+    } else if storage_mismatch {
+        // 存量库最常见的一种：库是 f32 建的，新版本默认 int8。模型版本可能只有一种，
+        // 所以上面几段都看不出问题；只说「需要重建」并把两种格式都写出来。
+        let stored = stored_storages.join(" / ");
+        Some(if stored_storages.len() > 1 {
+            format!(
+                "语义索引未就绪：生效代次里的向量混了多种存储格式（{stored}），当前是 \
+                 {current_storage}；存储格式是向量空间口径之一，需要重建语义索引\
+                 （build_semantic_index 会按当前格式整代重算）"
+            )
+        } else {
+            format!(
+                "语义索引未就绪：存储格式从 {stored} 变为 {current_storage}，需要重建\
+                 （build_semantic_index 会按当前格式整代重算）"
+            )
+        })
+    } else if dims_mismatch {
+        // 换过模型、整代只有一种旧版本时，`model_version` 可能「不混」；但维度不同
+        // 就已经不是同一个向量空间。没有向量或 `dims` 混了多种也要说清。
+        let stored = active_caliber
+            .dims
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(" / ");
+        Some(if active_caliber.dims.len() > 1 {
+            format!(
+                "语义索引未就绪：生效代次里的向量混了多种维度（{stored}），当前模型是 \
+                 {current_dims} 维；维度是向量空间口径之一，需要重建语义索引\
+                 （build_semantic_index 会按当前模型整代重算）"
+            )
+        } else {
+            format!(
+                "语义索引未就绪：生效代次里的向量是 {stored} 维，当前模型是 {current_dims} 维；\
+                 维度是向量空间口径之一，需要重建语义索引\
+                 （build_semantic_index 会按当前模型整代重算）"
+            )
+        })
+    } else if model_mismatch {
+        // 已加载/已配置的模型与生效代次不是同一个版本：整代重算，不能拿旧空间的分数。
+        let current = current_model_version.as_deref().unwrap_or("（未知）");
+        Some(format!(
+            "语义索引未就绪：生效代次的向量是模型 {} 建的，当前模型是 {current}；\
+             模型版本是向量空间口径之一，需要重建语义索引\
+             （build_semantic_index 会按当前模型整代重算）",
+            active_caliber.versions[0]
+        ))
     } else if let Some(versions) = &mixed_versions {
         // 混合代次：整代里不止一种模型口径。这是**如实报出来**而不是挑一行装作干净
         // ——不同模型空间的向量放在一起打分，结果本身就不作数（检索路径从 #80 起

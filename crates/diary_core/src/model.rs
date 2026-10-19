@@ -954,7 +954,15 @@ pub struct SourceLocation {
 /// 各种 `*_segments` / `*_captures`）与**语义这一路**（`semantic_index_ready`、
 /// `model_version`、`total_chunks` / `embedded_chunks`）。语义这一路的每个数字都是
 /// **算出来的真值**：没有一代向量生效时 `model_version` 是 `None` 而不是一个假装
-/// 的字符串，`semantic_index_ready` 要求生效代次真的覆盖了范围内的每一块。
+/// 的字符串，`semantic_index_ready` 要求生效代次真的覆盖了范围内的每一块，**并且**
+/// 整代口径一致——`storage` / `dims` **总是**要与当前口径相同；`model_version` 只在
+/// **当前版本可知**时才比（嵌入器已加载，或只配了模型时读模型文件哈希）。
+/// `NotConfigured` / `Failed` 时不知道当前版本，这一项**跳过**：既不算不一致、也不
+/// 假装一致——状态只报库里的事实与「为什么比不了」，不猜一个版本出来。
+/// 尤其 `storage`：存量 f32 库在默认改成 int8 之后，只看 `model_version` 会误报
+/// 「已就绪」，而检索路径整代判 `ForeignSpace`；因此状态检查直接读库里的 `storage`
+/// 列（不加载模型），不一致时 `semantic_index_ready = false` 并在 `reasons` 里
+/// 写明「存储格式从 f32 变为 int8，需要重建」。
 ///
 /// 两条路**不共用一个 `coverage`**：`coverage` 仍然只描述关键词索引的覆盖程度。
 /// 在检索会话里，`semantic` 模式的 `index_coverage` 才按语义那一路的覆盖算

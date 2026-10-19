@@ -25,7 +25,7 @@ use std::time::Instant;
 use anyhow::{bail, Result};
 use diary_core::{
     config_from_env, load_embedder, Core, EmbedOptions, EnvEmbedding, SearchFilters, SearchMode,
-    SearchRequest,
+    SearchRequest, VectorStorage,
 };
 
 use crate::quality::{self, Case, CaseOutcome, QualitySet, TOP_K};
@@ -51,7 +51,21 @@ struct Run {
     upgrade_ms: f64,
 }
 
-pub fn run() -> Result<()> {
+/// `--storage f32|int8`；不写默认 f32（文档里的阈值表是 f32 基线，显式保留可比性）。
+fn storage_arg(args: &[String]) -> Result<VectorStorage> {
+    let Some(position) = args.iter().position(|arg| arg == "--storage") else {
+        return Ok(VectorStorage::F32);
+    };
+    let value = args
+        .get(position + 1)
+        .map(String::as_str)
+        .ok_or_else(|| anyhow::anyhow!("--storage 后面要跟 f32 或 int8"))?;
+    VectorStorage::from_wire(value)
+        .ok_or_else(|| anyhow::anyhow!("不认识的存储格式：{value}（只认 f32 / int8）"))
+}
+
+pub fn run(args: &[String]) -> Result<()> {
+    let storage = storage_arg(args)?;
     let set = quality::load()?;
     let config = match config_from_env() {
         EnvEmbedding::Ready(config) => config,
@@ -70,6 +84,10 @@ pub fn run() -> Result<()> {
     println!(
         "  融合口径：{}（RRF k=60，两路各取前 50 篇，语义门槛可调）",
         diary_core::HYBRID_FUSION_VERSION
+    );
+    println!(
+        "  本节存储：{}（--storage；默认 f32，与文档里的阈值表同一口径）",
+        storage.wire()
     );
     println!(
         "  产品默认语义门槛：{:.2}  候选深度：50  k：60",
@@ -96,6 +114,9 @@ pub fn run() -> Result<()> {
             let embedder = load_embedder(&config, EmbedOptions::default())
                 .map_err(|reason| anyhow::anyhow!(reason))?;
             core.set_embedder(Box::new(embedder));
+            // 默认存储已改成 int8；这里由 `--storage` 显式指定。不写时用 f32，
+            // 让阈值表与文档里的 f32 基线同一口径；`--storage int8` 是评审要求的复测。
+            core.set_vector_storage_for_test(storage);
             core.build_semantic_index(None)?;
 
             // 语义一路的分数分布：阈值扫描表的读法要用它（期望来源多少分、
@@ -526,7 +547,7 @@ fn percentile(values: &[f64], p: f64) -> f64 {
         return 0.0;
     }
     let mut sorted = values.to_vec();
-    sorted.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(f64::total_cmp);
     let index = ((p / 100.0) * sorted.len() as f64).ceil() as usize;
     sorted[index.clamp(1, sorted.len()) - 1]
 }

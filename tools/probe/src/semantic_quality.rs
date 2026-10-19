@@ -7,7 +7,7 @@
 //! 2. **pooling（CLS / mean）× 指令前缀（加 / 不加）四组**：同一个模型、同一个前向
 //!    输出，只改取哪一位与查询侧要不要拼前缀。量的是**怎么用这个模型**，不是换模型；
 //! 3. **f32 vs int8**：对已经算出来的 f32 向量做 int8 量化模拟，报召回变化与体积。
-//!    只有数字支持才在存储上采纳 int8。
+//!    数字支持后默认存储已改为 int8（见 `docs/architecture/m5-大库可用性.md`）。
 //!
 //! 需要真模型与 ORT 动态库：
 //!
@@ -32,7 +32,7 @@ use std::time::Instant;
 use anyhow::{bail, Result};
 use diary_core::{
     config_from_env, load_embedder, pack_pieces, Core, EmbedOptions, Embedder, EmbeddingConfig,
-    EnvEmbedding, Piece, Pooling, SearchFilters, SearchMode, SearchRequest,
+    EnvEmbedding, Piece, Pooling, SearchFilters, SearchMode, SearchRequest, VectorStorage,
 };
 
 use crate::quality::{self, Case, CaseOutcome, QualitySet, TOP_K};
@@ -45,7 +45,21 @@ const COMBOS: [(&str, Pooling, bool); 4] = [
     ("mean + 指令前缀", Pooling::Mean, true),
 ];
 
-pub fn run() -> Result<()> {
+/// `--storage f32|int8`；不写默认 f32（文档里的质量基线是 f32，显式保留可比性）。
+fn storage_arg(args: &[String]) -> Result<VectorStorage> {
+    let Some(position) = args.iter().position(|arg| arg == "--storage") else {
+        return Ok(VectorStorage::F32);
+    };
+    let value = args
+        .get(position + 1)
+        .map(String::as_str)
+        .ok_or_else(|| anyhow::anyhow!("--storage 后面要跟 f32 或 int8"))?;
+    VectorStorage::from_wire(value)
+        .ok_or_else(|| anyhow::anyhow!("不认识的存储格式：{value}（只认 f32 / int8）"))
+}
+
+pub fn run(args: &[String]) -> Result<()> {
+    let storage = storage_arg(args)?;
     let set = quality::load()?;
     let config = match config_from_env() {
         EnvEmbedding::Ready(config) => config,
@@ -80,10 +94,11 @@ pub fn run() -> Result<()> {
             "不加"
         }
     );
+    println!("  本节存储：{}（--storage；默认 f32，保持文档基线可比）", storage.wire());
 
-    product_path(&set, &config, probe.dims())?;
-    no_answer_scores(&set, &config)?;
-    pooling_and_instruction(&set, &config, probe.dims())?;
+    product_path(&set, &config, probe.dims(), storage)?;
+    no_answer_scores(&set, &config, storage)?;
+    pooling_and_instruction(&set, &config, probe.dims(), storage)?;
     f32_vs_int8(&set, &config, probe.dims())?;
     projection(probe.dims())?;
     Ok(())
@@ -99,6 +114,7 @@ fn product_outcomes(
     set: &QualitySet,
     config: &EmbeddingConfig,
     options: EmbedOptions,
+    vector_storage: VectorStorage,
 ) -> Result<(Vec<CaseOutcome>, StorageTotals)> {
     let mut outcomes: Vec<CaseOutcome> = Vec::with_capacity(set.cases.len());
     let mut storage = StorageTotals::default();
@@ -108,6 +124,9 @@ fn product_outcomes(
             let embedder =
                 load_embedder(config, options).map_err(|reason| anyhow::anyhow!(reason))?;
             core.set_embedder(Box::new(embedder));
+            // 默认存储已改成 int8；这里由 `--storage` 显式指定。不写时用 f32，
+            // 让 `[1] 产品路径` 的数字与文档里的 f32 基线可比。
+            core.set_vector_storage_for_test(vector_storage);
             let built = core.build_semantic_index(None)?;
             let request = SearchRequest {
                 query: case.query.clone(),
@@ -155,14 +174,23 @@ fn product_outcomes(
     Ok((outcomes, storage))
 }
 
-fn product_path(set: &QualitySet, config: &EmbeddingConfig, dims: usize) -> Result<()> {
-    println!("\n[1] 产品路径（build_semantic_index + search.start，mode = semantic）");
-    let (outcomes, storage) = product_outcomes(set, config, EmbedOptions::default())?;
+fn product_path(
+    set: &QualitySet,
+    config: &EmbeddingConfig,
+    dims: usize,
+    vector_storage: VectorStorage,
+) -> Result<()> {
+    println!(
+        "\n[1] 产品路径（build_semantic_index + search.start，mode = semantic；存储 {}）",
+        vector_storage.wire()
+    );
+    let (outcomes, storage) = product_outcomes(set, config, EmbedOptions::default(), vector_storage)?;
     quality::report(set, &outcomes, "语义")?;
     println!(
-        "  存储（这 {} 个 case 的全部块，f32）：{} 块 · chunk_vectors {} · \
+        "  存储（这 {} 个 case 的全部块，{}）：{} 块 · chunk_vectors {} · \
          text_chunks 正文 {} · {} 个 span · 每块向量 {:.0} 字节（{} 维 × 4）",
         set.cases.len(),
+        vector_storage.wire(),
         storage.chunks,
         human_bytes(storage.vector_bytes),
         human_bytes(storage.chunk_text_bytes),
@@ -212,14 +240,22 @@ impl StorageTotals {
 
 /// `no_answer` 类**必须量**：语义检索天生会返回「最像的那几个」，没有分数阈值就
 /// 谈不上「不误报」。这里把每条的返回条数与最高/最低分报出来，供决定要不要设阈值。
-fn no_answer_scores(set: &QualitySet, config: &EmbeddingConfig) -> Result<()> {
-    println!("\n[2] no_answer：语义会不会乱报（没有分数阈值时的真实样子）");
+fn no_answer_scores(
+    set: &QualitySet,
+    config: &EmbeddingConfig,
+    storage: VectorStorage,
+) -> Result<()> {
+    println!(
+        "\n[2] no_answer：语义会不会乱报（没有分数阈值时的真实样子；存储 {}）",
+        storage.wire()
+    );
     for case in set.cases.iter().filter(|case| case.category == "no_answer") {
         let (mut core, _ids, dir) = quality::seed_case(case, true)?;
         let result = (|| -> Result<(usize, f32, f32)> {
             let embedder = load_embedder(config, EmbedOptions::default())
                 .map_err(|reason| anyhow::anyhow!(reason))?;
             core.set_embedder(Box::new(embedder));
+            core.set_vector_storage_for_test(storage);
             core.build_semantic_index(None)?;
             let filters = SearchFilters {
                 from_day_key: case.filters.from_day_key.clone(),
@@ -251,6 +287,7 @@ fn pooling_and_instruction(
     set: &QualitySet,
     config: &EmbeddingConfig,
     dims: usize,
+    storage: VectorStorage,
 ) -> Result<()> {
     println!("\n[3] pooling × 指令前缀（四组，同一模型同一前向输出）");
     println!("  四组都走**产品路径**（真核心建索引 + search.start），不是探针自己的打分循环；");
@@ -261,7 +298,8 @@ fn pooling_and_instruction(
             pooling,
             query_instruction: instruction,
         };
-        let (outcomes, _storage) = product_outcomes(set, config, options)?;
+        // 四组之间只比较 pooling / 指令前缀，存储固定用调用方指定的那一档。
+        let (outcomes, _storage) = product_outcomes(set, config, options, storage)?;
         println!("\n  口径：{label}");
         quality::report(set, &outcomes, "语义")?;
         let (r1, r5, r10, mrr, semantic_top) = summarize(&outcomes);
@@ -324,11 +362,12 @@ fn summarize(outcomes: &[CaseOutcome]) -> (f64, f64, f64, f64, f64) {
 
 fn f32_vs_int8(set: &QualitySet, config: &EmbeddingConfig, dims: usize) -> Result<()> {
     println!("\n[4] f32 vs int8（对算出来的 f32 向量做 int8 量化模拟）");
-    println!("  这一节走探针自己的打分循环：产品路径只实现 f32，int8 只能对已有 f32 向量模拟；");
+    println!("  这一节走探针自己的打分循环，对已有 f32 向量做 int8 量化；产品路径的 int8");
+    println!("  写入/查询由 large-bench recall-quality 真跑（默认存储已是 int8）。");
     println!("  分块、嵌入器与余弦都是同一份，差别只在存储格式。");
     let embedder = load_embedder(config, EmbedOptions::default())
         .map_err(|reason| anyhow::anyhow!(reason))?;
-    for (label, storage) in [("f32（当前实现）", Storage::F32), ("int8（模拟）", Storage::I8)] {
+    for (label, storage) in [("f32（显式指定）", Storage::F32), ("int8（模拟）", Storage::I8)] {
         let outcomes = harness(set, &embedder, storage)?;
         let (top1, bottom) = cosine_drift(set, &embedder)?;
         println!("\n  存储：{label} · 向量间余弦平均 {top1:.4} · 最差 {bottom:.4}");
@@ -468,8 +507,7 @@ fn harness_case(case: &Case, embedder: &dyn Embedder, storage: Storage) -> Resul
     ranked.sort_by(|left, right| {
         right
             .1
-            .partial_cmp(&left.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&left.1)
             .then_with(|| {
                 let left_day = case
                     .sources

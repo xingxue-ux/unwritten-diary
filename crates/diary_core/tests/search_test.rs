@@ -638,7 +638,7 @@ fn hundred_thousand_segments_measurement() {
             samples.push(start.elapsed().as_secs_f64() * 1000.0);
             assert_eq!(page.len(), 20);
         }
-        samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        samples.sort_by(|a, b| a.total_cmp(b));
 
         // 全量计数是最坏情况：产品路径翻页不需要它（快照带游标），
         // 但测试与实测拿它核对召回，代价要如实量出来。取 3 次里最快的一次。
@@ -650,7 +650,7 @@ fn hundred_thousand_segments_measurement() {
             let _ = core.count_search_matches(query).unwrap();
             count_samples.push(start.elapsed().as_secs_f64() * 1000.0);
         }
-        count_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        count_samples.sort_by(|a, b| a.total_cmp(b));
         let count_ms = count_samples[0];
 
         println!(
