@@ -76,7 +76,7 @@ export struct JobsPage {
 
   private dbPath: string = '';
   private seq: number = 0;
-  private filterLabels: string[] = ['全部', '需要处理', '处理中', '等待', '完成'];
+  private filterLabels: string[] = ['全部', '需要处理', '处理中', '等待', '完成/取消'];
   private filterStates: string[][] = [
     [],
     ['waiting_configuration', 'failed'],
@@ -588,7 +588,7 @@ export struct JobsPage {
             this.countChip('处理中', this.countOf('queued') + this.countOf('running'), 'active')
             this.countChip('等待', this.countOf('retry_wait') + this.countOf('waiting_dependency') + this.countOf('waiting_network'), 'muted')
             this.countChip('需要处理', this.countOf('waiting_configuration') + this.countOf('failed'), 'warn')
-            this.countChip('完成', this.countOf('succeeded') + this.countOf('cancelled'), 'ok')
+            this.countChip('完成', this.countOf('succeeded'), 'ok')
           }
           .width('100%')
           Row({ space: 8 }) {
@@ -599,6 +599,11 @@ export struct JobsPage {
             }
             if (this.status.next_wakeup !== null) {
               Text(`下次唤醒：${formatDateTime(this.status.next_wakeup)}`)
+                .fontSize(12)
+                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            }
+            if (this.status.cancelled > 0) {
+              Text(`已取消：${this.status.cancelled}`)
                 .fontSize(12)
                 .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
             }
