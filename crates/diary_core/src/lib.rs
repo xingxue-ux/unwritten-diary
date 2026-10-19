@@ -50,6 +50,8 @@ pub mod plugin;
 /// 公开是为了让测试与 `tools/probe` 能注入回放/记账传输层——这是给测试与量测的
 /// 入口，产品代码只用默认实现（见 `provider::transport`）。
 pub mod provider;
+/// `Capture.processing_summary` 的真实计算（#146）。口径见模块文档。
+mod processing;
 /// AI 质量集的**判定器**（issue #93，B4b-ai-quality）：可判定的特征判定、CER 计算、
 /// 回放式引擎与「调用 B4b 核心方法」的薄适配层。
 ///
@@ -577,6 +579,9 @@ impl Core {
             day_key: support::day_key(occurred_at, input.utc_offset_minutes),
             ordered_source_ids: Vec::new(),
             draft_text: String::new(),
+            // 刚创建的记录还没有来源，所以四个数字确实都是 0。这是 `ProcessingSummary`
+            // 唯一合法的全 0；有来源的记录一律由 `processing::summary` 按库里的真实
+            // 状态算（见 `capture_from_raw` 与 `processing` 模块文档）。
             processing_summary: ProcessingSummary::default(),
         };
 
@@ -790,6 +795,10 @@ impl Core {
             jobs::enqueue_in_tx(&tx, job.clone())?;
         }
 
+        // 提交之后这条记录才第一次有来源，摘要必须在**同一个事务里**按刚写进去的
+        // 来源与任务算：回执里存的也是这个值，幂等重放不会返回一份全 0 的旧快照。
+        committed.processing_summary = processing::summary(&tx, &committed.id)?;
+
         let result = CommitResult {
             capture: committed,
             original_text_revision,
@@ -986,9 +995,15 @@ impl Core {
             )?
             .collect::<rusqlite::Result<Vec<RawCapture>>>()?;
 
+        // 整页的摘要用**一次**聚合查询算完（`processing::summaries`），绝不按记录
+        // 逐条再查四次数；`rows` 里多取的那一条也一起算，代价只有它的来源。
+        let capture_ids: Vec<String> = rows.iter().map(|raw| raw.0.clone()).collect();
+        let summaries = processing::summaries(&self.conn, &capture_ids)?;
+
         let mut captures = Vec::with_capacity(rows.len().min(page_size));
         for raw in rows {
-            captures.push(capture_from_raw(&self.conn, raw)?);
+            let summary = summaries.get(&raw.0).copied().unwrap_or_default();
+            captures.push(capture_from_raw(&self.conn, raw, summary)?);
         }
         // 多取一条用来判断还有没有下一页。
         let next_cursor = if captures.len() > page_size {
@@ -2135,7 +2150,10 @@ fn load_capture(conn: &Connection, capture_id: &str) -> Result<Capture> {
         .optional()?;
 
     match raw {
-        Some(row) => capture_from_raw(conn, row),
+        Some(row) => {
+            let summary = processing::summary(conn, capture_id)?;
+            capture_from_raw(conn, row, summary)
+        }
         None => Err(CoreError::NotFound {
             entity: "记录",
             id: capture_id.to_owned(),
@@ -2143,7 +2161,11 @@ fn load_capture(conn: &Connection, capture_id: &str) -> Result<Capture> {
     }
 }
 
-fn capture_from_raw(conn: &Connection, raw: RawCapture) -> Result<Capture> {
+fn capture_from_raw(
+    conn: &Connection,
+    raw: RawCapture,
+    processing_summary: ProcessingSummary,
+) -> Result<Capture> {
     let (id, revision, state, occurred_at, created_at, updated_at, time_zone, offset, day_key, draft_text) = raw;
     let mut stmt =
         conn.prepare("SELECT source_id FROM source_items WHERE capture_id = ?1 ORDER BY position")?;
@@ -2167,7 +2189,6 @@ fn capture_from_raw(conn: &Connection, raw: RawCapture) -> Result<Capture> {
         day_key,
         ordered_source_ids,
         draft_text,
-        // B1b/B2 接上提取与索引后才会出现非零值。
-        processing_summary: ProcessingSummary::default(),
+        processing_summary,
     })
 }

@@ -51,6 +51,8 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // ——`current` 是 15 并不能证明索引在。每次 open 只多一次 `sqlite_master`
         // 查询，缺才建（#133 第 1 条，见 `ensure_v15_caliber_index`）。
         ensure_v15_caliber_index(conn)?;
+        // #146 的两条查询索引同理：版本号不能证明它们在。
+        ensure_processing_summary_indexes(conn)?;
         return Ok(());
     }
 
@@ -163,6 +165,7 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     tx.commit()?;
     // 与「版本已最新」分支同一份补齐逻辑：`current < 15` 但列已在的库也会走到这里。
     ensure_v15_caliber_index(conn)?;
+    ensure_processing_summary_indexes(conn)?;
     Ok(())
 }
 
@@ -220,6 +223,34 @@ fn ensure_v15_caliber_index(conn: &Connection) -> rusqlite::Result<()> {
         return Ok(());
     }
     conn.execute_batch(V15_CALIBER_INDEX)
+}
+
+/// #146 的摘要聚合要用的两条**部分索引**（不新开 schema 版本）。
+///
+/// 为什么不进版本迁移：这只是查询加速，没有任何数据/结构语义；而 v16（回收站）与
+/// v17（styles）各有分支在抬号，这一片不占版本号。写法与
+/// `ensure_v15_caliber_index` 相同：每次 open 只多两次 `sqlite_master` 查询，
+/// 缺才建，`IF NOT EXISTS` 只是兜底。
+///
+/// - `idx_jobs_live`：`Capture.processing_summary` 只关心**活着**的任务
+///   （`state NOT IN ('succeeded','failed','cancelled')`），不扫历史终态；
+/// - `idx_jobs_attention`：`needs_attention` 只扫 `requires_user_action = 1` 的任务。
+///
+/// 两条索引都让 `processing.rs` 的聚合从「扫整张 jobs」变成「扫少数活任务」。
+/// `EXPLAIN QUERY PLAN` 在 `processing_summary_test` 里钉住（必须出现 `USING INDEX
+/// idx_jobs_live` / `idx_jobs_attention`）。
+const PROCESSING_SUMMARY_INDEXES: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_jobs_live
+    ON jobs(state) WHERE state NOT IN ('succeeded', 'failed', 'cancelled');
+CREATE INDEX IF NOT EXISTS idx_jobs_attention
+    ON jobs(attention_key) WHERE requires_user_action = 1;
+"#;
+
+fn ensure_processing_summary_indexes(conn: &Connection) -> rusqlite::Result<()> {
+    if index_exists(conn, "idx_jobs_live")? && index_exists(conn, "idx_jobs_attention")? {
+        return Ok(());
+    }
+    conn.execute_batch(PROCESSING_SUMMARY_INDEXES)
 }
 
 /// 把已有记录的文字补进 v6 的两张索引表。只在迁移里用一次。

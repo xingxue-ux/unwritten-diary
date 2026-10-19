@@ -56,9 +56,13 @@ impl AuthorType {
     }
 }
 
-/// 未处理 / 处理中 / 可检索 / 需关注的数量。
+/// 未处理 / 处理中 / 可检索 / 需关注的数量（#146）。
 ///
-/// B1a 还没有提取与索引，所以这些数字现在恒为 0；等 B1b/B2 接上后再算。
+/// 每次读 `Capture` 都按库里的真实状态重算（`processing` 模块是唯一写入路径），
+/// 不是快照、不是累计。四个数字的口径（含失败任务落哪个桶）写在
+/// `docs/development/01-共享接口契约.md` 2.1 节，必须与 `processing.rs` 一起改。
+///
+/// 只有**还没有来源**的记录（刚创建的草稿）才全为 0。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ProcessingSummary {
     pub unprocessed: u32,
