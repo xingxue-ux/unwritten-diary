@@ -154,6 +154,14 @@ revert 救不了的两类事故：
 - **真机验收留到开发完成后人工走一遍**，清单见 issue「安卓真机人工验收清单」。
 - 模拟器数字**不能当性能基线**，只能用于「同一台机器上 A 比 B 快」这类相对比较；PR 里必须按 CONTRIBUTING 第 8 节分别标明验证范围。
 
+**磁盘卫生：每个 worktree 一个 target，合完就清（2026-10-19 踩过）**
+
+- 每个 worktree **必须**独立 `CARGO_TARGET_DIR`（共用会因墙钟跳变串用脏 rlib，吃过 58 个假错误），而**一个 target 动辄 5–25 GB**；
+- 2026-10-19 白天连续开了 30 个 worktree（一批 PR 各一条线），**WSL 占了 291 GB、E 盘只剩 70 GB**——用户手动清出空间才继续；
+- **规矩**：PR 合入后立刻跑 `tools/dev/clean-merged-worktrees.sh`（它只删「分支已合入 main 且工作区干净」的，其它跳过）；`--dry-run` 先看要删什么；
+- **不要**在仓库根目录跑 agent 构建（会把 18 GB 落到 `/mnt/e`）；构建用 `CARGO_TARGET_DIR=$HOME/dt-<name>`；
+- 开工前/收工前各看一次：`df -h $HOME /mnt/e`。WSL 侧紧张会表现为 `OSError: Cannot allocate memory`（不是内存，是文件系统）——我们为此查过半小时。
+
 **设备操作纪律（2026-10-18 踩过）**：**不得在用户的真机上触发电源状态变化**——按电源键、`power-shell suspend`、改息屏超时、清锁屏凭据，一律先问用户。
 
 - 起因：为了验证「锁屏长录音」，子代理按了 HarmonyOS 设备的 Power 键；设备随即停在**锁屏**并显示「使用指纹或密码解锁」，而
