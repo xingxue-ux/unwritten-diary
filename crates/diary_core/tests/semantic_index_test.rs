@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, TimeZone, Utc};
 use diary_core::{
-    Core, CreateDraftInput, EmbedOptions, Embedder, ImportManifest, ImportOrigin, ImportRequest,
-    MatchedBy, SearchFilters, SearchHit, SearchMode, SearchPhase, SearchRequest, SearchSnapshot,
-    SourceKind,
+    Core, CreateDraftInput, EmbedOptions, Embedder, Embedding, EmbeddingConfig, ImportManifest,
+    ImportOrigin, ImportRequest, JobState, MatchedBy, SearchFilters, SearchHit, SearchMode, SearchPhase,
+    SearchRequest, SearchSnapshot, SourceKind, TokenTruncation, VectorStorage,
 };
 use rusqlite::params;
 use sha2::{Digest, Sha256};
@@ -109,19 +109,23 @@ impl Embedder for StubEmbedder {
         EmbedOptions::default()
     }
 
-    fn embed_document(&self, text: &str) -> diary_core::Result<Vec<f32>> {
+    fn embed_document(&self, text: &str) -> diary_core::Result<diary_core::Embedding> {
         self.counters.documents.fetch_add(1, Ordering::SeqCst);
-        Ok(self.vector_for(text, &self.rules))
+        Ok(diary_core::Embedding::untruncated(
+            self.vector_for(text, &self.rules),
+        ))
     }
 
-    fn embed_query(&self, text: &str) -> diary_core::Result<Vec<f32>> {
+    fn embed_query(&self, text: &str) -> diary_core::Result<diary_core::Embedding> {
         self.counters.queries.fetch_add(1, Ordering::SeqCst);
         let rules = if self.query_rules.is_empty() {
             &self.rules
         } else {
             &self.query_rules
         };
-        Ok(self.vector_for(text, rules))
+        Ok(diary_core::Embedding::untruncated(
+            self.vector_for(text, rules),
+        ))
     }
 }
 
@@ -603,6 +607,9 @@ fn an_interrupted_generation_resumes_without_activating_half_a_build() {
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
     core.set_embedder(stub(&counters, vec![]));
+    // 这条测的是**同口径续跑**，不靠默认存储：把整条测试显式钉在 f32 上，
+    // 否则默认值一改，下面的「续上 / 复用」就会变成「换格式整代重算」。
+    core.set_vector_storage_for_test(VectorStorage::F32);
     write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
     write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
     core.build_semantic_index(None).unwrap();
@@ -672,6 +679,9 @@ fn switching_models_mid_build_discards_the_half_built_generation() {
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
     // A：512 维，把两篇正文都映到 e0，先建出一代生效向量。
+    // 这条测的是**换模型**，所以把存储显式钉在 int8 上：A 的生效代次与半成品
+    // 用同一种编码，口径差异只来自 model_version / dims，不掺 storage。
+    core.set_vector_storage_for_test(VectorStorage::Int8);
     core.set_embedder(Box::new(StubEmbedder::with_dims(
         A_VERSION,
         512,
@@ -683,7 +693,7 @@ fn switching_models_mid_build_discards_the_half_built_generation() {
     let first = core.build_semantic_index(None).unwrap();
     assert_eq!(first.embedded_chunks, 2, "前提：A 先建好一代");
 
-    // 模拟「A 在第 2 代里只写了苹果那一块就中断了」。
+    // 模拟「A 在第 2 代里只写了苹果那一块就中断了」（与第 1 代同编码，只有模型会变）。
     {
         let conn = open(&path);
         let chunk_id: String = conn
@@ -696,8 +706,12 @@ fn switching_models_mid_build_discards_the_half_built_generation() {
         conn.execute(
             "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, storage, \
                                         vector, created_at) \
-             VALUES (?1, 2, ?2, 512, 'f32', zeroblob(2048), '2026-10-10T00:00:00.000Z')",
-            params![chunk_id, A_VERSION],
+             VALUES (?1, 2, ?2, 512, 'int8', ?3, '2026-10-10T00:00:00.000Z')",
+            params![
+                chunk_id,
+                A_VERSION,
+                VectorStorage::Int8.encode(&vec![0.0_f32; 512]).unwrap()
+            ],
         )
         .unwrap();
         conn.execute("UPDATE index_meta SET building_generation = 2", [])
@@ -760,7 +774,7 @@ fn switching_models_mid_build_discards_the_half_built_generation() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(caliber, (B_VERSION.to_owned(), 384, "f32".to_owned()));
+    assert_eq!(caliber, (B_VERSION.to_owned(), 384, "int8".to_owned()));
     assert_eq!(
         count(&conn, "SELECT COUNT(*) FROM chunk_vectors", "chunk_vectors"),
         2,
@@ -802,9 +816,10 @@ fn switching_models_mid_build_discards_the_half_built_generation() {
 
 /// 回归（评审在 #58 上指出的）：**半个代次的存储格式与当前不一致时，同样整代废弃重算**。
 ///
-/// `storage` 是「一套口径」的第三个字段。将来从 f32 换成 int8 时，中断留下的 f32 半成品
-/// 若被当成「已完成」，切出来的代次里就会混着两种编码——搜索读到不认识的 `storage`
-/// 会直接报 `CorruptedData`。这条钉住「换存储格式也当换口径」。
+/// `storage` 是「一套口径」的第三个字段。默认已是 int8；中断留下的 f32 半成品若被
+/// 当成「已完成」，切出来的代次里就会混着两种编码——解码虽然按行分派，跨编码的余弦
+/// 却会被当成正常分数算出来（看起来有结果，但那个分数不代表任何东西）。这条钉住
+/// 「换存储格式也当换口径」。
 #[test]
 fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
     let dir = tempfile::tempdir().unwrap();
@@ -812,11 +827,13 @@ fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
     core.set_embedder(stub(&counters, vec![]));
+    // 当前代次显式用 int8（不靠默认）；下面故意把半成品写成 f32，构造「换过格式」。
+    core.set_vector_storage_for_test(VectorStorage::Int8);
     write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
     write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
     core.build_semantic_index(None).unwrap();
 
-    // 模拟「上一轮开到第 2 代、用另一种存储格式写了一块就中断」。
+    // 模拟「上一轮开到第 2 代、用另一种存储格式（f32）写了一块就中断」。
     {
         let conn = open(&path);
         let chunk_id: String = conn
@@ -829,9 +846,9 @@ fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
         conn.execute(
             "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, storage, \
                                         vector, created_at) \
-             VALUES (?1, 2, 'stub-embedder@000000000000', 512, 'i8', zeroblob(2048), \
+             VALUES (?1, 2, 'stub-embedder@000000000000', 512, 'f32', ?2, \
                      '2026-10-10T00:00:00.000Z')",
-            params![chunk_id],
+            params![chunk_id, diary_core::vector_bytes(&vec![0.0_f32; 512])],
         )
         .unwrap();
         conn.execute("UPDATE index_meta SET building_generation = 2", [])
@@ -840,15 +857,15 @@ fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
 
     let report = core.build_semantic_index(None).unwrap();
     assert_eq!(report.generation, 2);
-    assert_eq!(report.reused_chunks, 2, "废弃半成品后，两块都能从上一代 f32 复用");
+    assert_eq!(report.reused_chunks, 2, "废弃半成品后，两块都能从上一代 int8 复用");
     assert_eq!(report.embedded_chunks, 0, "没有一块需要重算");
-    assert_eq!(report.resumed_chunks, 0, "store 格式不一致的那一块不算「续上」");
+    assert_eq!(report.resumed_chunks, 0, "storage 格式不一致的那一块不算「续上」");
 
     let conn = open(&path);
     assert_eq!(
         count(
             &conn,
-            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2 AND storage <> 'f32'",
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2 AND storage <> 'int8'",
             "chunk_vectors"
         ),
         0,
@@ -859,8 +876,8 @@ fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
         2
     );
     drop(conn);
-    // 半成品若真被留下，语义检索会在读到 'i8' 那一行时报 `CorruptedData`——能正常
-    // 返回（纯语义是 kNN，会把两块都列出来）就说明整代都是认识的 f32。
+    // 半成品若真被留下，语义检索会读到 f32 那一行——能正常返回（纯语义是 kNN，
+    // 会把两块都列出来）就说明整代都是当前格式 int8。
     assert_eq!(
         search_mode(&mut core, "妈妈", SearchMode::Semantic, 10).results.len(),
         2
@@ -1239,10 +1256,10 @@ fn a_mixed_generation_keeps_semantic_out_of_both_paths_until_rebuild() {
 
 /// issue #80 第 2 条：**`dims` 不一致**的向量行不能静默 `zip` 算分。
 ///
-/// 构造：A（512 维）建好一代，把其中一行的 `dims` 与字节一起改成 384 维的 e0
-/// （行内自洽：记录 384、字节也是 384）。修复前这条会通过「字节 vs 行上记录」的检查
-/// （384 = 384），然后 `cosine` 把 512 维查询 `zip` 到前 384 位，得到 1.0 的
-/// 「相似度」——跨空间错分，而且看起来正常。
+/// 构造：A（512 维，显式 int8）建好一代，把其中一行的 `dims` 与字节一起改成 384 维的 e0
+/// （行内自洽：记录 384、int8 字节 = 4 字节 scale + 384 字节分量）。修复前这条会通过
+/// 「字节 vs 行上记录」的检查（384 = 384），然后 `cosine` 把 512 维查询 `zip` 到前 384 位，
+/// 得到 1.0 的「相似度」——跨空间错分，而且看起来正常。
 ///
 /// 修复后：整代口径判据在**进入计算前**发现 `dims` 不是 512，语义这一路整路不作数
 /// （空结果 + 口径警告），不依赖逐行检查兜底。逐行那条只余下「行内自洽但字节与记录
@@ -1255,6 +1272,9 @@ fn a_dims_mismatch_is_blocked_before_any_cosine() {
     let path = dir.path().join("library.sqlite");
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
+    // 这条测的是坏数据/口径校验，显式钉在 int8 上：下面造坏向量时才能保证
+    // 「scale 合法、只有维度不对」——不是先撞上 int8 自己的 scale 校验。
+    core.set_vector_storage_for_test(VectorStorage::Int8);
     core.set_embedder(Box::new(StubEmbedder::with_dims(
         A_VERSION,
         512,
@@ -1274,12 +1294,12 @@ fn a_dims_mismatch_is_blocked_before_any_cosine() {
         )
         .unwrap()
     };
-    // 行内自洽的 384 维向量：记录 384、字节 384。
+    // 行内自洽的 384 维 int8 向量：记录 384、字节是 4 字节 scale + 384 字节分量。
     {
         let conn = open(&path);
         conn.execute(
             "UPDATE chunk_vectors SET dims = 384, vector = ?1 WHERE chunk_id = ?2",
-            params![diary_core::vector_bytes(&unit_in(384, 0)), chunk_id],
+            params![VectorStorage::Int8.encode(&unit_in(384, 0)).unwrap(), chunk_id],
         )
         .unwrap();
     }
@@ -1314,12 +1334,14 @@ fn a_dims_mismatch_is_blocked_before_any_cosine() {
     assert!(!hybrid.results.iter().any(|hit| hit.group_id == b_capture));
     assert!(hybrid.results.iter().any(|hit| hit.group_id == a_capture));
 
-    // —— 行内自洽但字节与记录不符（坏数据）：如实报错，绝不静默算分 ——
+    // —— 行上记 512 维、字节只解出 8 维（坏数据）：如实报错，绝不静默算分 ——
+    // 用合法的 int8 编码（scale = 1.0）造出 8 个分量，确保先撞到的是「维度不符」
+    // 而不是 int8 自己的「scale 不是正数」。
     {
         let conn = open(&path);
         conn.execute(
             "UPDATE chunk_vectors SET dims = 512, vector = ?1 WHERE chunk_id = ?2",
-            params![diary_core::vector_bytes(&[0.0_f32; 8]), chunk_id],
+            params![VectorStorage::Int8.encode(&[0.0_f32; 8]).unwrap(), chunk_id],
         )
         .unwrap();
     }
@@ -1827,11 +1849,11 @@ fn a_vector_of_the_wrong_length_is_rejected() {
         fn options(&self) -> EmbedOptions {
             EmbedOptions::default()
         }
-        fn embed_document(&self, _text: &str) -> diary_core::Result<Vec<f32>> {
-            Ok(vec![0.0; 8])
+        fn embed_document(&self, _text: &str) -> diary_core::Result<diary_core::Embedding> {
+            Ok(diary_core::Embedding::untruncated(vec![0.0; 8]))
         }
-        fn embed_query(&self, _text: &str) -> diary_core::Result<Vec<f32>> {
-            Ok(vec![0.0; 8])
+        fn embed_query(&self, _text: &str) -> diary_core::Result<diary_core::Embedding> {
+            Ok(diary_core::Embedding::untruncated(vec![0.0; 8]))
         }
     }
 
@@ -1900,8 +1922,187 @@ fn keyword_search_is_untouched_by_building_semantics() {
     );
 }
 
-// ------------------------------------------------------------ 真模型（不进 CI）
+// ------------------------------------------------------------ #109：超长正文的截断与报告
 
+/// 嵌入器报告了截断时，`SemanticBuildReport` 要**如实累计**块数与 token 数。
+///
+/// 只打日志不算报告：上层（作业进度、探针）拿到的必须是可断言的数字。这里用 2 块
+/// × 每块 107 个 token 构造，断言 2 / 214。
+#[test]
+fn a_truncated_chunk_is_counted_in_the_build_report() {
+    struct TruncatingEmbedder;
+
+    impl Embedder for TruncatingEmbedder {
+        fn model_version(&self) -> &str {
+            "stub-embedder@truncated"
+        }
+
+        fn dims(&self) -> usize {
+            512
+        }
+
+        fn options(&self) -> EmbedOptions {
+            EmbedOptions::default()
+        }
+
+        fn embed_document(&self, text: &str) -> diary_core::Result<Embedding> {
+            Ok(Embedding {
+                vector: diary_core::text_hash_vector(text, 512),
+                truncation: Some(TokenTruncation {
+                    original_tokens: 617,
+                    kept_tokens: diary_core::MAX_BODY_TOKENS,
+                    dropped_tokens: 107,
+                }),
+            })
+        }
+
+        fn embed_query(&self, text: &str) -> diary_core::Result<Embedding> {
+            Ok(Embedding::untruncated(diary_core::text_hash_vector(text, 512)))
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    core.set_embedder(Box::new(TruncatingEmbedder));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "op-trunc-a");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "op-trunc-b");
+
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.embedded_chunks, 2);
+    assert_eq!(
+        report.truncated_chunks, 2,
+        "两块都被截断，报告里必须是 2（只打日志就等于没报）"
+    );
+    assert_eq!(
+        report.truncated_tokens, 214,
+        "107 × 2：报告要给出被截掉的 token 总数"
+    );
+
+    // 向量照写、检索照用：截断不是错误，也不该让索引失效。
+    let status = core.index_status(None).unwrap();
+    assert!(status.semantic_index_ready);
+    assert!(
+        !search_mode(&mut core, "妈妈", SearchMode::Semantic, 20)
+            .results
+            .is_empty(),
+        "截断过的块仍然要能被语义召回"
+    );
+}
+
+/// #109：一篇超长正文被切成多块之后，关键词、语义、混合三路都不报错、都还能召回。
+///
+/// 这条钉的是「修复不能把检索弄坏」：入口加了截断、报告加了字段，检索那条路的
+/// 向量仍然是 512 维、块仍然按篇折叠。
+#[test]
+fn a_long_capture_stays_searchable_on_both_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    // 规则把「含妈妈」的块与查询都映射到同一个单位向量：余弦 1，混合那一路才有
+    // 证据过门槛（纯哈希向量的相似度只有 0.06，会被证据门槛挡掉）。
+    core.set_embedder(stub(&counters, vec![("妈妈", unit(0))]));
+
+    // 16 字 × 200 = 3200 字：按 400 字一块会切成 8 块以上（带 48 字重叠）。
+    let text = "妈妈打电话来说她最近身体不太好。".repeat(200);
+    let capture_id = write_capture(&mut core, at(2026, 9, 20), &text, "op-long");
+
+    let report = core.build_semantic_index(None).unwrap();
+    assert!(
+        report.total_chunks > 1,
+        "这么长的正文必须被切成多块（实际 {} 块）",
+        report.total_chunks
+    );
+    assert_eq!(
+        report.truncated_chunks, 0,
+        "产品切块（400 字符）在 512 token 以内，正常不该有截断"
+    );
+    assert_eq!(report.embedded_chunks, report.total_chunks);
+
+    let keyword = search_mode(&mut core, "妈妈", SearchMode::Keyword, 20);
+    assert_eq!(
+        keyword.results.first().map(|hit| hit.group_id.as_str()),
+        Some(capture_id.as_str()),
+        "关键词那一路不报错、仍能命中：{:?}",
+        keyword.warnings
+    );
+
+    let semantic = search_mode(&mut core, "妈妈", SearchMode::Semantic, 20);
+    assert!(
+        !semantic.results.is_empty(),
+        "语义那一路不报错、仍能命中：{:?}",
+        semantic.warnings
+    );
+    assert!(
+        semantic
+            .results
+            .iter()
+            .all(|hit| hit.group_id == capture_id),
+        "同一篇的多个块要按篇折叠成一条"
+    );
+
+    let hybrid = hybrid_mode(&mut core, "妈妈", 20);
+    assert_eq!(
+        hybrid.phase,
+        SearchPhase::HybridReady,
+        "混合那一路要能完成融合：{:?}",
+        hybrid.warnings
+    );
+    assert!(!hybrid.results.is_empty(), "融合后不该凭空丢结果");
+}
+
+/// #109：查询超长被截断时，检索快照的 `warnings` 必须如实说出来（不是只打日志）。
+#[test]
+fn a_truncated_query_is_reported_in_the_search_warnings() {
+    struct TruncatingQueryEmbedder;
+
+    impl Embedder for TruncatingQueryEmbedder {
+        fn model_version(&self) -> &str {
+            "stub-embedder@truncated-query"
+        }
+
+        fn dims(&self) -> usize {
+            512
+        }
+
+        fn options(&self) -> EmbedOptions {
+            EmbedOptions::default()
+        }
+
+        fn embed_document(&self, text: &str) -> diary_core::Result<Embedding> {
+            Ok(Embedding::untruncated(diary_core::text_hash_vector(text, 512)))
+        }
+
+        fn embed_query(&self, text: &str) -> diary_core::Result<Embedding> {
+            Ok(Embedding {
+                vector: diary_core::text_hash_vector(text, 512),
+                truncation: Some(TokenTruncation {
+                    original_tokens: 617,
+                    kept_tokens: diary_core::MAX_BODY_TOKENS,
+                    dropped_tokens: 107,
+                }),
+            })
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    core.set_embedder(Box::new(TruncatingQueryEmbedder));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "op-query");
+    core.build_semantic_index(None).unwrap();
+
+    let semantic = search_mode(&mut core, "很长很长的查询", SearchMode::Semantic, 20);
+    let warning = semantic
+        .warnings
+        .iter()
+        .find(|warning| warning.contains("查询太长"))
+        .unwrap_or_else(|| panic!("查询截断必须在 warnings 里说：{:?}", semantic.warnings));
+    assert!(
+        warning.contains("107"),
+        "警告里要带被截掉的 token 数：{warning}"
+    );
+}
+
+// ------------------------------------------------------------ 真模型（不进 CI）
 /// 真模型端到端：加载 bge-small-zh-v1.5、建向量、语义检索、按篇折叠。
 ///
 /// **不进 CI**（CI 上没有模型、没有 ORT 动态库），手动跑：
@@ -2941,5 +3142,1366 @@ fn retired_revision_is_not_returned_by_semantic_search_before_rebuild() {
             .contains("旧说法")),
         "重建之后任何命中都不该是旧正文：{:?}",
         after.results.iter().map(|h| h.snippet.clone()).collect::<Vec<_>>()
+    );
+}
+
+// ------------------------------------------------------------ int8 存储与流式扫描（#90）
+
+/// 阻塞 1 的回归（评审 #128）：**从磁盘 reopen 一个存量 f32 库**。
+///
+/// 换默认存储之后，旧库只有一种 `model_version`，覆盖也完整——旧状态逻辑会报
+/// `semantic_index_ready = true`、`reasons` 为空，而检索路径把整代判成
+/// `ForeignSpace`（纯语义空、混合退化）。这条测试不注入嵌入器就查状态，同时证明
+/// storage 检查**不依赖加载模型**。
+#[test]
+fn reopening_an_f32_library_reports_not_ready_with_a_storage_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    let built = core.build_semantic_index(None).unwrap();
+    assert_eq!(built.embedded_chunks, 2, "前提：旧库的覆盖是完整的");
+    drop(core);
+
+    // 不 set_embedder：状态检查只用库里的列与当前默认口径。
+    let reopened = Core::open(&path).unwrap();
+    let status = reopened.index_status(None).unwrap();
+    assert_eq!(
+        status.embedded_chunks, status.total_chunks,
+        "数据没坏：块都有 f32 向量"
+    );
+    assert_eq!(
+        status.model_version.as_deref(),
+        Some("stub-embedder@000000000000"),
+        "只有一种模型版本——旧逻辑正是因此看不出问题"
+    );
+    assert!(
+        !status.semantic_index_ready,
+        "f32 生效代次在 int8 口径下不能报就绪：{:?}",
+        status.reasons
+    );
+    let reason = status
+        .reasons
+        .iter()
+        .find(|reason| reason.contains("存储格式从 f32 变为 int8"))
+        .unwrap_or_else(|| panic!("reasons 要写明存储格式变化：{:?}", status.reasons));
+    assert!(
+        reason.contains("需要重建"),
+        "原因里要给出可执行的下一步：{reason}"
+    );
+}
+
+/// 核心自动排队（评审 #128 复审）：口径不一致时 `open` 自己排一条语义重建，
+/// 且**重复 open 仍只有一条**（去重键 `(kind, target_ids=[], snapshot=NULL)`）。
+///
+/// 自动排队只在模型 `Configured` / `Ready` 时生效（没配模型不排），而测试不能设进程
+/// 环境变量来造这个状态，所以用 `open_with_embedding_config_for_test` 显式钉住
+/// 「配了、文件都在、还没加载」——与产品里设置好模型后的 open 同一条判据。
+#[test]
+fn opening_a_mismatched_library_queues_one_deduplicated_semantic_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    assert_eq!(semantic_job_count(&path), 0, "建库时口径一致，不该自动排队");
+    drop(core);
+
+    let configured = configured_model(dir.path());
+    let first =
+        Core::open_with_embedding_config_for_test(&path, Some(configured.clone())).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        1,
+        "open 检测到 f32→int8 口径不一致，要自动排一条语义重建"
+    );
+    assert!(!first.index_status(None).unwrap().semantic_index_ready);
+    let (kind, state) = semantic_job_kind_state(&path);
+    assert_eq!(kind, "semantic_index");
+    assert_eq!(state, "queued");
+    drop(first);
+
+    // 连开第二次：业务键命中，仍然只有 1 条（不能因为 open 两次排 N 条）。
+    let second =
+        Core::open_with_embedding_config_for_test(&path, Some(configured)).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        1,
+        "重复 open 不能产生第二条语义重建"
+    );
+    drop(second);
+}
+
+/// 口径的第三项 `dims`（评审 #128 复审）：换过模型但整代只有一种旧版本，
+/// `model_version` 不混、覆盖也完整——旧状态仍会报 ready；现在必须报 false。
+#[test]
+fn reopening_a_library_with_another_model_dimension_reports_not_ready() {
+    const OLD_VERSION: &str = "stub-embedder@old000000000";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        OLD_VERSION,
+        384,
+        &counters,
+        vec![],
+    )));
+    // 存储与当前默认一致，只让 dims 不同：这条测的就是「dims 完全没查」。
+    core.set_vector_storage_for_test(VectorStorage::Int8);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let reopened = Core::open_with_embedding_config_for_test(
+        &path,
+        Some(configured_model(dir.path())),
+    )
+    .unwrap();
+    let status = reopened.index_status(None).unwrap();
+    assert_eq!(status.embedded_chunks, status.total_chunks, "覆盖是完整的");
+    assert_eq!(
+        status.model_version.as_deref(),
+        Some(OLD_VERSION),
+        "整代只有一种旧模型版本——旧逻辑正是因此看不出问题"
+    );
+    assert!(
+        !status.semantic_index_ready,
+        "384 维旧代次在 512 维当前模型下不能报就绪：{:?}",
+        status.reasons
+    );
+    let reason = status
+        .reasons
+        .iter()
+        .find(|reason| reason.contains("维度"))
+        .unwrap_or_else(|| panic!("reasons 要写明维度不一致：{:?}", status.reasons));
+    assert!(reason.contains("384") && reason.contains("512"), "{reason}");
+    assert!(reason.contains("需要重建"), "{reason}");
+    // dims 也是口径不一致，自动排队同样要触发。
+    assert_eq!(semantic_job_count(&path), 1, "dims 不一致也要自动排一条");
+}
+
+/// 模型版本变了、但 dims/storage 相同：嵌入器加载后状态也必须报 false。
+#[test]
+fn a_loaded_embedder_with_another_model_version_reports_not_ready() {
+    const OLD_VERSION: &str = "stub-embedder@old111111111";
+    const NEW_VERSION: &str = "stub-embedder@new222222222";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        OLD_VERSION,
+        512,
+        &counters,
+        vec![],
+    )));
+    core.set_vector_storage_for_test(VectorStorage::Int8);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let mut reopened = Core::open(&path).unwrap();
+    // open 时还不知道新模型版本（没加载）；加载之后才比得出来。
+    reopened.set_embedder(Box::new(StubEmbedder::with_dims(
+        NEW_VERSION,
+        512,
+        &counters,
+        vec![],
+    )));
+    let status = reopened.index_status(None).unwrap();
+    assert!(!status.semantic_index_ready, "模型版本不同不能报就绪");
+    let reason = status
+        .reasons
+        .iter()
+        .find(|reason| reason.contains("模型"))
+        .unwrap_or_else(|| panic!("reasons 要写明模型版本不一致：{:?}", status.reasons));
+    assert!(reason.contains(OLD_VERSION) && reason.contains(NEW_VERSION), "{reason}");
+    assert!(reason.contains("需要重建"), "{reason}");
+}
+
+/// 「文件都在、但还没加载」的模型配置：`Configured` 只 stat 文件，不建 ORT 会话。
+///
+/// 自动排队只在模型 `Configured` / `Ready` 时生效；测试用显式配置钉住这个状态，
+/// 不去改进程环境变量（并行测试会互相踩）。
+fn configured_model(dir: &Path) -> EmbeddingConfig {
+    let model_dir = dir.join("fake-model");
+    std::fs::create_dir_all(&model_dir).unwrap();
+    std::fs::write(model_dir.join("model.onnx"), b"not-a-real-model").unwrap();
+    std::fs::write(model_dir.join("tokenizer.json"), b"{}").unwrap();
+    let ort_dylib = dir.join("libonnxruntime.so");
+    std::fs::write(&ort_dylib, b"not-a-real-ort").unwrap();
+    EmbeddingConfig {
+        model_dir,
+        ort_dylib,
+        model_file: Some("model.onnx".to_owned()),
+    }
+}
+
+/// 评审 #128 第 1 条：没配模型的库**不自动排队**——否则会长期挂一条
+/// `waiting_configuration` + `requires_user_action` 的噪声任务，取消后还会复活。
+///
+/// 显式请求仍然照旧落 `waiting_configuration`（那是用户/导入链自己排的，不是噪声）；
+/// 这里要钉的是：**自动触发**不排、取消之后重开也不复活。
+#[test]
+fn an_unconfigured_library_never_auto_queues_and_a_cancelled_job_does_not_come_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    // 没配模型（显式 None，不受开发机环境变量影响）：口径不一致也不自动排。
+    let mut core = Core::open_with_embedding_config_for_test(&path, None).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        0,
+        "没配模型的库不自动排队：那是长期噪声，不是在等资源"
+    );
+    assert_eq!(
+        core.job_status().unwrap().waiting_configuration, 0,
+        "自动触发不该造出等配置的任务"
+    );
+    // 状态仍如实说「需要重建」：没有自动入口 ≠ 状态闭嘴。
+    let status = core.index_status(None).unwrap();
+    assert!(!status.semantic_index_ready);
+    assert!(
+        status
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("存储格式从 f32 变为 int8")),
+        "要保持可执行的说明：{:?}",
+        status.reasons
+    );
+
+    // 显式排一条：它会等配置（既有语义，不是这条要改的东西）。
+    let explicit = core
+        .schedule_semantic_index("显式排上，等模型", "op-explicit")
+        .unwrap();
+    core.run_due_jobs(Utc::now(), 60_000, "foreground", 64)
+        .unwrap();
+    let waiting = core.get_job(&explicit.id).unwrap();
+    assert_eq!(waiting.state, JobState::WaitingConfiguration);
+    assert!(waiting.requires_user_action, "显式任务等配置要提示用户");
+    // 取消它，再重开：不能复活。
+    core.cancel_job(&explicit.id, "op-cancel").unwrap();
+    drop(core);
+    let reopened = Core::open_with_embedding_config_for_test(&path, None).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        1,
+        "取消之后重开不能再冒出一条（取消的那条还在，但不是新排的）"
+    );
+    let state: String = open(&path)
+        .query_row(
+            "SELECT state FROM jobs WHERE kind = 'semantic_index'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "cancelled");
+    assert_eq!(reopened.job_status().unwrap().waiting_configuration, 0);
+}
+
+/// 评审 #128 第 3 条（**死角落复现**）：失败/取消不会清 `building_generation`，
+/// 旧判据一看到它就早退，自动重建再也不会排。
+///
+/// 现在「正在建」的判据是**没有活着的 `semantic_index` 任务**：任务终态后，即使
+/// `building_generation` 还留着，也再排一次（执行者会续跑/整代废弃重算）。同一口径
+/// 最多自动尝试两次（首次 + 失败/取消后的一次重排），第三次起不再排。
+#[test]
+fn a_failed_rebuild_with_leftover_building_generation_gets_one_more_auto_attempt() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let configured = configured_model(dir.path());
+    // 第一次 open：自动排一条（自动尝试 1/2）。
+    let mut first =
+        Core::open_with_embedding_config_for_test(&path, Some(configured.clone())).unwrap();
+    assert_eq!(semantic_job_count(&path), 1);
+    let job = first.claim_next_due_job(Utc::now()).unwrap().unwrap();
+    drop(first);
+    {
+        // 模拟「跑到一半失败/被取消」：任务终态，building_generation 留着（续跑进度）。
+        let conn = open(&path);
+        conn.execute(
+            "UPDATE jobs SET state = 'failed', error_code = 'io' WHERE id = ?1",
+            params![job.id],
+        )
+        .unwrap();
+        conn.execute_batch("UPDATE index_meta SET building_generation = active_generation + 1;")
+            .unwrap();
+    }
+
+    // 第二次 open：没有**活着的**任务，building 不该再挡路 → 再排一次（2/2）。
+    let second =
+        Core::open_with_embedding_config_for_test(&path, Some(configured.clone())).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        2,
+        "失败后要能再排一条；否则 building_generation 永远挡着，这就是新的死角落"
+    );
+    let (kind, state) = open(&path)
+        .query_row(
+            "SELECT kind, state FROM jobs WHERE kind = 'semantic_index' \
+             AND state NOT IN ('failed', 'cancelled') LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "semantic_index");
+    assert_eq!(state, "queued");
+    drop(second);
+
+    // 把第二条也置成终态：同一口径已经自动尝试两次 → 第三次起交给显式入口。
+    open(&path)
+        .execute_batch(
+            "UPDATE jobs SET state = 'failed', error_code = 'io' \
+             WHERE kind = 'semantic_index' AND state NOT IN ('succeeded','failed','cancelled');",
+        )
+        .unwrap();
+    let _third =
+        Core::open_with_embedding_config_for_test(&path, Some(configured)).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        2,
+        "同一口径最多自动尝试两次：失败行不能随每次 open 增长"
+    );
+}
+
+/// 评审 #128 第五轮：自动尝试上限必须**跨发现点**生效。
+///
+/// 旧指纹把「当前模型版本」编了进去，而两个发现点拿到的东西必然不同：
+///
+/// - `open` 时模型只到 `Configured`，`loaded_model_version()` 永远是 `None` ⇒ 指纹里是
+///   `"unknown"`（记作 U）；
+/// - 检索（这里用 `open_with_embedder_for_test` 把「模型已加载」那一刻提前）一定在加载
+///   之后，拿到真实版本 ⇒ 指纹是 K。
+///
+/// 同一个 `storage` 不一致因此算出两个指纹：`open` 排 U → 失败 → `Ready` 排 K → 失败 →
+/// 再 `open` 又按 U 从 0 算 → 每次启动稳定新增 1–2 条，计数永远到不了 2。这条回归走一遍
+/// 「Configured → failed → Ready → failed → Configured」，修好之后第三次必须被上限挡住。
+#[test]
+fn the_auto_attempt_limit_is_shared_across_open_and_ready_discovery_points() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let configured = configured_model(dir.path());
+    // 发现点 1：Configured open。模型没加载，版本未知（U）。
+    let first =
+        Core::open_with_embedding_config_for_test(&path, Some(configured.clone())).unwrap();
+    assert_eq!(semantic_job_count(&path), 1, "Configured open 首次自动排一条");
+    drop(first);
+    fail_all_semantic_jobs(&path);
+
+    // 发现点 2：Ready open。模型已加载，版本已知（K）——旧指纹在这里换成另一个值。
+    let ready = Core::open_with_embedder_for_test(&path, stub(&counters, vec![])).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        2,
+        "Ready open 再排一条（自动尝试 2/2）"
+    );
+    drop(ready);
+    fail_all_semantic_jobs(&path);
+
+    // 回到发现点 1：同一个 storage 不一致，第三次必须被上限挡住，而不是又当新口径。
+    let third = Core::open_with_embedding_config_for_test(&path, Some(configured)).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        2,
+        "同一口径最多自动尝试两次：open 与 Ready 两个发现点必须共用同一个指纹"
+    );
+    drop(third);
+}
+
+/// 组合不一致（`storage` + 模型版本）：`open` 只看得见 `storage`，检索两个都看得见。
+/// 若把版本再单列成指纹位，两个发现点又算出两个指纹，同样的交替会回来（旧实现就是
+/// 这样）。所以 `storage`/`dims` 已不一致时版本位被吸收：它不改变「必须按当前口径
+/// 整代重算」这个事实，而且 `open` 永远观察不到它。
+#[test]
+fn the_auto_attempt_limit_survives_a_combined_storage_and_model_mismatch() {
+    const OLD_VERSION: &str = "stub-embedder@old555555555";
+    const NEW_VERSION: &str = "stub-embedder@new666666666";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        OLD_VERSION,
+        512,
+        &counters,
+        vec![],
+    )));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let ready_embedder = || -> Box<dyn Embedder> {
+        Box::new(StubEmbedder::with_dims(
+            NEW_VERSION,
+            512,
+            &counters,
+            vec![],
+        ))
+    };
+    // Ready open：storage 与版本都不一致 → 第一条（版本位在这里一度也是 true）。
+    let ready = Core::open_with_embedder_for_test(&path, ready_embedder()).unwrap();
+    assert_eq!(semantic_job_count(&path), 1, "组合不一致先排一条");
+    drop(ready);
+    fail_all_semantic_jobs(&path);
+
+    // Configured open：只看得到 storage → 第二条（2/2）。
+    let configured_core =
+        Core::open_with_embedding_config_for_test(&path, Some(configured_model(dir.path())))
+            .unwrap();
+    assert_eq!(semantic_job_count(&path), 2, "同一口径的第二次自动尝试");
+    drop(configured_core);
+    fail_all_semantic_jobs(&path);
+
+    // 再回到 Ready：组合不一致必须与 open 算出同一个指纹，第三次被上限挡住。
+    let ready_again = Core::open_with_embedder_for_test(&path, ready_embedder()).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        2,
+        "组合不一致也不能让 open 与检索各算一套指纹（旧实现这里会到 3）"
+    );
+    drop(ready_again);
+}
+
+/// 评审 #128 第 5 条：成功重建之后 reopen **不再排**——口径已经一致，自动触发无事可做。
+#[test]
+fn a_successful_rebuild_stops_the_auto_queue_on_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let mut reopened =
+        Core::open_with_embedding_config_for_test(&path, Some(configured_model(dir.path())))
+            .unwrap();
+    assert_eq!(semantic_job_count(&path), 1, "f32 存量库先自动排一条");
+    // 让它真的跑完：注入同口径的嵌入器并驱动一轮。
+    reopened.set_embedder(stub(&counters, vec![]));
+    let round = reopened
+        .run_due_jobs(Utc::now(), 60_000, "foreground", 64)
+        .unwrap();
+    assert_eq!(round.succeeded, 1);
+    assert!(
+        reopened.index_status(None).unwrap().semantic_index_ready,
+        "按当前口径整代重算之后就绪"
+    );
+    drop(reopened);
+
+    let again = Core::open_with_embedder_for_test(&path, stub(&counters, vec![])).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        1,
+        "成功重建后口径一致，reopen 不该再排一条"
+    );
+    assert!(again.index_status(None).unwrap().semantic_index_ready);
+}
+
+/// 评审 #128 第 4 条：`model_version` 也要纳入自动触发——换了一份同维度、同存储的
+/// 模型文件，`index_status` 会说「需要重建」，自动触发也必须给出可执行的入口。
+///
+/// 只在嵌入器**已经加载**（内存里有 `model_version`）时比：这里用
+/// `open_with_embedder_for_test` 把「open 时模型已加载」那一刻造出来，不比文件哈希。
+#[test]
+fn a_loaded_embedder_with_another_model_version_queues_one_auto_rebuild() {
+    const OLD_VERSION: &str = "stub-embedder@old333333333";
+    const NEW_VERSION: &str = "stub-embedder@new444444444";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        OLD_VERSION,
+        512,
+        &counters,
+        vec![],
+    )));
+    core.set_vector_storage_for_test(VectorStorage::Int8);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let reopened = Core::open_with_embedder_for_test(
+        &path,
+        Box::new(StubEmbedder::with_dims(
+            NEW_VERSION,
+            512,
+            &counters,
+            vec![],
+        )),
+    )
+    .unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        1,
+        "模型版本不同（维度/存储相同）也要自动排一条"
+    );
+    let status = reopened.index_status(None).unwrap();
+    assert!(!status.semantic_index_ready);
+    assert!(
+        status
+            .reasons
+            .iter()
+            .any(|reason| reason.contains(OLD_VERSION) && reason.contains(NEW_VERSION)),
+        "状态要同时点名两边的版本：{:?}",
+        status.reasons
+    );
+}
+
+/// 评审 #128 复审：v15 是**真的**加性迁移——空库直接建到 15；把库退回 v14 再打开，
+/// 向量一行不丢、新列默认 NULL、覆盖索引建出来、重复 open 幂等。
+///
+/// 为什么这条必须存在：`SCHEMA_VERSION` 是持久化的契约（Dart 端到端测试也断言它），
+/// 升版本就要证明「数据不丢、新结构可用、重复迁移不炸」，而不是为了改断言。
+#[test]
+fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    assert_eq!(
+        core.schema_version().unwrap(),
+        diary_core::SCHEMA_VERSION,
+        "空库直接建到最新"
+    );
+    assert_eq!(diary_core::SCHEMA_VERSION, 15, "本轮升到 15");
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+    let vectors_before: i64 = open(&path)
+        .query_row("SELECT COUNT(*) FROM chunk_vectors", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(vectors_before, 2, "前提：两篇各一块、各一行向量");
+    drop(core);
+
+    // 退回**真正的 v14 样子**：没有 v15 的列与索引，版本号也退回去。
+    {
+        let conn = open(&path);
+        conn.execute_batch(
+            "DROP INDEX idx_chunk_vectors_caliber;
+             ALTER TABLE index_meta DROP COLUMN auto_rebuild_marker;
+             UPDATE schema_migrations SET version = 14;
+             PRAGMA user_version = 14;",
+        )
+        .unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 14);
+        assert!(
+            conn.query_row("SELECT auto_rebuild_marker FROM index_meta", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .is_err(),
+            "先确认 v14 库里真的没有这一列"
+        );
+    }
+
+    let migrated = Core::open(&path).unwrap();
+    assert_eq!(
+        migrated.schema_version().unwrap(),
+        diary_core::SCHEMA_VERSION,
+        "v14 → v15"
+    );
+    // 旧数据一行不丢：向量数与生效代次的口径都还在。
+    let status = migrated.index_status(None).unwrap();
+    assert_eq!(status.total_chunks, 2);
+    assert_eq!(status.embedded_chunks, 2);
+    assert_eq!(
+        status.model_version.as_deref(),
+        Some("stub-embedder@000000000000"),
+        "向量行原样保留"
+    );
+    assert_eq!(
+        open(&path)
+            .query_row("SELECT COUNT(*) FROM chunk_vectors", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        vectors_before
+    );
+    {
+        let conn = open(&path);
+        // 新列默认 NULL（不回填），而且可写。
+        let marker: Option<String> = conn
+            .query_row(
+                "SELECT auto_rebuild_marker FROM index_meta WHERE id = 1",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap();
+        assert!(marker.is_none(), "迁移不回填自动尝试标记");
+        conn.execute(
+            "UPDATE index_meta SET auto_rebuild_marker = '1:probe' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        // 覆盖索引建出来，而且口径核对真的用它。
+        let plan: Vec<String> = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT DISTINCT model_version, dims, storage \
+                 FROM chunk_vectors WHERE generation = 1",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.join(" | ").contains("COVERING INDEX idx_chunk_vectors_caliber"),
+            "v15 的覆盖索引要真的被用上：{plan:?}"
+        );
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 15",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, 1, "schema_migrations 记下 15");
+    }
+    drop(migrated);
+
+    // 幂等：再 open 不重复建、不报错、也不把标记重置。
+    let again = Core::open(&path).unwrap();
+    assert_eq!(again.schema_version().unwrap(), 15);
+    assert_eq!(
+        open(&path)
+            .query_row("SELECT COUNT(*) FROM chunk_vectors", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        vectors_before,
+        "重复迁移不动向量"
+    );
+    let marker: Option<String> = open(&path)
+        .query_row(
+            "SELECT auto_rebuild_marker FROM index_meta WHERE id = 1",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap();
+    assert_eq!(marker.as_deref(), Some("1:probe"), "重复 open 不重置标记");
+}
+
+/// 评审 #133 第 1 条（真隐患）：v15 的「列」与「索引」必须各有一个守卫。
+///
+/// 造一个「`auto_rebuild_marker` 已在、`idx_chunk_vectors_caliber` 被手工删掉」的
+/// v15 库——手工删索引、或将来单独补索引的库都长这样。旧实现是
+/// `current < 15 && !column_exists(...)` 一个守卫包住整段：列已在 ⇒ 整段跳过，
+/// 索引永远补不回来。修完后每次 `open` 都做一次 `sqlite_master` 轻量检查，
+/// 索引缺就建（幂等；`current` 是 15 也一样）。
+#[test]
+fn a_v15_library_with_a_dropped_caliber_index_recreates_it_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    drop(core);
+
+    {
+        let conn = open(&path);
+        // 前提：库已经是 v15 且列在，只把索引删掉。
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 15, "前提：库已经是 v15");
+        let column_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('index_meta') \
+                 WHERE name = 'auto_rebuild_marker'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(column_count, 1, "前提：v15 的列已经在");
+        conn.execute_batch("DROP INDEX idx_chunk_vectors_caliber;")
+            .unwrap();
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' \
+                 AND name = 'idx_chunk_vectors_caliber'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 0, "前提：索引已被删掉");
+    }
+
+    // 旧实现：`migrate` 在 `current == SCHEMA_VERSION` 时直接返回，索引仍然缺。
+    let opened = Core::open(&path).unwrap();
+    assert_eq!(opened.schema_version().unwrap(), 15);
+
+    let conn = open(&path);
+    // 1) `PRAGMA index_list` 真的能查到这条索引。
+    let indexes: Vec<String> = conn
+        .prepare("PRAGMA index_list(chunk_vectors)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        indexes.iter().any(|name| name == "idx_chunk_vectors_caliber"),
+        "open 要把缺失的覆盖索引补回来：{indexes:?}"
+    );
+    // 2) 补回来的索引不是摆设：整代口径核对真的用它。
+    let plan: Vec<String> = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT DISTINCT model_version, dims, storage \
+             FROM chunk_vectors WHERE generation = 1",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        plan.join(" | ")
+            .contains("COVERING INDEX idx_chunk_vectors_caliber"),
+        "补回来的覆盖索引要被查询计划用上：{plan:?}"
+    );
+}
+
+/// 评审 #133 第 2 条：`index_bytes` 是**白名单求和**，v15 的覆盖索引必须列进去。
+///
+/// 不去断言 SQL 文本（改个空格就红），让数字自己说话：建好向量后记一次；把覆盖
+/// 索引删掉再记一次——白名单没包含它时两次相等（这条测试会红），包含时差值就是
+/// 索引占的页。
+#[test]
+fn index_bytes_counts_the_v15_caliber_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    let with_index = core.index_status(None).unwrap().index_bytes;
+    assert!(with_index > 0, "前提：索引占用读得到");
+
+    // 原始连接删索引。白名单没列 `idx_chunk_vectors_caliber` 时，这个数不会变小。
+    open(&path)
+        .execute_batch("DROP INDEX idx_chunk_vectors_caliber;")
+        .unwrap();
+    let without_index = core.index_status(None).unwrap().index_bytes;
+    assert!(
+        without_index < with_index,
+        "index_bytes 必须包含覆盖索引的页：有索引 {with_index}，删掉后 {without_index}"
+    );
+}
+
+/// 统计库里 `semantic_index` 任务数（自动排队回归用）。
+fn semantic_job_count(path: &Path) -> i64 {
+    open(path)
+        .query_row(
+            "SELECT COUNT(*) FROM jobs WHERE kind = 'semantic_index'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// 把所有还活着的 `semantic_index` 任务置成 `failed`（模拟重建反复失败）。
+fn fail_all_semantic_jobs(path: &Path) {
+    open(path)
+        .execute_batch(
+            "UPDATE jobs SET state = 'failed', error_code = 'io' \
+             WHERE kind = 'semantic_index' AND state NOT IN ('succeeded','failed','cancelled');",
+        )
+        .unwrap();
+}
+
+fn semantic_job_kind_state(path: &Path) -> (String, String) {
+    open(path)
+        .query_row(
+            "SELECT kind, state FROM jobs WHERE kind = 'semantic_index' LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+}
+
+/// 换存储格式 = 换口径：必须**整代重算**，不能把 f32 向量原地当 int8 用。
+///
+/// 默认已是 int8；为了让「换」这个动作真的存在，这里先把旧代次**显式**建成 f32，
+/// 再切到 int8。三件事都钉住：
+/// 1. 只改 `storage`、还没重建时，语义这一路**不作数**（跨编码的余弦是垃圾）；
+/// 2. 重建是一次整代重算（`reused_chunks == 0`，代次 +1）；
+/// 3. 新代次里每一行都是 `int8`、字节数是 `4 + dims`，检索照常出结果。
+#[test]
+fn switching_the_storage_format_forces_a_full_recompute() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    // 旧代次显式用 f32（不靠默认值：默认已改成 int8）。
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+
+    let first = core.build_semantic_index(None).unwrap();
+    assert_eq!(first.generation, 1);
+    let conn = open(&path);
+    let storages: Vec<String> = conn
+        .prepare("SELECT DISTINCT storage FROM chunk_vectors WHERE generation = 1")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(storages, vec!["f32".to_owned()], "前提：旧代次显式用 f32");
+    drop(conn);
+
+    // 换格式，但**先不重建**：口径已经不一致，语义这一路必须整路不作数。
+    core.set_vector_storage_for_test(VectorStorage::Int8);
+    let snapshot = search_mode(&mut core, "妈妈", SearchMode::Semantic, 10);
+    assert!(
+        snapshot.results.is_empty(),
+        "跨编码的余弦不作数，不能返回「看起来正常」的结果：{:?}",
+        snapshot.results
+    );
+    assert!(
+        snapshot.warnings.iter().any(|warning| warning.contains("口径")),
+        "要说清是口径不一致（而不是「没有相近内容」）：{:?}",
+        snapshot.warnings
+    );
+
+    // 重建：整代重算，不复制 f32 向量。
+    let rebuilt = core.build_semantic_index(None).unwrap();
+    assert_eq!(rebuilt.generation, 2, "换口径必须开新代次");
+    assert_eq!(
+        rebuilt.reused_chunks, 0,
+        "f32 向量一条都不能复用进 int8 代次（复用就等于混编码）"
+    );
+    assert_eq!(rebuilt.embedded_chunks, rebuilt.total_chunks, "两块都按 int8 重算");
+
+    let conn = open(&path);
+    let storages: Vec<String> = conn
+        .prepare("SELECT DISTINCT storage FROM chunk_vectors WHERE generation = 2")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(storages, vec!["int8".to_owned()], "生效代次里只能有一种编码");
+    let bad_lengths: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2 \
+             AND LENGTH(vector) <> 4 + dims",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bad_lengths, 0, "int8 行必须是 4 字节 scale + dims 字节");
+    drop(conn);
+
+    // 重建之后检索照常：两块都是哈希向量，查询「妈妈」应当至少命中一块。
+    let snapshot = search_mode(&mut core, "妈妈", SearchMode::Semantic, 10);
+    assert_eq!(snapshot.results.len(), 2, "纯语义是 kNN，两块都会被列出来");
+    assert!(
+        snapshot.warnings.iter().all(|warning| !warning.contains("口径")),
+        "重建后没有口径问题：{:?}",
+        snapshot.warnings
+    );
+}
+
+/// 新库的默认向量存储是 **int8**（#90 的拍板决定）。
+///
+/// 不设任何测试开关，走产品默认路径建一代：状态里报的是 int8、每一行都是 `int8`
+/// （4 字节 scale + dims 字节），检索照常。换默认之后若有哪条路又回退到 f32，这里会红。
+#[test]
+fn a_new_library_builds_int8_vectors_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    assert_eq!(
+        core.vector_storage(),
+        VectorStorage::Int8,
+        "新库默认必须是 int8（DEFAULT_VECTOR_STORAGE）"
+    );
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+
+    let report = core.build_semantic_index(None).unwrap();
+    assert_eq!(report.embedded_chunks, 1, "前提：真按默认路径写了一块");
+
+    let conn = open(&path);
+    let storages: Vec<String> = conn
+        .prepare("SELECT DISTINCT storage FROM chunk_vectors")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(storages, vec!["int8".to_owned()], "默认建出来的只能是 int8");
+    let bad_lengths: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM chunk_vectors WHERE LENGTH(vector) <> 4 + dims",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bad_lengths, 0, "int8 行必须是 4 字节 scale + dims 字节");
+    drop(conn);
+
+    let snapshot = search_mode(&mut core, "妈妈", SearchMode::Semantic, 10);
+    assert_eq!(snapshot.results.len(), 1, "int8 默认路径检索照常");
+    assert!(
+        snapshot.warnings.iter().all(|warning| !warning.contains("口径")),
+        "没有口径问题：{:?}",
+        snapshot.warnings
+    );
+}
+
+/// 流式扫描与「全量载入」参考路径必须**逐字节一致**（篇标识、顺序、分数位）。
+///
+/// 参考路径是这一片改掉的那条老路（先 `collect` 整代向量到堆里），只在测试里保留；
+/// 两条路径共用同一段解码、校验、排序与折叠，差别只有「什么时候把向量丢掉」。
+#[test]
+fn streaming_scan_matches_the_load_all_reference() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![("妈妈", unit(0)), ("桂花", unit(1)), ("加班", unit(2))],
+    ));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    write_capture(&mut core, at(2026, 9, 22), "今天又要加班。", "opC");
+    write_capture(&mut core, at(2026, 9, 23), "普通的一天。", "opD");
+    core.build_semantic_index(None).unwrap();
+
+    for query in ["妈妈", "桂花", "加班", "普通", "今天"] {
+        let streaming = core
+            .semantic_ranking(query, &SearchFilters::default())
+            .unwrap();
+        let load_all = core
+            .semantic_ranking_load_all_for_test(query, &SearchFilters::default())
+            .unwrap();
+        assert_eq!(
+            streaming.len(),
+            load_all.len(),
+            "「{query}」：两条路径的候选数必须一样"
+        );
+        for (left, right) in streaming.iter().zip(&load_all) {
+            assert_eq!(left.0, right.0, "「{query}」：篇标识与顺序必须逐字节一致");
+            assert_eq!(
+                left.1.to_bits(),
+                right.1.to_bits(),
+                "「{query}」：分数必须逐位一致（{} vs {}）",
+                left.1,
+                right.1
+            );
+        }
+    }
+}
+
+/// 快速路径的**回退红线**：top-K 里有被回收的块时，不能只交回「剩下的几条」——
+/// 那可能漏掉排在它后面的有效候选。这里两篇同分、其一被回收，断言流式路径（快速
+/// 路径发现过滤掉一条 ⇒ 整条回退到精确 SQL）与全量参考路径给出同一批结果。
+#[test]
+fn fast_scan_falls_back_when_a_top_candidate_is_filtered_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![("妈妈", unit(0)), ("桂花", unit(0))],
+    ));
+    let trashed = write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    let kept = write_capture(&mut core, at(2026, 9, 21), "桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    // 回收 A：它仍在生效代次的 top-K 里（两张同分），后置过滤会把它去掉。
+    let conn = open(&dir.path().join("library.sqlite"));
+    conn.execute(
+        "UPDATE captures SET state = 'trashed' WHERE id = ?1",
+        params![trashed],
+    )
+    .unwrap();
+    drop(conn);
+
+    for (filters, expected) in [
+        (SearchFilters::default(), vec![kept.clone()]),
+        (
+            SearchFilters {
+                include_trashed: true,
+                ..Default::default()
+            },
+            vec![kept.clone(), trashed.clone()],
+        ),
+    ] {
+        let streaming = core.semantic_ranking("妈妈", &filters).unwrap();
+        let exhaustive = core
+            .semantic_ranking_load_all_for_test("妈妈", &filters)
+            .unwrap();
+        assert_eq!(
+            streaming.len(),
+            exhaustive.len(),
+            "快速路径与精确路径的候选数必须一样：{streaming:?} vs {exhaustive:?}"
+        );
+        for (left, right) in streaming.iter().zip(&exhaustive) {
+            assert_eq!(left.0, right.0, "篇标识与顺序必须一致");
+            assert_eq!(left.1.to_bits(), right.1.to_bits(), "分数必须逐位一致");
+        }
+        let ids: Vec<&str> = streaming.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, expected, "过滤口径必须与精确路径一致");
+    }
+}
+
+/// int8 检索的结果与 f32 **同一批篇、同一顺序**（量化误差没有改变这一组用例的排序）。
+///
+/// 这不是「所有语料上召回不变」的证明——那件事由探针的 36 条质量集与 2000 块语料
+/// 量（`large-bench recall-quality` / `recall-large`）。这里只钉住结构性行为：
+/// int8 写入/解码/检索这条链路能跑通，且没有把结果变成另一批篇。
+#[test]
+fn int8_search_finds_the_same_pieces_as_f32() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![("妈妈", unit(0)), ("桂花", unit(1)), ("加班", unit(2))],
+    ));
+    // 第一代显式用 f32：默认已改成 int8，不写这一行的话两次都是 int8，
+    // 这条测试就会退化成「int8 与 int8 相同」，什么都没验到。
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    write_capture(&mut core, at(2026, 9, 22), "今天又要加班。", "opC");
+
+    core.build_semantic_index(None).unwrap();
+    let f32_ranking = core
+        .semantic_ranking("妈妈", &SearchFilters::default())
+        .unwrap();
+
+    core.set_vector_storage_for_test(VectorStorage::Int8);
+    core.build_semantic_index(None).unwrap();
+    let int8_ranking = core
+        .semantic_ranking("妈妈", &SearchFilters::default())
+        .unwrap();
+
+    assert_eq!(
+        f32_ranking
+            .iter()
+            .map(|(group, _)| group.clone())
+            .collect::<Vec<_>>(),
+        int8_ranking
+            .iter()
+            .map(|(group, _)| group.clone())
+            .collect::<Vec<_>>(),
+        "这一组用例上 int8 的排序应当与 f32 相同"
+    );
+}
+
+/// 与 `long_piece_with_insomnia` 同一个形状，只把段标识换成 `tag`：用来造**两份等长、
+/// 内容不同**的长文。两份都被同一条切块规则切成两块，四块都含「失眠」。
+fn long_piece_with_tag(tag: &str) -> String {
+    let mut text = String::new();
+    for index in 0..24 {
+        if index == 12 {
+            text.push_str(&format!(
+                "第12段 {tag}：这一段说的是连续几天失眠，凌晨两点还醒着。\n"
+            ));
+        } else {
+            text.push_str(&format!(
+                "第{index}段 {tag}：今天天气不错，路上人很多，顺便买了点水果回家。\n"
+            ));
+        }
+    }
+    text
+}
+
+/// issue #57 的第二半（旧修复只挡到「同一篇的两块」）：**不同篇**的两段也可能拥有
+/// 完全相同的（分数、日期、篇内起点 / 终点、段序号）。这时若落到 `chunk_id`，
+/// 又会回到「每个库不一样」的老问题——两条候选正文不同，摘录会真的换人。
+///
+/// 构造：同一天导入两份等长、不同内容的长文 A/B，四块都含查询词，桩把所有含查询词
+/// 的块映射成同一个单位向量 ⇒ 四块分数都是 1.0。A、B 的第一段都是
+/// `(2026-09-20, start=0, end=390, ordinal=0, score=1.0)`，前五道键完全相同；旧逻辑
+/// 只能用 `chunk_id`（每库随机 UUID）决定先后。
+///
+/// 断言的是**整份结果顺序**（摘录 + 定位区间）在 16 份独立库之间逐条相同。
+/// 旧逻辑下每份库都是一次独立抛硬币，16 轮全对的概率约 2^-15；这里**验证过**
+/// 去掉 `content_key` 这道键会红。
+#[test]
+fn equal_score_across_pieces_is_ordered_by_content_across_libraries() {
+    const ROUNDS: usize = 16;
+    type Evidence = (Option<String>, Option<i64>, Option<i64>);
+    let mut evidence: Vec<Vec<Evidence>> = Vec::new();
+
+    for round in 0..ROUNDS {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+        let mut core = new_core(dir.path());
+        let counters = Arc::new(Counters::default());
+        core.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+
+        let capture_a = write_capture(&mut core, at(2026, 9, 20), "", "op");
+        import_and_extract(
+            &mut core,
+            &capture_a,
+            "长文A.txt",
+            &long_piece_with_tag("A"),
+            &format!("matA{round}"),
+        );
+        let capture_b = write_capture(&mut core, at(2026, 9, 20), "", "op2");
+        import_and_extract(
+            &mut core,
+            &capture_b,
+            "长文B.txt",
+            &long_piece_with_tag("B"),
+            &format!("matB{round}"),
+        );
+
+        let built = core.build_semantic_index(None).unwrap();
+        assert_eq!(
+            built.total_chunks, 4,
+            "前提（第 {round} 轮）：两份等长长文各切成两块"
+        );
+
+        // 前提：四块都含「失眠」，桩给它们同一个单位向量，分数才会完全相同。
+        let conn = open(&path);
+        let with_word = count(
+            &conn,
+            "SELECT COUNT(*) FROM text_chunks WHERE text LIKE '%失眠%'",
+            "text_chunks",
+        );
+        assert_eq!(
+            with_word, 4,
+            "前提（第 {round} 轮）：四块都含「失眠」，分数才会完全相同"
+        );
+        // 前提：A、B 的第一段拥有完全相同的篇内区间；两篇各两块，区间分布是 2+2。
+        let span_groups: Vec<(i64, i64, i64)> = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT start_char, end_char, COUNT(*) FROM chunk_spans \
+                     GROUP BY start_char, end_char ORDER BY start_char",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(
+            span_groups,
+            vec![(0, 390, 2), (343, 731, 2)],
+            "前提（第 {round} 轮）：不同篇的两块区间完全重合，才谈得上「同分谁当证据」"
+        );
+        drop(conn);
+
+        let snapshot = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+        assert_eq!(
+            snapshot.results.len(),
+            2,
+            "前提（第 {round} 轮）：两份长文各折叠成一条命中"
+        );
+        evidence.push(
+            snapshot
+                .results
+                .iter()
+                .map(|hit| {
+                    (
+                        hit.snippet.clone(),
+                        hit.locator.as_ref().and_then(|locator| locator.text_start),
+                        hit.locator.as_ref().and_then(|locator| locator.text_end),
+                    )
+                })
+                .collect(),
+        );
+    }
+
+    for (round, entry) in evidence.iter().enumerate() {
+        assert_eq!(
+            entry, &evidence[0],
+            "第 {round} 份库的结果顺序与第 0 份不同：{:?} vs {:?}\
+             （不同篇的两段同分时，必须由内容键（content_key）决胜，不能落到每库随机的 chunk_id）",
+            entry, evidence[0]
+        );
+    }
+}
+
+/// 同一个库、同一个查询、两个独立的 `Core` 连接：结果必须**逐字节**相同。
+///
+/// 这是「同一查询跑两次」的最直接形态；跨到**另一个进程**再跑一次的那一条在
+/// `same_library_cross_process_is_byte_identical` 里。
+#[test]
+fn same_library_two_cores_agree_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+
+    {
+        let mut build = Core::open(&path).unwrap();
+        let counters = Arc::new(Counters::default());
+        build.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+        let capture = write_capture(&mut build, at(2026, 9, 20), "", "op");
+        import_and_extract(
+            &mut build,
+            &capture,
+            "长文A.txt",
+            &long_piece_with_tag("A"),
+            "matA",
+        );
+        let capture = write_capture(&mut build, at(2026, 9, 20), "", "op2");
+        import_and_extract(
+            &mut build,
+            &capture,
+            "长文B.txt",
+            &long_piece_with_tag("B"),
+            "matB",
+        );
+        build.build_semantic_index(None).unwrap();
+    }
+
+    let query = |core: &mut Core| -> (Vec<u8>, Vec<(String, u32)>) {
+        let counters = Arc::new(Counters::default());
+        core.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+        let snapshot = search_mode(core, "失眠", SearchMode::Semantic, 20);
+        let ranking = core
+            .semantic_ranking("失眠", &SearchFilters::default())
+            .unwrap()
+            .into_iter()
+            .map(|(group, score)| (group, score.to_bits()))
+            .collect();
+        (serde_json::to_vec(&snapshot.results).unwrap(), ranking)
+    };
+
+    let mut first = Core::open(&path).unwrap();
+    let mut second = Core::open(&path).unwrap();
+    let (first_bytes, first_ranking) = query(&mut first);
+    let (second_bytes, second_ranking) = query(&mut second);
+    assert_eq!(
+        first_bytes, second_bytes,
+        "两个独立 Core 对同一库、同一查询必须给出逐字节相同的结果"
+    );
+    assert_eq!(
+        first_ranking, second_ranking,
+        "分数的 f32 位模式也必须逐位相同（不是「差不多」）"
+    );
+}
+
+/// 跨进程：父进程建好库，再用**同一测试二进制**起一个子进程查一次；两边的
+/// （顺序 + 摘录 + 定位 + `semantic_ranking` 的 f32 位）必须逐字节相同。
+///
+/// 子进程与父进程的 `HashMap` 随机种子不同，所以如果有人误把排序/折叠建立在
+/// 容器迭代顺序上，这条会红。子进程模式靠环境变量区分；正常跑测试时它什么都不做。
+#[test]
+fn same_library_cross_process_is_byte_identical() {
+    const DB_ENV: &str = "DIARY57_CROSS_PROCESS_DB";
+
+    let query_json = |core: &mut Core| -> String {
+        let counters = Arc::new(Counters::default());
+        core.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+        let snapshot = search_mode(core, "失眠", SearchMode::Semantic, 20);
+        let ranking: Vec<(String, u32)> = core
+            .semantic_ranking("失眠", &SearchFilters::default())
+            .unwrap()
+            .into_iter()
+            .map(|(group, score)| (group, score.to_bits()))
+            .collect();
+        serde_json::to_string(&(snapshot.results, ranking)).unwrap()
+    };
+
+    if let Some(path) = std::env::var_os(DB_ENV) {
+        let mut core = Core::open(Path::new(&path)).unwrap();
+        println!("ZZ57_CHILD={}", query_json(&mut core));
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    {
+        let mut build = Core::open(&path).unwrap();
+        let counters = Arc::new(Counters::default());
+        build.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+        let capture = write_capture(&mut build, at(2026, 9, 20), "", "op");
+        import_and_extract(
+            &mut build,
+            &capture,
+            "长文A.txt",
+            &long_piece_with_tag("A"),
+            "matA",
+        );
+        let capture = write_capture(&mut build, at(2026, 9, 20), "", "op2");
+        import_and_extract(
+            &mut build,
+            &capture,
+            "长文B.txt",
+            &long_piece_with_tag("B"),
+            "matB",
+        );
+        build.build_semantic_index(None).unwrap();
+    }
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "same_library_cross_process_is_byte_identical",
+            "--nocapture",
+        ])
+        .env(DB_ENV, &path)
+        .output()
+        .expect("起子进程失败");
+    assert!(
+        output.status.success(),
+        "子进程失败：{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let child = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("ZZ57_CHILD="))
+        .unwrap_or_else(|| {
+            panic!("子进程没有输出 ZZ57_CHILD 行；stdout = {stdout:?}");
+        });
+
+    let mut parent = Core::open(&path).unwrap();
+    let parent_json = query_json(&mut parent);
+    assert_eq!(
+        child, parent_json,
+        "同一库、同一查询在另一个进程里必须给出逐字节相同的结果"
     );
 }

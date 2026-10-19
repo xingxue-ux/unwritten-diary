@@ -200,6 +200,29 @@ pub enum CoreError {
     #[error("备份包与当前版本不兼容：{reason}")]
     IncompatibleBackup { reason: String },
 
+    // ------------------------------------------------------------ 插件（#88，B6）
+    //
+    // 插件错误**不新增契约第 7 节的 wire 码**：清单/包错误落到 `invalid_argument` /
+    // `integrity_failed`，越权落到 `permission_denied`，超预算落到 `quota_exceeded`，
+    // 运行失败落到 `invalid_state`。分开变体只是为了让用户看到具体原因。
+    #[error("插件清单不合法：{reason}")]
+    PluginManifestInvalid { reason: String },
+
+    #[error("插件包不可用：{reason}")]
+    PluginPackageInvalid { reason: String },
+
+    #[error("插件与当前版本不兼容：{reason}")]
+    PluginIncompatible { reason: String },
+
+    #[error("插件没有权限：{reason}")]
+    PluginPermissionDenied { reason: String },
+
+    #[error("插件运行超出预算：{reason}")]
+    PluginBudgetExceeded { reason: String },
+
+    #[error("插件运行失败：{reason}")]
+    PluginFailed { reason: String },
+
     #[error("文件操作失败：{0}")]
     Io(#[from] std::io::Error),
 
@@ -242,6 +265,13 @@ impl CoreError {
             Self::ModelUnavailable { .. } => ErrorCode::ModelUnavailable,
             Self::CorruptedBackup { .. } => ErrorCode::CorruptedBackup,
             Self::IncompatibleBackup { .. } => ErrorCode::IncompatibleBackup,
+            Self::PluginManifestInvalid { .. } | Self::PluginIncompatible { .. } => {
+                ErrorCode::InvalidArgument
+            }
+            Self::PluginPackageInvalid { .. } => ErrorCode::IntegrityFailed,
+            Self::PluginPermissionDenied { .. } => ErrorCode::PermissionDenied,
+            Self::PluginBudgetExceeded { .. } => ErrorCode::QuotaExceeded,
+            Self::PluginFailed { .. } => ErrorCode::InvalidState,
             Self::Io(err) => io_code(err),
             Self::CorruptedData { .. } | Self::Serialization(_) => ErrorCode::InvalidState,
             Self::Database(err) => database_code(err),

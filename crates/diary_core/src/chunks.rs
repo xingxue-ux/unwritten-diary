@@ -64,9 +64,13 @@ struct PieceRow {
 }
 
 /// 库里块的计数。`total` 是范围内的块数，`embedded` 是其中有生效代次向量的块数。
+///
+/// `fast` 记录这次计数有没有走快路径（没有无 span 的块、没有过期 span）。量测要
+/// 如实报告「混合状态下有多少查询退回了精确计数」，所以把路径本身报出来。
 pub(crate) struct ChunkCounts {
     pub total: i64,
     pub embedded: i64,
+    pub fast: bool,
 }
 
 /// 一篇来源篇的查询结果（`collect_pieces` 内部用）。
@@ -303,25 +307,44 @@ fn chunk_id_of(day_key: &str, chunk: &crate::chunker::Chunk) -> String {
 
 /// 删掉「这次重建之后已经不存在」的块（连同它们的 span 与向量）。
 ///
-/// `keep` 为空表示这一天（或整库）不该有任何块，全部删掉。绑定顺序与 SQL 里的
-/// 占位符一致：先 scope（`day_condition` 里那一个子查询），再 `keep` 列表。
+/// `keep` 为空表示这一天（或整库）不该有任何块，全部删掉。
+///
+/// **不能把 `keep` 直接拼成 `NOT IN (?, ?, ...)`**：SQLite 一条语句的变量数有上限
+/// （默认 32766），10 万块的建库会在这里直接报 `too many SQL variables`。大库
+/// （issue #90）必须支持，所以 keep 列表先分批写进**临时表**，删除改成
+/// `NOT EXISTS` 相关子查询。分批写临时表也顺带避免了「一条语句几百 KB」的 SQL 文本。
 fn delete_stale_chunks(
     tx: &rusqlite::Transaction<'_>,
     day_condition: &str,
     scope_values: &[String],
     keep: &[String],
 ) -> Result<()> {
-    let sql = if keep.is_empty() {
-        format!("DELETE FROM text_chunks WHERE {day_condition}")
-    } else {
-        format!(
-            "DELETE FROM text_chunks WHERE {day_condition} AND chunk_id NOT IN ({})",
-            placeholders(keep.len())
-        )
-    };
-    let mut values: Vec<&str> = scope_values.iter().map(String::as_str).collect();
-    values.extend(keep.iter().map(String::as_str));
-    tx.execute(&sql, params_from_iter(values))?;
+    if keep.is_empty() {
+        let sql = format!("DELETE FROM text_chunks WHERE {day_condition}");
+        tx.execute(&sql, params_from_iter(scope_values.iter()))?;
+        return Ok(());
+    }
+
+    tx.execute_batch(
+        "DROP TABLE IF EXISTS temp.chunk_rebuild_keep; \
+         CREATE TEMP TABLE chunk_rebuild_keep (chunk_id TEXT PRIMARY KEY);",
+    )?;
+    {
+        let mut insert =
+            tx.prepare("INSERT OR IGNORE INTO chunk_rebuild_keep (chunk_id) VALUES (?1)")?;
+        for chunk_id in keep {
+            insert.execute(params![chunk_id])?;
+        }
+    }
+    // 相关子查询走临时表的主键索引，代价与块数线性；不占语句变量。
+    tx.execute(
+        &format!(
+            "DELETE FROM text_chunks WHERE {day_condition} AND NOT EXISTS \
+             (SELECT 1 FROM chunk_rebuild_keep keep WHERE keep.chunk_id = text_chunks.chunk_id)"
+        ),
+        params_from_iter(scope_values.iter()),
+    )?;
+    tx.execute_batch("DROP TABLE temp.chunk_rebuild_keep;")?;
     Ok(())
 }
 
@@ -590,6 +613,16 @@ fn coverage_rank(coverage: Coverage) -> u8 {
 /// 空白范围是「什么都不看」。块只要有一段来自范围里的记录，就算范围里的块——块可能
 /// 混着范围外的篇，但它的内容确实属于这个范围。
 pub(crate) fn counts(core: &Core, source_scope: Option<&[String]>) -> Result<ChunkCounts> {
+    // **快路径（#90）**：没有 `source_scope`、且库里没有「没有 span 的块」「过期 span」
+    // 这两个异常时，两个计数退化成三条 O(1)~O(n) 的简单查询，不必让每条语义查询都跑
+    // 两遍「逐块相关子查询」的全表扫描。10 万块上后者是 ~480 ms/查询（占总延迟三成），
+    // 而快路径 ~45 ms。异常时仍走下面的精确 SQL：宁可慢，也不把「其实用不上的块」
+    // 算成已嵌入。
+    if source_scope.is_none() {
+        if let Some(counts) = counts_fast_checked(core)? {
+            return Ok(counts);
+        }
+    }
     let scope_values: Vec<String> = source_scope.map(<[String]>::to_vec).unwrap_or_default();
     // 范围判断只需要「这一段所属的记录拥有范围内的来源」，与关键词那一路同一套语义。
     let scope_filter = match source_scope {
@@ -638,5 +671,153 @@ pub(crate) fn counts(core: &Core, source_scope: Option<&[String]>) -> Result<Chu
                 .query_row(&sql, params_from_iter(values), |row| row.get(0))?
         }
     };
-    Ok(ChunkCounts { total, embedded })
+    Ok(ChunkCounts {
+        total,
+        embedded,
+        fast: false,
+    })
+}
+
+/// `counts` 的快路径：先花三条小查询确认「全库没有异常块」，再直接数表。
+///
+/// 返回 `None` 表示库里存在需要逐块判断的异常（没有 span 的块，或某个非记录文字的
+/// span 记的修订已经不是当前修订），调用方必须走精确 SQL。
+fn counts_fast_checked(core: &Core) -> Result<Option<ChunkCounts>> {
+    // 一次拿两个数：块总数、有 span 的不同块数。两者相等 ⇔ 没有「没有 span 的块」。
+    // 用 `COUNT(DISTINCT chunk_id)`（走 `chunk_spans` 主键索引，10 万块 ~9 ms）而不是
+    // 逐块 `NOT EXISTS`（~30 ms）——后者是这条快路径上最贵的一笔。
+    let (total, chunks_with_spans): (i64, i64) = core.conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM text_chunks), \
+                (SELECT COUNT(DISTINCT chunk_id) FROM chunk_spans)",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let without_spans = total - chunks_with_spans;
+    // 「过期 span」= 来源修订非空、但该来源的当前修订不是它。任何一条存在，
+    // 都可能让某个块整块不可用，必须回精确 SQL 逐块判断。
+    let stale_spans: i64 = core.conn.query_row(
+        "SELECT COUNT(*) FROM chunk_spans s WHERE s.source_revision_id <> '' \
+           AND NOT EXISTS (SELECT 1 FROM source_items si \
+                           WHERE si.source_id = s.source_id \
+                             AND si.current_revision_id = s.source_revision_id)",
+        [],
+        |row| row.get(0),
+    )?;
+    if without_spans != 0 || stale_spans != 0 {
+        return Ok(None);
+    }
+    let embedded = match generations(core)?.0 {
+        // 没有生效代次就是 0（与精确路径同一口径）。
+        None => 0,
+        Some(generation) => core.conn.query_row(
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = ?1",
+            params![generation],
+            |row| row.get(0),
+        )?,
+    };
+    Ok(Some(ChunkCounts {
+        total,
+        embedded,
+        fast: true,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 大库回归（#90）：10 万块重建时 `keep` 列表远超 SQLite 的变量数上限
+    /// （默认 32766），不能把它拼成 `NOT IN (?, ...)`。
+    ///
+    /// 这条测试故意用 4 万个 id（超过上限），退回「一条语句拼所有占位符」的实现
+    /// 会直接报 `too many SQL variables`。
+    #[test]
+    fn deleting_stale_chunks_handles_more_ids_than_the_sqlite_variable_limit() {
+        let mut core = crate::Core::open_in_memory().unwrap();
+        let tx = core.conn.transaction().unwrap();
+        {
+            let mut insert = tx
+                .prepare(
+                    "INSERT INTO text_chunks (chunk_id, ordinal, text, kind, coverage, day_key, \
+                     chunker_version, created_at) \
+                     VALUES (?1, 0, 'x', 'text', 'complete', '2026-10-18', ?2, \
+                             '2026-10-18T00:00:00.000Z')",
+                )
+                .unwrap();
+            for index in 0..40_000 {
+                insert
+                    .execute(params![format!("chunk_{index:05}"), CHUNKER_VERSION])
+                    .unwrap();
+            }
+        }
+        let keep: Vec<String> = (0..40_000).map(|index| format!("chunk_{index:05}")).collect();
+        delete_stale_chunks(&tx, "1 = 1", &[], &keep).unwrap();
+        let count = |tx: &rusqlite::Transaction<'_>| -> i64 {
+            tx.query_row("SELECT COUNT(*) FROM text_chunks", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(count(&tx), 40_000, "keep 里的块一块都不能删");
+
+        // 少一个 id：只有那一个块该消失。
+        let stale = keep[12_345].clone();
+        let mut shorter = keep.clone();
+        shorter.remove(12_345);
+        delete_stale_chunks(&tx, "1 = 1", &[], &shorter).unwrap();
+        assert_eq!(count(&tx), 39_999);
+        let gone: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM text_chunks WHERE chunk_id = ?1",
+                params![stale],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(gone, 0, "没在 keep 里的块必须删掉");
+        tx.commit().unwrap();
+    }
+
+    /// #90 快路径的**红线**：库里真的出现「没有 span 的块」时，两个计数必须退回精确
+    /// 口径——那块不算「可检索」，不能因为 `COUNT(*) FROM text_chunks` 快就把它算进去。
+    ///
+    /// 正常路径产不出这种块（`rebuild` 在一个事务里先写块、再写 span），所以这里直接
+    /// 写 SQL 造一个，专门钉住守卫本身。
+    #[test]
+    fn counts_fall_back_when_a_chunk_has_no_spans() {
+        let core = crate::Core::open_in_memory().unwrap();
+        core.conn
+            .execute(
+                "INSERT INTO captures (id, revision, state, occurred_at, created_at, updated_at, \
+                 time_zone, utc_offset_minutes, day_key, draft_text) \
+                 VALUES ('cap_a', 0, 'active', '2026-10-18T00:00:00.000Z', \
+                         '2026-10-18T00:00:00.000Z', '2026-10-18T00:00:00.000Z', \
+                         'Asia/Shanghai', 480, '2026-10-18', '正文')",
+                [],
+            )
+            .unwrap();
+        for chunk_id in ["chunk_with_span", "chunk_without_span"] {
+            core.conn
+                .execute(
+                    "INSERT INTO text_chunks (chunk_id, ordinal, text, kind, coverage, day_key, \
+                     chunker_version, created_at) \
+                     VALUES (?1, 0, 'x', 'text', 'complete', '2026-10-18', ?2, \
+                             '2026-10-18T00:00:00.000Z')",
+                    params![chunk_id, CHUNKER_VERSION],
+                )
+                .unwrap();
+        }
+        core.conn
+            .execute(
+                "INSERT INTO chunk_spans (chunk_id, ordinal, capture_id, source_id, \
+                 source_revision_id, start_char, end_char, kind, coverage) \
+                 VALUES ('chunk_with_span', 0, 'cap_a', 'cap_a', '', 0, 2, 'text', 'complete')",
+                [],
+            )
+            .unwrap();
+
+        let counts = counts(&core, None).unwrap();
+        assert_eq!(
+            counts.total, 1,
+            "没有 span 的块不可检索，不能计入 total（快路径必须回退到精确口径）"
+        );
+        assert_eq!(counts.embedded, 0);
+    }
 }

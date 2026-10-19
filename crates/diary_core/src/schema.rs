@@ -17,7 +17,24 @@ use rusqlite::{params, Connection};
 /// `user_version` 已经是 12、但没有 v11 的两张表；只跑过 B4e 分支的库是 11、没有
 /// `revision` 列。光靠 `current < 11` / `current < 12` 会漏掉前者，所以 v11 的守卫是
 /// 「版本号小于 11 **或**表不在」，v12 是「版本号小于 12 **或**列不在」。
-pub const SCHEMA_VERSION: i64 = 13;
+///
+/// 14 是 B6（插件 SDK 与宿主，#88）抬的号：只加 `plugin_installations` /
+/// `plugin_grants` 两张全新的表，**不回填**任何旧数据（升级前没有插件，也没有
+/// 「替用户装一个」这种默认）。
+///
+/// 15 是 #128 复审（B5f 大库）抬的号：给 `index_meta` 加一列
+/// `auto_rebuild_marker`（`open` 自动重建「同一口径最多自动尝试两次」的持久标记），
+/// 并给 `chunk_vectors` 加一条**整代口径覆盖索引**（让 `open` 的整代口径核对从
+/// 全表扫变成覆盖索引扫描）。两件都是**加性**的：标记默认 NULL（= 从未自动尝试），
+/// 索引由 SQLite 从既有行建出来；用户的资料一行都不动，也不回填任何业务数据。
+///
+/// 为什么标记必须占 schema 版本、而不是搭 `jobs` 的既有字段：那个「同一口径只试一次」
+/// 的标记要**跨重启、按库**存在，而 `jobs` 的业务键
+/// `(kind, target_ids, input_snapshot_hash)` 正是去重键——把标记塞进
+/// `input_snapshot_hash` 会让同一个库按口径碎成好几条「活着」的任务，正好破坏
+/// 「至多一条活着的整代重建」。v1–v14 也没有一张键值表可借用；`index_meta` 是
+/// 单行的索引元数据，这一列与它同一个主题，所以升版本、写迁移是诚实的代价。
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -30,6 +47,10 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         )));
     }
     if current == SCHEMA_VERSION {
+        // 版本已经最新：v15 的列不用动。但覆盖索引仍可能被手工删掉或单独补建失败
+        // ——`current` 是 15 并不能证明索引在。每次 open 只多一次 `sqlite_master`
+        // 查询，缺才建（#133 第 1 条，见 `ensure_v15_caliber_index`）。
+        ensure_v15_caliber_index(conn)?;
         return Ok(());
     }
 
@@ -114,12 +135,35 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 而没有行也就没有版本可切。
         tx.execute_batch(V12_BACKFILL)?;
     }
+    if current < 13 || !table_exists(&tx, "plugin_installations")? || !table_exists(&tx, "plugin_grants")? {
+        tx.execute_batch(V13)?;
+        // **不回填、不迁移任何旧数据**：v13 只加两张全新的插件表。升级前没有插件，
+        // 也就没有东西可搬；更不能在迁移里替用户预设一个插件或一条授权。迁移后
+        // `plugin_installations` 为空，和刚建的新库一样。
+    }
+    // v15 的**列**用「版本号 + 结构」双重守卫（与 v12 同一写法）：只靠版本号不够
+    // ——测试会把库手工退回旧版本再升上来，那些库的 `index_meta` 可能已经有这一列，
+    // 再 `ALTER TABLE` 会报重复列；只靠结构也不够（`current < 15` 才该动）。所以是
+    // `current < 15 && 列不在`。
+    //
+    // **索引不能并进这段守卫**：这段被跳过的条件（列已在）恰好是「手工删过索引」
+    // 或「单独补索引」的库满足的状态，包在一起会让索引永远补不回来（#133 第 1 条）。
+    // 索引由 `ensure_v15_caliber_index` 在每次 open 时独立、幂等地补。
+    if current < 15 && !column_exists(&tx, "index_meta", "auto_rebuild_marker")? {
+        tx.execute_batch(V15_COLUMN)?;
+        // **不回填标记**（NULL = 从未自动尝试）**、不用回填索引**（SQLite 从既有行建）。
+        // 没有「替用户记一次自动尝试」这种默认：升级后的第一次 `open` 仍会按当时的
+        // 口径如实判断该不该自动排一条。
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.execute(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
         params![SCHEMA_VERSION, crate::support::to_iso(crate::support::now())],
     )?;
-    tx.commit()
+    tx.commit()?;
+    // 与「版本已最新」分支同一份补齐逻辑：`current < 15` 但列已在的库也会走到这里。
+    ensure_v15_caliber_index(conn)?;
+    Ok(())
 }
 
 /// `sqlite_master` 里有没有这张表（迁移的结构性守卫用；`name` 都是代码里的常量）。
@@ -146,6 +190,36 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Resu
         }
     }
     Ok(false)
+}
+
+/// `sqlite_master` 里有没有这条索引（迁移的结构性守卫用）。
+///
+/// 用 `sqlite_master` 而不是 `PRAGMA index_list`：这里只需要按名字查一次，索引名是
+/// 代码里的常量，可以参数化，没有拼 SQL 的注入面。
+fn index_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+        params![name],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// 确保 v15 的整代口径覆盖索引 `idx_chunk_vectors_caliber` 存在。
+///
+/// **独立于版本号、也独立于 `auto_rebuild_marker` 列**：那个列的守卫是
+/// `current < 15 && 列不在`，而「列已在、索引不在」正是手工删过索引、或索引补建失败
+/// 会留下的状态——把索引包进同一个守卫就永远补不回来（#133 第 1 条）。
+///
+/// **不在 `current >= 15` 时重跑整个 v15 段**：`ALTER TABLE` 不能重复跑；每次 open
+/// 都发一次 DDL（哪怕 `IF NOT EXISTS`）也没必要。这里只做一次 `sqlite_master` 查询，
+/// 索引在就什么都不做。索引缺失时 `CREATE INDEX` 会从既有行建出来，大库升级后的
+/// 第一次 open 因此有一次性开销（未实测具体耗时，见 `docs/development/升级与迁移.md`）。
+fn ensure_v15_caliber_index(conn: &Connection) -> rusqlite::Result<()> {
+    if index_exists(conn, "idx_chunk_vectors_caliber")? {
+        return Ok(());
+    }
+    conn.execute_batch(V15_CALIBER_INDEX)
 }
 
 /// 把已有记录的文字补进 v6 的两张索引表。只在迁移里用一次。
@@ -515,8 +589,10 @@ CREATE TABLE search_capture_grams (
 ///   上报时，摘录要用该篇自己那一段，而不是整块拼接文本（整块里混着别的篇）。
 ///   不做 JSON 而是单独一张表：`sourceScope` 过滤要能走索引。
 /// - `chunk_vectors`：向量按**代次**分开存。换代时先写新代次，切过去之后再清理旧的，
-///   所以「正在构建的那一代」和「正在服务的这一代」可以同时存在。`storage` 现在只有
-///   `f32`，留着 `i8` 给后面的量化。
+///   所以「正在构建的那一代」和「正在服务的这一代」可以同时存在。`storage` 记这一行
+///   的编码格式，当前有 `f32` 与 `int8`（产品默认 int8，见
+///   `embedding::DEFAULT_VECTOR_STORAGE`）；解码按行上的 `storage` 选，不认识的格式
+///   如实报错，不猜。
 /// - `index_meta`：单行元数据。`active_generation` 是正在服务检索的代次，
 ///   `building_generation` 是正在算的那一代；两个都为 NULL 表示还没有任何一代向量。
 ///
@@ -784,4 +860,85 @@ const V12_BACKFILL: &str = r#"
 UPDATE diary_days SET revision = (
     SELECT COUNT(*) FROM diary_versions WHERE diary_versions.day_key = diary_days.day_key
 );
+"#;
+
+/// v13：插件安装缓存与授权（B6，#88）。
+///
+/// 为什么是两张**全新的表**而不是往现有表里塞列：
+/// - `plugin_installations` 是**缓存清单**。应用启动只读它（`manifest_json` /
+///   `templates_json` / `enabled` / 授权），**不读、不编译、不执行**插件入口文件——
+///   这是任务书 §8.2 的硬要求，也是「启动不执行插件」可验证的落点。
+///   `install_rel_path` 指向 `plugins/<id>/<version>-<hash8>`（相对资料库根目录）；
+///   内存库没有根目录，安装会明确报 `invalid_state`。
+///   `state_json` 是插件自己的私有状态（有 16 KiB 配额），`last_run_json` 是最近一次
+///   运行的审计摘要（有大小上限），两者都不参与「清单是否可信」的判断。
+/// - `plugin_grants` 是**用户显式授予**的权限，与清单声明分开存：清单说「我想读材料」
+///   不等于用户说「你可以」。更新插件时新增权限必须重新出现在 `grants` 里，否则安装
+///   被拒——不默默扩大权限。
+///
+/// 两张表都**没有回填**：升级前不存在插件，替用户猜一个装上去是错的。外键级联删除
+/// 只作用于授权行；卸载插件不会删除已经产生的日记或导出物（那是用户的资料）。
+const V13: &str = r#"
+CREATE TABLE IF NOT EXISTS plugin_installations (
+    id               TEXT PRIMARY KEY,
+    version          TEXT NOT NULL,
+    manifest_version INTEGER NOT NULL,
+    manifest_json    TEXT NOT NULL,
+    templates_json   TEXT NOT NULL DEFAULT '[]',
+    entry_kind       TEXT NOT NULL,
+    entry_file       TEXT NOT NULL,
+    package_hash     TEXT NOT NULL,
+    install_rel_path TEXT NOT NULL,
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    state_json       TEXT NOT NULL DEFAULT '{}',
+    last_run_at      TEXT,
+    last_run_json    TEXT,
+    last_error       TEXT,
+    installed_at     TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plugin_installations_enabled ON plugin_installations(enabled, installed_at, id);
+
+CREATE TABLE IF NOT EXISTS plugin_grants (
+    plugin_id  TEXT NOT NULL REFERENCES plugin_installations(id) ON DELETE CASCADE,
+    permission TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    PRIMARY KEY (plugin_id, permission)
+);
+"#;
+
+/// v15：#128 复审的两处加性改动。
+///
+/// 1. `index_meta.auto_rebuild_marker`：`open` 自动排队「同一口径最多自动尝试两次」的
+///    持久标记，编码为 `<次数>:<口径指纹>`（见 `semantic_index_job`）。为什么放
+///    `index_meta`：它是**单行的索引元数据**，与「这一代的自动重建尝试」同一个主题；
+///    而 `jobs` 的 `input_snapshot_hash` 是业务去重键的一部分，借它存标记会让同一个库
+///    按口径碎成多条「活着」的重建任务，正好破坏「至多一条活着的整代重建」。
+///    默认 NULL = 从未自动尝试；**不回填**。
+/// 2. `idx_chunk_vectors_caliber`：让 `SELECT DISTINCT model_version, dims, storage
+///    FROM chunk_vectors WHERE generation = ?` 变成**覆盖索引扫描**。`open` 的自动
+///    排队要在每次打开库时核对整代口径（storage / dims / 已知时的 model_version），
+///    没有这条索引时那是**整表扫描**——大库上会与「启动不做重活」冲突，也会污染
+///    迁移回放/探针里 open 的计时。索引列的顺序与 `active_caliber` 的
+///    `WHERE generation = ? ORDER BY model_version, dims, storage` 对齐，扫描即有序。
+///    这条索引顺带让 `COUNT(*) ... WHERE generation = ?` 也走覆盖索引。
+///
+/// 为什么加索引不会把语义检索的全代扫描拖慢：正常代次里口径只有一个，索引项在
+/// `(generation, model_version, dims, storage)` 之后按 rowid 排列，`SELECT ... WHERE
+/// generation = ?`（要读 `vector`）拿到的 rowid 仍是近似升序的，回表基本是顺序的；
+/// 混合代次（历史遗留）才可能乱序，而那种库本来就要整代重算。
+///
+/// 索引的补齐**不并进列的守卫**：`user_version` 是 15 不代表索引在，见
+/// `ensure_v15_caliber_index`（#133 第 1 条）。
+/// v15 的**列**：只由迁移事务里的「版本 + 结构」守卫决定跑不跑。索引与它分开——
+/// 见 `V15_CALIBER_INDEX` 与 `ensure_v15_caliber_index`。
+const V15_COLUMN: &str = "ALTER TABLE index_meta ADD COLUMN auto_rebuild_marker TEXT;";
+
+/// v15 的**覆盖索引**：由 `ensure_v15_caliber_index` 独立补齐，**不并进列的守卫**。
+///
+/// `IF NOT EXISTS` 只是兜底（补齐前已经查过 `sqlite_master`），真正的幂等来自
+/// 「索引在就什么也不做」；这样每次 open 只花一次查询，不重复发 DDL。
+const V15_CALIBER_INDEX: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_chunk_vectors_caliber
+    ON chunk_vectors(generation, model_version, dims, storage);
 "#;

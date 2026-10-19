@@ -264,6 +264,123 @@ fn a_killed_recording_comes_back_as_recoverable() {
     let _ = queued;
 }
 
+/// 录音**中途**崩溃、尾段还没封闭登记：恢复不能把「已收到」当成「已持久化」。
+///
+/// 场景与真机一致：2 秒一段、录到 3.5 秒时进程被杀。第 0 段（2,000 ms）登记成功，
+/// 第 1 段还开着（1.5 秒的 PCM 只在内存/未封闭文件里），采集器最后一次上报收到
+/// 3,500 ms。恢复必须：
+/// - `closed_segment_indexes` 只含已登记的第 0 段；
+/// - `persisted_ms` = 已登记片段之和（2,000），**不是** 3,500；
+/// - `received_ms` = 3,500，并在 notes 里如实写「有 1,500 ms 可能是未封闭的尾巴」；
+/// - 按已封闭序号 finalize 出来的音频时长 = 2,000 ms。
+#[test]
+fn a_crash_before_the_tail_is_registered_does_not_claim_it_is_persisted() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+
+    let recording_id = {
+        let mut core = Core::open(&db).unwrap();
+        let capture_id = draft(&mut core);
+        let ticket = core.prepare_recording(&capture_id, "op-rec").unwrap();
+        // 第 0 段：2 秒，已封闭并登记成功。
+        add_segment(&mut core, &ticket, 0, b"AAAA", 2000);
+        // 采集器在 3.5 秒时上报：收到 3500，已登记 2000（第 1 段还没封闭）。
+        core.update_recording_state(NativeRecordingStatus {
+            recording_id: ticket.recording_id.clone(),
+            state: RecordingState::Recording,
+            wall_clock: Utc::now(),
+            elapsed_ms: 3500,
+            persisted_through_ms: 2000,
+            input_device_changed: false,
+            message: None,
+        })
+        .unwrap();
+        // 进程在这里被杀掉：第 1 段的 1.5 秒 PCM 没来得及登记。
+        ticket.recording_id
+    };
+
+    let mut core = Core::open(&db).unwrap();
+    let recovery = core.recover_recording(None).unwrap();
+    assert_eq!(recovery.recording_id.as_deref(), Some(recording_id.as_str()));
+    assert_eq!(recovery.state, RecordingState::Recoverable);
+    assert_eq!(
+        recovery.closed_segment_indexes,
+        vec![0],
+        "只有登记成功的那一段算数"
+    );
+    assert_eq!(
+        recovery.persisted_ms, 2000,
+        "persisted 只能等于已登记片段之和，不能把收到的 3500 报成已持久化"
+    );
+    assert_eq!(recovery.received_ms, 3500, "received 是采集器上报的收到量");
+    assert_eq!(
+        recovery.received_ms - recovery.persisted_ms,
+        1500,
+        "两者之差就是可能丢失的尾巴"
+    );
+    assert!(
+        recovery
+            .notes
+            .iter()
+            .any(|note| note.contains("未封闭的尾巴") && note.contains("1500 ms")),
+        "必须如实说明可能丢掉的尾巴：{:?}",
+        recovery.notes
+    );
+
+    // 恢复出的音频时长 = 已登记片段之和（2 秒），不是收到的 3.5 秒。
+    let result = core
+        .finalize_recording(&recording_id, 0, "recovered")
+        .unwrap();
+    assert_eq!(result.state, RecordingState::Saved);
+    assert_eq!(result.segment_count, 1);
+    assert_eq!(result.logical_duration_ms, 2000);
+    let lease = core.open_asset(&result.asset_id, "play").unwrap();
+    assert_eq!(std::fs::read(&lease.handle).unwrap(), b"AAAA");
+}
+
+/// 正常停止：最后一段先封闭登记，再上报 stopping。此时 received 必须等于 persisted。
+#[test]
+fn a_normal_stop_reports_received_equal_to_persisted() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let capture_id = draft(&mut core);
+    let ticket = core.prepare_recording(&capture_id, "op-rec").unwrap();
+    // 2 秒 + 2 秒 + 1 秒：停止时最后 1 秒也封闭并登记成功。
+    add_segment(&mut core, &ticket, 0, b"AAAA", 2000);
+    add_segment(&mut core, &ticket, 1, b"BBBB", 2000);
+    add_segment(&mut core, &ticket, 2, b"CC", 1000);
+
+    let session = core
+        .update_recording_state(NativeRecordingStatus {
+            recording_id: ticket.recording_id.clone(),
+            state: RecordingState::Stopping,
+            wall_clock: Utc::now(),
+            elapsed_ms: 5000,
+            persisted_through_ms: 5000,
+            input_device_changed: false,
+            message: None,
+        })
+        .unwrap();
+    assert_eq!(session.elapsed_ms, 5000);
+    assert_eq!(session.durable_through_ms, 5000);
+
+    let result = core
+        .finalize_recording(&ticket.recording_id, 2, "user_stop")
+        .unwrap();
+    assert_eq!(result.logical_duration_ms, 5000);
+
+    let recovery = core
+        .recover_recording(Some(&ticket.recording_id))
+        .unwrap();
+    assert_eq!(recovery.persisted_ms, recovery.received_ms);
+    assert_eq!(recovery.persisted_ms, 5000);
+    assert!(
+        recovery.notes.iter().any(|note| note.contains("没有可见的未登记尾巴")),
+        "正常停止不该虚报尾巴：{:?}",
+        recovery.notes
+    );
+}
+
 #[test]
 fn interrupted_is_not_the_same_as_paused() {
     let dir = tempfile::tempdir().unwrap();

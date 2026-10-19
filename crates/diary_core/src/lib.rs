@@ -16,6 +16,11 @@ mod assets;
 mod backup;
 mod chunker;
 mod chunks;
+/// 设备配置文件 `core-config.json`（与 `library.sqlite` 同目录）。
+///
+/// 公开是为了让 C ABI 与集成测试能读同一份类型（`RuntimeConfigReport` /
+/// `ConfigOrigin`）；产品代码只通过 `Core::runtime_config()` 看它。
+pub mod config_file;
 /// 日记生成与版本（B4b）：冻结输入快照、候选/当前语义、防注入、两步走、去重。
 ///
 /// 公开是为了让集成测试能直接断言提示词拼装（`SYSTEM_INSTRUCTIONS` /
@@ -35,6 +40,11 @@ pub mod model;
 /// 公开是为了让集成测试能直接断言模板规则与判据（`render_rule` / `LIMITS` /
 /// `candidates`）——产品代码只走 `Core::organize_*` 与驱动。
 pub mod organize;
+/// 插件 SDK 与宿主（B6，#88）：包格式、清单、权限、声明式模板与 Wasm 沙箱。
+///
+/// 公开是为了让桥接扫描 DTO、让测试直接断言权限目录与 ABI 导入表；产品代码只走
+/// `Core::inspect_plugin_package` / `install_plugin` / `run_plugin` 这几个入口。
+pub mod plugin;
 /// Provider 适配与配置（B4a）：配置、密钥托管、能力协商、连接测试与可注入传输层。
 ///
 /// 公开是为了让测试与 `tools/probe` 能注入回放/记账传输层——这是给测试与量测的
@@ -68,6 +78,10 @@ pub use extractors::{
     TEXT_DIRECT_EXTRACTOR_VERSION,
 };
 pub use error::{CoreError, ErrorCode, Result};
+pub use config_file::{
+    ConfigFileReport, ConfigOrigin, CoreConfigFile, RuntimeConfigReport, SemanticConfigReport,
+    TranscriptionConfigReport, CONFIG_FILE_NAME,
+};
 pub use provider::adapter::{
     adapter_for, builtin_adapter_ids, GenerateOutcome, GenerateRequest, ProtocolAdapter,
     CALL_TIMEOUT_MS, OPENAI_COMPATIBLE, PROBE_TIMEOUT_MS,
@@ -90,13 +104,16 @@ pub use model::{
     DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion, DiaryVersionOrigin,
     DiaryVersionPage, DomainEvent, DraftSaveResult, EventType, ExtractedContent, ExtractedSegment,
     GenerationInfo, ImportManifest, ImportOrigin, ImportState, ImportStatus, ImportTicket,
-    IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress, JobRunSummary, JobState,
+    IndexStatus, Job, JobErrorSummary, JobPage, JobPriority, JobProgress, JobRunSummary, JobState,
     JobStatus, LocatorType, MatchedBy, MaterialCounts, NativeRecordingStatus, NewJob,
     OrganizePendingDay, OrganizePlanSummary, OrganizeQuota, OrganizeRunInfo, OrganizeSettings,
     OrganizeSkippedDay, OrganizeStatus, OrganizeTemplate, OrganizeTemplateParam, ProcessingStatus,
-    ProcessingSummary, ProvenanceLink, Provider, ProviderCapability, ProviderTestReport,
-    ProviderTestStatus, RecordingFinalizeResult, RecordingRecovery, RecordingSession,
-    RecordingState, RecordingTicket, ResponseTicket, RestoreReport, SearchFilters, SearchHit,
+    ProcessingSummary, PluginArtifact, PluginDerivedContent, PluginEntryKind, PluginInspection,
+    PluginInstallation, PluginInvocation, PluginManifest, PluginPermission, PluginProviderFailure,
+    PluginRunResult, PluginSourceRef, PluginStyleProfile, PluginTemplate, ProvenanceLink, Provider,
+    ProviderCapability, ProviderTestReport, ProviderTestStatus, RecordingFinalizeResult,
+    RecordingRecovery, RecordingSession, RecordingState, RecordingTicket, ResponseTicket,
+    RestoreReport, SearchFilters, SearchHit,
     SearchMode, SearchPhase, SearchRequest, SearchSnapshot, SegmentManifest, SegmentReceipt,
     SourceItem, SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
 };
@@ -124,13 +141,18 @@ pub use chunker::{
     MAX_CHUNK_CHARS,
 };
 pub use embedding::{
-    bytes_to_vector, config_from_env, load as load_embedder, text_hash_vector, vector_bytes,
-    EmbedOptions, Embedder, EmbeddingConfig, EnvEmbedding, OrtEmbedder, Pooling, DEFAULT_POOLING,
-    DEFAULT_QUERY_INSTRUCTION, EXPECTED_DIMS, MODEL_ID, QUERY_INSTRUCTION,
+    bytes_to_vector, config_from_env, load as load_embedder, resolve as resolve_embedding_config,
+    text_hash_vector, vector_bytes, EmbedOptions, Embedder, Embedding, EmbeddingConfig,
+    EmbeddingResolution, EnvEmbedding, OrtEmbedder, Pooling, TokenTruncation, VectorStorage,
+    DEFAULT_POOLING, DEFAULT_QUERY_INSTRUCTION, DEFAULT_VECTOR_STORAGE, ENV_MODEL_DIR, ENV_ORT_DYLIB,
+    ENV_ORT_DYLIB_COMPAT, EXPECTED_DIMS, MAX_BODY_TOKENS, MAX_SEQ_TOKENS, MODEL_ID,
+    QUERY_INSTRUCTION,
 };
 pub use schema::SCHEMA_VERSION;
 pub use search::TOKENIZER_VERSION;
 pub use semantic::SemanticBuildReport;
+#[doc(hidden)]
+pub use semantic::{set_query_profiling, take_query_profile, SemanticQueryProfile};
 pub use search_session::{HYBRID_FUSION_VERSION, HYBRID_SEMANTIC_MIN_SCORE};
 
 use std::collections::HashMap;
@@ -170,6 +192,15 @@ pub struct Core {
     /// 混合检索的语义证据门槛。产品默认是 `HYBRID_SEMANTIC_MIN_SCORE`；量测与测试
     /// 可以临时改它来扫曲线（见 `set_hybrid_min_score_for_test`）。
     hybrid_min_score: f32,
+    /// 新写入向量的存储编码。默认 `DEFAULT_VECTOR_STORAGE`；量测与测试可以临时改它
+    /// （见 `set_vector_storage_for_test`）。它是口径三字段之一，换格式 = 整代重算。
+    vector_storage: embedding::VectorStorage,
+    /// 当前嵌入器（或产品模型）的维度。默认 `EXPECTED_DIMS`；注入/加载嵌入器后跟着它走。
+    /// `index_status` 用它判断生效代次的 `dims` 是不是同一个向量空间（不加载模型）。
+    current_dims: usize,
+    /// 快速路径保留的候选块数上限（#90）。默认 `FAST_SCAN_DEPTH`；量测与测试可以
+    /// 临时改它来扫「深度 vs 延迟」曲线（见 `set_semantic_scan_depth_for_test`）。
+    semantic_scan_depth: usize,
 /// 密钥托管。默认实现是资料库目录下权限受限的独立文件；测试与内存库用内存实现。
     /// **明文只在这一层**，`providers` 表里只有引用（见 `provider::secret`）。
     secrets: Box<dyn provider::secret::SecretStore>,
@@ -190,6 +221,13 @@ pub struct Core {
     backup_fault: backup::BackupFault,
     /// 仅供测试的备份会合点，默认不设（见 `set_backup_gate_for_test`）。
     backup_gate: Option<Arc<backup::BackupGate>>,
+    /// 资料库旁边的 `core-config.json`（四个可选路径）。`None` = 没有/不可用。
+    ///
+    /// 只在 `open` 时读一次：与 `DIARY_*` 环境变量同一语义（打开那一刻的快照）。
+    /// 读不了/解析失败**不是错误**：`config_report.error` 如实记下原因，配置回落。
+    config_file: Option<config_file::CoreConfigFile>,
+    /// 配置文件本身的状态（路径、是否存在、解析错误、不认识的字段）。
+    config_report: config_file::ConfigFileReport,
 }
 
 /// 契约 1.2 节的 API 版本。
@@ -252,10 +290,37 @@ impl Core {
     }
 
     fn prepare(
+        conn: Connection,
+        root: Option<PathBuf>,
+        library_file_name: Option<String>,
+        transport: std::sync::Arc<dyn provider::transport::Transport>,
+    ) -> Result<Self> {
+        // 设备配置文件：与库文件同目录的 `core-config.json`。读失败/解析失败都不致命，
+        // 只是这一档不生效（原因记在 `config_report` 里，`core.info` 会如实报出）。
+        //
+        // **先读配置、再建语义运行时**：自动排队的口径核对必须用这份配置解析出来的
+        // 当前口径（环境变量逐字段优先、文件补空缺），不能拿一份旧快照去比。
+        let loaded_config = config_file::load(root.as_deref());
+        let semantic = semantic::SemanticRuntime::from_config_file(loaded_config.file.as_ref());
+        Self::prepare_with_semantic(
+            conn,
+            root,
+            library_file_name,
+            transport,
+            semantic,
+            loaded_config,
+        )
+    }
+
+    /// `prepare` 的实现体：语义运行时与已读到的配置文件都由调用方给——产品路径从
+    /// `core-config.json` + 环境变量解析，测试路径显式注入（见两个 `_for_test` 入口）。
+    fn prepare_with_semantic(
         mut conn: Connection,
         root: Option<PathBuf>,
         library_file_name: Option<String>,
         transport: std::sync::Arc<dyn provider::transport::Transport>,
+        semantic: semantic::SemanticRuntime,
+        loaded_config: config_file::LoadedCoreConfig,
     ) -> Result<Self> {
         // WAL 提高并发读写表现；synchronous=FULL 保证「提交了就是落盘了」，
         // 只用 NORMAL 会让进程崩溃时丢掉最后几个事务，与 durable 承诺不符。
@@ -279,21 +344,100 @@ impl Core {
         // 历史包袱一次性清账：以前因为没有执行者而进「已放弃 + no_handler」的旧任务，
         // 现在有执行者的放回队列（判据自带幂等，见 `jobs::requeue_legacy_no_handler`）。
         jobs::requeue_legacy_no_handler(&mut conn, support::now())?;
-        Ok(Self {
+        // 已加载的嵌入器可能带着自己的维度（测试注入 384 维的桩）；其余情形是产品默认。
+        let current_dims = semantic.current_dims();
+        let mut core = Self {
             conn,
             root,
             library_file_name,
             leases: HashMap::new(),
             search_sessions: HashMap::new(),
-            semantic: semantic::SemanticRuntime::from_env(),
+            semantic,
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
+            vector_storage: embedding::DEFAULT_VECTOR_STORAGE,
+            current_dims,
+            semantic_scan_depth: semantic::FAST_SCAN_DEPTH,
             secrets,
             transport,
             asr_engine: std::sync::Arc::new(transcription::sherpa::SherpaOnnxEngine),
             asr_config_for_test: None,
             backup_fault: backup::BackupFault::None,
             backup_gate: None,
-        })
+            config_file: loaded_config.file,
+            config_report: loaded_config.report,
+        };
+        // 存量库的口径（storage / dims / 已知时的 model_version）与当前不一致时，
+        // **核心自己**把语义重建排上：`reasons` 说「需要重建」，就不能让用户找不到
+        // 能重建的入口。判据、去重与「同一口径最多自动尝试两次」见
+        // `semantic_index_job::enqueue_for_caliber_mismatch`。
+        //
+        // **必须在配置读完之后**：`semantic` 就是由这次读到的 `core-config.json`
+        // 与环境变量解析出来的当前口径；先排队会拿旧口径去比。
+        semantic_index_job::enqueue_for_caliber_mismatch(&mut core)?;
+        Ok(core)
+    }
+
+    /// 仅供测试：用一份**显式**的模型配置打开资料库，不读进程环境变量。
+    ///
+    /// 为什么要这个入口：自动排队只在模型 `Configured` / `Ready` 时生效，而测试不能
+    /// 靠设环境变量来造这个状态（环境变量是进程级的，并行测试会互相踩）。`None`
+    /// 固定成「没配」的合法退化；`Some(config)` 走与 `from_config_file` 同一条
+    /// `check_files` 路径（缺文件就是 `Failed`，不是 `Configured`）。
+    #[doc(hidden)]
+    pub fn open_with_embedding_config_for_test(
+        path: impl AsRef<std::path::Path>,
+        config: Option<embedding::EmbeddingConfig>,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let root = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        let loaded_config = config_file::load(Some(&root));
+        Self::prepare_with_semantic(
+            Connection::open(path)?,
+            Some(root),
+            file_name,
+            std::sync::Arc::new(provider::transport::PanicTransport {}),
+            semantic::SemanticRuntime::configured(config),
+            loaded_config,
+        )
+    }
+
+    /// 仅供测试：打开资料库时就把一个**已加载**的嵌入器挂上（`Ready`）。
+    ///
+    /// 自动排队的 `model_version` 一项只在「内存里已有版本」时才比——产品冷启动做
+    /// 不到这一点（见 `semantic_index_job` 的说明），测试用这个入口把那一刻提前。
+    #[doc(hidden)]
+    pub fn open_with_embedder_for_test(
+        path: impl AsRef<std::path::Path>,
+        embedder: Box<dyn embedding::Embedder>,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let root = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        let loaded_config = config_file::load(Some(&root));
+        Self::prepare_with_semantic(
+            Connection::open(path)?,
+            Some(root),
+            file_name,
+            std::sync::Arc::new(provider::transport::PanicTransport {}),
+            semantic::SemanticRuntime::ready(embedder),
+            loaded_config,
+        )
+    }
+
+    /// 打开时读到的核心配置文件（`core-config.json` 的四个可选字段）。
+    pub(crate) fn config_file(&self) -> Option<&config_file::CoreConfigFile> {
+        self.config_file.as_ref()
     }
 
     /// 文件库根目录。内存库没有根目录，导入相关方法会因此报错。
@@ -320,6 +464,32 @@ impl Core {
         Ok(())
     }
 
+    /// 仅供量测：改这条连接的 `synchronous`（产品默认 `FULL`）。
+    ///
+    /// 为什么量测需要它：`build_semantic_index` **一块一个事务**（中断可续跑的前提），
+    /// `synchronous = FULL` 时每块一次 fsync。笔记本/机械盘上 fsync 可能比模型推理还贵，
+    /// 于是「构建时间」主要量的是磁盘而不是索引。量测时用 `OFF` 把这一项单独拿掉，
+    /// 并在报告里把两种口径分开写（产品默认的那一档单独量、按比例说明）。
+    ///
+    /// 它只影响这一条连接与之后的提交；产品代码不调它。
+    #[doc(hidden)]
+    pub fn set_synchronous_for_test(&self, mode: &str) -> Result<()> {
+        self.conn.pragma_update(None, "synchronous", mode)?;
+        Ok(())
+    }
+
+    /// 仅供量测：设 SQLite 的 `mmap_size`（0 = 关，产品默认沿用 SQLite 的默认值）。
+    ///
+    /// 大库语义查询要顺序读整代向量（10 万块 f32 = 195 MiB）。不开 mmap 时 SQLite 把页
+    /// 先拷进自己的 2 MiB 页缓存，等于每次查询多一遍 195 MiB 的内存拷贝；`mmap_size`
+    /// 让 BLOB 直接指进映射文件。量测用它回答「这一项值不值得进产品默认」。
+    /// 它只影响这一条连接；产品代码不调它。
+    #[doc(hidden)]
+    pub fn set_mmap_size_for_test(&self, bytes: i64) -> Result<()> {
+        self.conn.pragma_update(None, "mmap_size", bytes)?;
+        Ok(())
+    }
+
     /// 仅供量测/测试：改混合检索的语义证据门槛。
     ///
     /// 阈值扫描必须走**同一条产品路径**（`start_search(mode = hybrid)` + 真融合），
@@ -328,6 +498,54 @@ impl Core {
     #[doc(hidden)]
     pub fn set_hybrid_min_score_for_test(&mut self, value: f32) {
         self.hybrid_min_score = value;
+    }
+
+    /// 仅供量测/测试：改**新写入**向量的存储格式（`f32` / `int8`）。
+    ///
+    /// 为什么需要它：`storage` 是口径三字段之一，换格式必须走**同一条产品路径**
+    /// （`build_semantic_index` 整代重算）来量，不能在探针里另写一套写入逻辑——
+    /// 否则量到的召回与体积不是线上会得到的东西。
+    ///
+    /// 它**只影响之后写入的向量**：已有的生效代次不会就地改写；改完格式再检索，
+    /// 整代口径核对会发现不一致（`ForeignSpace`），下一次 `build_semantic_index`
+    /// 整代重算。产品代码不调它，默认值是可审计的 `DEFAULT_VECTOR_STORAGE`。
+    #[doc(hidden)]
+    pub fn set_vector_storage_for_test(&mut self, storage: VectorStorage) {
+        self.vector_storage = storage;
+    }
+
+    /// 当前配置的向量存储格式（状态查询与量测用）。
+    pub fn vector_storage(&self) -> VectorStorage {
+        self.vector_storage
+    }
+
+    /// 当前已知的向量维度：注入/加载嵌入器后是它的维度，否则是产品模型的
+    /// `EXPECTED_DIMS`。状态检查用它比对生效代次的 `dims`（不加载模型）。
+    pub(crate) fn current_dims(&self) -> i64 {
+        self.current_dims as i64
+    }
+
+    /// 当前**已知**的模型版本：已加载嵌入器优先；只配置了模型时读模型文件哈希
+    /// （不建 ORT 会话）；都没有就是 `None`（无从比对，不猜）。
+    pub(crate) fn current_model_version(&self) -> Option<String> {
+        self.semantic.model_version_hint()
+    }
+
+    /// 当前**已经加载**的模型版本（内存里的真值）：没加载就是 `None`，不读文件。
+    ///
+    /// `open` 的自动排队只用这一项——为 discovery 去读 24 MiB 模型文件与「启动不做
+    /// 重活」冲突。状态路径（`index_status`）仍用 `current_model_version`。
+    pub(crate) fn loaded_model_version(&self) -> Option<String> {
+        self.semantic.loaded_model_version()
+    }
+
+    /// 仅供量测/测试：改快速路径保留的候选块数上限（#90），用来扫「深度 vs 延迟」。
+    ///
+    /// 产品默认是可审计的 `FAST_SCAN_DEPTH`（4096）。这个上限**不是 ANN**：保留范围内
+    /// 的名次仍是逐条精算的，只影响「最多能翻到多深」。产品代码不调它。
+    #[doc(hidden)]
+    pub fn set_semantic_scan_depth_for_test(&mut self, depth: usize) {
+        self.semantic_scan_depth = depth.max(1);
     }
 
     // ------------------------------------------------------------ 记录路径
@@ -844,6 +1062,20 @@ impl Core {
         jobs::list(self, states, limit)
     }
 
+    /// 分页读取任务，契约 `jobs.list` 的逐条翻页用。
+    ///
+    /// 排序与 `list_jobs` 相同（`priority DESC, created_at, id`），但游标是**键集**：
+    /// 把上一页最后一条的位置带回去，下一批从它之后取，不是偏移。翻页期间入队的新任务
+    /// 不会让后面的页漏项或重项。`cursor` 对调用方不透明，原样回传上一页的 `next_cursor`。
+    pub fn list_jobs_page(
+        &self,
+        states: Option<&[JobState]>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<JobPage> {
+        jobs::list_page(self, states, cursor, limit)
+    }
+
     /// 按状态精确计数。**不要用 `list_jobs` 的长度当计数**：它为分页把
     /// limit 夹在 200 以内，任务多的时候会少报。
     pub fn count_jobs(&self, states: Option<&[JobState]>) -> Result<i64> {
@@ -1104,6 +1336,17 @@ impl Core {
         filters: &SearchFilters,
     ) -> Result<Vec<(String, f32)>> {
         semantic::ranking(self, query, filters)
+    }
+
+    /// 仅供测试：**全量载入**路径的语义排名（与 `semantic_ranking` 同一段解码、
+    /// 排序与折叠，只是先把整代向量收进堆）。用来钉住「流式扫描没有改变结果」。
+    #[doc(hidden)]
+    pub fn semantic_ranking_load_all_for_test(
+        &mut self,
+        query: &str,
+        filters: &SearchFilters,
+    ) -> Result<Vec<(String, f32)>> {
+        semantic::ranking_load_all_for_test(self, query, filters)
     }
 
     /// 关键词检索候选：命中**派生片段**的 ID，按索引写入顺序。

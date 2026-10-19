@@ -170,20 +170,24 @@ hvigor 的 `ProcessLibs` 会自动收进 HAP 的 `libs/arm64-v8a/`（并顺手 s
 | HAP 体积 | 不含 ORT **≈5.2 MB** / 含自编 ORT **unsigned 24.98 MB、signed 25.25 MB** |
 
 > ORT 从哪来（两条路，两条都走过了）：
-> 1. **快路**：sherpa-onnx 官方 OHOS 预编译包里的 `libonnxruntime.so`（`SKIP_ORT=0` 时 `build-native.sh` 会自动下载），
->    **只有 1.16.3**，比我们 `ort` crate 要求的 API 17 低一个 minor —— 它证明了「沙箱能 dlopen ORT + 能推理」，
->    但**吃不到产品的 `ort` crate**；
-> 2. **正路（本次最终采用）**：按 `/tmp/requests-wt/archives/o/onnxruntime/1.29.1` 的配方**自编 ORT 1.29.1**
->    （19.62 MB / strip 后），放进 `entry/libs/arm64-v8a/` 即可 —— 产品路径全通。构建过程、耗时（~33 min/16 核）
->    与 WSL/CI 环境差异清单见文档 §24.5。
+> 1. **正路（默认，也是产品要求）**：自编 **ORT 1.29.1**（19.62 MB / strip 后），由
+>    [`tools/ohos/build-ort.sh`](../../tools/ohos/build-ort.sh) 提供 —— 缓存优先，未命中才编
+>    （首次 ~33 min/16 核；幂等）。`build-native.sh` 默认走这条。
+> 2. **历史快路（opt-in）**：sherpa-onnx 官方 OHOS 预编译包里的 1.16.3（API 16），
+>    用来复现「沙箱能 dlopen ORT + 能推理」，但**吃不到产品的 `ort` crate**（§23.3）。
+>    用 `ORT_FLAVOR=sherpa-1.16.3 bash scripts/build-native.sh` 触发，缓存在
+>    `$HOME/dev/caches/sherpa-ort-1.16.3`（不再是 /tmp）。
 >
-> 用已有的 ORT 跳过下载：`ORT_SO_DIR=<含 libonnxruntime.so 的目录> ./scripts/build-native.sh`。
+> 用已有的 ORT 跳过下载/构建：`ORT_SO_DIR=<含 libonnxruntime.so 的目录> bash scripts/build-native.sh`。
+> 为什么必须自编、配方、坑与缓存策略见
+> [`docs/architecture/m6-ORT-构建与缓存.md`](../../docs/architecture/m6-ORT-构建与缓存.md)。
 
 ## 复现脚本
 
 ```bash
 ./scripts/build-native.sh                    # 编原生库
-#   环境变量：NDK / OHOS_TARGET / CARGO_TARGET_DIR / SKIP_RUST / SKIP_SHIM / SKIP_ORT / ORT_SO_DIR
+#   环境变量：NDK / OHOS_TARGET / CARGO_TARGET_DIR / SKIP_RUST / SKIP_SHIM / SKIP_ORT /
+#             ORT_SO_DIR / ORT_FLAVOR / ORT_CACHE_DIR
 OHOS_BUNDLE_NAME=… ./scripts/build-hap.sh    # 换 bundleName / API 版本 / 加签名
 HDC=/path/to/hdc.exe ./scripts/run-on-device.sh <bundleName>
 ```

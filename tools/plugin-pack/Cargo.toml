@@ -1,0 +1,16 @@
+[package]
+name = "plugin_pack"
+description = "插件打包辅助：把示例 WAT 编成 Wasm，并重算 packageHashes。不是产品代码。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "plugin-pack"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+sha2 = "0.10"
+wat = "1.259"

@@ -419,10 +419,20 @@ fn load_library(config: &EngineConfig) -> Result<libloading::Library> {
             Err(error) => last_error = error.to_string(),
         }
     }
-    Err(CoreError::ModelUnavailable {
+    // **「加载不到引擎库」是配置/打包问题，不是「模型坏了」**（PR #130 评审的 P0）。
+    //
+    // 在 OHOS/Android 上引擎库按库名从应用的 native 库目录解析，核心**没法 stat**，
+    // 所以 `readiness` 在 `engine_lib = None` 时只能乐观放行；真正的缺口在这里才
+    // 暴露。以前这里报 `ModelUnavailable`，作业层按「终态失败」处置（不重试、不等
+    // 配置）——可用户/打包侧补上 `libs/arm64` 里的库之后它是能好的。所以落
+    // `provider_not_configured`：作业进 `waiting_configuration`、不消耗重试额度、
+    // `requires_user_action` 如实置位。缺符号（库里没这个 API）仍归 `ModelUnavailable`：
+    // 那是「装了一个不对的引擎」，与「没装引擎」不是同一件事。
+    Err(CoreError::ProviderNotConfigured {
         reason: format!(
-            "加载本机转写引擎库失败：{}（试过 {}）。随包分发要把引擎库与 {} 放在一起，\
-             或用 {} 显式指定路径",
+            "加载本机转写引擎库失败：{}（试过 {}）。引擎库必须随 HAP 打进 \
+             libs/arm64/（OHOS 的应用数据目录里的 .so 不能 dlopen），且要与 {} \
+             放在一起；也可以用 {} 显式指定它的绝对路径",
             last_error,
             candidates.join(" / "),
             onnxruntime_file_name(),
@@ -593,6 +603,46 @@ fn create_recognizer(
     Ok(recognizer)
 }
 
+/// 「按库名加载的引擎库到底能不能加载」的进程级缓存。
+///
+/// 为什么 readiness 必须知道这件事：OHOS/Android 的引擎库按库名从应用的 native 库
+/// 目录解析，核心**没法 stat 它**。以前这里直接乐观放行，结果是
+/// 「闸门说 ready → 执行者 dlopen 失败 → 作业落 waiting_configuration → 闸门下一轮又
+/// 说 ready（`promote_configuration_waits` 把它拉回队列）→ 再失败……」——一轮
+/// `jobs.runDue` 会在同一个任务上空转 64 次。所以闸门必须**真的**摸一次库。
+///
+/// 代价与取舍：
+/// - 只在「解析不到显式路径」（移动端按库名）时做，桌面端仍旧只看候选文件；
+/// - 结果进 `OnceLock`：**一个进程只探测一次**，之后是纯内存判断；
+/// - 成功时 `mem::forget` 句柄：不解引用、不 dlclose。与「ORT 会话退出不释放」同一个
+///   理由——dlclose 会跑 C++ 静态析构，退出阶段容易炸；留着等于预加载，执行者之后再
+///   dlopen 只是引用计数 +1。
+static ENGINE_BY_NAME: std::sync::OnceLock<std::result::Result<(), String>> =
+    std::sync::OnceLock::new();
+
+/// 已经探测过的话，返回缓存结论；**不触发**探测。
+///
+/// 给 `core.info` 用：它不能为了报状态去 dlopen（启动路径），但探测过一次之后
+/// （第一次任务/连接测试），状态就该如实变成「可用 / 加载不了」，而不是一直停在
+/// 「未探测」。
+pub(crate) fn engine_library_by_name_probe() -> Option<&'static std::result::Result<(), String>> {
+    ENGINE_BY_NAME.get()
+}
+
+fn engine_library_by_name_ready() -> &'static std::result::Result<(), String> {
+    ENGINE_BY_NAME.get_or_init(|| {
+        let name = crate::provider::local_engine::engine_lib_file_name();
+        // SAFETY: 引擎库由我们随包分发；这里只加载、不取符号、不调用任何函数。
+        match unsafe { libloading::Library::new(name) } {
+            Ok(library) => {
+                std::mem::forget(library);
+                Ok(())
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    })
+}
+
 impl LocalEngine for SherpaOnnxEngine {
     fn id(&self) -> &'static str {
         SHERPA_ONNX
@@ -622,8 +672,9 @@ impl LocalEngine for SherpaOnnxEngine {
         }
 
         // 引擎库：`EngineConfig::resolve` 已经把「显式路径 → 可执行文件旁边的候选」
-        // 解析过了。解析不到（`None`）在两处是正常的：Android 上按库名加载，
-        // 由系统在应用的 native 库目录里解析；桌面端则是真的缺库，如实报。
+        // 解析过了。解析不到（`None`）在两类平台上是正常的：Android 与 OHOS
+        // 都按库名加载，由系统在应用的 native 库目录（OHOS 是 `libs/arm64`）里
+        // 解析——引擎随 HAP 分发时就在那儿；桌面端则是真的缺库，如实报。
         if let Some(path) = &config.engine_lib {
             if !path.is_file() {
                 return EngineReadiness {
@@ -638,7 +689,29 @@ impl LocalEngine for SherpaOnnxEngine {
                     )),
                 };
             }
-        } else if !cfg!(target_os = "android") {
+        } else if cfg!(any(target_os = "android", target_env = "ohos")) {
+            // 按库名加载：核心没法 stat，只能**真的**试一次 dlopen（进程内只做一次）。
+            // 不做这一步的话，闸门会在缺库时一直说「可用」，作业被反复拉起又失败。
+            if let Err(error) = engine_library_by_name_ready() {
+                return EngineReadiness {
+                    ready: false,
+                    code: "provider_not_configured".to_owned(),
+                    reason: format!(
+                        "本机转写引擎的动态库加载不了：按库名找 {} 失败（{error}）。\
+                         引擎库必须随安装包放在应用的 libs/<abi>/ 里，且与 {} 一起",
+                        crate::provider::local_engine::engine_lib_file_name(),
+                        onnxruntime_file_name()
+                    ),
+                    next_step: Some(format!(
+                        "把 {} 与 {} 打进 HAP 的 libs/arm64/（或用 {} 指定它们的绝对路径）；\
+                         模型文件放应用沙箱",
+                        crate::provider::local_engine::engine_lib_file_name(),
+                        onnxruntime_file_name(),
+                        crate::provider::local_engine::ENV_ENGINE_LIB
+                    )),
+                };
+            }
+        } else {
             return EngineReadiness {
                 ready: false,
                 code: "provider_not_configured".to_owned(),
@@ -1133,6 +1206,35 @@ mod tests {
         let (text, language) = parse_result_json(r#"{"text":"hi"}"#).unwrap();
         assert_eq!(text, "hi");
         assert!(language.is_none());
+    }
+
+    /// PR #130 评审的 P0：**引擎库加载不到 = 等配置**，不是终态失败。
+    ///
+    /// 以前这里是 `ModelUnavailable`，作业层按「终态 failed」处置：用户/打包侧把
+    /// `libs/arm64` 里的库补上之后任务也不会再跑（不重试、不等配置）。改动后是
+    /// `provider_not_configured` → `waiting_configuration`，配置好了下一轮就能拉起。
+    #[test]
+    fn a_missing_engine_library_is_a_configuration_problem_not_an_unavailable_model() {
+        let config = EngineConfig {
+            engine_lib: Some(PathBuf::from("/nonexistent/libsherpa-onnx-c-api.so")),
+            model_dir: PathBuf::from("/nonexistent/model-dir"),
+            model_file: None,
+            kind: ModelKind::SenseVoice,
+            language: None,
+            num_threads: 2,
+            itn: true,
+        };
+        let error = load_library(&config).expect_err("库不在时必须失败");
+        assert!(
+            matches!(error, CoreError::ProviderNotConfigured { .. }),
+            "必须是等配置（可恢复），不是 ModelUnavailable（终态）：{error:?}"
+        );
+        assert_eq!(error.code(), crate::ErrorCode::ProviderNotConfigured);
+        assert!(error.waits_for_configuration(), "作业要落 waiting_configuration");
+        assert!(
+            error.to_string().contains("libs/arm64"),
+            "错误信息要说清引擎库该放哪儿：{error}"
+        );
     }
 
     #[test]

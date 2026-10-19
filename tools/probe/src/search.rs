@@ -124,7 +124,7 @@ where
         let _ = query();
         samples.push(start.elapsed().as_secs_f64() * 1000.0);
     }
-    samples.sort_by(|a, b| a.partial_cmp(b).expect("样本不是 NaN"));
+    samples.sort_by(f64::total_cmp);
     samples[samples.len() / 2]
 }
 

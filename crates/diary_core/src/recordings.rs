@@ -411,6 +411,8 @@ pub(crate) fn recover(core: &Core, recording_id: Option<&str>) -> Result<Recordi
                     recording_id: None,
                     state: RecordingState::Idle,
                     closed_segment_indexes: Vec::new(),
+                    persisted_ms: 0,
+                    received_ms: 0,
                     gap_ms: 0,
                     notes: vec!["没有未完成的录音".to_owned()],
                 })
@@ -427,12 +429,19 @@ pub(crate) fn recover(core: &Core, recording_id: Option<&str>) -> Result<Recordi
         }
     }
 
+    // 已登记片段的时长之和 = 真正能拼出来的音频长度。**只有**它能当 persisted。
+    let persisted_ms: i64 = segments.iter().map(|row| row.duration_ms).sum();
+    // 采集器最后一次上报的「已收到」；它是上报时刻的值，所以只是下界。
+    let received_ms = session.elapsed_ms.max(0);
+    // 收到的比登记的多的部分：两次登记之间还没封闭的尾巴，崩溃时丢了。
+    let unregistered_tail_ms = (received_ms - persisted_ms).max(0);
+
     // 缺口时长按已见片段的平均时长估算——估算就是估算，写在 notes 里。
     let mut notes = Vec::new();
     let average = if present.is_empty() {
         0
     } else {
-        segments.iter().map(|row| row.duration_ms).sum::<i64>() / present.len() as i64
+        persisted_ms / present.len() as i64
     };
     let gap_ms = average * missing.len() as i64;
     if !missing.is_empty() {
@@ -441,12 +450,31 @@ pub(crate) fn recover(core: &Core, recording_id: Option<&str>) -> Result<Recordi
             missing.len()
         ));
     }
-    notes.push("最后一段之后可能还有没封闭的尾巴，时长无法确定".to_owned());
+    // 「已登记」与「已收到」的差必须说清楚：不隐瞒可能丢掉的尾巴。
+    if unregistered_tail_ms > 0 {
+        notes.push(format!(
+            "已登记片段共 {persisted_ms} ms，采集器最后一次上报收到 {received_ms} ms：\
+             有 {unregistered_tail_ms} ms 没有对应的已登记片段，可能是未封闭的尾巴，\
+             已在崩溃时丢失（收到量只是最后一次上报值，实际可能更多）"
+        ));
+    } else if received_ms <= 0 {
+        notes.push(format!(
+            "已登记片段共 {persisted_ms} ms；采集器没有上报过「收到」进度，\
+             最后一段之后可能还有未封闭的尾巴，时长无法确定"
+        ));
+    } else {
+        notes.push(format!(
+            "已登记片段共 {persisted_ms} ms，采集器最后一次上报收到 {received_ms} ms，\
+             没有可见的未登记尾巴；但上报可能落后最多约 1 秒，最后一段之后仍可能还有没封闭的尾巴"
+        ));
+    }
 
     Ok(RecordingRecovery {
         recording_id: Some(session.id.clone()),
         state: session.state,
         closed_segment_indexes: present,
+        persisted_ms,
+        received_ms,
         gap_ms,
         notes,
     })

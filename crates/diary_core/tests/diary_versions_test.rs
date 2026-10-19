@@ -1062,7 +1062,7 @@ fn empty_bodies_are_refused_and_long_bodies_are_kept_verbatim() {
 // ------------------------------------------------------ schema 迁移（#101；合并后是 v13）
 
 /// 老库（v10 的样子：`diary_days` 没有 `revision` 列、也没有 v11 的两张整理表）
-/// 升级到**合并后的最新版本（13）**：**回填的 revision 是「这一天的版本数」**——
+/// 升级到**合并后的最新版本（14）**：**回填的 revision 是「这一天的版本数」**——
 /// 正是升级前调用方从 `getDay` 算出来的那个数字（契约 2.5 的老口径），所以升级不会让
 /// 任何在飞的 `expectedRevision` 失效。这一次 `setCurrent` 的历史（老口径下不计数）
 /// 也确实无法还原，回填不假装它算过。
@@ -1105,8 +1105,9 @@ fn v10_library_migrates_to_latest_with_revision_backfilled() {
     assert_eq!(core.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
     assert_eq!(
         diary_core::SCHEMA_VERSION,
-        13,
-        "11（B4e 的整理表）与 12（这一片的 revision 列）合并成 13"
+        15,
+        "11（整理表）+ 12（revision 列）合并成 13，B6 插件表抬到 14，\
+         #128 复审的自动重建标记 + 口径索引抬到 15"
     );
     // 两段迁移都跑了：v11 的两张表在，v12 的列在（下面用行为断言 revision）。
     {

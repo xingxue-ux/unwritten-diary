@@ -33,6 +33,7 @@ use std::time::Duration;
 use chrono::{DateTime, TimeZone, Utc};
 use diary_core::{
     Core, CreateDraftInput, EmbedOptions, Embedder, JobProgress, JobState, SearchFilters,
+    VectorStorage,
 };
 use rusqlite::params;
 
@@ -67,16 +68,20 @@ impl Embedder for StubEmbedder {
         EmbedOptions::default()
     }
 
-    fn embed_document(&self, text: &str) -> diary_core::Result<Vec<f32>> {
+    fn embed_document(&self, text: &str) -> diary_core::Result<diary_core::Embedding> {
         self.counters.documents.fetch_add(1, Ordering::SeqCst);
         if !self.delay.is_zero() {
             std::thread::sleep(self.delay);
         }
-        Ok(diary_core::text_hash_vector(text, self.dims))
+        Ok(diary_core::Embedding::untruncated(diary_core::text_hash_vector(
+            text, self.dims,
+        )))
     }
 
-    fn embed_query(&self, text: &str) -> diary_core::Result<Vec<f32>> {
-        Ok(diary_core::text_hash_vector(text, self.dims))
+    fn embed_query(&self, text: &str) -> diary_core::Result<diary_core::Embedding> {
+        Ok(diary_core::Embedding::untruncated(diary_core::text_hash_vector(
+            text, self.dims,
+        )))
     }
 }
 
@@ -395,6 +400,9 @@ fn an_interrupted_semantic_job_resumes_without_redoing_finished_chunks() {
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
     core.set_embedder(stub(MODEL_A, 512, Duration::ZERO, &counters));
+    // 这条测的是**同口径续跑**：把存储显式钉在 f32，别让默认值（int8）把它变成
+    // 「换格式整代重算」。下面的夹具按 f32 写向量。
+    core.set_vector_storage_for_test(VectorStorage::F32);
     assert_eq!(seed_chunks(&mut core, 3), 3);
 
     let job = core
@@ -507,6 +515,9 @@ fn a_foreign_caliber_left_by_an_interrupted_build_is_discarded_before_resuming()
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
     core.set_embedder(stub(MODEL_A, 512, Duration::ZERO, &counters));
+    // 这条测的是**换模型**：存储显式钉在 f32，让「A 那块本该续上」只因模型/维度
+    // 不同而被废弃，不掺默认存储格式的变化。
+    core.set_vector_storage_for_test(VectorStorage::F32);
     assert_eq!(seed_chunks(&mut core, 3), 3);
 
     let job = core
@@ -784,12 +795,12 @@ impl Embedder for WrongDimsEmbedder {
         EmbedOptions::default()
     }
 
-    fn embed_document(&self, _text: &str) -> diary_core::Result<Vec<f32>> {
-        Ok(vec![0.0_f32; 384])
+    fn embed_document(&self, _text: &str) -> diary_core::Result<diary_core::Embedding> {
+        Ok(diary_core::Embedding::untruncated(vec![0.0_f32; 384]))
     }
 
-    fn embed_query(&self, _text: &str) -> diary_core::Result<Vec<f32>> {
-        Ok(vec![0.0_f32; 512])
+    fn embed_query(&self, _text: &str) -> diary_core::Result<diary_core::Embedding> {
+        Ok(diary_core::Embedding::untruncated(vec![0.0_f32; 512]))
     }
 }
 

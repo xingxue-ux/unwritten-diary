@@ -217,7 +217,8 @@ const BUILTIN_TEMPLATES: &[TemplateSpec] = &[
     },
 ];
 
-/// 全部可用模板（现在只有三个内置的；#88 的插件模板从这里加进来）。
+/// 全部可用模板（现在只有三个内置的）。#88 的声明式模板走独立的
+/// `plugins.templates`；**还没有并进**这个列表，所以这里不假装插件模板可用。
 pub(crate) fn templates() -> Vec<OrganizeTemplate> {
     BUILTIN_TEMPLATES
         .iter()
@@ -257,7 +258,7 @@ fn template_dto(template_id: &str) -> Result<OrganizeTemplate> {
         .ok_or_else(|| CoreError::NotFound {
             entity: "整理模板",
             id: format!(
-                "{template_id}（核心内置的模板只有 {}；声明式插件模板是 #88 的事，还没有落地）",
+                "{template_id}（核心内置的模板只有 {}；声明式插件模板见 #88 的 plugins.templates，尚未并进整理模板列表）",
                 BUILTIN_TEMPLATES
                     .iter()
                     .map(|spec| spec.id)

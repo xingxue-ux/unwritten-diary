@@ -13,15 +13,20 @@
 #     $HOME/dev/caches/ort-1291/libonnxruntime.so   自编 ORT（19.6 MB，见 README §ORT）
 #     $HOME/dt-ohosbge                              交叉编译 target
 #
+# ORT 不再由本脚本自己找：统一交给 `tools/ohos/build-ort.sh`（缓存优先、幂等、
+# 自检都在那里），本脚本只负责把最终产物复制进 entry/libs/。
+#
 # 环境变量：
 #   NDK              默认 $HOME/command-line-tools/sdk/default/openharmony/native
 #   OHOS_TARGET      默认 aarch64-unknown-linux-ohos
 #   CARGO_TARGET_DIR 默认 $HOME/dt-ohosbge
-#   ORT_SO_DIR       放 libonnxruntime.so 的目录，默认 $HOME/dev/caches/ort-1291
+#   ORT_SO_DIR       放 libonnxruntime.so 的目录（兼容旧名；等同 ORT_CACHE_DIR）
+#   ORT_CACHE_DIR    同 tools/ohos/build-ort.sh，默认 $HOME/dev/caches/ort-1291
 #   SKIP_RUST=1 / SKIP_SHIM=1 / SKIP_ORT=1   只重建其中一部分
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 NDK="${NDK:-$HOME/command-line-tools/sdk/default/openharmony/native}"
 TARGET="${OHOS_TARGET:-aarch64-unknown-linux-ohos}"
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/dt-ohosbge}"
@@ -61,12 +66,12 @@ if [[ -z "${SKIP_SHIM:-}" ]]; then
 fi
 
 # ── 3. ONNX Runtime（自编 1.29.1；`ort` crate 要求 API ≥17，见第 2 步 §23.3） ──
+# 统一走 tools/ohos/build-ort.sh：先查缓存（manifest sha256 + ELF 自检），命中的话
+# 秒级返回；未命中才完整构建（~33 min/16 核）。自检与「从哪来」的说明都在那边。
 if [[ -z "${SKIP_ORT:-}" ]]; then
-  ORT_SRC="${ORT_SO_DIR:-$HOME/dev/caches/ort-1291}"
-  [[ -f "$ORT_SRC/libonnxruntime.so" ]] || {
-    echo "缺 $ORT_SRC/libonnxruntime.so —— 见 README「ORT 从哪来」" >&2; exit 1; }
-  echo "== [3/4] cp $ORT_SRC/libonnxruntime.so"
-  cp "$ORT_SRC/libonnxruntime.so" "$OUT/libonnxruntime.so"
+  echo "== [3/4] ORT 1.29.1（tools/ohos/build-ort.sh）"
+  ORT_CACHE_DIR="${ORT_SO_DIR:-${ORT_CACHE_DIR:-$HOME/dev/caches/ort-1291}}" \
+    "$REPO_ROOT/tools/ohos/build-ort.sh" --dest "$OUT"
 fi
 
 # ── 4. 自检：ELF 类型、NEEDED、导出符号 ──────────────────────────────────────

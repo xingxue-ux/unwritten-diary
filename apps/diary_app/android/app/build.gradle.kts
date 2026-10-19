@@ -1,7 +1,22 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Release signing is supplied out of band: android/key.properties points at the
+// keystore and is ignored by git. Keeping the file optional preserves the
+// Flutter template's `flutter run --release` behaviour for developers, while
+// tools/release/build-android.sh refuses to produce a "release" artifact
+// without it.
+val keystorePropertiesFile = rootProject.file("key.properties")
+val keystoreProperties = Properties()
+val hasReleaseKeystore = keystorePropertiesFile.isFile
+if (hasReleaseKeystore) {
+    FileInputStream(keystorePropertiesFile).use { keystoreProperties.load(it) }
 }
 
 android {
@@ -33,11 +48,33 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                // Paths in key.properties are relative to the android/ project
+                // directory, matching Flutter's documented convention.
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // With key.properties present, release builds are signed with the
+            // release keystore. Without it, keep the Flutter template's debug
+            // signing so `flutter run --release` still works locally; the
+            // release script treats that fallback as a hard failure.
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
+            // The Flutter Gradle plugin turns R8 on for release builds and
+            // adds its own proguard rules. See android/app/proguard-rules.pro
+            // for the app-specific additions.
         }
     }
 }

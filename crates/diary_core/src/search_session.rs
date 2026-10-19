@@ -45,6 +45,7 @@
 //! `semantic::caliber_mismatch`；重建语义索引即可按当前模型整代重算并恢复。
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use crate::embedding::Embedder;
 use crate::error::{CoreError, Result};
@@ -148,6 +149,21 @@ struct FusedCandidate {
     semantic: Option<semantic::SemanticCandidate>,
 }
 
+/// 混合融合的全序：`score DESC → day_key DESC → content_key → group_id`。
+///
+/// 分数用 `total_cmp`：融合分是 f32，语义那一路一旦漏进 NaN/Inf（旧库、坏模型输出），
+/// `partial_cmp` 的 `unwrap_or(Equal)` 会让「NaN 等于任何数」——比较器不传递，
+/// `sort_by` 可能乱序甚至 panic。`total_cmp` 给 NaN 确定位置，排序始终是全序；
+/// 正常路径上 `semantic::score_of` 已经拒绝非有限分数，这里是融合层自己的防线。
+fn fused_order(left: &FusedCandidate, right: &FusedCandidate) -> std::cmp::Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| right.day_key.cmp(&left.day_key))
+        .then_with(|| left.content_key.cmp(&right.content_key))
+        .then_with(|| left.group_id.cmp(&right.group_id))
+}
+
 /// 混合会话「升级」到哪一步了（#69）。阶段值不是装饰：只有真的融合过（`Fused`）
 /// 才允许报 `hybrid_ready` / `done`，其余三种必须如实停在 `keyword_ready`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,7 +265,13 @@ pub(crate) fn start(
         index_coverage,
         warnings,
     };
+    let materialize_start = semantic::profile_enabled().then(Instant::now);
     let snapshot = materialize(core, &state, &state.last_page)?;
+    if let Some(start) = materialize_start {
+        semantic::note_profile(|profile| {
+            profile.materialize_ns += semantic::elapsed_ns(start);
+        });
+    }
     core.search_sessions_mut().insert(session_id, state);
     Ok(snapshot)
 }
@@ -319,10 +341,23 @@ fn semantic_search(
             return Ok((Vec::new(), coverage, SearchPhase::Done));
         }
     };
-    let candidates = match semantic::candidates(core, &*embedder, needle, &request.filters)? {
+    let outcome = semantic::candidates(core, &*embedder, needle, &request.filters)?;
+    // 查询超长被 token 截断：**不算错误**（#109），但必须说清「只有前 510 个 token
+    // 参与了匹配」，否则用户会以为整句都参与了语义匹配。
+    if let Some(truncation) = outcome.query_truncation {
+        warnings.push(format!(
+            "查询太长，只有前 {} 个 token 参与了语义匹配（{truncation}），结果可能不完整",
+            truncation.kept_tokens
+        ));
+    }
+    let candidates = match outcome.candidates {
         // 口径不一致（生效代次是另一个模型建的）：**不进入计算**，也不拿跨空间的分数
         // 冒充结果。空结果 + 明确、可执行的原因——与「语义未就绪」同一条「不假装」的路。
         semantic::SemanticCandidates::ForeignSpace(mismatch) => {
+            // 发现跨空间就是自动重建的入口：`apps/` 没有 rebuildSemantic 的调用点，
+            // 而「换了一份同维度、同存储的模型文件」只有加载模型之后才比得出来。
+            // 去重与「同一口径最多自动尝试两次」在 `semantic_index_job` 里统一处理。
+            crate::semantic_index_job::enqueue_for_detected_mismatch(core, &mismatch)?;
             warnings.push(format!(
                 "语义检索没有结果：{}；这次没有结果（没有退化成关键词，\
                  也没有拿跨空间的分数当结果）",
@@ -371,6 +406,10 @@ fn hybrid_start(
     }
 
     if let Some(reason) = hybrid_evidence(core)? {
+        // 语义这一路不可用/不一致时也可能是一个「该重建」的事实（尤其是模型已经加载、
+        // 在 `hybrid_evidence` 里当场比出口径不一致的情形）。让自动触发按同一套判据
+        // 决定要不要排一条；不可用的原因不是口径不一致时它什么都不做。
+        crate::semantic_index_job::enqueue_for_caliber_mismatch(core)?;
         let (ordered, coverage, _) =
             keyword_search(core, request, needle, request.page_size, warnings)?;
         let ordered = as_keyword_only_hybrid(ordered);
@@ -575,7 +614,14 @@ fn fuse_hybrid(
     let keyword_groups = keyword_groups(core, needle, filters)?;
 
     // —— 语义那一路：候选已按篇折叠，过门槛，再截断 ——
-    let mut semantic_candidates = match semantic::candidates(core, embedder, needle, filters)? {
+    let semantic_outcome = semantic::candidates(core, embedder, needle, filters)?;
+    if let Some(truncation) = semantic_outcome.query_truncation {
+        warnings.push(format!(
+            "查询太长，只有前 {} 个 token 参与了语义匹配（{truncation}），结果可能不完整",
+            truncation.kept_tokens
+        ));
+    }
+    let mut semantic_candidates = match semantic_outcome.candidates {
         // 兜底（正常走不到：`hybrid_evidence` 与 `upgrade` 都先在加载模型之后核对过口径）。
         // 口径不一致 ⇒ 语义这一路不作数：**不融合**，保留关键词那份快照，
         // 原因写进 `warnings`（调用方据此停在 `keyword_ready`）。
@@ -651,15 +697,7 @@ fn fuse_hybrid(
     // 每个库都不一样；同分时先比它，同一份内容在两个库里就会给出不同的先后。
     // `content_key` 是正文哈希，只由内容决定。真的走到 `groupId` 那一项时，两边的
     // 正文哈希已经相同（内容一样），谁先谁后不影响用户看到什么。
-    fused.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| right.day_key.cmp(&left.day_key))
-            .then_with(|| left.content_key.cmp(&right.content_key))
-            .then_with(|| left.group_id.cmp(&right.group_id))
-    });
+    fused.sort_by(fused_order);
 
     // 走到这里语义候选非空，融合结果必然非空（语义独有那些篇也会进来）。
     debug_assert!(!fused.is_empty());
@@ -755,6 +793,9 @@ pub(crate) fn upgrade(core: &mut Core, session_id: &str) -> Result<SearchSnapsho
         // 挡住，不是逐行 dims 兜底。`hybrid_evidence` 已经拦下 `Ready` 的情形，
         // 这里补的是「模型刚被这一次调用加载出来」的常见真实路径。
         if let Some(mismatch) = semantic::caliber_mismatch(core, &*embedder)? {
+            // 模型刚被这一次调用加载出来：这里才知道 `model_version`，也就是自动重建
+            // 该被排上的时刻（与 open 共用判据/去重/尝试上限）。
+            crate::semantic_index_job::enqueue_for_detected_mismatch(core, &mismatch)?;
             return mark_unavailable(core, &mut state, mismatch.reason());
         }
 
@@ -885,16 +926,24 @@ fn weakest_coverage(left: Coverage, right: Coverage) -> Coverage {
 /// 语义那一路的覆盖程度：没有生效代次或没有块是 `unavailable`，生效代次没覆盖
 /// 完范围内的块是 `partial`，否则 `complete`。
 fn semantic_coverage(core: &Core, filters: &SearchFilters) -> Result<Coverage> {
-    let scope = filters.source_scope.as_deref();
-    let counts = crate::chunks::counts(core, scope)?;
-    if semantic::active_generation(core)?.is_none() || counts.total == 0 {
-        return Ok(Coverage::Unavailable);
+    let start = semantic::profile_enabled().then(Instant::now);
+    let result = (|| -> Result<Coverage> {
+        let scope = filters.source_scope.as_deref();
+        let counts = crate::chunks::counts(core, scope)?;
+        semantic::note_profile(|profile| profile.coverage_fast = counts.fast);
+        if semantic::active_generation(core)?.is_none() || counts.total == 0 {
+            return Ok(Coverage::Unavailable);
+        }
+        Ok(if counts.embedded == counts.total {
+            Coverage::Complete
+        } else {
+            Coverage::Partial
+        })
+    })();
+    if let Some(start) = start {
+        semantic::note_profile(|profile| profile.coverage_ns += semantic::elapsed_ns(start));
     }
-    Ok(if counts.embedded == counts.total {
-        Coverage::Complete
-    } else {
-        Coverage::Partial
-    })
+    result
 }
 
 pub(crate) fn next_page(
@@ -1017,6 +1066,12 @@ pub(crate) fn cancel(core: &mut Core, session_id: &str) -> Result<SearchSnapshot
     let result = materialize(core, &state, &state.last_page);
     // 取消后还留在表里：这样 `search.snapshot` 还能读到「已取消」这个状态，
     // 前端不至于因为会话突然消失而把它当成过期（那是两件事）。
+    //
+    // 但**不再保留完整候选列表**：取消之后不会再有 `nextPage`，`snapshot` 只需要
+    // `last_page`。大库上这份候选是「每篇一条」，10 万块就是几 MB 到几十 MB；取消的
+    // 会话只增不减，量几次查询就把常驻内存垒到 GB 级（#90 量到的真实问题）。
+    // 释放它不影响任何契约：已取消会话的翻页本来就该报过期。
+    state.ordered = Vec::new();
     core.search_sessions_mut().insert(session_id.to_owned(), state);
     result
 }
@@ -1424,7 +1479,63 @@ pub(crate) fn filters_to_params(filters: &SearchFilters) -> Result<(Option<Strin
 
 #[cfg(test)]
 mod rank_tests {
-    use super::next_group_rank;
+    use super::{fused_order, next_group_rank, FusedCandidate};
+
+    fn fused(group_id: &str, score: f32) -> FusedCandidate {
+        FusedCandidate {
+            group_id: group_id.to_owned(),
+            score,
+            day_key: Some("2026-09-20".to_owned()),
+            content_key: "same-content".to_owned(),
+            keyword: None,
+            semantic: None,
+        }
+    }
+
+    /// 回归（评审 #128 复审）：混合融合的排序也必须用 `total_cmp`。
+    ///
+    /// **这条测试真正的红点是下面的位置断言**（`fused[0].is_nan()` /
+    /// `fused[1] == +Inf`）：旧实现 `partial_cmp(...).unwrap_or(Equal)` 让 NaN 没有
+    /// 确定位置，排完 `+Inf` 会跑到 NaN 前面，那两条立刻失败。
+    ///
+    /// 下面那条「传递性」断言**不是**旧实现的红点，别把它当成证据：本测试的三个候选
+    /// `group_id` 各不相同，旧实现的 NaN 虽然与对手「分数不可比」，但 `then_with` 的
+    /// 决胜键（day_key / content_key / group_id）会把这一对比较出大小——`Equal` 只在
+    /// 所有键都相同时才成立。所以旧实现下这条断言同样为 `true`。它留着是防「将来有人
+    /// 去掉决胜键」的回归：那种情况下 NaN 与任意候选都会比成 `Equal`，不传递才真的
+    /// 暴露出来。
+    #[test]
+    fn fusion_sort_is_a_total_order_with_nan_scores() {
+        let nan = fused("nan", f32::NAN);
+        let one = fused("one", 1.0);
+        let two = fused("two", 2.0);
+        // 注意：这组数据里 group_id 不同，决胜键使旧实现也得到非 Equal 的结果，
+        // 这条断言在旧实现下恒真；真正的红点是函数末尾的两条位置断言。
+        assert!(
+            !(fused_order(&nan, &one) == std::cmp::Ordering::Equal
+                && fused_order(&nan, &two) == std::cmp::Ordering::Equal)
+                || fused_order(&one, &two) == std::cmp::Ordering::Equal,
+            "融合排序必须传递：不能把 NaN 同时当成等于 1 和 2，却又认为 1 != 2"
+        );
+
+        let mut fused = [
+            fused("nan", f32::NAN),
+            fused("inf", f32::INFINITY),
+            fused("one", 1.0),
+            fused("neg_inf", f32::NEG_INFINITY),
+        ];
+        fused.sort_by(fused_order);
+        for pair in fused.windows(2) {
+            assert_ne!(
+                fused_order(&pair[0], &pair[1]),
+                std::cmp::Ordering::Greater,
+                "排序结果必须满足全序"
+            );
+        }
+        assert!(fused[0].score.is_nan(), "total_cmp 把 NaN 排在降序最前");
+        assert_eq!(fused[1].score, f32::INFINITY);
+        assert_eq!(fused[3].score, f32::NEG_INFINITY);
+    }
 
     /// 评审在 #60 上给的场景：第一篇占 5 个命中片段、紧随的第二篇只有 1 个。
     /// 按篇给名次 ⇒ 名次是 1、2；按文档位置 ⇒ 第二篇会变成 6（它的融合分就取决于

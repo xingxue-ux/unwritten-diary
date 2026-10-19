@@ -26,6 +26,12 @@ mod semantic_quality;
 // 混合检索（RRF）的量测与阈值扫描，同样需要真模型。
 #[cfg(feature = "search")]
 mod hybrid_quality;
+// 大库可用性实测（issue #90）：1 万/5 万/10 万块的构建、查询、内存、体积与 int8 召回。
+#[cfg(feature = "search")]
+mod large_bench;
+// `Core::open` 的整代口径核对成本（评审 #128 第 6 条）：v15 覆盖索引前后的对比。
+#[cfg(feature = "search")]
+mod open_cost;
 // AI 质量集的评测（issue #93 前半）：判定器 + CER + 回放/真模型两种模式。
 // 判定器本身在 diary_core 里，由 `ai-quality` feature 打开（这一片加进 search 的依赖）。
 #[cfg(feature = "search")]
@@ -35,10 +41,15 @@ use anyhow::Result;
 
 fn usage() -> &'static str {
     "用法：\n  diary_probe short-word-search [片段数，默认 20000]\n  diary_probe quality-set（读 tests/quality/search_quality_set.json，可用 DIARY_QUALITY_SET 覆盖）
-  diary_probe semantic-quality（真模型：语义召回 + pooling×前缀四组 + f32/int8，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）
-  diary_probe hybrid-quality（真模型：三类对照 + 阈值扫描 + matchedBy 分布，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）
+  diary_probe semantic-quality [--storage f32|int8]（真模型：语义召回 + pooling×前缀四组 + f32/int8，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）
+  diary_probe hybrid-quality [--storage f32|int8]（真模型：三类对照 + 阈值扫描 + matchedBy 分布，需要 DIARY_MODEL_DIR 与 DIARY_ORT_DYLIB）
   diary_probe ai-quality [--replay|--live] [--generation-only] [--json 文件] [--quality-dir 目录]（AI 质量集：生成特征 + 防提示注入 + 转写 CER。默认 --replay，不联网；--live 要 DIARY_AI_ENDPOINT/DIARY_AI_MODEL）
   diary_probe ai-quality-set（与 ai-quality 同义，风格对齐 quality-set / semantic-quality / hybrid-quality）
+  diary_probe large-bench build <块数> [--storage f32|int8] [--dir 目录]（真模型：建合成语料 + 语义索引，报构建时间/内存/体积）
+  diary_probe large-bench query <块数> [--storage f32|int8] [--dir 目录] [--queries 40]（另起进程量查询延迟与峰值内存）
+  diary_probe large-bench recall-quality（既有 36 条质量集：f32 vs int8 召回）
+  diary_probe large-bench recall-large [块数，默认 2000]（自造语料：f32 vs int8 召回）
+  diary_probe open-cost <块数> --dir 目录（同一份库上有/无 v15 口径覆盖索引的 open 耗时对比）
   diary_probe plugin-runtime\n  diary_probe vector-model（需要 --features model 与本地权重）\n  diary_probe all [片段数]"
 }
 
@@ -77,13 +88,26 @@ fn main() -> Result<()> {
         }
         "semantic-quality" => {
             #[cfg(feature = "search")]
-            semantic_quality::run()?;
+            semantic_quality::run(&args[1..])?;
             #[cfg(not(feature = "search"))]
             anyhow::bail!("这个构建没有启用 search feature（尝试 cargo run -p diary_probe --features search）");
         }
         "hybrid-quality" => {
             #[cfg(feature = "search")]
-            hybrid_quality::run()?;
+            hybrid_quality::run(&args[1..])?;
+            #[cfg(not(feature = "search"))]
+            anyhow::bail!("这个构建没有启用 search feature（尝试 cargo run -p diary_probe --features search）");
+        }
+        // 大库可用性（issue #90）：build / query / recall-quality / recall-large。
+        "large-bench" => {
+            #[cfg(feature = "search")]
+            large_bench::run(&args[1..])?;
+            #[cfg(not(feature = "search"))]
+            anyhow::bail!("这个构建没有启用 search feature（尝试 cargo run -p diary_probe --features search）");
+        }
+        "open-cost" => {
+            #[cfg(feature = "search")]
+            open_cost::run(&args[1..])?;
             #[cfg(not(feature = "search"))]
             anyhow::bail!("这个构建没有启用 search feature（尝试 cargo run -p diary_probe --features search）");
         }
