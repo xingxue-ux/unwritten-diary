@@ -51,8 +51,15 @@
 // 核心返回的 `char *`。**没有一根 C 指针活到 JS 里**，所以不需要导出 `stringFree`：
 // 也就没有「重复释放 / 忘了释放」这一整类错误。
 //
-// 注意：`diary_capi` 自己的入口已经 `catch_unwind`，panic 不会穿过 FFI；本层不重复兜底，
-// 但同样不 `throw` C++ 异常穿过 NAPI 边界（不用 `std::stoi` 之类会抛的调用）。
+// 注意：`diary_capi` 自己的入口已经 `catch_unwind`，panic 不会穿过 FFI；本层不重复兜底。
+//
+// # C++ 异常兜底（#133）
+//
+// 本层会分配 `std::string` / `std::vector` / `std::unordered_map` 节点；分配失败时
+// 抛 `std::bad_alloc`。C++ 异常穿过 NAPI 边界不是 UB，而是直接 `std::terminate`
+// （JS 侧看不到错误码，进程也没了）。所以**每个** NAPI 回调入口都经过 `Guarded()`：
+// 兜底成既有的 `ERR_DIARY_CALL`（不新增码），并保证已经拿到的 C 资源（`char *` /
+// 句柄）在栈展开时归还（`CoreText` / `PendingHandle`）。
 
 #include <dlfcn.h>
 #include <napi/native_api.h>
@@ -61,7 +68,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <mutex>
+#include <new>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -87,6 +96,47 @@ struct CoreApi {
     CallFn call = nullptr;
     StringFreeFn string_free = nullptr;
     LastErrorFn last_error = nullptr;
+};
+
+// 拥有 `diary_capi` 返回的 `char *`：拷贝成 `std::string` 时若抛 `std::bad_alloc`，
+// 或后续任何一步抛错，析构都会把 C 指针还给核心——不会漏掉 `string_free`。
+class CoreText {
+public:
+    CoreText(CoreApi &api, char *text) : api_(&api), text_(text) {}
+    ~CoreText() {
+        if (text_ != nullptr) {
+            api_->string_free(text_);
+        }
+    }
+    CoreText(const CoreText &) = delete;
+    CoreText &operator=(const CoreText &) = delete;
+
+    const char *get() const { return text_; }
+    std::string Copy() const { return std::string(text_); }
+
+private:
+    CoreApi *api_;
+    char *text_;
+};
+
+// 拥有一个还没交给 JS 的 C 句柄：`Handles().Add` 或 `napi_create_uint32` 抛错/失败时，
+// 析构会 `diary_close` 它——JS 没拿到 id，C 句柄也不能泄漏。
+class PendingHandle {
+public:
+    PendingHandle(CoreApi &api, void *handle) : api_(&api), handle_(handle) {}
+    ~PendingHandle() {
+        if (handle_ != nullptr && api_->close != nullptr) {
+            (void)api_->close(handle_);
+        }
+    }
+    PendingHandle(const PendingHandle &) = delete;
+    PendingHandle &operator=(const PendingHandle &) = delete;
+
+    void Dismiss() { handle_ = nullptr; }
+
+private:
+    CoreApi *api_;
+    void *handle_;
 };
 
 // 本 shim 自己被加载的目录（带结尾 '/'）。给「同目录的兄弟 .so」用，不依赖搜索路径配置。
@@ -196,13 +246,11 @@ std::string TakeLastError(CoreApi &api) {
     if (api.last_error == nullptr) {
         return "{\"code\":\"invalid_state\",\"message\":\"核心没有给出错误详情\",\"retryable\":false}";
     }
-    char *text = api.last_error();
-    if (text == nullptr) {
+    CoreText text(api, api.last_error());
+    if (text.get() == nullptr) {
         return "{\"code\":\"invalid_state\",\"message\":\"核心没有给出错误详情\",\"retryable\":false}";
     }
-    std::string out(text);
-    api.string_free(text);
-    return out;
+    return text.Copy();
 }
 
 // ---------------------------------------------------------------- 句柄登记表
@@ -257,6 +305,35 @@ HandleTable &Handles() {
 void Throw(napi_env env, const char *code, const std::string &message) {
     // napi_throw_error 会把 code 挂到 JS Error 的 `code` 上（ArkTS 侧据此区分「原生层失败」）。
     napi_throw_error(env, code, message.c_str());
+}
+
+// 异常兜底路径本身不能再分配内存（bad_alloc 时再构造 std::string 会直接 terminate）。
+// 调用方用栈上的 `char` 缓冲 + `snprintf`，这里只做一次 C 调用。
+void ThrowLiteral(napi_env env, const char *code, const char *message) noexcept {
+    (void)napi_throw_error(env, code, message);
+}
+
+// 所有 NAPI 回调的统一入口：任何漏网的 C++ 异常（含 std::bad_alloc）都变成
+// JS 侧的 `ERR_DIARY_CALL`，绝不让它穿过 NAPI 边界 terminate 进程。
+// `snprintf` 不分配内存，catch 里构造消息是安全的。
+template <typename Body>
+napi_value Guarded(napi_env env, const char *entry, Body &&body) noexcept {
+    try {
+        return body();
+    } catch (const std::bad_alloc &) {
+        char message[256];
+        (void)snprintf(message, sizeof(message), "%s: std::bad_alloc（原生层内存不足）", entry);
+        ThrowLiteral(env, "ERR_DIARY_CALL", message);
+    } catch (const std::exception &error) {
+        char message[512];
+        (void)snprintf(message, sizeof(message), "%s: %s", entry, error.what());
+        ThrowLiteral(env, "ERR_DIARY_CALL", message);
+    } catch (...) {
+        char message[256];
+        (void)snprintf(message, sizeof(message), "%s: 未知 C++ 异常", entry);
+        ThrowLiteral(env, "ERR_DIARY_CALL", message);
+    }
+    return nullptr;
 }
 
 bool IsString(napi_env env, napi_value value) {
@@ -367,24 +444,22 @@ bool RequireCore(napi_env env, CoreApi *&out) {
 // ---------------------------------------------------------------- JS 函数
 
 // JS: version() -> string
-napi_value VersionJs(napi_env env, napi_callback_info info) {
+napi_value VersionJsImpl(napi_env env, napi_callback_info info) {
     (void)info;
     CoreApi *api = nullptr;
     if (!RequireCore(env, api)) {
         return nullptr;
     }
-    char *text = api->version();
-    if (text == nullptr) {
+    CoreText text(*api, api->version());
+    if (text.get() == nullptr) {
         Throw(env, "ERR_DIARY_LIB", "diary_capi_version() 返回 NULL");
         return nullptr;
     }
-    std::string out(text);
-    api->string_free(text);
-    return MakeString(env, out);
+    return MakeString(env, text.Copy());
 }
 
 // JS: open(path: string) -> number（句柄 id）
-napi_value OpenJs(napi_env env, napi_callback_info info) {
+napi_value OpenJsImpl(napi_env env, napi_callback_info info) {
     std::string path;
     if (!ReadStringArg(env, info, 0, "path", path)) {
         return nullptr;
@@ -399,20 +474,22 @@ napi_value OpenJs(napi_env env, napi_callback_info info) {
         Throw(env, "ERR_DIARY_OPEN", TakeLastError(*api));
         return nullptr;
     }
+    // 拿到 C 句柄后、JS 拿到 id 之前，任何一步抛错/失败都由 `pending` 负责关闭它。
+    PendingHandle pending(*api, handle);
     napi_value out = nullptr;
     const uint32_t id = Handles().Add(handle);
     if (napi_create_uint32(env, id, &out) != napi_ok) {
-        // 极端情况：JS 值都造不出来。把登记表和 C 句柄都还回去，避免泄漏。
+        // 极端情况：JS 值都造不出来。把登记表还回去；C 句柄由 pending 析构关闭。
         (void)Handles().Take(id);
-        (void)api->close(handle);
         Throw(env, "ERR_DIARY_CALL", "创建返回值失败");
         return nullptr;
     }
+    pending.Dismiss();
     return out;
 }
 
 // JS: close(handle: number) -> void
-napi_value CloseJs(napi_env env, napi_callback_info info) {
+napi_value CloseJsImpl(napi_env env, napi_callback_info info) {
     uint32_t id = 0;
     if (!ReadHandleArg(env, info, 0, id)) {
         return nullptr;
@@ -438,7 +515,7 @@ napi_value CloseJs(napi_env env, napi_callback_info info) {
 }
 
 // JS: call(handle: number, methodJson: string) -> string（信封 JSON 原文）
-napi_value CallJs(napi_env env, napi_callback_info info) {
+napi_value CallJsImpl(napi_env env, napi_callback_info info) {
     uint32_t id = 0;
     if (!ReadHandleArg(env, info, 0, id)) {
         return nullptr;
@@ -458,19 +535,18 @@ napi_value CallJs(napi_env env, napi_callback_info info) {
         Throw(env, "ERR_DIARY_HANDLE", "句柄无效或已关闭（id=" + std::to_string(id) + "）");
         return nullptr;
     }
-    char *text = api->call(handle, request.c_str());
-    if (text == nullptr) {
+    CoreText text(*api, api->call(handle, request.c_str()));
+    if (text.get() == nullptr) {
         // C ABI 文档：diary_call 只在内存分配失败时返回 NULL。
         Throw(env, "ERR_DIARY_CALL", "diary_call 返回 NULL：" + TakeLastError(*api));
         return nullptr;
     }
-    std::string out(text);
-    api->string_free(text);  // 复制完立刻还回去：C 指针不进 JS
-    return MakeString(env, out);
+    // 复制后由 CoreText 析构归还：C 指针不进 JS，抛错路径也不漏。
+    return MakeString(env, text.Copy());
 }
 
 // JS: lastError() -> string | null
-napi_value LastErrorJs(napi_env env, napi_callback_info info) {
+napi_value LastErrorJsImpl(napi_env env, napi_callback_info info) {
     (void)info;
     CoreApi &api = Core();
     if (api.handle == nullptr || api.last_error == nullptr) {
@@ -478,32 +554,63 @@ napi_value LastErrorJs(napi_env env, napi_callback_info info) {
         napi_get_null(env, &null_value);
         return null_value;
     }
-    char *text = api.last_error();
-    if (text == nullptr) {
+    CoreText text(api, api.last_error());
+    if (text.get() == nullptr) {
         napi_value null_value = nullptr;
         napi_get_null(env, &null_value);
         return null_value;
     }
-    std::string out(text);
-    api.string_free(text);
-    return MakeString(env, out);
+    return MakeString(env, text.Copy());
 }
 
 // JS: selfDir() -> string
-napi_value SelfDirJs(napi_env env, napi_callback_info info) {
+napi_value SelfDirJsImpl(napi_env env, napi_callback_info info) {
     (void)info;
     return MakeString(env, SelfDir());
 }
 
 // JS: openHandleCount() -> number（排障 / 泄漏自检：正常应是 0）
-napi_value OpenHandleCountJs(napi_env env, napi_callback_info info) {
+napi_value OpenHandleCountJsImpl(napi_env env, napi_callback_info info) {
     (void)info;
     napi_value out = nullptr;
     napi_create_uint32(env, static_cast<uint32_t>(Handles().Size()), &out);
     return out;
 }
 
-napi_value Init(napi_env env, napi_value exports) {
+// ---------------------------------------------------------------- 统一异常边界
+//
+// 下面的薄包装是**唯一**注册给 NAPI 的入口：函数体里的 `std::bad_alloc` / 其它
+// C++ 异常都在这里变成 `ERR_DIARY_CALL` 的 JS 异常，不会 terminate 进程。
+
+napi_value VersionJs(napi_env env, napi_callback_info info) noexcept {
+    return Guarded(env, "version", [&] { return VersionJsImpl(env, info); });
+}
+
+napi_value OpenJs(napi_env env, napi_callback_info info) noexcept {
+    return Guarded(env, "open", [&] { return OpenJsImpl(env, info); });
+}
+
+napi_value CloseJs(napi_env env, napi_callback_info info) noexcept {
+    return Guarded(env, "close", [&] { return CloseJsImpl(env, info); });
+}
+
+napi_value CallJs(napi_env env, napi_callback_info info) noexcept {
+    return Guarded(env, "call", [&] { return CallJsImpl(env, info); });
+}
+
+napi_value LastErrorJs(napi_env env, napi_callback_info info) noexcept {
+    return Guarded(env, "lastError", [&] { return LastErrorJsImpl(env, info); });
+}
+
+napi_value SelfDirJs(napi_env env, napi_callback_info info) noexcept {
+    return Guarded(env, "selfDir", [&] { return SelfDirJsImpl(env, info); });
+}
+
+napi_value OpenHandleCountJs(napi_env env, napi_callback_info info) noexcept {
+    return Guarded(env, "openHandleCount", [&] { return OpenHandleCountJsImpl(env, info); });
+}
+
+napi_value InitImpl(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {
         {"version", nullptr, VersionJs, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"open", nullptr, OpenJs, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -516,6 +623,10 @@ napi_value Init(napi_env env, napi_value exports) {
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     return exports;
+}
+
+napi_value Init(napi_env env, napi_value exports) noexcept {
+    return Guarded(env, "init", [&] { return InitImpl(env, exports); });
 }
 
 napi_module g_module = {

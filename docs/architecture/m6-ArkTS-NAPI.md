@@ -492,9 +492,11 @@ $ python3 tools/check_arkts_capi_contract.py
 11. **release 构建 / 混淆**：只打了 debug、没开混淆；release 下的 ArkTS 优化未验；
 12. **升级 / 回滚**：`data_schema_version` 与旧库的兼容没验；
 13. **hilog 输出本身**：`Smoke.ets` 的日志代码完整，但一行都没在设备上出现过；
-14. **C++ 侧 OOM 没兜底**：shim 里的 `std::string` / 容器分配失败是 `std::bad_alloc`，
-    会以 C++ 异常穿透 NAPI 边界（进程中止）。这是 OOM 级的不可恢复错误，没有兜底；
-    核心自己的 panic 仍然由 `diary_capi` 的 `catch_unwind` 拦住（C ABI 文档 §8）。
+14. ~~**C++ 侧 OOM 没兜底**~~ → **#133 已修**：shim 的 8 个入口都经 `Guarded()`
+    （`std::bad_alloc` / 其它 C++ 异常 → 既有 `ERR_DIARY_CALL`），`CoreText` /
+    `PendingHandle` RAII 归还 C 字符串与句柄。**验证只在 host harness（stub NAPI +
+    注入 `bad_alloc`）上做，真机 OOM 未注入**（见工程 README 第 14 项）；
+    核心自己的 panic 仍由 `diary_capi` 的 `catch_unwind` 拦住（C ABI 文档 §8）。
 
 ## 10 需要拍板的地方
 
@@ -533,4 +535,4 @@ $ python3 tools/check_arkts_capi_contract.py
 3. 补大库/权限拒绝/磁盘满的设备侧用例（`open` 错误码已修，`revision_conflict`/损坏库已验）；
 4. 性能：库加载、JSON 往返、检索首屏——**2026-10-18 已测出中位数**（见工程 README 性能表）；
 5. 方法面继续接（`captures.list` / `jobs.list` / `indexes.status` …），ArkTS 侧同步加；
-6. 决定 HAR 化与 CI；补 C++ OOM 兜底（`bad_alloc`）。
+6. ~~补 C++ OOM 兜底（`bad_alloc`）~~ **#133 已修（host 注入验证）**；剩下决定 HAR 化与 CI。
