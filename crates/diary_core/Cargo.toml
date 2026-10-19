@@ -47,9 +47,20 @@ libloading = "0.9"
 
 [features]
 # AI 质量集的**判定器**（issue #93，B4b-ai-quality）。默认不开：判定器不是产品代码，
-# 产品路径一个字节都不该为它变大。`cargo test -p diary_core`（dev-dependencies 生效时
-# 测试自带 `cfg(test)`）与 `tools/probe` 显式打开它。
+# 产品路径一个字节都不该为它变大。由 `tools/probe` 与下面的 `[[test]]` 显式打开。
+#
+# `src/lib.rs` 的门是 `#[cfg(any(test, feature = "ai-quality"))]`，而 `cfg(test)` 只对
+# **本 crate 的单元测试**成立；`tests/ai_quality_test.rs` 是集成测试，把本 crate 当普通
+# 依赖链接，那里 `cfg(test)` **不成立**。所以那个测试文件要靠
+# `required-features = ["ai-quality"]` 声明依赖——否则裸 `cargo test -p diary_core` 会
+# 因为 `diary_core::quality` 不存在而编译失败（旧注释写成"dev-dependencies 生效时测试自带
+# cfg(test)"，那是错的）。
 ai-quality = []
+
+# 集成测试是独立 crate，`cfg(test)` 对它不成立，见上。
+[[test]]
+name = "ai_quality_test"
+required-features = ["ai-quality"]
 
 [dev-dependencies]
 tempfile = "3"
