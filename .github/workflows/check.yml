@@ -40,6 +40,14 @@ jobs:
         run: |
           python3 tools/check_docs.py
           python3 tools/test_check_docs.py
+      # 诊断包隐私/确定性测试：之前只在本地手动跑，Windows 上的 time.tzset
+      # 硬红一直没被 CI 发现。它只用 Python 标准库，几秒钟，跟 docs 一起跑。
+      - name: 诊断包隐私与 zip 确定性测试
+        run: python3 tools/diagnostics/test_no_user_content.py
+      # NAPI host harness：用 stub NAPI + 假核心在普通 Linux 上编译真 shim，
+      # 逐个入口注入 C++ 异常，并断言 open() 异常后句柄表为空。只需 g++。
+      - name: NAPI host harness（C++ 异常路径 / 句柄表）
+        run: bash apps/ohos-diary-core/tests/napi_host/run.sh
 
   dart:
     name: dart

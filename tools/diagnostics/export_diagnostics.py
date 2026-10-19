@@ -453,6 +453,17 @@ def read_logs(path: Path | None, limit: int) -> dict[str, Any]:
     }
 
 
+def model_id_of(model_version: str) -> str:
+    """从库里的 `model_version` 取出模型包名字。
+
+    `embedding.rs::model_version_for()` 写入的是 `MODEL_ID@sha256前12位`
+    （例如 `bge-small-zh-v1.5-ours@abc123456789`），不是裸 `MODEL_ID`。拿整串
+    和 `EXPECTED_MODEL_ID` 全等比较会对真实库恒为 false；哈希只说明「同一模型包
+    的哪一份文件」，模型身份看 `@` 前那一段。
+    """
+    return model_version.split("@", 1)[0]
+
+
 def collect_index(conn: sqlite3.Connection) -> dict[str, Any]:
     total_segments = table_count(conn, "extracted_segments")
     indexed_segments = table_count(conn, "search_docs")
@@ -542,10 +553,17 @@ def collect_index(conn: sqlite3.Connection) -> dict[str, Any]:
     elif has_chunk_vectors:
         embedded_chunks = 0
 
-    if not has_chunk_vectors:
+    # 只比 `@` 前的模型包名：真实 `model_version` 是
+    # `MODEL_ID@sha256[:12]`（`embedding.rs`），整串全等会让健康库恒为 false。
+    # 没有生效代次 / 该代次还没有向量时没有可比对象，给 null 而不是 false：
+    # false 会被读成「模型不对」，实际是「还不知道」。
+    distinct_model_versions = set(model_versions)
+    if not distinct_model_versions:
         model_version_matches_expected: bool | None = None
     else:
-        model_version_matches_expected = sorted(set(model_versions)) == [EXPECTED_MODEL_ID]
+        model_version_matches_expected = len(distinct_model_versions) == 1 and (
+            model_id_of(next(iter(distinct_model_versions))) == EXPECTED_MODEL_ID
+        )
 
     chunker_version: str | None = None
     if table_exists(conn, "text_chunks"):

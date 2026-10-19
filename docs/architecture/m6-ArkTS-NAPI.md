@@ -495,7 +495,10 @@ $ python3 tools/check_arkts_capi_contract.py
 14. ~~**C++ 侧 OOM 没兜底**~~ → **#133 已修**：shim 的 8 个入口都经 `Guarded()`
     （`std::bad_alloc` / 其它 C++ 异常 → 既有 `ERR_DIARY_CALL`），`CoreText` /
     `PendingHandle` RAII 归还 C 字符串与句柄。**验证只在 host harness（stub NAPI +
-    注入 `bad_alloc`）上做，真机 OOM 未注入**（见工程 README 第 14 项）；
+    注入 `bad_alloc`）上做，真机 OOM 未注入**；harness 已入库在
+    [`apps/ohos-diary-core/tests/napi_host/`](../../apps/ohos-diary-core/tests/napi_host/harness.cpp)
+    （`run.sh`，随 `check.yml` 的 docs job 在 Linux 上跑），并断言 `open()` 在
+    `Handles().Add` 之后抛异常时句柄表被 `Take` 干净（`openHandleCount() == 0`）。
     核心自己的 panic 仍由 `diary_capi` 的 `catch_unwind` 拦住（C ABI 文档 §8）。
 
 ## 10 需要拍板的地方

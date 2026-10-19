@@ -598,7 +598,7 @@ hdc shell "hilog -x" | grep DIARY_HAP
 | 11 | release / 混淆 | ⚠️ **门控前的历史证据**（当前 release 不跑 Smoke） | 门控前那次 release 构建：`BUILD_MODE=release` 签名安装成功、`debug:false`、Smoke 通过；混淆 HAP 也跑通 Smoke（构建后已还原 `enable:false`）。**现在** release 下 `EntryAbility` 走 `PROBE_DISABLED`，Smoke / record* / asr_* / hap_both 都不跑，`INTERNET` 也不在 release 包内 ⇒ 该证据只说明「当初验过」，不代表「现在还能验」；本轮也没装 release 真机（见「没验到的」） |
 | 12 | 升级回滚（同 bundleName 重装，数据仍在） | ✅ 升级通过 | v1 `1000000/1.0.0` → v2 `1000001/1.0.1`；升级前后 `captures=4`、`hits=2`、`dbBytes=389120`、`schema=13` 完全一致 |
 | 13 | hilog 实际输出 | ✅ 通过 | `DIARY_SMOKE JSON[...]` 10 个 label 全部按分片还原成合法 JSON（`search` 占 2 片）；`CLOSED handles=0` 出现 |
-| 14 | C++ OOM 兜底 | ✅ 已修（#133；host 注入，**设备未跑 OOM**） | 所有 NAPI 入口统一走 `Guarded()`：`std::bad_alloc` / 其它 C++ 异常兜底成既有 `ERR_DIARY_CALL`，不再穿透边界；`CoreText`/`PendingHandle` RAII 保证异常路径归还 `char *`/句柄。host harness 对 8 个入口逐个注入 `bad_alloc`：修前 8/8 逃逸，修后 8/8 变成 `ERR_DIARY_CALL`，`diary_string_free` 恰好 1 次 |
+| 14 | C++ OOM 兜底 | ✅ 已修（#133；host 注入，**设备未跑 OOM**） | 所有 NAPI 入口统一走 `Guarded()`：`std::bad_alloc` / 其它 C++ 异常兜底成既有 `ERR_DIARY_CALL`，不再穿透边界；`CoreText`/`PendingHandle` RAII 保证异常路径归还 `char *`/句柄。host harness（[`tests/napi_host/run.sh`](tests/napi_host/run.sh)）对 8 个入口逐个注入 `bad_alloc`：修前 8/8 逃逸，修后 8/8 变成 `ERR_DIARY_CALL`，`diary_string_free` 恰好 1 次；另注入 `open()` 在 `Add` 之后抛异常，断言 `openHandleCount()==0`（修前虚报 1，且 `close(id)` double-free abort） |
 
 ### 第 1 项：dlopen / dlsym（11.37 MB 那份）
 

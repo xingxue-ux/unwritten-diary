@@ -119,26 +119,6 @@ private:
     char *text_;
 };
 
-// 拥有一个还没交给 JS 的 C 句柄：`Handles().Add` 或 `napi_create_uint32` 抛错/失败时，
-// 析构会 `diary_close` 它——JS 没拿到 id，C 句柄也不能泄漏。
-class PendingHandle {
-public:
-    PendingHandle(CoreApi &api, void *handle) : api_(&api), handle_(handle) {}
-    ~PendingHandle() {
-        if (handle_ != nullptr && api_->close != nullptr) {
-            (void)api_->close(handle_);
-        }
-    }
-    PendingHandle(const PendingHandle &) = delete;
-    PendingHandle &operator=(const PendingHandle &) = delete;
-
-    void Dismiss() { handle_ = nullptr; }
-
-private:
-    CoreApi *api_;
-    void *handle_;
-};
-
 // 本 shim 自己被加载的目录（带结尾 '/'）。给「同目录的兄弟 .so」用，不依赖搜索路径配置。
 std::string SelfDir() {
     Dl_info info{};
@@ -299,6 +279,43 @@ HandleTable &Handles() {
     static HandleTable table;
     return table;
 }
+
+// 拥有一个「还没交给 JS」的 open 结果：C 句柄 + 可能已经登记进表的 id。
+//
+// open() 的顺序是 `Handles().Add(handle)` → `napi_create_uint32` → 交给 JS。
+// 中间任何一步失败（返回 `napi_status` 失败）**或抛 C++ 异常**（本层承诺兜底任意
+// 异常，harness 正是往这里注入 `bad_alloc` 的），两样都不能留：
+//   * 没关的 C 句柄 → `diary_close` 泄漏；
+//   * `id → 已关闭指针` 的悬空表项 → 之后 `close(id)` 可能 double-close / UAF，
+//     `openHandleCount()` 还会虚报泄漏。
+// 所以析构**先** `Take(id)` **再** close：两步都在栈展开时执行。正常路径
+// `Dismiss()` 之后，id 归 JS、句柄归调用方。
+class PendingHandle {
+public:
+    PendingHandle(CoreApi &api, void *handle) : api_(&api), handle_(handle) {}
+    ~PendingHandle() {
+        if (id_ != 0) {
+            (void)Handles().Take(id_);
+        }
+        if (handle_ != nullptr && api_->close != nullptr) {
+            (void)api_->close(handle_);
+        }
+    }
+    PendingHandle(const PendingHandle &) = delete;
+    PendingHandle &operator=(const PendingHandle &) = delete;
+
+    // 记下表里的 id。`Handles().Add` 自己抛错时 id 仍是 0，析构只 close 句柄。
+    void Adopt(uint32_t id) { id_ = id; }
+    void Dismiss() {
+        id_ = 0;
+        handle_ = nullptr;
+    }
+
+private:
+    CoreApi *api_;
+    void *handle_;
+    uint32_t id_ = 0;
+};
 
 // ---------------------------------------------------------------- NAPI 小工具
 
@@ -474,13 +491,14 @@ napi_value OpenJsImpl(napi_env env, napi_callback_info info) {
         Throw(env, "ERR_DIARY_OPEN", TakeLastError(*api));
         return nullptr;
     }
-    // 拿到 C 句柄后、JS 拿到 id 之前，任何一步抛错/失败都由 `pending` 负责关闭它。
+    // 拿到 C 句柄后、JS 拿到 id 之前，任何一步抛错/失败（含 napi_create_uint32
+    // 抛 C++ 异常）都由 `pending` 负责：先从登记表 Take 掉 id，再关闭 C 句柄。
     PendingHandle pending(*api, handle);
-    napi_value out = nullptr;
     const uint32_t id = Handles().Add(handle);
+    pending.Adopt(id);
+    napi_value out = nullptr;
     if (napi_create_uint32(env, id, &out) != napi_ok) {
-        // 极端情况：JS 值都造不出来。把登记表还回去；C 句柄由 pending 析构关闭。
-        (void)Handles().Take(id);
+        // 极端情况：JS 值都造不出来。表项与 C 句柄都由 pending 析构归还。
         Throw(env, "ERR_DIARY_CALL", "创建返回值失败");
         return nullptr;
     }

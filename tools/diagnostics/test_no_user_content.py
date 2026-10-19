@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import sqlite3
@@ -37,6 +36,9 @@ SCRIPT = Path(__file__).resolve().with_name("export_diagnostics.py")
 ERROR_RS = ROOT / "crates" / "diary_core" / "src" / "error.rs"
 JOBS_RS = ROOT / "crates" / "diary_core" / "src" / "jobs.rs"
 MODEL_RS = ROOT / "crates" / "diary_core" / "src" / "model.rs"
+EMBEDDING_RS = ROOT / "crates" / "diary_core" / "src" / "embedding.rs"
+CHUNKER_RS = ROOT / "crates" / "diary_core" / "src" / "chunker.rs"
+SEARCH_RS = ROOT / "crates" / "diary_core" / "src" / "search.rs"
 CORE_WAKEUP_DART = ROOT / "apps" / "diary_app" / "lib" / "src" / "core_wakeup.dart"
 API_VALUES_DART = ROOT / "packages" / "diary_api" / "lib" / "src" / "values.dart"
 NAPI_SHIM_CPP = (
@@ -147,12 +149,14 @@ def build_fixture(base: Path) -> tuple[Path, Path, Path]:
     conn.execute("INSERT INTO search_grams VALUES('日记', 1)")
     conn.execute("INSERT INTO search_capture_grams VALUES('草稿', 1)")
     conn.execute(
-        "INSERT INTO text_chunks VALUES('chunk_1', ?, ?)",
-        (CANARIES[3], CANARIES[11]),
+        "INSERT INTO text_chunks VALUES('chunk_1', ?, 'chunker-1-packday-line400-overlap48')",
+        (CANARIES[3],),
     )
+    # Real on-disk format: `MODEL_ID@sha256[:12]` (embedding.rs). The healthy
+    # fixture must keep it so the `modelVersionMatchesExpected == true`
+    # positive case exists; a canary here made that branch untestable.
     conn.execute(
-        "INSERT INTO chunk_vectors VALUES('chunk_1', 1, ?, 512, X'00000000')",
-        (CANARIES[10],),
+        "INSERT INTO chunk_vectors VALUES('chunk_1', 1, 'bge-small-zh-v1.5-ours@abc123', 512, X'00000000')"
     )
     conn.execute("INSERT INTO index_meta VALUES(1, 1, NULL)")
     conn.execute("INSERT INTO blobs VALUES('sha_1','blobs/sha_1',11)")
@@ -294,6 +298,15 @@ def parse_model_wire_values(enum_name: str) -> set[str]:
     return set(WIRE_ARM_RE.findall(body.group(1)))
 
 
+def parse_rust_str_const(path: Path, name: str) -> str:
+    """Read `pub const <name>: &str = "…";` out of a Rust source file."""
+    text = path.read_text(encoding="utf-8")
+    match = re.search(rf'pub const {name}: &str = "([^"]+)";', text)
+    if match is None:
+        raise AssertionError(f"could not find {name} in {path.name}")
+    return match.group(1)
+
+
 def build_fixed_data(library: Path, logs: Path) -> dict[str, Any]:
     """Build the real bundle payload once, with a frozen `generatedAt`."""
     from export_diagnostics import build_diagnostics
@@ -396,14 +409,16 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
         self.assertEqual(data["index"]["semantic"]["embeddedChunks"], 1)
         self.assertTrue(data["index"]["semantic"]["ready"])
         # Only matchesExpected booleans; the raw model/chunker strings never
-        # leave the exporter (they are user-writable TEXT columns).
+        # leave the exporter (they are user-writable TEXT columns). A healthy
+        # library stores `MODEL_ID@sha256[:12]`, so both must be true.
         semantic = data["index"]["semantic"]
-        self.assertFalse(semantic["modelVersionMatchesExpected"])
-        self.assertFalse(semantic["chunkerVersionMatchesExpected"])
+        self.assertTrue(semantic["modelVersionMatchesExpected"])
+        self.assertTrue(semantic["chunkerVersionMatchesExpected"])
         self.assertNotIn("modelVersions", semantic)
         self.assertNotIn("chunkerVersion", semantic)
-        self.assertNotIn(CANARIES[10], json.dumps(data, ensure_ascii=False))
-        self.assertNotIn(CANARIES[11], json.dumps(data, ensure_ascii=False))
+        # The hash half is user-specific (it identifies the local model file):
+        # only the expected id constant may appear, never `MODEL_ID@hash`.
+        self.assertNotIn("abc123", json.dumps(data, ensure_ascii=False))
         self.assertNotIn("CANARY", json.dumps(data, ensure_ascii=False))
 
         keys = set(walk_keys(data))
@@ -508,6 +523,26 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
             "diagnostics job-state whitelist drifted from model.rs",
         )
 
+    def test_expected_versions_match_rust_constants(self) -> None:
+        # The exporter repeats three Rust constants. If either side changes the
+        # format/name (as `MODEL_ID@sha` did), the matchesExpected booleans go
+        # silently false; pin them to the source of truth instead.
+        from export_diagnostics import (
+            EXPECTED_CHUNKER,
+            EXPECTED_MODEL_ID,
+            EXPECTED_TOKENIZER,
+        )
+
+        self.assertEqual(
+            EXPECTED_MODEL_ID, parse_rust_str_const(EMBEDDING_RS, "MODEL_ID")
+        )
+        self.assertEqual(
+            EXPECTED_CHUNKER, parse_rust_str_const(CHUNKER_RS, "CHUNKER_VERSION")
+        )
+        self.assertEqual(
+            EXPECTED_TOKENIZER, parse_rust_str_const(SEARCH_RS, "TOKENIZER_VERSION")
+        )
+
     def test_app_only_log_codes_match_dart_enum(self) -> None:
         from export_diagnostics import APP_ONLY_ERROR_CODES, LOG_ONLY_ERROR_CODES
 
@@ -527,11 +562,17 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
             self.assertIn(f'"{code}"', cpp, f"{code} is no longer in napi_shim.cpp")
 
     def test_zip_members_use_utc_fixed_time_and_are_deterministic(self) -> None:
-        """Same payload + different local timezone => identical zip bytes.
+        """Same payload, different local clock => identical zip bytes.
 
         Before the fix `zipfile` stamped every member with `time.localtime()`,
         so two exports from different timezones differed (and the member time
         minus `generatedAt` exposed the user's UTC offset).
+
+        `time.tzset` is POSIX-only (Windows has no such attribute) and on
+        Windows `TZ` does not affect `localtime` anyway, so a `tzset`-based
+        probe is either a hard ERROR or a fake green there. Poison
+        `time.localtime` itself instead: no platform API, and any regression
+        that starts stamping members from the local clock changes the bytes.
         """
         from export_diagnostics import ZIP_MEMBER_DATE_TIME, write_bundle
 
@@ -539,22 +580,21 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
         first = self.base / "first.zip"
         second = self.base / "second.zip"
         write_bundle(data, first, True)
-        saved_tz = os.environ.get("TZ")
+        real_localtime = time.localtime
         try:
-            os.environ["TZ"] = "Pacific/Kiritimati"  # UTC+14
-            time.tzset()
+            # A deliberately absurd local time; if any member picked it up,
+            # the digest below would differ.
+            time.localtime = lambda *_args, **_kwargs: time.struct_time(
+                (2038, 1, 2, 3, 4, 5, 6, 7, -1)
+            )
             write_bundle(data, second, True)
         finally:
-            if saved_tz is None:
-                os.environ.pop("TZ", None)
-            else:
-                os.environ["TZ"] = saved_tz
-            time.tzset()
+            time.localtime = real_localtime
 
         self.assertEqual(
             hashlib.sha256(first.read_bytes()).hexdigest(),
             hashlib.sha256(second.read_bytes()).hexdigest(),
-            "same data exported under a different TZ produced different bytes",
+            "same data exported under a different local clock produced different bytes",
         )
         with zipfile.ZipFile(first) as archive:
             self.assertEqual(
@@ -583,6 +623,48 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
                 "ready",
             },
         )
+
+    def test_model_and_chunker_version_canaries_stay_redacted(self) -> None:
+        # `chunk_vectors.model_version` / `text_chunks.chunker_version` are
+        # writable TEXT columns; a poisoned library must only yield `false`,
+        # never echo the value itself.
+        conn = sqlite3.connect(self.library)
+        conn.execute("UPDATE chunk_vectors SET model_version = ?", (CANARIES[10],))
+        conn.execute("UPDATE text_chunks SET chunker_version = ?", (CANARIES[11],))
+        conn.commit()
+        conn.close()
+
+        result = self.run_export(self.out)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        raw = all_archive_bytes(self.out)
+        for canary in (CANARIES[10], CANARIES[11]):
+            self.assertNotIn(canary.encode("utf-8"), raw, f"leaked: {canary}")
+        with zipfile.ZipFile(self.out) as archive:
+            semantic = json.loads(archive.read("diagnostics.json"))["index"]["semantic"]
+        self.assertFalse(semantic["modelVersionMatchesExpected"])
+        self.assertFalse(semantic["chunkerVersionMatchesExpected"])
+
+    def test_no_effective_generation_reports_null_model_match(self) -> None:
+        # Without an effective generation there is nothing to compare: the
+        # field must be `null` ("unknown"), not `false` ("the model is wrong").
+        mutations = [
+            ("active_generation NULL", "UPDATE index_meta SET active_generation = NULL", 0),
+            ("chunk_vectors table missing", "DROP TABLE chunk_vectors", None),
+        ]
+        for index, (label, sql, embedded) in enumerate(mutations):
+            with self.subTest(label):
+                conn = sqlite3.connect(self.library)
+                conn.execute(sql)
+                conn.commit()
+                conn.close()
+                out = self.base / f"empty-{index}.zip"
+                result = self.run_export(out)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                with zipfile.ZipFile(out) as archive:
+                    semantic = json.loads(archive.read("diagnostics.json"))["index"]["semantic"]
+                self.assertIsNone(semantic["modelVersionMatchesExpected"], label)
+                self.assertFalse(semantic["ready"], label)
+                self.assertEqual(semantic["embeddedChunks"], embedded, label)
 
     def test_unknown_short_code_is_redacted_by_function(self) -> None:
         from export_diagnostics import sanitize_log_entry
