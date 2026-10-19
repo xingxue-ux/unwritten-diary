@@ -311,6 +311,11 @@ enum ProviderCapability {
 /// 事件类型，契约第 6 节。
 enum DomainEventType {
   captureChanged('capture.changed'),
+  captureTrashed('capture.trashed'),
+  captureRestored('capture.restored'),
+  /// 改归属日。多词事件的第二个词起用 camelCase，与 `diary.versionCreated` 一致。
+  captureMovedDay('capture.movedDay'),
+  capturePurged('capture.purged'),
   assetChanged('asset.changed'),
   diaryVersionCreated('diary.versionCreated'),
   diaryCurrentChanged('diary.currentChanged'),

@@ -34,7 +34,15 @@ use rusqlite::{params, Connection};
 /// `input_snapshot_hash` 会让同一个库按口径碎成好几条「活着」的任务，正好破坏
 /// 「至多一条活着的整代重建」。v1–v14 也没有一张键值表可借用；`index_meta` 是
 /// 单行的索引元数据，这一列与它同一个主题，所以升版本、写迁移是诚实的代价。
-pub const SCHEMA_VERSION: i64 = 15;
+///
+/// 16 是回收站（B7）抬的号：给 `captures` 加一列 `trashed_from_state`，记住移入
+/// 回收站之前是 `draft` 还是 `committed`。契约 3.1 节的状态机写的是「恢复回原状态」，
+/// 而 v1–v15 的 `captures` 没有第二处能存这个事实：`state` 已经被 `trashed` 占用，
+/// 派生内容（有没有 source / 有没有正文）都不能可靠反推（空白草稿提交后是
+/// `committed`、也可以没有任何来源）。所以这是**必要的加性迁移**：只加一列，
+/// 老数据留 NULL（升级前没有回收站入口，NULL 在恢复时按 `committed` 的解释处理，
+/// 见 `recycle::restore`），不回填、不改任何已有行。
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -48,7 +56,7 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     }
     if current == SCHEMA_VERSION {
         // 版本已经最新：v15 的列不用动。但覆盖索引仍可能被手工删掉或单独补建失败
-        // ——`current` 是 15 并不能证明索引在。每次 open 只多一次 `sqlite_master`
+        // ——`current` 是当前版本并不能证明索引在。每次 open 只多一次 `sqlite_master`
         // 查询，缺才建（#133 第 1 条，见 `ensure_v15_caliber_index`）。
         ensure_v15_caliber_index(conn)?;
         return Ok(());
@@ -155,6 +163,13 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 没有「替用户记一次自动尝试」这种默认：升级后的第一次 `open` 仍会按当时的
         // 口径如实判断该不该自动排一条。
     }
+    if current < 16 && !column_exists(&tx, "captures", "trashed_from_state")? {
+        tx.execute_batch(V16)?;
+        // **不回填**：升级前没有「移入回收站」的入口（虽然有 `trashed` 这个值，
+        // 但没有任何代码写它），所以老库里这一列只可能是 NULL。恢复时把 NULL
+        // 解释成 `committed`（见 `recycle::restore`）——不能凭有没有来源去猜，
+        // 空白草稿提交之后也是 `committed`。
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.execute(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
@@ -179,7 +194,7 @@ fn table_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
 /// 表里有没有这一列（迁移的结构性守卫用）。
 ///
 /// `PRAGMA table_info` 的表名不能参数化，所以用 `format!` 拼进来——**调用方只传代码里的
-/// 常量**（现在只有 `"diary_days"`），不接受外部输入，没有注入面。
+/// 常量**（`diary_days` / `index_meta` / `captures`），不接受外部输入，没有注入面。
 fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
     let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let mut rows = statement.query([])?;
@@ -942,3 +957,12 @@ const V15_CALIBER_INDEX: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_chunk_vectors_caliber
     ON chunk_vectors(generation, model_version, dims, storage);
 "#;
+
+/// v16：记住「移入回收站之前是什么状态」。
+///
+/// 契约 3.1 节要求恢复回原状态（`draft → committed`、`draft/committed → trashed`、
+/// 恢复回原状态）。恢复时不能从别的列反推：没有来源不等于草稿（空白草稿提交后是
+/// `committed`），有来源也不等于一定提交过（导入可以发生在草稿上）。所以存一份。
+///
+/// 只加列、不回填：升级前没有回收站入口，老库里不会出现需要恢复的 `trashed` 行。
+const V16: &str = "ALTER TABLE captures ADD COLUMN trashed_from_state TEXT;";

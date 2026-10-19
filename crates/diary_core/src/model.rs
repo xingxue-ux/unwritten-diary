@@ -128,6 +128,33 @@ pub struct CapturePage {
     pub next_cursor: Option<String>,
 }
 
+/// 永久清理的影响预览，契约 4.1 节 `captures.previewPurge`。
+///
+/// 清单是**这一次预览时**数据库里的真实行：原件（assets）、派生内容
+/// （extracted_contents，含它的片段与检索词项）与仍引用这条记录的日记版本。
+/// `preview_token` 一次性、带过期、绑定 `capture_id`；`purge_capture` 必须带上它，
+/// 而且如果预览之后清单变了（又有新原件/新日记版本），核心会拒绝并让用户重新预览。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgePreview {
+    pub capture_id: String,
+    pub preview_token: String,
+    pub asset_ids: Vec<String>,
+    pub derived_content_ids: Vec<String>,
+    pub diary_versions_still_referencing: Vec<String>,
+}
+
+/// 永久清理结果，契约 4.1 节 `captures.purge`。
+///
+/// 三个列表就是真的删掉的 id；`purged_diary_version_ids` 与预览里的
+/// `diary_versions_still_referencing` 是同一批（预览之后清单变了会被拒绝）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeResult {
+    pub capture_id: String,
+    pub purged_asset_ids: Vec<String>,
+    pub purged_derived_content_ids: Vec<String>,
+    pub purged_diary_version_ids: Vec<String>,
+}
+
 /// 任务分页结果。cursor 对调用方不透明。
 ///
 /// 与 [`CapturePage`] 同一个形状（列表 + 不透明游标），给任务中心逐条翻页用：
@@ -140,11 +167,22 @@ pub struct JobPage {
 
 /// 持久业务事件类型，契约第 6 节的完整清单。
 ///
-/// 现在实际会发的是 capture.changed、asset.changed 与 job.changed；
+/// 现在实际会发的是 capture.changed、asset.changed、job.changed，以及回收站的
+/// capture.trashed / capture.restored / capture.movedDay / capture.purged；
 /// 其余几种等对应的切片接上（日记、索引、插件）。
+///
+/// 回收站四件事各自一个类型，不共用 capture.changed：前端订阅时只需要按类型决定
+/// 要不要刷新回收站/检索结果，不用再读一遍正文判断「这次改的是什么」。命名沿用
+/// 既有的 `<实体>.<事件>`：单词事件全小写（`capture.changed`），多词事件第二个词
+/// 起用 camelCase（`diary.versionCreated`、`index.coverageChanged`），所以是
+/// `capture.movedDay` 而不是 `capture.moved_day`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventType {
     CaptureChanged,
+    CaptureTrashed,
+    CaptureRestored,
+    CaptureMovedDay,
+    CapturePurged,
     AssetChanged,
     DiaryVersionCreated,
     DiaryCurrentChanged,
@@ -157,6 +195,10 @@ impl EventType {
     pub fn wire(self) -> &'static str {
         match self {
             Self::CaptureChanged => "capture.changed",
+            Self::CaptureTrashed => "capture.trashed",
+            Self::CaptureRestored => "capture.restored",
+            Self::CaptureMovedDay => "capture.movedDay",
+            Self::CapturePurged => "capture.purged",
             Self::AssetChanged => "asset.changed",
             Self::DiaryVersionCreated => "diary.versionCreated",
             Self::DiaryCurrentChanged => "diary.currentChanged",
@@ -169,6 +211,10 @@ impl EventType {
     pub fn from_wire(value: &str) -> Option<Self> {
         match value {
             "capture.changed" => Some(Self::CaptureChanged),
+            "capture.trashed" => Some(Self::CaptureTrashed),
+            "capture.restored" => Some(Self::CaptureRestored),
+            "capture.movedDay" => Some(Self::CaptureMovedDay),
+            "capture.purged" => Some(Self::CapturePurged),
             "asset.changed" => Some(Self::AssetChanged),
             "diary.versionCreated" => Some(Self::DiaryVersionCreated),
             "diary.currentChanged" => Some(Self::DiaryCurrentChanged),
@@ -1754,7 +1800,6 @@ pub struct OrganizePlanSummary {
     pub blocked_reason: Option<String>,
     pub notes: Vec<String>,
 }
-
 
 // ---------------------------------------------------------------- 备份与恢复（B7）
 
