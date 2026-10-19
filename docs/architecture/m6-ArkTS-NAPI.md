@@ -21,7 +21,7 @@
 | 5 | 交叉编译 + shim 编译过：`libdiary_capi.so` 11,369,880 B（`NEEDED` 只有 `libc.so`）、`libdiary_napi.so` 46,824 B（`NEEDED` = `libace_napi.z.so` / `libc++_shared.so` / `libc.so`）、6 个 C 符号全在 | 实测（见 §8.1） |
 | 6 | **ArkTS 真的编过了**：`hvigorw assembleHap` `BUILD SUCCESSFUL`，`CompileArkTS` 8 s，unsigned HAP 12,815,707 B，包内三个 `.so`（含 `libc++_shared.so`） | 实测（见 §8.2） |
 | 7 | `index.d.ts` **没有退化成 any**：把 `diaryNapi.open(123)` 故意写错 → 编译报 2 条类型错误（红证据见 §8.3） | 实测 |
-| 8 | 静态契约核对：9 个方法名、21 个错误码、6 个 C 符号、7 个 JS 函数、打包三件套全部一致（改坏一处就红，见 §8.4） | 实测 |
+| 8 | 静态契约核对：30 个方法名、21 个错误码、6 个 C 符号、7 个 JS 函数、打包三件套全部一致（改坏一处就红，见 §8.4） | 实测 |
 | 9 | **真机已验**（2026-10-18，HAD-W32 / API 23，临时 bundleName `com.example.myapplication`）：`dlopen`/`dlsym`、沙箱建库（schema 13）、HAP 安装启动、hilog、性能、并发、多 Ability/多进程、错误路径、release/混淆、升级保留全部跑过；产品名 `com.lingxing.unwrittendiary` 仍未验（Profile 未生成） | 实测（见工程 README「真机验证结果」） |
 
 **一句话**：ArkTS 现在有一份**能编、能打包、契约对得上**的 `DiaryCore`；2026-10-18 已在
@@ -176,8 +176,10 @@ corrupted_backup, incompatible_backup
 
 ## 5 ArkTS 薄封装 ↔ C ABI 的对应
 
-`DiaryCore.ets` 的 9 个方法**一一对应** `crates/diary_capi/src/methods.rs` 的
-`WIRED_METHODS`（方法体里的字符串与方法名必须一致，检查器会核对）：
+`DiaryCore.ets` 的 30 个方法**一一对应** `crates/diary_capi/src/methods.rs` 的
+`WIRED_METHODS`（方法体里的字符串与方法名必须一致，检查器会核对）。下面的表只列
+#143 之前的 9 条契约方法是**当时的子集**；#143 补的 11 条见
+[`m6-核心-C-ABI.md` §6.1](m6-核心-C-ABI.md#L171-L209)：
 
 | ArkTS 方法 | C ABI 方法 | 参数类型 | 返回类型 |
 |---|---|---|---|
@@ -506,7 +508,7 @@ $ python3 tools/check_arkts_capi_contract.py
      当数据用；好处是不用 `try/catch`、异步化时更自然；
    - **我的建议**：保持抛异常（ArkTS 的 `try/finally` 与 `close()` 天然配套），
      同时保留 `rawEnvelope()` 给需要原始信封的场景。若要改，改动面 =
-     `DiaryCore` 的 12 个方法 + 示例的调用点，**不涉及 C ABI**。
+     `DiaryCore` 的 30 个方法 + 示例的调用点，**不涉及 C ABI**。
 2. **模块归属**：现在放在 `apps/ohos-diary-core`（可复制的参考工程）。要不要抽成
    独立 HAR / 独立仓包（`@diary/core`），由应用 `ohpm install` 依赖？抽的话要处理
    「HAR 里怎么带 `.so` 与 `types` 三件套」——本块没有验证 HAR 形态。
