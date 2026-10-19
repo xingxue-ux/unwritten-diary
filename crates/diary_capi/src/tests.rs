@@ -306,7 +306,7 @@ fn bad_input_never_crashes_and_always_reports_an_error() {
 
     // 未知方法：message 里点名，并附上已接入清单。
     let unknown = expect_error(
-        &call(handle, "captures.purge", json!({"id": "cap_1"})),
+        &call(handle, "imports.prepare", json!({"capture_id": "cap_1"})),
         "invalid_argument",
     );
     assert!(unknown.contains("未接入"), "{unknown}");
@@ -481,9 +481,14 @@ fn semantic_rebuild_and_runtime_config_are_wired() {
     assert!(config["transcription"]["state"].is_string());
     assert!(config["transcription"]["configSource"].is_string());
     assert!(config["transcription"]["engineLibSource"].is_string());
-    let env_clean = ["DIARY_MODEL_DIR", "DIARY_ORT_DYLIB", "DIARY_ASR_MODEL_DIR", "DIARY_ASR_ENGINE_LIB"]
-        .iter()
-        .all(|key| std::env::var_os(key).is_none());
+    let env_clean = [
+        "DIARY_MODEL_DIR",
+        "DIARY_ORT_DYLIB",
+        "DIARY_ASR_MODEL_DIR",
+        "DIARY_ASR_ENGINE_LIB",
+    ]
+    .iter()
+    .all(|key| std::env::var_os(key).is_none());
     if env_clean {
         assert_eq!(config["semantic"]["configSource"], json!("absent"));
         assert_eq!(config["semantic"]["state"], json!("absent"));
@@ -730,12 +735,11 @@ fn recordings_flow_prepare_register_finalize_and_recover() {
     assert_eq!(recovery["persisted_ms"], json!(1000));
     assert_eq!(recovery["received_ms"], json!(1500));
     assert!(
-        recovery["notes"]
-            .as_array()
+        recovery["notes"].as_array().unwrap().iter().any(|note| note
+            .as_str()
             .unwrap()
-            .iter()
-            .any(|note| note.as_str().unwrap().contains("未封闭的尾巴")
-                && note.as_str().unwrap().contains("500 ms")),
+            .contains("未封闭的尾巴")
+            && note.as_str().unwrap().contains("500 ms")),
         "恢复结果要如实说明可能丢掉的尾巴：{recovery}"
     );
 
@@ -817,7 +821,11 @@ fn recordings_bad_input_reports_core_errors() {
     assert!(text.contains("字节数不符"), "{text}");
 
     let text = expect_error(
-        &call(handle, "recordings.recover", json!({"recording_id": "rec_missing"})),
+        &call(
+            handle,
+            "recordings.recover",
+            json!({"recording_id": "rec_missing"}),
+        ),
         "not_found",
     );
     assert!(text.contains("录音"), "{text}");
@@ -1239,7 +1247,10 @@ fn providers_crud_contract_shapes_and_validation() {
     assert_eq!(report["actual_call_made"], json!(false));
     assert_eq!(report["results"]["generate_text"], json!("failed"));
     assert!(
-        report["message"].as_str().unwrap_or_default().contains("没有实现"),
+        report["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("没有实现"),
         "{report}"
     );
 
@@ -1269,7 +1280,10 @@ fn providers_crud_contract_shapes_and_validation() {
         ),
         "invalid_state",
     );
-    assert!(message.contains("随包") || message.contains("内建"), "{message}");
+    assert!(
+        message.contains("随包") || message.contains("内建"),
+        "{message}"
+    );
 
     assert_eq!(diary_close(handle), 0);
     std::fs::remove_dir_all(dir).unwrap();
@@ -1282,7 +1296,12 @@ fn captures_get_and_list_use_real_cursor_pagination() {
     let (dir, _path, handle) = open_temp("captures-read");
 
     // 三条：两条在 10-17（上海），一条在 10-16。
-    let older = seed_capture_at(handle, "op-capi-list-a", "2026-10-16T09:30:00Z", "前天的记录");
+    let older = seed_capture_at(
+        handle,
+        "op-capi-list-a",
+        "2026-10-16T09:30:00Z",
+        "前天的记录",
+    );
     let morning = seed_capture_at(handle, "op-capi-list-b", "2026-10-17T09:30:00Z", "今天上午");
     let evening = seed_capture_at(handle, "op-capi-list-c", "2026-10-17T14:00:00Z", "今天晚上");
 
@@ -1498,7 +1517,11 @@ fn jobs_list_and_get_use_real_cursor_pagination() {
         "jobs.list",
         json!({"states": ["succeeded"], "limit": 10}),
     ));
-    assert_eq!(succeeded["jobs"].as_array().unwrap().len(), 0, "{succeeded}");
+    assert_eq!(
+        succeeded["jobs"].as_array().unwrap().len(),
+        0,
+        "{succeeded}"
+    );
 
     // 详情：id + 完整形状；camelCase 别名也接受。
     let detail = expect_ok(&call(
@@ -1592,7 +1615,11 @@ fn jobs_retry_cancel_and_acknowledge_attention() {
     }
 
     // 不带 operationId 的人工重试：清零重跑。
-    let retried = expect_ok(&call(handle, "jobs.retry", json!({"job_id": job_id.clone()})));
+    let retried = expect_ok(&call(
+        handle,
+        "jobs.retry",
+        json!({"job_id": job_id.clone()}),
+    ));
     assert_eq!(retried["state"], json!("queued"), "{retried}");
     assert_eq!(retried["attempt_count"], json!(0));
     assert_eq!(retried["error_code"], json!(null));
@@ -1834,7 +1861,11 @@ fn search_pagination_upgrade_and_cancel() {
         "invalid_state",
     );
     expect_error(
-        &call(handle, "search.cancel", json!({"session_id": "search_missing"})),
+        &call(
+            handle,
+            "search.cancel",
+            json!({"session_id": "search_missing"}),
+        ),
         "search_expired",
     );
 
@@ -1851,7 +1882,10 @@ fn search_pagination_upgrade_and_cancel() {
         ),
         "invalid_argument",
     );
-    expect_error(&call(handle, "search.upgrade", json!(null)), "invalid_argument");
+    expect_error(
+        &call(handle, "search.upgrade", json!(null)),
+        "invalid_argument",
+    );
     expect_error(
         &call(
             handle,
@@ -1865,7 +1899,7 @@ fn search_pagination_upgrade_and_cancel() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// 能力清单必须随接线增长：`core.info.capabilities == WIRED_METHODS`，30 条、无重复。
+/// 能力清单必须随接线增长：`core.info.capabilities == WIRED_METHODS`，38 条、无重复。
 #[test]
 fn capabilities_include_every_wired_method() {
     let (dir, _path, handle) = open_temp("capabilities");
@@ -1878,7 +1912,7 @@ fn capabilities_include_every_wired_method() {
         .iter()
         .map(|name| name.as_str().unwrap())
         .collect();
-    assert_eq!(capabilities.len(), 30, "{capabilities:?}");
+    assert_eq!(capabilities.len(), 38, "{capabilities:?}");
     let mut unique = capabilities.clone();
     unique.sort_unstable();
     unique.dedup();
@@ -1896,10 +1930,468 @@ fn capabilities_include_every_wired_method() {
         "search.nextPage",
         "search.upgrade",
         "search.cancel",
+        // 本批接的 8 条：来源正文 4 + 备份 3 + 事件 1。
+        "sources.extractedContent",
+        "sources.previousRevision",
+        "sources.reviseText",
+        "sources.locate",
+        "backups.create",
+        "backups.inspect",
+        "backups.restore",
+        "core.events",
     ] {
         assert!(capabilities.contains(&name), "能力清单缺 {name}");
     }
 
+    // 核心还没有实现的 9 条**不能**出现在诚实的能力清单里。
+    for name in [
+        "captures.trash",
+        "captures.restore",
+        "captures.previewPurge",
+        "captures.purge",
+        "captures.moveDay",
+        "styles.get",
+        "styles.save",
+        "styles.list",
+        "exports.create",
+    ] {
+        assert!(
+            !capabilities.contains(&name),
+            "能力清单不该列未实现的 {name}"
+        );
+    }
+
     assert_eq!(diary_close(handle), 0);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+// ---------------------------------------------------------------- 本批（P0 的 8 条）
+
+/// `sources.extractedContent` / `previousRevision` / `reviseText` / `locate`：
+/// 可空返回、改正文建新修订、乐观锁、`deny_unknown_fields` 与别名。
+#[test]
+fn sources_revisions_content_and_locate_are_wired() {
+    let (dir, _path, handle) = open_temp("sources-revisions");
+    let first_text = "第一版正文：今天把窗台的绿萝修了。";
+    let (capture_id, source_id) = seed_committed_capture(handle, first_text);
+
+    // 当前修订的提取结果：已 extract 过，应当有；未知来源是 null，不是错误。
+    let content = expect_ok(&call(
+        handle,
+        "sources.extractedContent",
+        json!({"source_id": source_id}),
+    ));
+    assert_eq!(content["source_id"], json!(source_id));
+    assert!(content["text"].as_str().unwrap().contains("绿萝"));
+    let none = expect_ok(&call(
+        handle,
+        "sources.extractedContent",
+        json!({"source_id": "src_不存在"}),
+    ));
+    assert_eq!(none, Value::Null, "没有提取过必须是 null");
+
+    // 首次提交只有一版：上一版是 null。
+    let previous = expect_ok(&call(
+        handle,
+        "sources.previousRevision",
+        json!({"source_id": source_id}),
+    ));
+    assert_eq!(previous, Value::Null, "只有一版时上一版必须是 null");
+
+    // 改正文：新修订，旧内容保留。
+    let capture = expect_ok(&call(
+        handle,
+        "captures.get",
+        json!({"capture_id": capture_id}),
+    ));
+    let revision = capture["revision"].as_i64().unwrap();
+    let revised = expect_ok(&call(
+        handle,
+        "sources.reviseText",
+        json!({
+            "source_id": source_id,
+            "text": "第二版正文：绿萝换盆了。",
+            "expected_revision": revision,
+            "operation_id": "op-capi-revise",
+        }),
+    ));
+    assert_eq!(revised["source_id"], json!(source_id));
+    assert_eq!(revised["text"], json!("第二版正文：绿萝换盆了。"));
+    assert!(
+        revised["parent_revision_id"].as_str().is_some(),
+        "新修订必须指回上一版：{revised}"
+    );
+    let revised_revision_id = revised["revision_id"].clone();
+
+    // 现在上一版就是第一次提交的正文；旧内容没有被覆盖。
+    let previous = expect_ok(&call(
+        handle,
+        "sources.previousRevision",
+        json!({"source_id": source_id}),
+    ));
+    assert_eq!(previous["text"], json!(first_text));
+    assert_eq!(previous["revision_id"], revised["parent_revision_id"]);
+
+    // 当前提取结果跟着当前修订走。
+    let content = expect_ok(&call(
+        handle,
+        "sources.extractedContent",
+        json!({"source_id": source_id}),
+    ));
+    assert_eq!(content["source_revision_id"], revised_revision_id);
+    assert!(content["text"].as_str().unwrap().contains("换盆"));
+
+    // 定位：纯文字来源没有可打开的原件 -> available:false + reason，不是错误。
+    let located = expect_ok(&call(
+        handle,
+        "sources.locate",
+        json!({
+            "source_ref": source_id,
+            "locator": {
+                "locator_type": "text_range",
+                "source_revision_id": revised_revision_id,
+                "text_start": 0,
+                "text_end": 4,
+            },
+        }),
+    ));
+    assert_eq!(located["source_ref"], json!(source_id));
+    assert_eq!(located["available"], json!(false));
+    assert!(
+        located["reason"].as_str().unwrap().contains("原件"),
+        "{located}"
+    );
+    assert_eq!(located["locator"]["locator_type"], json!("text_range"));
+
+    // 破坏性/修改类操作必须带 expected_revision：缺了直接报错。
+    let missing = expect_error(
+        &call(
+            handle,
+            "sources.reviseText",
+            json!({
+                "source_id": source_id,
+                "text": "x",
+                "operation_id": "op-capi-missing",
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(missing.contains("expected_revision"), "{missing}");
+
+    // 乐观锁不匹配：核心报 revision_conflict，一个字节都不改。
+    expect_error(
+        &call(
+            handle,
+            "sources.reviseText",
+            json!({
+                "source_id": source_id,
+                "text": "x",
+                "expected_revision": 999,
+                "operation_id": "op-capi-conflict",
+            }),
+        ),
+        "revision_conflict",
+    );
+
+    // 拼错的字段（deny_unknown_fields）不能被静默忽略。
+    let typo = expect_error(
+        &call(
+            handle,
+            "sources.extractedContent",
+            json!({"source_id": source_id, "extra": 1}),
+        ),
+        "invalid_argument",
+    );
+    assert!(typo.contains("参数不合法"), "{typo}");
+
+    // camelCase 别名可用。
+    let alias = expect_ok(&call(
+        handle,
+        "sources.extractedContent",
+        json!({"sourceId": source_id}),
+    ));
+    assert_eq!(alias["source_id"], json!(source_id));
+    // Dart 方法参数名 `ref` 也是 `source_ref` 的别名。
+    let alias = expect_ok(&call(
+        handle,
+        "sources.locate",
+        json!({
+            "ref": source_id,
+            "locator": {
+                "locator_type": "text_range",
+                "source_revision_id": revised_revision_id,
+                "text_start": 0,
+                "text_end": 1,
+            },
+        }),
+    ));
+    assert_eq!(alias["source_ref"], json!(source_id));
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `core.events`：序号推进、`from_sequence` 省略 = 从现在开始、`limit` 截断要如实报。
+#[test]
+fn events_poll_by_sequence_and_report_truncation() {
+    let (dir, _path, handle) = open_temp("events");
+
+    // 省略 from_sequence：从当前最新开始，不补历史。
+    let start = expect_ok(&call(handle, "core.events", Value::Null));
+    let start_sequence = start["next_sequence"].as_i64().unwrap();
+    assert_eq!(start["events"], json!([]));
+    assert_eq!(start["truncated"], json!(false));
+
+    let capture = expect_ok(&call(
+        handle,
+        "captures.createDraft",
+        json!({
+            "time_zone": "Asia/Shanghai",
+            "utc_offset_minutes": 480,
+            "operation_id": "op-events-draft",
+        }),
+    ));
+    expect_ok(&call(
+        handle,
+        "captures.saveDraft",
+        json!({
+            "capture_id": capture["id"],
+            "text": "事件轮询用",
+            "expected_revision": 1,
+            "operation_id": "op-events-save",
+        }),
+    ));
+
+    let page = expect_ok(&call(
+        handle,
+        "core.events",
+        json!({"from_sequence": start_sequence, "limit": 200}),
+    ));
+    let events = page["events"].as_array().unwrap();
+    assert!(!events.is_empty(), "两次写入必须产生事件：{page}");
+    let mut previous = start_sequence;
+    for event in events {
+        let sequence = event["sequence"].as_i64().unwrap();
+        assert!(sequence > previous, "序号必须单调递增：{event}");
+        previous = sequence;
+        assert!(
+            event["type"].as_str().unwrap().contains('.'),
+            "事件类型是线上字符串：{event}"
+        );
+        assert!(!event["event_id"].as_str().unwrap().is_empty());
+        assert!(!event["entity_id"].as_str().unwrap().is_empty());
+        assert!(event["emitted_at"].as_str().unwrap().ends_with('Z'));
+        assert!(event["revision"].as_i64().unwrap() >= 1);
+    }
+    assert_eq!(page["next_sequence"], json!(previous));
+    assert_eq!(page["truncated"], json!(false));
+
+    // 没有新事件：同一游标的空页。游标不会自己往前跑。
+    let idle = expect_ok(&call(
+        handle,
+        "core.events",
+        json!({"from_sequence": page["next_sequence"]}),
+    ));
+    assert_eq!(idle["events"], json!([]));
+    assert_eq!(idle["next_sequence"], page["next_sequence"]);
+
+    // limit = 1：只给一条，并如实标 truncated；按 next_sequence 继续能推到同一末尾。
+    let one = expect_ok(&call(
+        handle,
+        "core.events",
+        json!({"from_sequence": start_sequence, "limit": 1}),
+    ));
+    assert_eq!(one["events"].as_array().unwrap().len(), 1);
+    assert_eq!(one["truncated"], json!(true));
+    let rest = expect_ok(&call(
+        handle,
+        "core.events",
+        json!({"from_sequence": one["next_sequence"], "limit": 200}),
+    ));
+    assert_eq!(rest["next_sequence"], page["next_sequence"]);
+
+    // 参数校验：0 / 超上限 / 负游标 / 拼错字段都是 invalid_argument。
+    for bad in [
+        json!({"limit": 0}),
+        json!({"limit": 1001}),
+        json!({"from_sequence": -1}),
+        json!({"fromSequence": 0, "extra": 1}),
+    ] {
+        expect_error(&call(handle, "core.events", bad), "invalid_argument");
+    }
+    // camelCase 别名可用。
+    let alias = expect_ok(&call(
+        handle,
+        "core.events",
+        json!({"fromSequence": start_sequence, "limit": 1}),
+    ));
+    assert_eq!(alias["truncated"], json!(true));
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `backups.create` / `inspect` / `restore`：真实落盘、自校验、恢复到新库。
+#[test]
+fn backups_create_inspect_and_restore_round_trip() {
+    let (dir, _path, handle) = open_temp("backups");
+    let (capture_id, source_id) = seed_committed_capture(handle, "备份正文：今天走了 8700 步。");
+
+    let package = dir.join("library-backup.diarybackup");
+    let package_text = package.to_string_lossy().into_owned();
+    let created = expect_ok(&call(
+        handle,
+        "backups.create",
+        json!({"target_path": package_text}),
+    ));
+    assert_eq!(created["package_path"], json!(package_text));
+    assert_eq!(
+        created["api_version"],
+        json!("1.0"),
+        "加方法不升 apiVersion"
+    );
+    assert!(package.is_file(), "备份包必须真的落在目标路径");
+    assert!(created["counts"]["captures"].as_i64().unwrap() >= 1);
+    assert!(created["counts"]["sourceRevisions"].as_i64().unwrap() >= 1);
+    assert!(created["byte_size"].as_i64().unwrap() > 0);
+
+    let inspect = expect_ok(&call(
+        handle,
+        "backups.inspect",
+        json!({"package_path": package_text}),
+    ));
+    assert_eq!(inspect["package_path"], json!(package_text));
+    assert_eq!(inspect["api_version"], json!("1.0"));
+    assert_eq!(inspect["compatible"], json!(true));
+    assert_eq!(inspect["hashes_verified"], json!(true));
+    assert_eq!(inspect["issues"], json!([]));
+    assert_eq!(inspect["counts"], created["counts"]);
+
+    // 恢复到新目录：绝不覆盖当前库。
+    let restore_dir = dir.join("restored-library");
+    let restored = expect_ok(&call(
+        handle,
+        "backups.restore",
+        json!({
+            "package_path": package_text,
+            "target_dir": restore_dir.to_string_lossy(),
+        }),
+    ));
+    let library_path = restored["library_path"].as_str().unwrap().to_owned();
+    assert!(Path::new(&library_path).is_file(), "恢复出来的库必须存在");
+    assert_eq!(restored["api_version"], json!("1.0"));
+    assert!(restored["counts"]["captures"].as_i64().unwrap() >= 1);
+    assert_eq!(restored["counts"], created["counts"]);
+
+    // 恢复出来的库能直接打开，记录与正文都在。
+    let restored_handle = open(Path::new(&library_path));
+    let page = expect_ok(&call(restored_handle, "captures.list", json!({})));
+    assert!(
+        page["captures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|capture| capture["id"] == json!(capture_id)),
+        "恢复出来的库缺原记录：{page}"
+    );
+    let content = expect_ok(&call(
+        restored_handle,
+        "sources.extractedContent",
+        json!({"source_id": source_id}),
+    ));
+    assert!(content["text"].as_str().unwrap().contains("8700"));
+    assert_eq!(diary_close(restored_handle), 0);
+
+    // 目标已存在：核心拒绝覆盖旧备份（invalid_argument）。
+    expect_error(
+        &call(
+            handle,
+            "backups.create",
+            json!({"target_path": package_text}),
+        ),
+        "invalid_argument",
+    );
+    // 只支持完整备份：include_assets=false 明确拒绝。
+    let error = expect_error(
+        &call(
+            handle,
+            "backups.create",
+            json!({
+                "target_path": dir.join("small.zip").to_string_lossy(),
+                "include_assets": false,
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(error.contains("完整备份"), "{error}");
+    // 只支持恢复到新库：restore_as_new_library=false 明确拒绝。
+    let error = expect_error(
+        &call(
+            handle,
+            "backups.restore",
+            json!({
+                "package_path": package_text,
+                "target_dir": dir.join("overwrite").to_string_lossy(),
+                "options": {"restore_as_new_library": false},
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(error.contains("新库"), "{error}");
+    // 拼错的字段与缺字段都不能静默通过。
+    let typo = expect_error(
+        &call(
+            handle,
+            "backups.inspect",
+            json!({"package_path": package_text, "extra": 1}),
+        ),
+        "invalid_argument",
+    );
+    assert!(typo.contains("参数不合法"), "{typo}");
+    expect_error(
+        &call(handle, "backups.create", json!({})),
+        "invalid_argument",
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 备份路径的沙箱判定：OHOS 上必须命中应用数据前缀，且不能含 `..`。
+///
+/// 真机构建才会 `enforce`；这里直接测判定内核，两半都覆盖（否则宿主单测只能测到
+/// 「不限制」那一半）。
+#[test]
+fn backup_paths_are_confined_to_the_ohos_sandbox_when_enforced() {
+    for inside in [
+        "/data/storage/el2/base/files/backup.diarybackup",
+        "/data/storage/el1/base/files/backup.diarybackup",
+        "/data/storage/el1/database/backup.diarybackup",
+        "/data/storage/el1/cache/backup.diarybackup",
+        "/data/app/el2/100/base/com.example.diary/files/backup.diarybackup",
+    ] {
+        assert!(
+            crate::methods::validate_sandbox_path_with("target_path", inside, true).is_ok(),
+            "沙箱内路径应当通过：{inside}"
+        );
+    }
+    for outside in [
+        "/tmp/backup.diarybackup",
+        "/sdcard/backup.diarybackup",
+        // 安装目录是只读的，备份不能写那里。
+        "/data/storage/el1/bundle/backup.diarybackup",
+        // 前缀命中但 `..` 会跳出沙箱。
+        "/data/storage/el2/base/../../../etc/backup.diarybackup",
+    ] {
+        let error = crate::methods::validate_sandbox_path_with("target_path", outside, true)
+            .expect_err("沙箱外路径必须拒绝");
+        assert!(
+            format!("{error:?}").contains("沙箱"),
+            "{outside}: {error:?}"
+        );
+    }
+    // 非 OHOS（桌面 / CLI / 宿主单测）不限制。
+    assert!(
+        crate::methods::validate_sandbox_path_with("target_path", "/tmp/backup.zip", false).is_ok()
+    );
 }

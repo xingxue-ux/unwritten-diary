@@ -20,19 +20,25 @@ import { DiaryError, NATIVE_UNAVAILABLE } from './DiaryError';
 import { buildRequest, unwrapEnvelope } from './Envelope';
 import {
   AcknowledgeAttentionParams,
+  BackupInspection,
+  BackupReport,
   CancelJobParams,
   Capture,
   CaptureIdParams,
   CapturePage,
   CommitParams,
   CommitResult,
+  CreateBackupParams,
   CreateDraftParams,
+  DomainEventPage,
   DraftSaveResult,
+  EventsParams,
   ExtractedContent,
   ExtractParams,
   FinalizeRecordingParams,
   IndexStatus,
   IndexStatusParams,
+  InspectBackupParams,
   Job,
   JobIdParams,
   JobPage,
@@ -41,6 +47,7 @@ import {
   LibraryInfo,
   ListCapturesParams,
   ListJobsParams,
+  LocateSourceParams,
   NativeRecordingStatusParams,
   PrepareRecordingParams,
   ProviderConfig,
@@ -54,7 +61,10 @@ import {
   RecordingSession,
   RecordingTicket,
   RegisterSegmentParams,
+  RestoreBackupParams,
+  RestoreReport,
   RetryJobParams,
+  ReviseTextParams,
   RunDueParams,
   SaveDraftParams,
   SaveProviderParams,
@@ -63,6 +73,9 @@ import {
   SearchSessionParams,
   SearchSnapshot,
   SegmentReceipt,
+  SourceIdParams,
+  SourceLocation,
+  SourceRevision,
   TestProviderParams,
 } from './Models';
 
@@ -171,7 +184,7 @@ export class DiaryCore {
     return diaryNapi.openHandleCount();
   }
 
-  // ---------------------------------------------------------------- 契约方法（30 条）
+  // ---------------------------------------------------------------- 契约方法（38 条）
   //
   // 一一对应 `crates/diary_capi/src/methods.rs` 的 `WIRED_METHODS`。方法名与方法体里的
   // 字符串必须一致；`tools/check_arkts_capi_contract.py` 会核对。
@@ -256,6 +269,45 @@ export class DiaryCore {
   /** `sources.extract`：抽取正文；`source_ref` 可以是来源 id 或修订 id。 */
   extract(params: ExtractParams): ExtractedContent {
     return this.invokeData('sources.extract', params) as ExtractedContent;
+  }
+
+  /**
+   * `sources.extractedContent`：当前修订的提取结果；**还没提取过时返回 null**
+   * （正常结果，不是错误）。
+   *
+   * 这是可空返回，所以走 `invokeNullable`——不能用 `invokeData`（它把 null 当信封坏了）。
+   */
+  extractedContent(params: SourceIdParams): ExtractedContent | null {
+    return this.invokeNullable('sources.extractedContent', params) as ExtractedContent | null;
+  }
+
+  /**
+   * `sources.previousRevision`：当前修订的上一版正文，供「看原正文/对比」用。
+   *
+   * 只有一版时返回 null（首次提交没有上一版）。
+   */
+  previousRevision(params: SourceIdParams): SourceRevision | null {
+    return this.invokeNullable('sources.previousRevision', params) as SourceRevision | null;
+  }
+
+  /**
+   * `sources.reviseText`：改原始正文，创建**新修订**，不覆盖旧内容。
+   *
+   * `expected_revision` 不符抛 `revision_conflict`；同一个 `operation_id` 重放返回
+   * 同一条修订。
+   */
+  reviseText(params: ReviseTextParams): SourceRevision {
+    return this.invokeData('sources.reviseText', params) as SourceRevision;
+  }
+
+  /**
+   * `sources.locate`：把定位信息解析成前端可打开的原件位置。
+   *
+   * 纯文字/原件不在文件库时 `available === false` 并在 `reason` 里说明原因——
+   * 这不是异常，界面应展示原因而不是报「出错了」。
+   */
+  locateSource(params: LocateSourceParams): SourceLocation {
+    return this.invokeData('sources.locate', params) as SourceLocation;
   }
 
   /** `search.start`：发起一次检索，返回**当前页的完整快照**。 */
@@ -390,6 +442,46 @@ export class DiaryCore {
     this.rawCall('providers.remove', params);
   }
 
+  // ---------------------------------------------------------------- 备份与恢复（契约 4.5）
+  //
+  // 核心这三个是**同步**入口（契约那三行返回 jobId 的任务化是 #70，不在本块）。
+  // `target_path` / `package_path` / `target_dir` 在 OHOS 上必须是应用沙箱内路径，
+  // 否则 C ABI 报 `invalid_argument`（见 `crates/diary_capi/src/methods.rs`）。
+
+  /** `backups.create`：生成可完整恢复的备份包（含原件，自校验通过才落地）。 */
+  createBackup(params: CreateBackupParams): BackupReport {
+    return this.invokeData('backups.create', params) as BackupReport;
+  }
+
+  /** `backups.inspect`：逐条目校验备份包；坏在哪就列在 `issues`，不抛错。 */
+  inspectBackup(params: InspectBackupParams): BackupInspection {
+    return this.invokeData('backups.inspect', params) as BackupInspection;
+  }
+
+  /**
+   * `backups.restore`：恢复到**新的空目录**，绝不覆盖当前库。
+   *
+   * 返回的 `library_path` 直接交给 `DiaryCore.open()` 打开新库。
+   */
+  restoreBackup(params: RestoreBackupParams): RestoreReport {
+    return this.invokeData('backups.restore', params) as RestoreReport;
+  }
+
+  // ---------------------------------------------------------------- 事件（契约第 6 节）
+
+  /**
+   * `core.events`：按序号**轮询**持久业务事件（C ABI 不是推送流）。
+   *
+   * 用法：省略 `from_sequence` 先拿到当前 `next_sequence`，之后每轮把上次的
+   * `next_sequence` 原样传回来；`truncated === true` 时立刻再拉一页。
+   *
+   * 核心在每次写事务里就持久化了事件，所以**不需要**先订阅；本方法不建会话、
+   * 不缓存，读到的就是库里真实的事件。
+   */
+  events(params: EventsParams | null = null): DomainEventPage {
+    return this.invokeData('core.events', params) as DomainEventPage;
+  }
+
   // ---------------------------------------------------------------- 逃生口
 
   /**
@@ -430,6 +522,14 @@ export class DiaryCore {
     if (this.closed) {
       throw new DiaryError('invalid_state', '资料库已关闭（DiaryCore.close 之后不能再调用）');
     }
+  }
+
+  /**
+   * 可空返回（`Option<T>` → `null`）用：`ok:true` + `data:null` 是正常结果，
+   * 不能像 [`invokeData`] 那样当成「信封形状变了」。
+   */
+  private invokeNullable(method: string, params: Object | null): Object | null {
+    return this.rawCall(method, params);
   }
 
   private invokeData(method: string, params: Object | null): Object {

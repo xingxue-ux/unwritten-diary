@@ -145,7 +145,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `storage_full` / `asset_missing` / `permission_denied` / `integrity_failed` | I/O、资产与完整性（本块未走到，核心原样给） |
 | `unsupported_format` | 提取器不支持这个格式 |
 | `search_expired` / `cursor_expired` | 检索会话/游标失效 |
-| `corrupted_backup` / `incompatible_backup` | 备份相关（本块未接方法，码留着） |
+| `corrupted_backup` / `incompatible_backup` | 备份包损坏/不兼容（`backups.inspect` 只把问题列进 `issues`；清单都读不出才抛 `corrupted_backup`，恢复时同码） |
 | `provider_not_configured` / `authentication_failed` / `network_unavailable` / `rate_limited` / `quota_exceeded` / `provider_timeout` / `model_unavailable` | 远端服务与模型（`providers.test` / 任务执行；桥面透传） |
 
 ### 5.2 C ABI 边界条件 → 既有码（**不新增码**）
@@ -168,7 +168,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 ## 6 方法映射表
 
-### 6.1 已接（30 条，`core.info.capabilities` 就是这份清单）
+### 6.1 已接（38 条，`core.info.capabilities` 就是这份清单）
 
 | 契约方法 | 核心调用 | `data` |
 |---|---|---|
@@ -184,6 +184,10 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `recordings.finalize` | `Core::finalize_recording` | `RecordingFinalizeResult` |
 | `recordings.recover` | `Core::recover_recording` | `RecordingRecovery` |
 | `sources.extract` | `Core::extract_source`（`source_ref` 可以是来源 id 或修订 id） | `ExtractedContent` |
+| `sources.extractedContent` | `Core::extracted_content`（没提取过是 `null`） | `ExtractedContent \| null` |
+| `sources.previousRevision` | `Core::previous_source_revision`（只有一版是 `null`） | `SourceRevision \| null` |
+| `sources.reviseText` | `Core::revise_text`（新修订、不覆盖旧内容；`expected_revision` 乐观锁） | `SourceRevision` |
+| `sources.locate` | `Core::locate_source`（`source_ref` + locator；打不开时 `available:false` + `reason`） | `SourceLocation` |
 | `search.start` | `Core::start_search`（`{"request":{…},"query_revision":N}`） | `SearchSnapshot` |
 | `search.nextPage` | `Core::search_next_page`（不透明游标） | `SearchSnapshot` |
 | `search.upgrade` | `Core::upgrade_search_to_hybrid`（显式第二阶段；无证据不假装融合） | `SearchSnapshot` |
@@ -202,6 +206,10 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `providers.list` | `Core::list_providers` | `Provider[]` |
 | `providers.test` | `Core::test_provider` | `ProviderTestReport` |
 | `providers.remove` | `Core::remove_provider` | `null` |
+| `backups.create` | `Core::create_backup`（同步入口；目标路径必须是沙箱内，已存在则拒绝覆盖） | `BackupReport` |
+| `backups.inspect` | `Core::inspect_backup`（同步入口；逐条目重算哈希，问题进 `issues`、不抛错） | `BackupInspection` |
+| `backups.restore` | `Core::restore_backup`（同步入口；只恢复到新库，来源/目标都必须沙箱内） | `RestoreReport` |
+| `core.events` | `Core::events_since`（按序号轮询持久事件，见 §6.1.2） | `{events,next_sequence,truncated}` |
 
 `search.start` 的 `request` 里只有 `query` 必填，`mode`（默认 `keyword`；`semantic` 是
 语义那一路）、`filters`（全字段可选）、`page_size`（默认 20，与 `bridge_diary_api.dart`
@@ -245,6 +253,53 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 两条都只「排任务 / 落数据」，不引入任何新语义。**要不要删，评审说了算（§12）**。
 
+### 6.1.2 `core.events`：请求/响应下的**按序号轮询**
+
+C ABI 没有回调/推送面，所以 `core.events` 不装成 Stream，而是把核心**持久事件表**当游标读：
+
+```json
+{"method":"core.events","params":{"from_sequence":0,"limit":200}}
+// data：
+{"events":[{"event_id":"evt_…","sequence":1,"type":"capture.changed",
+            "entity_id":"cap_…","revision":2,"emitted_at":"…"}],
+ "next_sequence":1,"truncated":false}
+```
+
+- **不需要订阅**：核心在每次写事务里就 `insert_event` 落 `domain_events`（提交、保存、
+  任务状态变化、日记版本…），不是「订阅后才产生」。因此桥面**不建订阅、不缓存**，
+  读到的就是库里真实事件；进程重启也不丢游标。
+- **`from_sequence` 省略** = 从**当前最新**序号开始（只等下一条，不补历史）；
+  显式给 `0` 才是从头补。要「先拿游标再等新事件」就省略它。
+- **`next_sequence`** 是下一次调用的 `from_sequence`：有事件时是本页最后一条的序号，
+  没事件时是本次的起点；**调用方必须原样回传**，不要自己 +1。
+- **`limit`** 默认 200、上限 1000；超出部分不返回并标 `truncated: true`（继续按
+  `next_sequence` 拉，直到 `truncated:false`）。桥面先读一页再截断——单次响应有上界，
+  但**首次从 0 补历史**在超大库上仍会先读一遍事件表（未做 SQL 分页，见 §11）。
+- **事件类型**按线上字符串给（`capture.changed`，不是 serde 的 `CaptureChanged`）：
+  核心 `EventType` 没有 serde rename，桥面显式投影一次，与契约 `DomainEventType` 对齐。
+
+### 6.1.3 备份与恢复：同步入口 + 沙箱路径
+
+`backups.*` 是契约那三行的**同步版本**（任务化 #70 不在本块）：返回真实报告，不是 `jobId`。
+
+- `backups.create`：`target_path`（包文件完整路径，父目录会建）；已存在拒绝覆盖；
+  `include_assets:false` 明确 `invalid_argument`（核心只做完整备份）。
+- `backups.inspect`：`package_path`；逐条目哈希/大小/路径安全/版本兼容，坏在哪进
+  `issues`（`corrupted` / `unsafe_path` / `incompatible`），只有清单都读不出才抛
+  `corrupted_backup`。
+- `backups.restore`：`package_path` + `target_dir`（**新的空目录**）+ 契约的
+  `options`。`restore_as_new_library:false` 明确 `invalid_argument`（绝不覆盖当前库）；
+  `include_indexes` 只做形状兼容（核心恢复的是快照整体，本来就有索引/向量）。
+- **沙箱路径**：OHOS 上 `target_path` / `package_path` / `target_dir` 必须是应用数据目录
+  （`/data/storage/el2/…`、`/data/storage/el1/base|database|cache/…`、`/data/app/el2/…`），
+  且不能含 `..`；否则 `invalid_argument`。复用 `asrEngineLib` 的同一个前缀判定
+  （`is_ohos_app_data_path`），**方向相反**：原生库必须在 HAP 安装目录（沙箱 `.so` 不能
+  dlopen），备份包必须在应用数据目录（安装目录只读）。其它平台不限制。
+- **`BackupCounts` 的键是 camelCase**（`sourceRevisions` / `importsInFlight` /
+  `openRecordings`，核心 `#[serde(rename_all = "camelCase")]`），外层 `BackupReport`
+  等仍是 snake_case——ArkTS 的 `Models.ets` 照实声明。
+
+
 ### 6.2 扩展点：再加一个方法要动哪里
 
 1. `crates/diary_capi/src/methods.rs` 的 `dispatch` 里加一条分支，并在同文件顶部的表里加一行；
@@ -255,11 +310,13 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 4. `src/tests.rs` 加用例（至少一条成功路径 + 一条参数错误）。
 
 **还没接的（按契约第 4 节分组，代码里带 `TODO(#108)`）**：`captures.moveDay/trash/
-restore/previewPurge/purge`、`sources.extractedContent/previousRevision/reviseText/locate`、
-`imports.*`、`assets.open/release`、`search.snapshot`、`jobs.nextWakeup`、
-`core.events/snapshot/close/setRuntimeState`、`backups.*`（桥上已有同步入口，映射过来即可）、
-`diary.*` / `styles.*` / `responses.*` / `settings.*` / `plugins.*` / `exports.*`（核心大多
-还没有对应实现）。`providers.*` 四条已接（见上表）。
+restore/previewPurge/purge`、`styles.*`、`exports.create`——**核心还没有对应入口**
+（`trash_capture` / `preview_purge` / `purge_capture` / `move_day` / `get_style` /
+`save_style` / `list_styles` / `create_export` 全仓零命中），不是桥面漏接；另开核心线
+（回收站状态机 / styles 表 / export）。其余：`imports.*`、`assets.open/release`、
+`search.snapshot`、`jobs.nextWakeup`、`core.snapshot/close/setRuntimeState`、`diary.*` /
+`responses.*` / `settings.*` / `plugins.*`——要么还没接，要么属于后面的块。
+`providers.*` 四条、`sources` 正文 5 条、`backups.*` 三条、`core.events` 都已接（见上表）。
 
 未接入的方法一律 `invalid_argument` + 已接入清单，**不静默成功、不假装支持**。
 
@@ -436,9 +493,9 @@ cargo +1.94.1 build -p diary_capi --release --target aarch64-unknown-linux-ohos
 
 ## 11 没有做到的（如实）
 
-1. **回调 / 事件流**：没有 `core.events` 那样的推送通道，只有请求-响应。宿主要么轮询
-   （`jobs.status` / 未接的 `core.events`），要么等后面的块加「回调注册 + 事件泵」。
-   这一块连 `events_since` 都没接；
+1. **回调 / 事件流**：没有推送通道，只有请求-响应。`core.events` 这一批按**序号轮询**
+   接了（§6.1.2：读持久事件表，`from_sequence` + `next_sequence`），但**没有**「事件发生时
+   主动唤醒宿主」的回调/事件泵；宿主仍要定时轮询或按平台调度唤醒；
 2. **零拷贝**：所有进出都是 JSON 字符串，正文/大对象要序列化 + 复制一遍。
    本块**没有量**长正文（比如 10 KB 草稿、检索 100 条命中）的往返开销；
 3. **ArkTS 侧 NAPI 包装**：没有 C++ shim、没有 `index.d.ts` / `oh-package.json5`、
@@ -447,8 +504,8 @@ cargo +1.94.1 build -p diary_capi --release --target aarch64-unknown-linux-ohos
    `DiaryCore` 薄封装 + 参考工程，本机能编、HAP 能打；真机仍未验**；
 4. **鸿蒙真机验证**：只验到「能交叉编过」。`dlopen` 能不能拿到符号、沙箱里能不能建库、
    SQLite 能不能落盘——**全部未验证**（探针验过的是探针自己那份薄 ABI，不是这一份）；
-5. **方法子集**：只接了 30 条（§6.1；录音 5 条、`providers.*` 4 条、界面缺口 11 条都是后续
-   分片补的），其余仍是扩展点；
+5. **方法子集**：只接了 38 条（§6.1；回收站 5 / styles 3 / 导出 1 共 9 条**核心还没有
+   实现**，见 §6.2），其余仍是扩展点；
 6. **性能**：没测吞吐、没测 JSON 序列化占比、没测大库（十万条记录）下的表现；
 7. **并发压力**：跨线程用例是 15 次循环的**正确性**验证，不是压测（没有 P50/P99）；
 8. **错误 message 的语言**：桥面判定的是中文，`serde_json` 的解析错误是英文
