@@ -79,6 +79,10 @@ class BridgeDiaryApi implements api.DiaryApi {
     'search.cancel',
     'jobs.nextWakeup',
     'jobs.runDue',
+    'jobs.get',
+    'jobs.list',
+    'jobs.cancel',
+    'jobs.retry',
     'imports.prepare',
     'imports.finish',
     'imports.status',
@@ -467,6 +471,52 @@ class BridgeDiaryApi implements api.DiaryApi {
     final day = await _translate(() => session.getDiaryDay(dayKey: dayKey));
     return _diaryDay(day);
   }
+
+  @override
+  Future<api.Job> getJob(String id) async =>
+      _job(await _translate(() => _open.getJob(jobId: id)));
+
+  @override
+  Future<api.JobPage> listJobs({
+    Set<api.JobState>? states,
+    String? cursor,
+    int pageSize = 20,
+  }) async {
+    // The current bridge exposes a bounded recent list, without pagination.
+    if (cursor != null) {
+      throw const api.DiaryException(
+        code: api.DiaryErrorCode.invalidArgument,
+        message: '当前核心暂不支持继续翻页任务列表。',
+      );
+    }
+    final rows = await _translate(
+      () => _open.listJobs(
+        states: states
+            ?.map((state) => bridge.JobState.values.byName(state.name))
+            .toList(),
+        limit: pageSize,
+      ),
+    );
+    return api.JobPage(jobs: rows.map(_job).toList(growable: false));
+  }
+
+  @override
+  Future<api.Job> cancelJob({
+    required String id,
+    required String operationId,
+  }) async => _job(
+    await _translate(
+      () => _open.cancelJob(jobId: id, operationId: operationId),
+    ),
+  );
+
+  @override
+  Future<api.Job> retryJob({
+    required String id,
+    required String operationId,
+  }) async => _job(
+    await _translate(() => _open.retryJob(jobId: id, operationId: operationId)),
+  );
 
   /// 生成一篇日记。**输入在返回前已冻结**；真正的调用由 `runDueJobs` 执行。
   ///
@@ -937,6 +987,27 @@ class BridgeDiaryApi implements api.DiaryApi {
       return api.DiaryErrorCode.unknown;
     }
   }
+
+  api.Job _job(bridge.Job value) => api.Job(
+    id: value.id,
+    kind: value.kind,
+    state: api.JobState.values.byName(value.state.name),
+    targetIds: value.targetIds,
+    inputSnapshotHash: value.inputSnapshotHash,
+    progress: value.progress == null
+        ? null
+        : api.JobProgress(
+            completed: value.progress!.completed.toInt(),
+            total: value.progress!.total.toInt(),
+          ),
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    attemptCount: value.attemptCount.toInt(),
+    nextAttemptAt: value.nextAttemptAt,
+    errorCode: value.errorCode == null ? null : _errorCode(value.errorCode!),
+    requiresUserAction: value.requiresUserAction,
+    attentionKey: value.attentionKey,
+  );
 
   Future<api.CoreSnapshot> _snapshot(bridge.BridgeSession session) async {
     final info = await _translate(() => session.info());

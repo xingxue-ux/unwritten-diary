@@ -529,6 +529,18 @@ impl BridgeSession {
         Ok(core.get_job(&job_id)?)
     }
 
+    /// User cancellation keeps captured material and version history intact.
+    pub fn cancel_job(&self, job_id: String, operation_id: String) -> Result<Job, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.cancel_job(&job_id, &operation_id)?)
+    }
+
+    /// Retry a failed job with an idempotent user action identifier.
+    pub fn retry_job(&self, job_id: String, operation_id: String) -> Result<Job, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.retry_job_idempotent(&job_id, &operation_id)?)
+    }
+
     /// 任务面板状态：各状态计数、到期积压、下次唤醒与最近错误。
     ///
     /// 最近错误只有 kind + 错误码 + 时间（外加不透明的任务 ID），**没有用户内容**。
@@ -937,6 +949,8 @@ fn wired_capabilities() -> Vec<String> {
         "search.upgrade",
         "jobs.list",
         "jobs.get",
+        "jobs.cancel",
+        "jobs.retry",
         "jobs.status",
         "jobs.runDue",
         "jobs.nextWakeup",

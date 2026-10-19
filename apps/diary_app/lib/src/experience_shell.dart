@@ -9,6 +9,8 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
 import 'capture_controller.dart';
+import 'ai_diary_panel.dart';
+import 'ai_provider_panel.dart';
 import 'file_import_controller.dart';
 import 'file_import_journal.dart';
 import 'core_wakeup.dart';
@@ -68,6 +70,7 @@ class _ExperienceShellState extends State<ExperienceShell>
   int _tab = 0;
   String? _panel;
   String? _detail;
+  String? _diaryInitialDayKey;
   bool _candidate = false;
   bool _adopted = false;
   bool _showOldVersions = false;
@@ -284,6 +287,20 @@ class _ExperienceShellState extends State<ExperienceShell>
         children: [
           Text(entry.file.name, maxLines: 2, overflow: TextOverflow.ellipsis),
           Text(entry.message ?? state),
+          if (entry.phase == FileImportPhase.saved && entry.captureId != null)
+            TextButton(
+              onPressed: () async {
+                try {
+                  final capture = await widget.api.getCapture(entry.captureId!);
+                  if (mounted) {
+                    _openDiaryFor(_dayKey(capture.occurredAt.toLocal()));
+                  }
+                } on Object {
+                  if (mounted) _toast('暂时无法读取这份材料的日期，请稍后重试。');
+                }
+              },
+              child: const Text('查看这一天的日记'),
+            ),
           if (entry.phase == FileImportPhase.copying ||
               entry.phase == FileImportPhase.queued)
             TextButton(
@@ -320,6 +337,17 @@ class _ExperienceShellState extends State<ExperienceShell>
     _flushDraft();
     setState(() {
       _tab = tab;
+      _panel = null;
+      _detail = null;
+      if (tab == 1) _diaryInitialDayKey = null;
+    });
+  }
+
+  void _openDiaryFor(String dayKey) {
+    _flushDraft();
+    setState(() {
+      _diaryInitialDayKey = dayKey;
+      _tab = 1;
       _panel = null;
       _detail = null;
     });
@@ -1274,14 +1302,11 @@ class _ExperienceShellState extends State<ExperienceShell>
 
   Widget _diaryPage(bool desktop) {
     if (!widget.demoMode) {
-      return Column(
-        key: const ValueKey('diary'),
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _title('日记', '让原本零散的片刻，慢慢成为一页。'),
-          const SizedBox(height: 24),
-          _notice('日记整理正在接入。原始文字已经保存在「片段」中，可以随时回看。'),
-        ],
+      return AiDiaryPanel(
+        key: ValueKey('ai-diary-${_diaryInitialDayKey ?? 'today'}'),
+        api: widget.api,
+        onOpenModel: () => _openPanel('model'),
+        initialDayKey: _diaryInitialDayKey,
       );
     }
     return Column(
@@ -1948,7 +1973,10 @@ class _ExperienceShellState extends State<ExperienceShell>
     ],
   );
 
-  Widget _modelPanel() => Column(
+  Widget _modelPanel() =>
+      widget.demoMode ? _modelDemoPanel() : AiProviderPanel(api: widget.api);
+
+  Widget _modelDemoPanel() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       _title('模型服务', '记录不需要先配置模型。'),
@@ -2206,6 +2234,7 @@ class _ExperienceShellState extends State<ExperienceShell>
           title: hit.title ?? '找到的片段',
           subtitle: hit.dayKey ?? '本地原始材料',
           fallback: hit.snippet,
+          diaryDayKey: hit.dayKey,
         );
       }
       return Column(
@@ -2222,6 +2251,13 @@ class _ExperienceShellState extends State<ExperienceShell>
           ),
           const SizedBox(height: 12),
           _title(hit.title ?? '找到的片段', hit.dayKey ?? '本地原始材料'),
+          if (hit.dayKey != null) ...[
+            const SizedBox(height: 12),
+            SketchAction(
+              label: '查看这一天的日记',
+              onPressed: () => _openDiaryFor(hit.dayKey!),
+            ),
+          ],
           const SizedBox(height: 18),
           SketchFrame(
             padding: const EdgeInsets.all(27),
@@ -2246,6 +2282,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       return _revisionDetail(
         title: '收好的记录',
         subtitle: _dateLabel(capture.occurredAt.toLocal()),
+        diaryDayKey: _dayKey(capture.occurredAt.toLocal()),
         capture: capture,
       );
     }
@@ -2282,6 +2319,14 @@ class _ExperienceShellState extends State<ExperienceShell>
                     ? '本次会话文字 · 仅在本次运行保留'
                     : '本地文字 · ${_dateLabel(capture.occurredAt.toLocal())}'),
         ),
+        if (capture?.state == CaptureState.committed && !widget.demoMode) ...[
+          const SizedBox(height: 12),
+          SketchAction(
+            label: '查看这一天的日记',
+            onPressed: () =>
+                _openDiaryFor(_dayKey(capture!.occurredAt.toLocal())),
+          ),
+        ],
         const SizedBox(height: 20),
         _notice(
           capture == null
@@ -2323,6 +2368,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     required String title,
     required String subtitle,
     String? fallback,
+    String? diaryDayKey,
     Capture? capture,
   }) {
     final revisions = _revisions;
@@ -2340,6 +2386,13 @@ class _ExperienceShellState extends State<ExperienceShell>
           ),
         ),
         _title(title, subtitle),
+        if (diaryDayKey != null && !widget.demoMode) ...[
+          const SizedBox(height: 12),
+          SketchAction(
+            label: '查看这一天的日记',
+            onPressed: () => _openDiaryFor(diaryDayKey),
+          ),
+        ],
         const SizedBox(height: 18),
         if (revisions.loading) const LinearProgressIndicator(),
         if (revisions.error != null)
@@ -2550,6 +2603,9 @@ class _ExperienceShellState extends State<ExperienceShell>
       ),
     );
   }
+
+  String _dayKey(DateTime date) =>
+      '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
 
   String _dateLabel(DateTime date) =>
       '${date.year} 年 ${date.month} 月 ${date.day} 日';
