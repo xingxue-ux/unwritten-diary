@@ -541,6 +541,10 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
     // 索引表实际占用的页。`dbstat` 是 SQLite 的调试用虚表，本仓库的 bundled
     // 构建开了它；读不到就如实报 0 并在 reasons 里说明，不编一个数出来。
     //
+    // 这是一份**白名单**（按表/索引名求和），不是「整库所有索引」：新加的索引
+    // 必须显式列进来，否则报出来的体积会漏掉它。v15 的 `idx_chunk_vectors_caliber`
+    // 是 `chunk_vectors` 上新增的覆盖索引，也是向量索引体积的大头（#133 第 2 条）。
+    //
     // **这个数字永远是整库的**：dbstat 按表/索引汇总页数，页在来源之间是共享的，
     // 没法按 source_scope 拆分。范围查询照样给出整库值，但会在 reasons 里写明，
     // 免得前端把整库大小当成某个来源的索引大小（审查就是这么发现的）。
@@ -552,7 +556,8 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
                     'text_chunks', 'idx_text_chunks_day', 'sqlite_autoindex_text_chunks_1', \
                     'chunk_spans', 'idx_chunk_spans_source', 'idx_chunk_spans_capture', \
                     'idx_chunk_spans_revision', 'sqlite_autoindex_chunk_spans_1', \
-                    'chunk_vectors', 'sqlite_autoindex_chunk_vectors_1', 'index_meta')";
+                    'chunk_vectors', 'sqlite_autoindex_chunk_vectors_1', \
+                    'idx_chunk_vectors_caliber', 'index_meta')";
         core.conn
             .query_row(sql, [], |row| row.get::<_, i64>(0))
             .unwrap_or_default()

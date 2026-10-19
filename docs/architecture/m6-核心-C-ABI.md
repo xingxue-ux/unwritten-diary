@@ -133,12 +133,12 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 ## 5 信封与错误码
 
-### 5.1 错误码：就是核心那 14 个，一个不多
+### 5.1 错误码：就是核心那 21 个，一个不多
 
 | 码 | 什么时候出现（本块可见的） |
 |---|---|
 | `not_found` | 目标不存在（例：`sources.extract` 给了一个不存在的 ref） |
-| `invalid_state` | 当前状态不允许（例：往已提交的记录上 `saveDraft`） |
+| `invalid_state` | 当前状态不允许（例：往已提交的记录上 `saveDraft`；游标格式不对） |
 | `invalid_argument` | 输入不合法（`scope` 编码、参数缺失…） |
 | `revision_conflict` | 乐观锁不匹配（`expected_revision` 不对） |
 | `idempotency_conflict` | 同一个 `operationId` 换了内容 |
@@ -146,6 +146,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `unsupported_format` | 提取器不支持这个格式 |
 | `search_expired` / `cursor_expired` | 检索会话/游标失效 |
 | `corrupted_backup` / `incompatible_backup` | 备份相关（本块未接方法，码留着） |
+| `provider_not_configured` / `authentication_failed` / `network_unavailable` / `rate_limited` / `quota_exceeded` / `provider_timeout` / `model_unavailable` | 远端服务与模型（`providers.test` / 任务执行；桥面透传） |
 
 ### 5.2 C ABI 边界条件 → 既有码（**不新增码**）
 
@@ -167,7 +168,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 ## 6 方法映射表
 
-### 6.1 已接（14 条，`core.info.capabilities` 就是这份清单）
+### 6.1 已接（30 条，`core.info.capabilities` 就是这份清单）
 
 | 契约方法 | 核心调用 | `data` |
 |---|---|---|
@@ -175,6 +176,8 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `captures.createDraft` | `Core::create_draft` | `Capture` |
 | `captures.saveDraft` | `Core::save_draft` | `DraftSaveResult` |
 | `captures.commit` | `Core::commit` | `CommitResult` |
+| `captures.get` | `Core::get_capture` | `Capture` |
+| `captures.list` | `Core::list_captures`（`day_key` + 不透明游标） | `CapturePage` |
 | `recordings.prepare` | `Core::prepare_recording` | `RecordingTicket` |
 | `recordings.registerSegment` | `Core::register_segment` | `SegmentReceipt` |
 | `recordings.updateState` | `Core::update_recording_state` | `RecordingSession` |
@@ -182,14 +185,47 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `recordings.recover` | `Core::recover_recording` | `RecordingRecovery` |
 | `sources.extract` | `Core::extract_source`（`source_ref` 可以是来源 id 或修订 id） | `ExtractedContent` |
 | `search.start` | `Core::start_search`（`{"request":{…},"query_revision":N}`） | `SearchSnapshot` |
+| `search.nextPage` | `Core::search_next_page`（不透明游标） | `SearchSnapshot` |
+| `search.upgrade` | `Core::upgrade_search_to_hybrid`（显式第二阶段；无证据不假装融合） | `SearchSnapshot` |
+| `search.cancel` | `Core::cancel_search` | `SearchSnapshot` |
 | `indexes.rebuild` | `Core::schedule_index_rebuild`（只排任务） | `Job` |
 | `indexes.rebuildSemantic` | `Core::schedule_semantic_index`（只排一条整库语义任务） | `Job` |
+| `indexes.status` | `Core::index_status`（可选 `source_scope`） | `IndexStatus` |
 | `jobs.runDue` | `Core::run_due_jobs`（`budget_ms` + `trigger`；`now = Utc::now()`，条数上限 64，与桥上同一个常量口径） | `JobRunSummary` |
 | `jobs.status` | `Core::job_status` | `JobStatus` |
+| `jobs.list` | `Core::list_jobs_page`（状态筛选 + 不透明游标） | `JobPage` |
+| `jobs.get` | `Core::get_job` | `Job` |
+| `jobs.retry` | `Core::retry_job`（给了 `operation_id` 时走 `retry_job_idempotent`） | `Job` |
+| `jobs.cancel` | `Core::cancel_job` | `Job` |
+| `jobs.acknowledgeAttention` | `Core::acknowledge_attention` | `null` |
+| `providers.save` | `Core::save_provider` | `Provider` |
+| `providers.list` | `Core::list_providers` | `Provider[]` |
+| `providers.test` | `Core::test_provider` | `ProviderTestReport` |
+| `providers.remove` | `Core::remove_provider` | `null` |
 
 `search.start` 的 `request` 里只有 `query` 必填，`mode`（默认 `keyword`；`semantic` 是
 语义那一路）、`filters`（全字段可选）、`page_size`（默认 20，与 `bridge_diary_api.dart`
 同口径）都可省。
+
+### 6.1.1 分页方法：游标是**真游标**，不是「传了就报错」
+
+三条分页方法都把核心的**不透明游标**原样透传，没有把「只接第一页」当成已接：
+
+| 方法 | 参数 | `data` | 游标语义 |
+|---|---|---|---|
+| `captures.list` | `day_key?` / `cursor?` / `limit?`（默认 20，核心夹 1–100） | `CapturePage` | 键集 `(occurred_at DESC, id DESC)`；`next_cursor` 原样回传 |
+| `jobs.list` | `states?` / `cursor?` / `limit?`（默认 20，核心夹 1–200） | `JobPage` | 键集 `(priority DESC, created_at, id)`；`next_cursor` 原样回传 |
+| `search.nextPage` | `session_id` / `cursor?` | `SearchSnapshot` | 会话内偏移 + 结果代次；省略 `cursor` = 继续用会话记着的下一页 |
+
+`jobs.list` 的游标是这一片给核心加的 `Core::list_jobs_page`：原有 `list_jobs(states, limit)`
+只能取「前 N 条」（`limit` 还夹在 200），没法越过第 200 条。新入口与它同排序、同状态筛选，
+但游标是**键集**（上一页最后一条的三元组），翻页期间入队的新任务不会让后面的页漏项或重项；
+`list_jobs` 原样保留，既有调用方不受影响。
+
+`search.upgrade` 是显式的第二阶段：`start(mode=hybrid)` 只算关键词那一阶段并返回
+`keyword_ready`；升级后返回同一会话的 `hybrid_ready`，游标重置为融合后第一页，升级前的
+游标一律 `cursor_expired`。语义拿不出可融合的证据时**不**声称 `hybrid_ready`（仍是
+`keyword_ready` + `warnings`）。
 
 `indexes.rebuildSemantic` 是契约 4.4 已有、核心与桥接早就接上的方法，C ABI 之前漏了它
 （鸿蒙上就没有任何办法建语义索引）。参数只有 `reason` + `operation_id`（没有 `scope`：代次
@@ -218,13 +254,12 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
    没列出来的就是还没接，界面不该显示成可用）；
 4. `src/tests.rs` 加用例（至少一条成功路径 + 一条参数错误）。
 
-**还没接的（按契约第 4 节分组，代码里带 `TODO(#108)`）**：`captures.get/list/moveDay/trash/
+**还没接的（按契约第 4 节分组，代码里带 `TODO(#108)`）**：`captures.moveDay/trash/
 restore/previewPurge/purge`、`sources.extractedContent/previousRevision/reviseText/locate`、
-`imports.*`、`assets.open/release`、`search.nextPage/snapshot/cancel/upgrade`、
-`indexes.status`、`jobs.list/get/retry/cancel/nextWakeup/
-acknowledgeAttention`、`core.events/snapshot/close/setRuntimeState`、`backups.*`（桥上已有同步
-入口，映射过来即可）、`diary.*` / `styles.*` / `responses.*` / `providers.*` / `settings.*` /
-`plugins.*` / `exports.*`（核心大多还没有对应实现）。
+`imports.*`、`assets.open/release`、`search.snapshot`、`jobs.nextWakeup`、
+`core.events/snapshot/close/setRuntimeState`、`backups.*`（桥上已有同步入口，映射过来即可）、
+`diary.*` / `styles.*` / `responses.*` / `settings.*` / `plugins.*` / `exports.*`（核心大多
+还没有对应实现）。`providers.*` 四条已接（见上表）。
 
 未接入的方法一律 `invalid_argument` + 已接入清单，**不静默成功、不假装支持**。
 
@@ -412,7 +447,8 @@ cargo +1.94.1 build -p diary_capi --release --target aarch64-unknown-linux-ohos
    `DiaryCore` 薄封装 + 参考工程，本机能编、HAP 能打；真机仍未验**；
 4. **鸿蒙真机验证**：只验到「能交叉编过」。`dlopen` 能不能拿到符号、沙箱里能不能建库、
    SQLite 能不能落盘——**全部未验证**（探针验过的是探针自己那份薄 ABI，不是这一份）；
-5. **方法子集**：只接了 14 条（§6.1；录音 5 条是 #108 ⑦ 第一片补的），其余仍是扩展点；
+5. **方法子集**：只接了 30 条（§6.1；录音 5 条、`providers.*` 4 条、界面缺口 11 条都是后续
+   分片补的），其余仍是扩展点；
 6. **性能**：没测吞吐、没测 JSON 序列化占比、没测大库（十万条记录）下的表现；
 7. **并发压力**：跨线程用例是 15 次循环的**正确性**验证，不是压测（没有 P50/P99）；
 8. **错误 message 的语言**：桥面判定的是中文，`serde_json` 的解析错误是英文

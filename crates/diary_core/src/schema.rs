@@ -47,6 +47,10 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         )));
     }
     if current == SCHEMA_VERSION {
+        // 版本已经最新：v15 的列不用动。但覆盖索引仍可能被手工删掉或单独补建失败
+        // ——`current` 是 15 并不能证明索引在。每次 open 只多一次 `sqlite_master`
+        // 查询，缺才建（#133 第 1 条，见 `ensure_v15_caliber_index`）。
+        ensure_v15_caliber_index(conn)?;
         return Ok(());
     }
 
@@ -137,12 +141,16 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 也就没有东西可搬；更不能在迁移里替用户预设一个插件或一条授权。迁移后
         // `plugin_installations` 为空，和刚建的新库一样。
     }
-    // v15 的守卫与 v12 同一写法：**版本号 + 结构**两重判断。只靠版本号不够——测试会
-    // 把库手工退回旧版本再升上来，那些库的 `index_meta` 可能已经有这一列，再
-    // `ALTER TABLE` 会报重复列；只靠结构也不够（`current < 15` 才该动）。所以是
-    // `current < 15 && 列不在`。`CREATE INDEX IF NOT EXISTS` 让同一段重复跑也幂等。
+    // v15 的**列**用「版本号 + 结构」双重守卫（与 v12 同一写法）：只靠版本号不够
+    // ——测试会把库手工退回旧版本再升上来，那些库的 `index_meta` 可能已经有这一列，
+    // 再 `ALTER TABLE` 会报重复列；只靠结构也不够（`current < 15` 才该动）。所以是
+    // `current < 15 && 列不在`。
+    //
+    // **索引不能并进这段守卫**：这段被跳过的条件（列已在）恰好是「手工删过索引」
+    // 或「单独补索引」的库满足的状态，包在一起会让索引永远补不回来（#133 第 1 条）。
+    // 索引由 `ensure_v15_caliber_index` 在每次 open 时独立、幂等地补。
     if current < 15 && !column_exists(&tx, "index_meta", "auto_rebuild_marker")? {
-        tx.execute_batch(V15)?;
+        tx.execute_batch(V15_COLUMN)?;
         // **不回填标记**（NULL = 从未自动尝试）**、不用回填索引**（SQLite 从既有行建）。
         // 没有「替用户记一次自动尝试」这种默认：升级后的第一次 `open` 仍会按当时的
         // 口径如实判断该不该自动排一条。
@@ -152,7 +160,10 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
         params![SCHEMA_VERSION, crate::support::to_iso(crate::support::now())],
     )?;
-    tx.commit()
+    tx.commit()?;
+    // 与「版本已最新」分支同一份补齐逻辑：`current < 15` 但列已在的库也会走到这里。
+    ensure_v15_caliber_index(conn)?;
+    Ok(())
 }
 
 /// `sqlite_master` 里有没有这张表（迁移的结构性守卫用；`name` 都是代码里的常量）。
@@ -179,6 +190,36 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Resu
         }
     }
     Ok(false)
+}
+
+/// `sqlite_master` 里有没有这条索引（迁移的结构性守卫用）。
+///
+/// 用 `sqlite_master` 而不是 `PRAGMA index_list`：这里只需要按名字查一次，索引名是
+/// 代码里的常量，可以参数化，没有拼 SQL 的注入面。
+fn index_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+        params![name],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// 确保 v15 的整代口径覆盖索引 `idx_chunk_vectors_caliber` 存在。
+///
+/// **独立于版本号、也独立于 `auto_rebuild_marker` 列**：那个列的守卫是
+/// `current < 15 && 列不在`，而「列已在、索引不在」正是手工删过索引、或索引补建失败
+/// 会留下的状态——把索引包进同一个守卫就永远补不回来（#133 第 1 条）。
+///
+/// **不在 `current >= 15` 时重跑整个 v15 段**：`ALTER TABLE` 不能重复跑；每次 open
+/// 都发一次 DDL（哪怕 `IF NOT EXISTS`）也没必要。这里只做一次 `sqlite_master` 查询，
+/// 索引在就什么都不做。索引缺失时 `CREATE INDEX` 会从既有行建出来，大库升级后的
+/// 第一次 open 因此有一次性开销（未实测具体耗时，见 `docs/development/升级与迁移.md`）。
+fn ensure_v15_caliber_index(conn: &Connection) -> rusqlite::Result<()> {
+    if index_exists(conn, "idx_chunk_vectors_caliber")? {
+        return Ok(());
+    }
+    conn.execute_batch(V15_CALIBER_INDEX)
 }
 
 /// 把已有记录的文字补进 v6 的两张索引表。只在迁移里用一次。
@@ -886,8 +927,18 @@ CREATE TABLE IF NOT EXISTS plugin_grants (
 /// `(generation, model_version, dims, storage)` 之后按 rowid 排列，`SELECT ... WHERE
 /// generation = ?`（要读 `vector`）拿到的 rowid 仍是近似升序的，回表基本是顺序的；
 /// 混合代次（历史遗留）才可能乱序，而那种库本来就要整代重算。
-const V15: &str = r#"
-ALTER TABLE index_meta ADD COLUMN auto_rebuild_marker TEXT;
+///
+/// 索引的补齐**不并进列的守卫**：`user_version` 是 15 不代表索引在，见
+/// `ensure_v15_caliber_index`（#133 第 1 条）。
+/// v15 的**列**：只由迁移事务里的「版本 + 结构」守卫决定跑不跑。索引与它分开——
+/// 见 `V15_CALIBER_INDEX` 与 `ensure_v15_caliber_index`。
+const V15_COLUMN: &str = "ALTER TABLE index_meta ADD COLUMN auto_rebuild_marker TEXT;";
+
+/// v15 的**覆盖索引**：由 `ensure_v15_caliber_index` 独立补齐，**不并进列的守卫**。
+///
+/// `IF NOT EXISTS` 只是兜底（补齐前已经查过 `sqlite_master`），真正的幂等来自
+/// 「索引在就什么也不做」；这样每次 open 只花一次查询，不重复发 DDL。
+const V15_CALIBER_INDEX: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_chunk_vectors_caliber
     ON chunk_vectors(generation, model_version, dims, storage);
 "#;

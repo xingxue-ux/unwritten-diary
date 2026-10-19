@@ -264,6 +264,10 @@ indicating out-of-sync code.
 **自动合并**它们——结果语法上没问题、也能编译，但与合并后的 `api.rs` **不同源**。我在这几条 PR 上
 连着踩了两次。
 
+**工具链以仓库根的 `rust-toolchain.toml` 为准（当前 `1.94.1`）**：本地 `cargo` 若是别的版本（例如
+1.98.1），跑 codegen 或测试时用 `cargo +1.94.1`——两个版本生成的 `model.dart` 会差一行自动注释
+（`assert_receiver_is_total_eq` ↔ `assert_fields_are_eq`），不钉版本就会每次都在 diff 里重新吵这一行。
+
 **规则**：
 
 1. 合并 `main`（或任何改过 `crates/diary_bridge/**` 的分支）之后，**重跑**

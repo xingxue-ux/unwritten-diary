@@ -104,7 +104,7 @@ pub use model::{
     DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion, DiaryVersionOrigin,
     DiaryVersionPage, DomainEvent, DraftSaveResult, EventType, ExtractedContent, ExtractedSegment,
     GenerationInfo, ImportManifest, ImportOrigin, ImportState, ImportStatus, ImportTicket,
-    IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress, JobRunSummary, JobState,
+    IndexStatus, Job, JobErrorSummary, JobPage, JobPriority, JobProgress, JobRunSummary, JobState,
     JobStatus, LocatorType, MatchedBy, MaterialCounts, NativeRecordingStatus, NewJob,
     OrganizePendingDay, OrganizePlanSummary, OrganizeQuota, OrganizeRunInfo, OrganizeSettings,
     OrganizeSkippedDay, OrganizeStatus, OrganizeTemplate, OrganizeTemplateParam, ProcessingStatus,
@@ -1060,6 +1060,20 @@ impl Core {
     /// 按状态筛选列出任务，按优先级与创建时间排序。
     pub fn list_jobs(&self, states: Option<&[JobState]>, limit: usize) -> Result<Vec<Job>> {
         jobs::list(self, states, limit)
+    }
+
+    /// 分页读取任务，契约 `jobs.list` 的逐条翻页用。
+    ///
+    /// 排序与 `list_jobs` 相同（`priority DESC, created_at, id`），但游标是**键集**：
+    /// 把上一页最后一条的位置带回去，下一批从它之后取，不是偏移。翻页期间入队的新任务
+    /// 不会让后面的页漏项或重项。`cursor` 对调用方不透明，原样回传上一页的 `next_cursor`。
+    pub fn list_jobs_page(
+        &self,
+        states: Option<&[JobState]>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<JobPage> {
+        jobs::list_page(self, states, cursor, limit)
     }
 
     /// 按状态精确计数。**不要用 `list_jobs` 的长度当计数**：它为分页把

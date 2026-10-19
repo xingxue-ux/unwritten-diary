@@ -27,7 +27,8 @@ use rusqlite::{params, OptionalExtension, Transaction};
 
 use crate::error::{CoreError, Result};
 use crate::model::{
-    EventType, Job, JobErrorSummary, JobProgress, JobRunSummary, JobState, JobStatus, NewJob,
+    EventType, Job, JobErrorSummary, JobPage, JobProgress, JobRunSummary, JobState, JobStatus,
+    NewJob,
 };
 use crate::provider;
 use crate::support;
@@ -228,6 +229,102 @@ pub(crate) fn list(core: &Core, states: Option<&[JobState]>, limit: usize) -> Re
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     ids.iter().map(|id| load_job(&core.conn, id)).collect()
+}
+
+/// 任务分页的游标：`priority|created_at|id`。
+///
+/// 对外仍是不透明字符串（契约第 1.2 节）：调用方只该把上一页的 `nextCursor`
+/// 原样回传。格式之所以与排序逐字段对应，是因为它要能表达「上一页最后一条之后」：
+/// 只带 `id` 会在**同优先级、同毫秒**的两条任务之间漏项或重项；只带优先级与时间
+/// 又会在同一个时间戳的多条任务之间打转。
+fn split_page_cursor(cursor: &str) -> Result<(i64, String, String)> {
+    let mut parts = cursor.splitn(3, '|');
+    let priority = parts.next().unwrap_or_default();
+    let created_at = parts.next().ok_or_else(|| CoreError::CorruptedData {
+        message: format!("任务游标格式不正确：{cursor}"),
+    })?;
+    let id = parts.next().ok_or_else(|| CoreError::CorruptedData {
+        message: format!("任务游标格式不正确：{cursor}"),
+    })?;
+    let priority = priority
+        .parse::<i64>()
+        .map_err(|_| CoreError::CorruptedData {
+            message: format!("任务游标里的优先级不是整数：{cursor}"),
+        })?;
+    Ok((
+        priority,
+        support::to_iso(support::parse_iso(created_at)?),
+        id.to_owned(),
+    ))
+}
+
+fn join_page_cursor(job: &Job) -> String {
+    format!(
+        "{}|{}|{}",
+        job.priority,
+        support::to_iso(job.created_at),
+        job.id
+    )
+}
+
+/// 分页读取任务。按 `priority DESC, created_at, id` 确定性排序，cursor 对调用方不透明。
+///
+/// 与 [`list`] 的关系：`list` 只给「前 N 条」（`limit` 也夹在 200 以内），是给内部
+/// 计数/探针用的；这里是给任务中心逐条翻页用的真分页——游标是**键集**（上一页最后
+/// 一条的三元组），不是偏移，翻页期间新任务入队也不会让后面的页漏项或重项。
+pub(crate) fn list_page(
+    core: &Core,
+    states: Option<&[JobState]>,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<JobPage> {
+    let page = limit.clamp(1, 200);
+    let (cursor_priority, cursor_created_at, cursor_id) = match cursor {
+        Some(raw) => {
+            let (priority, created_at, id) = split_page_cursor(raw)?;
+            (Some(priority), Some(created_at), Some(id))
+        }
+        None => (None, None, None),
+    };
+    let filter = match states {
+        Some(values) if !values.is_empty() => Some(serde_json::to_string(
+            &values.iter().map(|state| state.wire()).collect::<Vec<_>>(),
+        )?),
+        _ => None,
+    };
+    let mut stmt = core.conn.prepare(
+        "SELECT id FROM jobs \
+         WHERE (?1 IS NULL OR state IN (SELECT value FROM json_each(?1))) \
+           AND (?2 IS NULL OR priority < ?2 OR (priority = ?2 AND \
+                (created_at > ?3 OR (created_at = ?3 AND id > ?4)))) \
+         ORDER BY priority DESC, created_at, id LIMIT ?5",
+    )?;
+    let ids = stmt
+        .query_map(
+            params![
+                filter,
+                cursor_priority,
+                cursor_created_at,
+                cursor_id,
+                (page + 1) as i64
+            ],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut jobs = Vec::with_capacity(ids.len().min(page));
+    for id in ids {
+        jobs.push(load_job(&core.conn, &id)?);
+    }
+    // 多取一条用来判断还有没有下一页。
+    let next_cursor = if jobs.len() > page {
+        jobs.truncate(page);
+        jobs.last().map(join_page_cursor)
+    } else {
+        None
+    };
+
+    Ok(JobPage { jobs, next_cursor })
 }
 
 /// 按状态精确计数。
