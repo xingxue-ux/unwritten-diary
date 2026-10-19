@@ -659,6 +659,8 @@ class RecordingSession {
 class RecordingFinalizeResult {
   const RecordingFinalizeResult({
     required this.recordingId,
+    this.captureId = '',
+    this.captureRevision = 0,
     required this.assetId,
     required this.state,
     required this.segmentCount,
@@ -667,6 +669,12 @@ class RecordingFinalizeResult {
   });
 
   final String recordingId;
+
+  /// 这条录音挂到的记录；提交成正式记录时要用它。
+  final String captureId;
+
+  /// finalize 之后记录的权威 revision，`commit` 的 `expectedRevision` 必须用它。
+  final int captureRevision;
   final String assetId;
   final RecordingState state;
   final int segmentCount;
@@ -677,6 +685,8 @@ class RecordingFinalizeResult {
   bool operator ==(Object other) =>
       other is RecordingFinalizeResult &&
       other.recordingId == recordingId &&
+      other.captureId == captureId &&
+      other.captureRevision == captureRevision &&
       other.assetId == assetId &&
       other.state == state &&
       other.segmentCount == segmentCount &&
@@ -686,6 +696,8 @@ class RecordingFinalizeResult {
   @override
   int get hashCode => Object.hash(
         recordingId,
+        captureId,
+        captureRevision,
         assetId,
         state,
         segmentCount,

@@ -548,6 +548,14 @@ export interface RecordingSession {
 /** `recordings.finalize` 的结果。转写任务与最终化同一个事务，`transcription_queued` 为 true。 */
 export interface RecordingFinalizeResult {
   recording_id: string;
+  /** 这条录音挂到的记录；恢复路径靠它拿回 capture id 才能提交。 */
+  capture_id: string;
+  /**
+   * finalize 完成后记录的权威 revision（就是这次递增后的值）。
+   *
+   * `captures.commit` 的 `expected_revision` 必须用它，**不要自己猜**。
+   */
+  capture_revision: number;
   asset_id: string;
   state: string;
   segment_count: number;

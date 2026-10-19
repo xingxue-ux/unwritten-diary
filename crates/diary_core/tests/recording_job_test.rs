@@ -5,8 +5,8 @@
 
 use chrono::{Duration, Utc};
 use diary_core::{
-    Core, CreateDraftInput, ErrorCode, JobPriority, JobState, NativeRecordingStatus, NewJob,
-    RecordingState, RecordingTicket, SegmentManifest,
+    CaptureState, Core, CreateDraftInput, ErrorCode, JobPriority, JobState, NativeRecordingStatus,
+    NewJob, RecordingState, RecordingTicket, SegmentManifest,
 };
 use sha2::{Digest, Sha256};
 
@@ -153,6 +153,11 @@ fn finalize_builds_one_logical_audio_asset() {
     assert_eq!(result.segment_count, 3);
     assert_eq!(result.logical_duration_ms, 6000);
     assert!(result.transcription_queued, "转写任务应当在同一个事务里排上");
+    assert_eq!(result.capture_id, capture_id, "finalize 要报出它挂到哪条记录");
+    assert_eq!(
+        result.capture_revision, 2,
+        "finalize 推进一步 revision，客户端要拿这个值当 commit 的 expected_revision"
+    );
 
     // 逻辑音频真在文件库里，内容是按序拼起来的。
     let lease = core.open_asset(&result.asset_id, "play").unwrap();
@@ -165,6 +170,32 @@ fn finalize_builds_one_logical_audio_asset() {
     let capture = core.get_capture(&capture_id).unwrap();
     assert_eq!(capture.revision, 2);
     assert_eq!(capture.ordered_source_ids.len(), 1);
+
+    // 录音 finalize 只推进 revision，**不会**把记录变成 committed；要客户端再 commit。
+    assert_eq!(
+        capture.state,
+        CaptureState::Draft,
+        "finalize 的契约是「音频已保存」，不是「记录已成篇」"
+    );
+    let commit = core
+        .commit(&result.capture_id, result.capture_revision, "op-commit")
+        .unwrap();
+    assert_eq!(commit.capture.state, CaptureState::Committed);
+    assert_eq!(commit.capture.revision, result.capture_revision + 1);
+    assert!(
+        commit.original_text_revision.is_none(),
+        "空草稿 + 音频来源：commit 不该凭空造一条空文字修订"
+    );
+    assert_eq!(
+        core.count_jobs(Some(&[JobState::Queued])).unwrap(),
+        1,
+        "plain commit 不排任务，转写仍然只有 finalize 排的那一条"
+    );
+    // 同一个 operation_id 重试拿到同一份回执：录音提交失败后重试的幂等依据。
+    let retry = core
+        .commit(&result.capture_id, result.capture_revision, "op-commit")
+        .unwrap();
+    assert_eq!(retry, commit);
 
     // 重复最终化必须被拒绝。
     let again = core.finalize_recording(&ticket.recording_id, 2, "user");
@@ -223,7 +254,7 @@ fn a_killed_recording_comes_back_as_recoverable() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("library.sqlite");
 
-    let (recording_id, queued) = {
+    let (recording_id, capture_id, queued) = {
         let mut core = Core::open(&db).unwrap();
         let capture_id = draft(&mut core);
         let ticket = core.prepare_recording(&capture_id, "op-rec").unwrap();
@@ -240,7 +271,7 @@ fn a_killed_recording_comes_back_as_recoverable() {
         })
         .unwrap();
         // 进程在这里被杀掉，没有 finalize。
-        (ticket.recording_id.clone(), ticket)
+        (ticket.recording_id.clone(), capture_id, ticket)
     };
 
     let mut core = Core::open(&db).unwrap();
@@ -259,8 +290,22 @@ fn a_killed_recording_comes_back_as_recoverable() {
         .finalize_recording(&recording_id, 1, "recovered")
         .unwrap();
     assert_eq!(result.segment_count, 2);
+    assert_eq!(
+        result.capture_id, capture_id,
+        "恢复后 finalize 也必须报出原来的记录"
+    );
+    assert_eq!(
+        result.capture_revision, 2,
+        "恢复后 finalize 的 revision 同样是权威值，可直接用于 commit"
+    );
     let lease = core.open_asset(&result.asset_id, "play").unwrap();
     assert_eq!(std::fs::read(&lease.handle).unwrap(), b"AAAABBBB");
+    // 恢复路径也要能提交成正式记录，否则救回来仍停在 draft。
+    let commit = core
+        .commit(&result.capture_id, result.capture_revision, "op-recovered-commit")
+        .unwrap();
+    assert_eq!(commit.capture.state, CaptureState::Committed);
+    assert_eq!(commit.capture.revision, result.capture_revision + 1);
     let _ = queued;
 }
 

@@ -3099,6 +3099,18 @@ enum ProviderTestStatus {
 /// 最终化结果。转写不阻塞完成。
 class RecordingFinalizeResult {
   final String recordingId;
+
+  /// 这条录音挂到的记录。
+  ///
+  /// 正常停止时平台层本来就知道 capture id；恢复路径（`recover` 后按已封闭序号
+  /// `finalize`）只知道 recording id，必须靠这里拿回 capture 才能提交。
+  final String captureId;
+
+  /// `finalize` 完成后记录的**权威** revision（等于这次递增后的值）。
+  ///
+  /// `captures.commit` 需要 `expected_revision`，而这个值客户端**不该猜**：
+  /// 猜小了会撞乐观锁，猜大了会把「记录已经被别处改过」掩盖过去。
+  final PlatformInt64 captureRevision;
   final String assetId;
   final RecordingState state;
   final PlatformInt64 segmentCount;
@@ -3107,6 +3119,8 @@ class RecordingFinalizeResult {
 
   const RecordingFinalizeResult({
     required this.recordingId,
+    required this.captureId,
+    required this.captureRevision,
     required this.assetId,
     required this.state,
     required this.segmentCount,
@@ -3117,6 +3131,8 @@ class RecordingFinalizeResult {
   @override
   int get hashCode =>
       recordingId.hashCode ^
+      captureId.hashCode ^
+      captureRevision.hashCode ^
       assetId.hashCode ^
       state.hashCode ^
       segmentCount.hashCode ^
@@ -3129,6 +3145,8 @@ class RecordingFinalizeResult {
       other is RecordingFinalizeResult &&
           runtimeType == other.runtimeType &&
           recordingId == other.recordingId &&
+          captureId == other.captureId &&
+          captureRevision == other.captureRevision &&
           assetId == other.assetId &&
           state == other.state &&
           segmentCount == other.segmentCount &&

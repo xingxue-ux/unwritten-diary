@@ -392,6 +392,10 @@ pub(crate) fn finalize(
 
     Ok(RecordingFinalizeResult {
         recording_id: recording_id.to_owned(),
+        capture_id: session.capture_id,
+        // 就是上面那条 UPDATE 写进去的 revision：客户端拿它当 commit 的
+        // expected_revision，不要自己猜。
+        capture_revision: new_revision,
         asset_id: session.asset_id,
         state: final_state,
         segment_count: present.len() as i64,
