@@ -3819,6 +3819,115 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
     assert_eq!(marker.as_deref(), Some("1:probe"), "重复 open 不重置标记");
 }
 
+/// 评审 #133 第 1 条（真隐患）：v15 的「列」与「索引」必须各有一个守卫。
+///
+/// 造一个「`auto_rebuild_marker` 已在、`idx_chunk_vectors_caliber` 被手工删掉」的
+/// v15 库——手工删索引、或将来单独补索引的库都长这样。旧实现是
+/// `current < 15 && !column_exists(...)` 一个守卫包住整段：列已在 ⇒ 整段跳过，
+/// 索引永远补不回来。修完后每次 `open` 都做一次 `sqlite_master` 轻量检查，
+/// 索引缺就建（幂等；`current` 是 15 也一样）。
+#[test]
+fn a_v15_library_with_a_dropped_caliber_index_recreates_it_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    drop(core);
+
+    {
+        let conn = open(&path);
+        // 前提：库已经是 v15 且列在，只把索引删掉。
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 15, "前提：库已经是 v15");
+        let column_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('index_meta') \
+                 WHERE name = 'auto_rebuild_marker'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(column_count, 1, "前提：v15 的列已经在");
+        conn.execute_batch("DROP INDEX idx_chunk_vectors_caliber;")
+            .unwrap();
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' \
+                 AND name = 'idx_chunk_vectors_caliber'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 0, "前提：索引已被删掉");
+    }
+
+    // 旧实现：`migrate` 在 `current == SCHEMA_VERSION` 时直接返回，索引仍然缺。
+    let opened = Core::open(&path).unwrap();
+    assert_eq!(opened.schema_version().unwrap(), 15);
+
+    let conn = open(&path);
+    // 1) `PRAGMA index_list` 真的能查到这条索引。
+    let indexes: Vec<String> = conn
+        .prepare("PRAGMA index_list(chunk_vectors)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        indexes.iter().any(|name| name == "idx_chunk_vectors_caliber"),
+        "open 要把缺失的覆盖索引补回来：{indexes:?}"
+    );
+    // 2) 补回来的索引不是摆设：整代口径核对真的用它。
+    let plan: Vec<String> = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT DISTINCT model_version, dims, storage \
+             FROM chunk_vectors WHERE generation = 1",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        plan.join(" | ")
+            .contains("COVERING INDEX idx_chunk_vectors_caliber"),
+        "补回来的覆盖索引要被查询计划用上：{plan:?}"
+    );
+}
+
+/// 评审 #133 第 2 条：`index_bytes` 是**白名单求和**，v15 的覆盖索引必须列进去。
+///
+/// 不去断言 SQL 文本（改个空格就红），让数字自己说话：建好向量后记一次；把覆盖
+/// 索引删掉再记一次——白名单没包含它时两次相等（这条测试会红），包含时差值就是
+/// 索引占的页。
+#[test]
+fn index_bytes_counts_the_v15_caliber_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    let with_index = core.index_status(None).unwrap().index_bytes;
+    assert!(with_index > 0, "前提：索引占用读得到");
+
+    // 原始连接删索引。白名单没列 `idx_chunk_vectors_caliber` 时，这个数不会变小。
+    open(&path)
+        .execute_batch("DROP INDEX idx_chunk_vectors_caliber;")
+        .unwrap();
+    let without_index = core.index_status(None).unwrap().index_bytes;
+    assert!(
+        without_index < with_index,
+        "index_bytes 必须包含覆盖索引的页：有索引 {with_index}，删掉后 {without_index}"
+    );
+}
+
 /// 统计库里 `semantic_index` 任务数（自动排队回归用）。
 fn semantic_job_count(path: &Path) -> i64 {
     open(path)
