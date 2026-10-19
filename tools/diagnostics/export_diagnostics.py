@@ -65,6 +65,14 @@ EXPECTED_TOKENIZER = "jieba-0.11-gram1-v1"
 EXPECTED_CHUNKER = "chunker-1-packday-line400-overlap48"
 EXPECTED_MODEL_ID = "bge-small-zh-v1.5-ours"
 
+# Every zip member gets the same fixed DOS timestamp. Python's `zipfile` would
+# otherwise call `time.localtime()` per entry: the member time minus the
+# manifest's UTC `generatedAt` reveals the user's UTC offset, and two exports
+# of the same database hash differently. Pinned to the earliest legal DOS
+# timestamp so the value can never be mistaken for "when this was exported".
+ZIP_MEMBER_DATE_TIME = (1980, 1, 1, 0, 0, 0)
+ZIP_MEMBER_MODE = 0o600
+
 # Free-form / user-owned columns. Listed here so the exclusion is auditable in
 # the bundle itself, and so the test can assert none of these names leak.
 EXCLUDED_COLUMNS = [
@@ -92,8 +100,13 @@ LOG_ALLOWED_KEYS = {
     "waitingDependency",
     "dependencyFailed",
     "nextWakeup",
+    # Written by `core_wakeup.dart` on the wakeup path. They used to be
+    # dropped here even though the app emits them on every wake, which made
+    # "the wake actually ran at the expected time" impossible to check.
+    "expectedAt",
+    "completedAt",
 }
-LOG_TIMESTAMP_KEYS = {"observedAt", "nextWakeup"}
+LOG_TIMESTAMP_KEYS = {"observedAt", "nextWakeup", "expectedAt", "completedAt"}
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?$")
 
 # Exact machine-code whitelist. This is intentionally a membership test, not a
@@ -148,13 +161,63 @@ JOB_ONLY_ERROR_CODES = frozenset(
     }
 )
 
+# `captures.state` and `jobs.state` are plain `TEXT NOT NULL` in schema.rs (no
+# CHECK constraint), so a bug or a hand-edited library can store arbitrary text
+# there. `GROUP BY state` used to copy it verbatim into the bundle. Same policy
+# as error codes: only exact `wire()` values from
+# `crates/diary_core/src/model.rs` survive; everything else is grouped as
+# `<redacted>`. The drift test parses that file so a new state cannot be
+# silently dropped (or a removed one silently kept).
+CAPTURE_STATE_WHITELIST = frozenset({"draft", "committed", "trashed"})
+JOB_STATE_WHITELIST = frozenset(
+    {
+        "queued",
+        "running",
+        "succeeded",
+        "retry_wait",
+        "waiting_configuration",
+        "waiting_dependency",
+        "waiting_network",
+        "failed",
+        "cancelled",
+    }
+)
+
 # Machine codes emitted only by the Flutter wakeup logger
-# (`apps/diary_app/lib/src/core_wakeup.dart`). Dart runtime type names are not
-# machine codes and stay redacted.
-LOG_ONLY_ERROR_CODES = frozenset({"installed_core_missing_job_capabilities"})
+# (`apps/diary_app/lib/src/core_wakeup.dart`). `diagnosticErrorCode()` maps a
+# thrown `DiaryException` to its wire code; Dart runtime type names are not
+# machine codes and stay redacted. `unclassified_error` is the fixed literal
+# for "not a DiaryException / PlatformException", so even that case is
+# diagnosable without echoing a runtime type.
+LOG_ONLY_ERROR_CODES = frozenset(
+    {"installed_core_missing_job_capabilities", "unclassified_error"}
+)
+
+# `DiaryErrorCode` values that exist only in the Dart API package
+# (`packages/diary_api/lib/src/values.dart`, plugin feature) and therefore are
+# not part of `ErrorCode::wire()`. They can still be the `code.wire` of a real
+# `DiaryException`, so the log must keep them; source is asserted by the drift
+# test.
+APP_ONLY_ERROR_CODES = frozenset({"plugin_denied", "plugin_budget_exceeded", "unknown"})
+
+# NAPI host codes (`apps/ohos-diary-core/entry/src/main/cpp/napi_shim.cpp`).
+# A `PlatformException` carries the JS `Error.code`, which is one of these when
+# the call could not happen. They are stable machine codes, not free-form text.
+NAPI_ERROR_CODES = frozenset(
+    {
+        "ERR_DIARY_LIB",
+        "ERR_DIARY_ARGS",
+        "ERR_DIARY_HANDLE",
+        "ERR_DIARY_OPEN",
+        "ERR_DIARY_CLOSE",
+        "ERR_DIARY_CALL",
+    }
+)
 
 JOB_ERROR_CODES = ERROR_CODE_WHITELIST | JOB_ONLY_ERROR_CODES
-LOG_ERROR_CODES = JOB_ERROR_CODES | LOG_ONLY_ERROR_CODES
+LOG_ERROR_CODES = (
+    JOB_ERROR_CODES | LOG_ONLY_ERROR_CODES | APP_ONLY_ERROR_CODES | NAPI_ERROR_CODES
+)
 
 # `trigger` is a closed vocabulary in `core_wakeup.dart`. Treat it as a
 # whitelist too, so a future free-form value cannot leak into the archive.
@@ -264,7 +327,14 @@ def table_count(conn: sqlite3.Connection, table: str) -> int | None:
     return scalar(conn, f'SELECT COUNT(*) FROM "{table}"', None)
 
 
-def grouped_counts(conn: sqlite3.Connection, table: str, column: str) -> dict[str, int] | None:
+def grouped_counts(
+    conn: sqlite3.Connection, table: str, column: str, allowed: frozenset[str]
+) -> dict[str, int] | None:
+    """GROUP BY a closed-vocabulary column; unknown values become `<redacted>`.
+
+    Never return the raw key: the column is `TEXT` without a CHECK constraint,
+    so an arbitrary string (a user's draft, a leaked secret) can end up there.
+    """
     if not table_exists(conn, table):
         return None
     try:
@@ -274,7 +344,14 @@ def grouped_counts(conn: sqlite3.Connection, table: str, column: str) -> dict[st
         ).fetchall()
     except sqlite3.Error:
         return None
-    return {str(key): int(value) for key, value in rows}
+    out: dict[str, int] = {}
+    for key, value in rows:
+        text = str(key)
+        if text == "<null>" or text in allowed:
+            out[text] = out.get(text, 0) + int(value)
+        else:
+            out["<redacted>"] = out.get("<redacted>", 0) + int(value)
+    return out
 
 
 def read_pubspec_version(root: Path) -> tuple[str | None, str | None]:
@@ -439,8 +516,12 @@ def collect_index(conn: sqlite3.Connection) -> dict[str, Any]:
 
     total_chunks = table_count(conn, "text_chunks")
     embedded_chunks = None
+    # Library text is used only to compute booleans below. `model_version` and
+    # `chunker_version` are plain TEXT columns; a canary planted there used to
+    # be copied verbatim into the bundle. Never export the value itself.
     model_versions: list[str] = []
-    if active_generation is not None and table_exists(conn, "chunk_vectors"):
+    has_chunk_vectors = table_exists(conn, "chunk_vectors")
+    if active_generation is not None and has_chunk_vectors:
         embedded_chunks = scalar(
             conn,
             "SELECT COUNT(DISTINCT chunk_id) FROM chunk_vectors WHERE generation = ?",
@@ -458,16 +539,24 @@ def collect_index(conn: sqlite3.Connection) -> dict[str, Any]:
             ]
         except sqlite3.Error:
             model_versions = []
-    elif table_exists(conn, "chunk_vectors"):
+    elif has_chunk_vectors:
         embedded_chunks = 0
 
-    chunker_version = None
+    if not has_chunk_vectors:
+        model_version_matches_expected: bool | None = None
+    else:
+        model_version_matches_expected = sorted(set(model_versions)) == [EXPECTED_MODEL_ID]
+
+    chunker_version: str | None = None
     if table_exists(conn, "text_chunks"):
         chunker_version = scalar(
             conn,
             "SELECT chunker_version FROM text_chunks ORDER BY chunk_id LIMIT 1",
             None,
         )
+    chunker_version_matches_expected: bool | None = (
+        None if chunker_version is None else chunker_version == EXPECTED_CHUNKER
+    )
 
     keyword_ready = (
         indexed_segments is not None
@@ -526,8 +615,10 @@ def collect_index(conn: sqlite3.Connection) -> dict[str, Any]:
             "buildingGeneration": building_generation,
             "totalChunks": total_chunks,
             "embeddedChunks": embedded_chunks,
-            "modelVersions": model_versions,
-            "chunkerVersion": chunker_version,
+            # Booleans only: the versions themselves are user-writable TEXT
+            # columns and must never be copied into a bundle.
+            "modelVersionMatchesExpected": model_version_matches_expected,
+            "chunkerVersionMatchesExpected": chunker_version_matches_expected,
             "ready": semantic_ready,
         },
         "notes": [
@@ -605,7 +696,7 @@ def collect_counts(conn: sqlite3.Connection) -> dict[str, Any]:
     return {
         "captures": {
             "total": table_count(conn, "captures"),
-            "byState": grouped_counts(conn, "captures", "state"),
+            "byState": grouped_counts(conn, "captures", "state", CAPTURE_STATE_WHITELIST),
         },
         "sourceItems": table_count(conn, "source_items"),
         "sourceRevisions": table_count(conn, "source_revisions"),
@@ -633,7 +724,7 @@ def collect_counts(conn: sqlite3.Connection) -> dict[str, Any]:
         },
         "jobs": {
             "total": table_count(conn, "jobs"),
-            "byState": grouped_counts(conn, "jobs", "state"),
+            "byState": grouped_counts(conn, "jobs", "state", JOB_STATE_WHITELIST),
             "byErrorCode": grouped_error_codes(conn),
         },
         "diary": {
@@ -682,10 +773,17 @@ def build_diagnostics(library: Path, logs: Path | None, limit: int, expected_sch
             "excludedColumns": EXCLUDED_COLUMNS,
             "logAllowedKeys": sorted(LOG_ALLOWED_KEYS),
             "logTriggers": sorted(LOG_TRIGGERS),
+            "stateWhitelists": {
+                "captures": sorted(CAPTURE_STATE_WHITELIST),
+                "jobs": sorted(JOB_STATE_WHITELIST),
+            },
             "errorCodeWhitelist": sorted(LOG_ERROR_CODES),
             "errorCodeWhitelistSource": (
                 "crates/diary_core/src/error.rs ErrorCode::wire() + "
-                "crates/diary_core/src/jobs.rs + apps/diary_app/lib/src/core_wakeup.dart"
+                "crates/diary_core/src/jobs.rs + "
+                "packages/diary_api/lib/src/values.dart DiaryErrorCode + "
+                "apps/diary_app/lib/src/core_wakeup.dart + "
+                "apps/ohos-diary-core/entry/src/main/cpp/napi_shim.cpp"
             ),
             "namePolicy": [
                 "library fileName is fixed to <hidden>",
@@ -699,6 +797,12 @@ def build_diagnostics(library: Path, logs: Path | None, limit: int, expected_sch
                 "trigger is kept only when it is in the closed trigger vocabulary",
                 "unknown values become <redacted>; a shape match is never enough",
                 "no paths, file names, blob bytes, capture/source/diary/chunk text are selected",
+            ],
+            "stateRules": [
+                "captures.state / jobs.state are kept only when they are an exact "
+                "CaptureState::wire()/JobState::wire() value from model.rs",
+                "unknown states are grouped as <redacted>",
+                "model/chunker versions are reported as matchesExpected booleans only",
             ],
             "verification": (
                 "tools/diagnostics/test_no_user_content.py plants body, short-word and "
@@ -731,6 +835,15 @@ README_TEXT = """不写日记 · 诊断包
 """
 
 
+def zip_member(name: str) -> zipfile.ZipInfo:
+    """A member with a fixed timestamp and mode: no local time, no umask leak."""
+    info = zipfile.ZipInfo(name, date_time=ZIP_MEMBER_DATE_TIME)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3  # Unix, so external_attr is interpreted as a mode
+    info.external_attr = ZIP_MEMBER_MODE << 16
+    return info
+
+
 def write_bundle(data: dict[str, Any], out: Path, force: bool) -> None:
     if out.exists() and not force:
         raise FileExistsError(f"output exists: {out} (use --force to overwrite)")
@@ -756,10 +869,10 @@ def write_bundle(data: dict[str, Any], out: Path, force: bool) -> None:
             tmp.write_bytes(payload)
         else:
             with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-                archive.writestr("diagnostics.json", payload)
-                archive.writestr("README.txt", README_TEXT)
+                archive.writestr(zip_member("diagnostics.json"), payload)
+                archive.writestr(zip_member("README.txt"), README_TEXT)
                 archive.writestr(
-                    "manifest.json",
+                    zip_member("manifest.json"),
                     json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
                 )
         os.replace(tmp, out)
@@ -803,7 +916,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         data = build_diagnostics(args.library, args.logs, args.limit, args.expected_schema)
-        out = args.out or Path(f"diagnostics-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip")
+        out = args.out or Path(
+            f"diagnostics-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.zip"
+        )
         write_bundle(data, out, args.force)
     except FileNotFoundError as exc:
         print(f"[diagnostics][失败] {exc}", file=sys.stderr)
