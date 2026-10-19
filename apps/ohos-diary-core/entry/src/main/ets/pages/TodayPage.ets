@@ -299,7 +299,9 @@ export struct TodayPage {
             .fontColor($r('sys.color.ohos_id_color_text_secondary'))
           StatePill({
             text: captureStateLabel(row.capture.state),
-            tone: row.capture.state === 'draft' ? 'warn' : 'ok',
+            tone: row.capture.state === 'draft'
+              ? 'warn'
+              : (row.capture.state === 'trashed' ? 'alert' : 'ok'),
           })
           Blank()
           StatePill({ text: this.transcribeLabel(row), tone: this.transcribeTone(row) })
