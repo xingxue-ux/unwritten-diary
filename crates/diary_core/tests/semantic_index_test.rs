@@ -1501,6 +1501,17 @@ fn semantic_hits_are_per_piece_and_snippets_come_from_that_pieces_span() {
     assert_eq!(sleep.matched_by, vec![diary_core::MatchedBy::Semantic]);
     assert_eq!(sleep.source_kind, SourceKind::File);
     assert_eq!(sleep.source_id.as_deref(), Some(first.as_str()));
+    // 语义来源篇：group_id 是来源篇的折叠键（source_id），capture_id 是这篇来源
+    // 所属的记录。两者不同，界面跳记录详情页必须用后者。
+    assert_eq!(sleep.group_id, first, "语义来源篇的 group_id 是来源篇的 id");
+    assert_eq!(
+        sleep.capture_id, a,
+        "语义来源篇的 capture_id 是它所属的记录"
+    );
+    assert_ne!(
+        sleep.capture_id, sleep.group_id,
+        "语义来源篇上 capture_id 与 group_id 不是一回事"
+    );
     assert!(sleep.revision_id.is_some(), "来源篇要带上修订");
     assert_eq!(
         sleep.snippet.as_deref(),
@@ -1527,6 +1538,14 @@ fn semantic_hits_are_per_piece_and_snippets_come_from_that_pieces_span() {
     let express = hit_of(&snapshot, &second);
     assert_eq!(express.source_kind, SourceKind::File);
     assert_eq!(
+        express.capture_id, a,
+        "同块第二篇的 capture_id 也是它所属的那篇记录"
+    );
+    assert_ne!(
+        express.capture_id, express.group_id,
+        "来源篇的 capture_id 与 group_id 不同"
+    );
+    assert_eq!(
         express.snippet.as_deref(),
         Some("快递放在门口。"),
         "每一篇各拿自己那一段"
@@ -1539,6 +1558,14 @@ fn semantic_hits_are_per_piece_and_snippets_come_from_that_pieces_span() {
     // 记录自己写的文字：与关键词那一路同一个口径（groupId = capture_id）。
     let capture_hit = hit_of(&snapshot, &b);
     assert_eq!(capture_hit.hit_id, format!("cap_{b}"));
+    assert_eq!(
+        capture_hit.capture_id, b,
+        "语义记录文字命中的 capture_id 是这篇记录"
+    );
+    assert_eq!(
+        capture_hit.capture_id, capture_hit.group_id,
+        "记录文字命中天然自成一组，两者相同"
+    );
     assert_eq!(capture_hit.source_id, None);
     assert_eq!(capture_hit.revision_id, None);
     assert_eq!(capture_hit.source_kind, SourceKind::Text);

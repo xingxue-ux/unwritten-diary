@@ -1162,6 +1162,7 @@ class BridgeDiaryApi implements api.DiaryApi {
               (hit) => api.SearchHit(
                 hitId: hit.hitId,
                 groupId: hit.groupId,
+                captureId: hit.captureId,
                 sourceKind: api.SourceKind.values.byName(hit.sourceKind.name),
                 matchedBy: hit.matchedBy
                     .map((kind) => api.MatchedBy.values.byName(kind.name))

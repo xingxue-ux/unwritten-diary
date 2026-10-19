@@ -2163,6 +2163,9 @@ pub(crate) fn materialize(core: &Core, page: &[SemanticCandidate]) -> Result<Vec
         hits.push(SearchHit {
             hit_id: hit_id_of(candidate),
             group_id: candidate.group_id.clone(),
+            // 候选本身带着 capture_id（记录文字那一路就是它自己，来源篇那一路是
+            // 这篇来源所属的记录）；契约要求每条命中都能直接跳记录详情页。
+            capture_id: candidate.capture_id.clone(),
             source_kind: SourceKind::from_wire(&candidate.kind),
             matched_by: vec![MatchedBy::Semantic],
             coverage: candidate.coverage,

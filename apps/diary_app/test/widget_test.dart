@@ -114,6 +114,7 @@ class HybridPreviewApi extends MockDiaryApi {
         SearchHit(
           hitId: 'keyword',
           groupId: 'keyword',
+          captureId: 'keyword',
           sourceKind: SourceKind.text,
           matchedBy: {MatchedBy.keyword},
           coverage: Coverage.complete,
@@ -154,6 +155,7 @@ class LargeCaptureApi extends MockDiaryApi {
             SearchHit(
               hitId: 'hit-$index',
               groupId: 'capture-$index',
+              captureId: 'capture-$index',
               sourceKind: SourceKind.text,
               matchedBy: const {MatchedBy.keyword},
               coverage: Coverage.complete,
@@ -350,6 +352,7 @@ void main() {
           SearchHit(
             hitId: 'semantic',
             groupId: 'semantic',
+            captureId: 'semantic',
             sourceKind: SourceKind.text,
             matchedBy: {MatchedBy.semantic},
             coverage: Coverage.complete,

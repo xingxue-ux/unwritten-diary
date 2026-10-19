@@ -335,9 +335,10 @@ diary_call(h, json)
     "request":{"mode":"keyword","page_size":10,"query":"关键词"}}}
 <<< {"apiVersion":"1.0","data":{"cursor":null,"index_coverage":"complete","phase":"done",
     "query_revision":1,"results":[{"hit_id":"seg_01a14a80…","group_id":"src_01a14a80…",
+    "capture_id":"cap_01a14a7f…",
     "matched_by":["keyword"],"snippet":"今天在鸿蒙上验证核心的 C ABI，关键词是鹅掌楸与检索。",
     "highlights":[{"end":21,"start":18}],"source_kind":"text"},{"hit_id":"cap_cap_01a14a7f…",
-    "group_id":"cap_01a14a7f…","matched_by":["keyword"],"snippet":"今天在鸿蒙上验证核心的 C ABI…"}],
+    "group_id":"cap_01a14a7f…","capture_id":"cap_01a14a7f…","matched_by":["keyword"],"snippet":"今天在鸿蒙上验证核心的 C ABI…"}],
     "session_id":"search_01a14a8004af72b78f660abe43b1a9c8","warnings":[]},"ok":true}
 
 >>> {"method":"indexes.rebuild","params":{"operation_id":"op-capi-index","reason":"capi e2e","scope":"all"}}

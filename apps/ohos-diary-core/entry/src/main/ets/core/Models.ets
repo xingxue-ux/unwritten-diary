@@ -192,7 +192,10 @@ export interface TextRange {
 /** 一条检索命中。 */
 export interface SearchHit {
   hit_id: string;
+  /** 同一来源的命中折叠归组用的键；片段命中时是 `source_id`，**不是**记录 id。 */
   group_id: string;
+  /** 这一条命中属于哪篇记录（`captures.id`）；两种命中都有，跳详情页用它。 */
+  capture_id: string;
   /** `text` / `image` / `audio` / `video` / `file` / `link`。 */
   source_kind: string;
   /** 命中原因，元素是 `keyword` / `semantic` / `metadata`。 */
