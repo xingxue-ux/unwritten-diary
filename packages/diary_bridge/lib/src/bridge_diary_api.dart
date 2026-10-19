@@ -759,6 +759,8 @@ class BridgeDiaryApi implements api.DiaryApi {
     );
     return api.RecordingFinalizeResult(
       recordingId: result.recordingId,
+      captureId: result.captureId,
+      captureRevision: result.captureRevision,
       assetId: result.assetId,
       state: api.RecordingState.values.byName(result.state.name),
       segmentCount: result.segmentCount,
