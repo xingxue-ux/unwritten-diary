@@ -650,7 +650,9 @@ pub(crate) fn counts(core: &Core, source_scope: Option<&[String]>) -> Result<Chu
     );
     let total = core
         .conn
-        .query_row(&total_sql, params_from_iter(&scope_values), |row| row.get(0))?;
+        .query_row(&total_sql, params_from_iter(&scope_values), |row| {
+            row.get(0)
+        })?;
 
     // 没有生效代次就是 0：不是「碰巧没查到」，是没有可算的代次。
     let embedded = match generations(core)?.0 {
@@ -691,9 +693,18 @@ pub(crate) fn counts(core: &Core, source_scope: Option<&[String]>) -> Result<Chu
 ///   与精确 SQL 的 `NOT EXISTS` 同一口径），再减去这些块在生效代次里的向量数；
 /// - 没有 span 的块若也有向量，同样从 `embedded` 里减掉。
 ///
-/// 取过期块 id 的查询走 `chunk_spans` 的主键索引（10 万块上约 10 ms），不是两次
-/// 逐块相关子查询的 COUNT。异常块数超过 `MAX_LOCAL_COUNT_CORRECTION` 时返回 `None`，
-/// 让调用方退回精确 SQL——修正本身有上界，不拼一个巨大的 JSON 数组。
+/// 取过期块 id 的查询走 `idx_chunk_spans_revision`（`source_revision_id > ''`，
+/// 10 万块上约 0–10 ms），不是两次逐块相关子查询的 COUNT。注意这里扫的是**索引里
+/// 非空 revision 的部分**：本仓库的基准语料是「每块一篇记录文字」，`source_revision_id`
+/// 全是空串，索引几乎是空的，所以「干净库 ~0 ms」是**语料产物**；换成 10 万块都有
+/// 非空 revision 的语料（§5.2 的敏感性测试）这一笔约 **86 ms**。
+///
+/// **上界按不同块数算，不是过期 span 行数**：一块只要有一段过期就整块排除，多段
+/// 过期只计一次；`MAX_LOCAL_COUNT_CORRECTION` 限制的是前者。
+///
+/// 这几条查询**没有包在同一个事务里**：计数是给覆盖状态/warning 用的，不参与排序；
+/// 并发重建或写入时可能读到「块表与 span/向量表来自不同瞬间」的瞬时不一致。这里
+/// 不用读事务换一致性——代价是偶尔报一个偏保守的覆盖状态，不会把结果排序改错。
 fn counts_fast_checked(core: &Core) -> Result<Option<ChunkCounts>> {
     // 一次拿两个数：块总数、有 span 的不同块数。两者相等 ⇔ 没有「没有 span 的块」。
     // 用 `COUNT(DISTINCT chunk_id)`（走 `chunk_spans` 主键索引，10 万块 ~9 ms）而不是
@@ -761,7 +772,8 @@ fn counts_fast_checked(core: &Core) -> Result<Option<ChunkCounts>> {
         )?
     };
     // 没有 span 的块不该有向量（正常路径产不出来），但精确 SQL 不认它们；有就减掉。
-    // 这种异常很少见，才值得跑一次逐向量 `NOT EXISTS`。
+    // 这种异常很少见，才值得跑一次逐向量 `NOT EXISTS`：代价是 **O(向量行数)**，
+    // 不是 O(块数)；向量行本身也受 `without_spans` 这个异常前提限制，正常库不跑。
     let orphan_vectors: i64 = if without_spans == 0 {
         0
     } else {
@@ -782,7 +794,8 @@ fn counts_fast_checked(core: &Core) -> Result<Option<ChunkCounts>> {
 /// 局部修正的上界：异常块多到这份上就退回精确 SQL（不拼一个巨大的 JSON 数组）。
 ///
 /// 32 768 与 SQLite 默认的单语句变量上限同量级；到这个规模时，局部修正已经没有
-/// 性能优势，精确 SQL 反而更简单。
+/// 性能优势，精确 SQL 反而更简单。**数的是不同块 id**：一块有多段过期 span 只算
+/// 一块，所以它不限制过期 span 的行数（那些行会被逐行扫过、在 Rust 侧去重）。
 const MAX_LOCAL_COUNT_CORRECTION: usize = 32_768;
 
 #[cfg(test)]
@@ -813,7 +826,9 @@ mod tests {
                     .unwrap();
             }
         }
-        let keep: Vec<String> = (0..40_000).map(|index| format!("chunk_{index:05}")).collect();
+        let keep: Vec<String> = (0..40_000)
+            .map(|index| format!("chunk_{index:05}"))
+            .collect();
         delete_stale_chunks(&tx, "1 = 1", &[], &keep).unwrap();
         let count = |tx: &rusqlite::Transaction<'_>| -> i64 {
             tx.query_row("SELECT COUNT(*) FROM text_chunks", [], |row| row.get(0))
@@ -949,12 +964,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        let chunks = [
-            "chunk_clean",
-            "chunk_stale",
-            "chunk_mixed",
-            "chunk_orphan",
-        ];
+        let chunks = ["chunk_clean", "chunk_stale", "chunk_mixed", "chunk_orphan"];
         for chunk_id in chunks {
             core.conn
                 .execute(
@@ -996,7 +1006,10 @@ mod tests {
                 .unwrap();
         }
         core.conn
-            .execute("UPDATE index_meta SET active_generation = 7 WHERE id = 1", [])
+            .execute(
+                "UPDATE index_meta SET active_generation = 7 WHERE id = 1",
+                [],
+            )
             .unwrap();
 
         let counts = counts(&core, None).unwrap();
@@ -1011,6 +1024,48 @@ mod tests {
         assert!(
             counts.fast,
             "过期 span 只做局部修正，不应让整个覆盖计数回退精确 SQL"
+        );
+    }
+
+    /// #135 的**局部修正上界**：过期块超过 `MAX_LOCAL_COUNT_CORRECTION` 时，
+    /// `counts_fast_checked` 必须返回 `None`（调用方据此退回精确 SQL），而不是拼一个
+    /// 巨大的 JSON 数组。这里直接造 `32769` 个过期块，刚好越过 32768 的界。
+    #[test]
+    fn counts_fall_back_when_local_corrections_exceed_the_bound() {
+        let core = crate::Core::open_in_memory().unwrap();
+        core.conn
+            .execute(
+                "INSERT INTO captures (id, revision, state, occurred_at, created_at, updated_at, \
+                 time_zone, utc_offset_minutes, day_key, draft_text) \
+                 VALUES ('cap_a', 0, 'active', '2026-10-18T00:00:00.000Z', \
+                         '2026-10-18T00:00:00.000Z', '2026-10-18T00:00:00.000Z', \
+                         'Asia/Shanghai', 480, '2026-10-18', '正文')",
+                [],
+            )
+            .unwrap();
+        let last = MAX_LOCAL_COUNT_CORRECTION; // 0..=32768 共 32769 行
+        core.conn
+            .execute_batch(&format!(
+                "WITH RECURSIVE seq(i) AS (\
+                     SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}\
+                 ) \
+                 INSERT INTO text_chunks (chunk_id, ordinal, text, kind, coverage, day_key, \
+                                          chunker_version, created_at) \
+                 SELECT 'chunk_stale_' || i, 0, 'x', 'text', 'complete', '2026-10-18', \
+                        '{CHUNKER_VERSION}', '2026-10-18T00:00:00.000Z' FROM seq; \
+                 WITH RECURSIVE seq(i) AS (\
+                     SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}\
+                 ) \
+                 INSERT INTO chunk_spans (chunk_id, ordinal, capture_id, source_id, \
+                                          source_revision_id, start_char, end_char, kind, coverage) \
+                 SELECT 'chunk_stale_' || i, 0, 'cap_a', 'src_stale', 'rev_old', 0, 1, \
+                        'text', 'complete' FROM seq;"
+            ))
+            .unwrap();
+
+        assert!(
+            counts_fast_checked(&core).unwrap().is_none(),
+            "过期块超过 {MAX_LOCAL_COUNT_CORRECTION} 时必须退回精确 SQL，而不是继续局部修正"
         );
     }
 }
