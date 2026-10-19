@@ -45,8 +45,13 @@
 //! 按篇折叠。**这不是 ANN**：保留范围内的名次仍然是逐条精算的，只是不保留更深的
 //! 结果（上限说明见 `docs/architecture/m5-大库可用性.md`）。日期 / 类型 / 来源范围
 //! 过滤会用上单表扫描里没有的列，那种查询走原来的逐行 join 精确 SQL（候选集通常
-//! 小得多）。两段式里只要有块没通过后置过滤，就整条回退到精确 SQL——绝不拿
-//! 「前 K 条恰好都有效」当完整结果。
+//! 小得多）。
+//!
+//! 后置过滤（回收站 / 旧来源修订）掉的块由深度之外的**补位窗口**补上（#135）：
+//! 只有「折叠后的返回条数 < 调用方这一屏要的条数」、并且窗口或深度之外还有块时，
+//! 才整条回退到精确 SQL。首屏因此与精确路径**逐条一致**；`semantic_ranking` 要全部
+//! 结果，所以任何深度截断都会回退。第 `FAST_SCAN_DEPTH` 块之后的截断仍是 #90 早
+//! 已写明的**结果深度上限**，不是过滤造成的漏召回。
 //!
 //! 向量本身按 `int8`（体积优先）或 `f32` 存，解码按行上的 `storage` 分派；编码格式
 //! 是口径三字段之一（#58），换格式整代重算。点积直接从 BLOB 字节读（x86_64 上 AVX2），
@@ -76,9 +81,7 @@ use crate::embedding::{
     self, Embedder, EmbeddingConfig, EnvEmbedding, TokenTruncation, VectorStorage,
 };
 use crate::error::{CoreError, Result};
-use crate::model::{
-    Coverage, MatchedBy, SearchFilters, SearchHit, SourceKind, SourceLocator,
-};
+use crate::model::{Coverage, MatchedBy, SearchFilters, SearchHit, SourceKind, SourceLocator};
 use crate::Core;
 
 /// 语义摘录最多这么多字符（超出截断加省略号）。取该篇自己那一段，不是整块正文。
@@ -131,9 +134,10 @@ pub struct SemanticQueryProfile {
     pub fast_meta_build_ns: u64,
     /// #90 快速路径是否命中；`false` = 回退到逐行 join 的精确路径。
     pub fast_path: bool,
-    /// 语义覆盖计数是否走了快路径；`false` = 因为库里有异常块/过期 span 退回精确 SQL。
-    /// 与 `fast_path` 是**两条独立的回退**：覆盖计数只要有一条过期 span 就整库回退，
-    /// 与查询命中哪一块无关。
+    /// 语义覆盖计数是否走了快路径；`false` = 异常块多到超过
+    /// `chunks::MAX_LOCAL_COUNT_CORRECTION`，退回精确 SQL。
+    /// 与 `fast_path` 是**两条独立的回退**：覆盖计数只看整库的异常规模，与查询命中
+    /// 哪一块无关；少量过期 span 只做局部扣减，不再整库回退（#135）。
     pub coverage_fast: bool,
 }
 
@@ -158,12 +162,15 @@ impl SemanticQueryProfile {
 
 mod profile_sink {
     use super::SemanticQueryProfile;
-    use std::cell::RefCell;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::cell::{Cell, RefCell};
 
-    static ENABLED: AtomicBool = AtomicBool::new(false);
-
+    // **开关是线程局部的，不是全局 AtomicBool**（#135 复审）。计时累加器本来就是
+    // thread-local；开关做成全局时，并行跑的两个测试会互相把对方关掉
+    // （`take_query_profile()` 返回 None 或 `fast_path` 断言假红）。产品代码从不打开
+    // 它；探针在同一线程上 set / query / take，线程局部与进程级的可见性没有差别。
     thread_local! {
+        static ENABLED: Cell<bool> = const { Cell::new(false) };
+
         static ACC: RefCell<SemanticQueryProfile> = const { RefCell::new(SemanticQueryProfile {
             rows: 0,
             total_ns: 0,
@@ -188,12 +195,12 @@ mod profile_sink {
     }
 
     pub(super) fn set_enabled(enabled: bool) {
-        ENABLED.store(enabled, Ordering::Relaxed);
+        ENABLED.with(|slot| slot.set(enabled));
         reset();
     }
 
     pub(super) fn enabled() -> bool {
-        ENABLED.load(Ordering::Relaxed)
+        ENABLED.with(Cell::get)
     }
 
     pub(super) fn reset() {
@@ -219,13 +226,16 @@ mod profile_sink {
     }
 }
 
-/// 仅供量测：打开/关闭语义查询的分段计时（默认关；产品代码不调它）。
+/// 仅供量测：打开/关闭**当前线程**的语义查询分段计时（默认关；产品代码不调它）。
+///
+/// 开关与累加器都是线程局部的：并行测试不会互相关掉对方的计时；探针必须在
+/// 执行查询的同一线程上打开并取走结果。
 #[doc(hidden)]
 pub fn set_query_profiling(enabled: bool) {
     profile_sink::set_enabled(enabled);
 }
 
-/// 仅供量测：取走上一次语义查询的分段计时；没打开计时时返回 `None`。
+/// 仅供量测：取走**当前线程**上一次语义查询的分段计时；没打开计时时返回 `None`。
 #[doc(hidden)]
 pub fn take_query_profile() -> Option<SemanticQueryProfile> {
     profile_sink::take()
@@ -473,22 +483,22 @@ impl Core {
                 self.semantic.slot = EmbedderSlot::Failed(reason.clone());
                 Err(semantic_unavailable(reason))
             }
-            EmbedderSlot::Configured(config) => match embedding::load(&config, embedding::EmbedOptions::default())
-            {
-                Ok(loaded) => {
-                    let embedder: Arc<dyn Embedder> = Arc::new(loaded);
-                    self.current_dims = embedder.dims();
-                    self.semantic.slot = EmbedderSlot::Ready(Arc::clone(&embedder));
-                    Ok(embedder)
+            EmbedderSlot::Configured(config) => {
+                match embedding::load(&config, embedding::EmbedOptions::default()) {
+                    Ok(loaded) => {
+                        let embedder: Arc<dyn Embedder> = Arc::new(loaded);
+                        self.current_dims = embedder.dims();
+                        self.semantic.slot = EmbedderSlot::Ready(Arc::clone(&embedder));
+                        Ok(embedder)
+                    }
+                    Err(reason) => {
+                        self.semantic.slot = EmbedderSlot::Failed(reason.clone());
+                        Err(semantic_unavailable(reason))
+                    }
                 }
-                Err(reason) => {
-                    self.semantic.slot = EmbedderSlot::Failed(reason.clone());
-                    Err(semantic_unavailable(reason))
-                }
-            },
+            }
         }
     }
-
 }
 
 /// 一次语义重建**能分段跑**的结果：跑完，还是到了截止点主动让出。
@@ -640,7 +650,12 @@ fn foreign_row_count(core: &Core, generation: i64, caliber: &Caliber<'_>) -> Res
     let foreign: i64 = core.conn.query_row(
         "SELECT COUNT(*) FROM chunk_vectors WHERE generation = ?1 \
            AND (model_version <> ?2 OR dims <> ?3 OR storage <> ?4)",
-        params![generation, caliber.model_version, caliber.dims, caliber.storage],
+        params![
+            generation,
+            caliber.model_version,
+            caliber.dims,
+            caliber.storage
+        ],
         |row| row.get(0),
     )?;
     Ok(foreign)
@@ -833,7 +848,12 @@ fn missing_chunks(
     )?;
     let rows = statement
         .query_map(
-            params![generation, caliber.model_version, caliber.dims, caliber.storage],
+            params![
+                generation,
+                caliber.model_version,
+                caliber.dims,
+                caliber.storage
+            ],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -935,13 +955,25 @@ pub(crate) fn active_generation(core: &Core) -> Result<Option<i64>> {
 ///
 /// **折叠在分页之前**：同一篇的多个块命中只留得分最高的那一个，所以「一篇长材料」
 /// 不会在结果里出现十次（消费契约第 1 条）。
+/// `requested` 是调用方**这一屏至少要拿到多少条**（按篇折叠后的条数）。
+/// 快速路径只在「返回条数 < requested 且窗口之外还有块」时整条回退：这时无法
+/// 证明窗口外没有更该出现的候选。`requested = usize::MAX` 表示「要全部结果」，
+/// 于是任何深度截断都会回退到精确 SQL——量测 API 用它保证全量逐位一致。
 pub(crate) fn candidates(
     core: &Core,
     embedder: &dyn Embedder,
     query: &str,
     filters: &SearchFilters,
+    requested: usize,
 ) -> Result<SemanticOutcome> {
-    candidates_impl(core, embedder, query, filters, RowMode::Streaming)
+    candidates_impl(
+        core,
+        embedder,
+        query,
+        filters,
+        requested,
+        RowMode::Streaming,
+    )
 }
 
 /// 取行的两种方式。**生产只用 `Streaming`**；`LoadAll` 是测试用的参考实现
@@ -958,6 +990,7 @@ fn candidates_impl(
     embedder: &dyn Embedder,
     query: &str,
     filters: &SearchFilters,
+    requested: usize,
     mode: RowMode,
 ) -> Result<SemanticOutcome> {
     let profiling = profile_sink::enabled();
@@ -1006,20 +1039,20 @@ fn candidates_impl(
     // **快速路径（#90 / #135）**：默认过滤器下，先用一张表扫完向量、选 top-K 块，再只取这
     // 些块的元数据。10 万块上「逐行 join span + capture」占查询总时间的一半以上，
     // 而默认过滤条件用不上那些列——它们只在最后 K 条上核对一次。后置过滤掉的块由
-    // 深度之外的**补位窗口**补上（见 `fast_scan_reserve`）；只有窗口不够时才整条回退
-    // 到下面的精确 SQL，绝不拿「窗口里恰好只剩这些」当完整结果。
+    // 深度之外的**补位窗口**补上（见 `fast_scan_reserve`）；只有「折叠后不够这一屏
+    // 要的条数、且窗口/深度之外还有块」时才整条回退到下面的精确 SQL，绝不拿
+    // 「窗口里恰好只剩这些」当完整结果。
     if mode == RowMode::Streaming && fast_path_eligible(filters) {
-        if let Some(scored) =
-            candidates_fast(
-                core,
-                &query_vector,
-                query_norm,
-                generation,
-                filters,
-                core.semantic_scan_depth,
-                profiling,
-            )?
-        {
+        if let Some(scored) = candidates_fast(
+            core,
+            &query_vector,
+            query_norm,
+            generation,
+            filters,
+            core.semantic_scan_depth,
+            requested,
+            profiling,
+        )? {
             if profiling {
                 profile_sink::add(|profile| profile.fast_path = true);
             }
@@ -1142,8 +1175,10 @@ fn candidates_impl(
 ///
 /// 深度之外的补位窗口见 `fast_scan_reserve`（#135）：后置过滤掉的块由窗口补上，
 /// 不再「filter 掉一条就重扫整代」。测试
-/// `fast_scan_falls_back_when_a_top_candidate_is_filtered_out` 钉住结果一致性，
-/// `fast_scan_backfills_when_a_top_candidate_is_filtered_out` 钉住补位不整条回退。
+/// `semantic_ranking_falls_back_when_depth_would_truncate_the_requested_results`
+/// 钉住「要全部结果时不许拿深度截断冒充完整」，
+/// `fast_scan_backfills_and_keeps_the_first_page_exact_when_a_top_candidate_is_filtered_out`
+/// 钉住「首屏够条数时留在快速路径、且与精确路径同一批」。
 pub(crate) const FAST_SCAN_DEPTH: usize = 4_096;
 
 /// 只有**默认过滤器**才走单表扫描。
@@ -1151,7 +1186,7 @@ pub(crate) const FAST_SCAN_DEPTH: usize = 4_096;
 /// 日期区间 / 类型 / 来源范围都会把候选限制在库的一个子集里，而单表扫描里没有这些列：
 /// 先按分数取 top-K 再过滤，可能把「分数不高但确实符合过滤条件」的块整个漏掉。那种
 /// 查询仍走精确 SQL（候选集通常也小得多）。`include_trashed` 不在此列——它只影响
-/// 后置核对，核对不上会整条回退。
+/// 后置核对；核对不上由补位窗口补，补不满请求条数才整条回退。
 fn fast_path_eligible(filters: &SearchFilters) -> bool {
     filters.from_day_key.is_none()
         && filters.to_day_key.is_none()
@@ -1200,9 +1235,11 @@ impl Ord for ScoredRow {
 /// 窗口里排在后面的候选直接补上——**不重扫整代向量**。只有窗口里的有效块还不够
 /// （被过滤的块超过了预留）才整条回退精确 SQL。
 ///
-/// 取 `depth / 4`（至少 1）：10 万块、各 2% 回收站 + 2% 旧修订时，5120 的窗口期望
-/// 混入约 205 个被过滤块，远小于 1024 的余量；稀疏混合通常只混入 0–1 个。余量用完
-/// 就回退——补位有确定上界，不会退化成「反复补位到扫完」的 O(N) 循环。
+/// 取 `depth / 4`（至少 1）：默认窗口 = 4096 + 1024 = 5120 块，补位余量 1024 占窗口
+/// 的约 **20%**（不是「相对结果深度的 25%」这个口径）。10 万块、各 2% 回收站 +
+/// 2% 旧修订时，5120 的窗口期望混入约 205 个被过滤块，远小于 1024 的余量；稀疏混合
+/// 通常只混入 0–1 个。余量用完就回退——补位有确定上界，不会退化成「反复补位到扫完」
+/// 的 O(N) 循环。
 const FAST_SCAN_RESERVE_DIVISOR: usize = 4;
 
 fn fast_scan_reserve(depth: usize) -> usize {
@@ -1211,12 +1248,20 @@ fn fast_scan_reserve(depth: usize) -> usize {
 
 /// 单表扫描 + 只取 top-K 元数据。返回 `None` 表示**必须回退**到精确路径。
 ///
-/// 回退条件只有一条：**补位窗口里**选中的块被后置过滤掉太多，剩下的有效块不足
-/// `depth`，而窗口之外还可能有块（`scanned > selected.len()`）。那时「窗口里恰好
-/// 只剩这些」不能证明「窗口之外没有更该出现的候选」，所以不猜。
+/// 回退条件（`requested` = 调用方这一屏至少要多少条，按篇折叠后计）：
 ///
-/// 反过来，只要窗口覆盖了整代（`scanned <= selected.len()`），即使有效块不足
-/// `depth`，那也是**完整的**答案——不是回退的理由。
+/// 1. 补位窗口里的有效块不足 `depth`，而窗口之外还有块（`scanned > selected.len()`）：
+///    无法证明深度里的有效块已经取全；
+/// 2. 折叠后返回条数 < `requested`，且还有块没交出来（窗口之外没扫，或扫到了但被
+///    结果深度 `depth` 截掉）：无法证明这一屏是精确路径的前 `requested` 条。
+///
+/// 反过来，只要窗口覆盖整代、且返回条数够 `requested`，剩下的就是**完整的**答案
+/// （在 #90 写明的深度上限之内）——不是回退的理由。`requested = usize::MAX`
+/// （`semantic_ranking` 要全部结果）时任何深度截断都会触发条件 2。
+///
+/// 深度边界同分时，保留哪一块由扫描序（分数降序、rowid 升序）决定；保留下来的
+/// 候选仍走完整七道全序。首屏不落在深度边界上时，与精确路径逐条一致。
+#[allow(clippy::too_many_arguments)]
 fn candidates_fast(
     core: &Core,
     query_vector: &[f32],
@@ -1224,6 +1269,7 @@ fn candidates_fast(
     generation: i64,
     filters: &SearchFilters,
     depth: usize,
+    requested: usize,
     profiling: bool,
 ) -> Result<Option<Vec<SemanticCandidate>>> {
     let capacity = depth.saturating_add(fast_scan_reserve(depth));
@@ -1231,9 +1277,9 @@ fn candidates_fast(
     let mut heap: BinaryHeap<ScoredRow> = BinaryHeap::with_capacity(capacity);
     let mut scanned = 0_u64;
     {
-        let mut statement = core
-            .conn
-            .prepare("SELECT rowid, dims, storage, vector FROM chunk_vectors WHERE generation = ?1")?;
+        let mut statement = core.conn.prepare(
+            "SELECT rowid, dims, storage, vector FROM chunk_vectors WHERE generation = ?1",
+        )?;
         let mut rows = statement.query(params![generation])?;
         while let Some(row) = {
             let step_start = profiling.then(Instant::now);
@@ -1313,10 +1359,7 @@ fn candidates_fast(
             .total_cmp(&left.score)
             .then_with(|| left.rowid.cmp(&right.rowid))
     });
-    let scores: HashMap<i64, f32> = selected
-        .iter()
-        .map(|row| (row.rowid, row.score))
-        .collect();
+    let scores: HashMap<i64, f32> = selected.iter().map(|row| (row.rowid, row.score)).collect();
     let first_batch = selected.len().min(depth);
     let mut scored: Vec<SemanticCandidate> = Vec::with_capacity(selected.len());
     let mut surviving_chunks: HashSet<String> = HashSet::with_capacity(selected.len());
@@ -1370,6 +1413,25 @@ fn candidates_fast(
         .map(|(chunk_id, _, _)| chunk_id)
         .collect();
     scored.retain(|candidate| allowed.contains(&candidate.chunk_id));
+    // **请求条数红线（#135 复审）**：折叠后不足 `requested` 条，而窗口之外还有块，
+    // 就不能保证这一屏是精确路径的前 `requested` 条（窗口外可能还有能补满的篇）。
+    // 这时整条回退；反过来，返回条数已经够这一屏时，深度之外的截断是 #90 早已
+    // 写明的结果深度上限，不是这次过滤造成的漏召回。
+    //
+    // 注意这里数的是**折叠后**的篇数，不是有效块数：一篇长材料可能用掉多个深度
+    // 名额，块够 D 不代表结果够一屏。
+    let folded_count = scored
+        .iter()
+        .map(|candidate| candidate.group_id.as_str())
+        .collect::<HashSet<_>>()
+        .len();
+    // 两种「还有结果没交出来」的来源都要算上：
+    // - 窗口之外还有块没扫（`scanned > selected.len()`）；
+    // - 扫到了、但被结果深度截掉（`selected.len() > depth`）——整代都在窗口里时，
+    //   深度截断仍可能把能补满这一屏的篇挡在外面。
+    if folded_count < requested && (scanned as usize > selected.len() || selected.len() > depth) {
+        return Ok(None);
+    }
     Ok(Some(scored))
 }
 
@@ -1748,12 +1810,7 @@ fn dot_norm_int8_scalar(bytes: &[u8], query: &[f32], scale: f32) -> (f32, f32) {
 }
 
 /// 与 `candidate_of` 里的两条维度校验同口径：先对行上的 `dims`，再对查询向量。
-fn check_dims(
-    vector_dims: usize,
-    row_dims: i64,
-    query_dims: usize,
-    chunk_id: &str,
-) -> Result<()> {
+fn check_dims(vector_dims: usize, row_dims: i64, query_dims: usize, chunk_id: &str) -> Result<()> {
     let row_dims = usize::try_from(row_dims).unwrap_or(usize::MAX);
     if vector_dims != row_dims {
         return Err(CoreError::CorruptedData {
@@ -2023,14 +2080,15 @@ fn resolve_ties(core: &Core, scored: &mut [SemanticCandidate]) -> Result<()> {
             core.conn
                 .execute_batch("DROP TABLE temp.semantic_tie_chunks;")?;
             for candidate in &mut scored[start..end] {
-                let text = texts.get(&candidate.chunk_id).ok_or_else(|| {
-                    CoreError::CorruptedData {
-                        message: format!(
-                            "候选块的正文不见了：chunk_id = {}（块表与向量表不一致）",
-                            candidate.chunk_id
-                        ),
-                    }
-                })?;
+                let text =
+                    texts
+                        .get(&candidate.chunk_id)
+                        .ok_or_else(|| CoreError::CorruptedData {
+                            message: format!(
+                                "候选块的正文不见了：chunk_id = {}（块表与向量表不一致）",
+                                candidate.chunk_id
+                            ),
+                        })?;
                 candidate.content_key = crate::support::content_hash(text);
             }
             scored[start..end].sort_by(rank_order);
@@ -2056,8 +2114,12 @@ pub(crate) fn content_key(core: &Core, candidate: &SemanticCandidate) -> Result<
             )
             .optional()?
     } else {
-        chunks::source_piece_text(&core.conn, &candidate.source_id, &candidate.source_revision_id)?
-            .map(|piece| piece.text)
+        chunks::source_piece_text(
+            &core.conn,
+            &candidate.source_id,
+            &candidate.source_revision_id,
+        )?
+        .map(|piece| piece.text)
     };
     Ok(text.map(|value| crate::support::content_hash(&value)))
 }
@@ -2077,8 +2139,11 @@ pub(crate) fn materialize(core: &Core, page: &[SemanticCandidate]) -> Result<Vec
             )?;
             (text, None, None)
         } else {
-            let Some(piece) =
-                chunks::source_piece_text(&core.conn, &candidate.source_id, &candidate.source_revision_id)?
+            let Some(piece) = chunks::source_piece_text(
+                &core.conn,
+                &candidate.source_id,
+                &candidate.source_revision_id,
+            )?
             else {
                 // 派生内容可能已经被重提取删掉（块还在）。这一篇没有正文可取，
                 // 如实跳过，而不是拿整块拼接文本顶上去。
@@ -2169,8 +2234,12 @@ fn source_title(core: &Core, source_revision_id: &str) -> Result<Option<String>>
 /// 摘录：该篇自己那一段（span 区间）截断，不做假高亮。
 fn snippet_of_piece(piece_text: &str, start_char: i64, end_char: i64) -> Option<String> {
     let characters: Vec<char> = piece_text.chars().collect();
-    let start = usize::try_from(start_char).unwrap_or(0).min(characters.len());
-    let end = usize::try_from(end_char).unwrap_or(start).min(characters.len());
+    let start = usize::try_from(start_char)
+        .unwrap_or(0)
+        .min(characters.len());
+    let end = usize::try_from(end_char)
+        .unwrap_or(start)
+        .min(characters.len());
     if start >= end {
         return None;
     }
@@ -2226,7 +2295,7 @@ fn ranking_with_mode(
     let embedder = core.embedder()?;
     // 口径不一致时给**空排名**：与产品路径「语义这一路不作数」同一口径，
     // 而不是把跨空间的分数当成量测结果报出去。
-    match candidates_impl(core, &*embedder, query, filters, mode)?.candidates {
+    match candidates_impl(core, &*embedder, query, filters, usize::MAX, mode)?.candidates {
         SemanticCandidates::ForeignSpace(_) => Ok(Vec::new()),
         SemanticCandidates::Scored(candidates) => Ok(candidates
             .into_iter()
@@ -2413,6 +2482,28 @@ mod tests {
         }
     }
 
+    /// #135 复审的回归：计时开关是**线程局部**的，一个线程打开/关闭不会影响另一个
+    /// 线程。并行测试共享全局开关时会互相把对方的计时关掉，`take()` 于是返回 `None`。
+    #[test]
+    fn query_profiling_switch_does_not_leak_across_threads() {
+        profile_sink::set_enabled(true);
+        assert!(profile_sink::enabled(), "当前线程已打开");
+        let other = std::thread::spawn(|| {
+            assert!(
+                !profile_sink::enabled(),
+                "新线程的默认状态必须是关闭，不能继承别的线程"
+            );
+            assert!(
+                profile_sink::take().is_none(),
+                "别的线程没开计时，不能取走当前线程的账本"
+            );
+            profile_sink::set_enabled(false);
+        });
+        other.join().unwrap();
+        assert!(profile_sink::enabled(), "另一个线程改开关不能影响当前线程");
+        profile_sink::set_enabled(false);
+    }
+
     /// issue #57 的回归（纯排序层，不建库、不依赖随机 UUID）：
     /// 两条候选的（分数、日期、篇内区间、段序号）全部相同、**正文不同**时，
     /// 顺序必须由 `content_key` 决定；把 `chunk_id` 故意排成相反顺序也不能翻盘。
@@ -2476,16 +2567,8 @@ mod tests {
     fn score_of_rejects_non_finite_scores() {
         let finite = VectorStorage::F32.encode(&[1.0, 0.0]).unwrap();
         let cases: [(&str, Vec<u8>, Vec<f32>); 4] = [
-            (
-                "查询向量含 NaN",
-                finite.clone(),
-                vec![f32::NAN, 0.0],
-            ),
-            (
-                "查询向量含 Inf",
-                finite.clone(),
-                vec![f32::INFINITY, 0.0],
-            ),
+            ("查询向量含 NaN", finite.clone(), vec![f32::NAN, 0.0]),
+            ("查询向量含 Inf", finite.clone(), vec![f32::INFINITY, 0.0]),
             (
                 "库里的 f32 向量含 NaN",
                 [1.0_f32.to_le_bytes(), f32::NAN.to_le_bytes()].concat(),
@@ -2498,8 +2581,8 @@ mod tests {
             ),
         ];
         for (label, bytes, query) in cases {
-            let error = score_of(VectorStorage::F32, &bytes, &query, 1.0, 2, "chunk_x")
-                .unwrap_err();
+            let error =
+                score_of(VectorStorage::F32, &bytes, &query, 1.0, 2, "chunk_x").unwrap_err();
             let CoreError::CorruptedData { message } = error else {
                 panic!("{label}：应当报 CorruptedData，实际是 {error:?}");
             };
@@ -2540,7 +2623,10 @@ mod tests {
                 "排序结果必须满足 comparator 全序"
             );
         }
-        assert!(candidates[0].score.is_nan(), "total_cmp 把 NaN 排在最后（降序的最前）");
+        assert!(
+            candidates[0].score.is_nan(),
+            "total_cmp 把 NaN 排在最后（降序的最前）"
+        );
         assert_eq!(candidates[1].score, f32::INFINITY);
         assert_eq!(candidates[3].score, f32::NEG_INFINITY);
     }
@@ -2587,5 +2673,4 @@ mod tests {
             "每个并列候选都要补上 content_key"
         );
     }
-
 }
