@@ -358,7 +358,9 @@ export class VoiceRecorder {
       }
     } catch (e) {
       primaryError = e as Object;
-      throw e;
+      // ArkTS 只允许 throw Error 类型；保留原异常（DiaryError 等），
+      // 极端的非 Error 抛出值统一包成 Error，至少不丢消息。
+      throw e instanceof Error ? e : new Error(describeError(e as Object));
     } finally {
       // 无条件释放「保持屏幕常亮」与长时任务。`releaseHold()` 自身幂等。
       // 已经有异常时：先释放，释放再失败只记日志，别覆盖真正的故障；
