@@ -106,6 +106,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   EventType dco_decode_box_autoadd_event_type(dynamic raw);
 
   @protected
+  ExportRequest dco_decode_box_autoadd_export_request(dynamic raw);
+
+  @protected
   ExtractedContent dco_decode_box_autoadd_extracted_content(dynamic raw);
 
   @protected
@@ -153,9 +156,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PluginInvocation dco_decode_box_autoadd_plugin_invocation(dynamic raw);
 
   @protected
-  PluginStyleProfile dco_decode_box_autoadd_plugin_style_profile(dynamic raw);
-
-  @protected
   ProcessingStatus dco_decode_box_autoadd_processing_status(dynamic raw);
 
   @protected
@@ -189,6 +189,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SourceRevision dco_decode_box_autoadd_source_revision(dynamic raw);
 
   @protected
+  StyleProfile dco_decode_box_autoadd_style_profile(dynamic raw);
+
+  @protected
   TextRange dco_decode_box_autoadd_text_range(dynamic raw);
 
   @protected
@@ -213,6 +216,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DiaryDay dco_decode_diary_day(dynamic raw);
 
   @protected
+  DiaryDayPage dco_decode_diary_day_page(dynamic raw);
+
+  @protected
   DiaryGenerationReason dco_decode_diary_generation_reason(dynamic raw);
 
   @protected
@@ -235,6 +241,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   EventType dco_decode_event_type(dynamic raw);
+
+  @protected
+  ExportRequest dco_decode_export_request(dynamic raw);
+
+  @protected
+  ExportTicket dco_decode_export_ticket(dynamic raw);
 
   @protected
   ExtractedContent dco_decode_extracted_content(dynamic raw);
@@ -304,6 +316,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Capture> dco_decode_list_capture(dynamic raw);
+
+  @protected
+  List<DiaryDay> dco_decode_list_diary_day(dynamic raw);
 
   @protected
   List<DiaryVersion> dco_decode_list_diary_version(dynamic raw);
@@ -392,6 +407,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<SourceKind> dco_decode_list_source_kind(dynamic raw);
 
   @protected
+  List<StyleProfile> dco_decode_list_style_profile(dynamic raw);
+
+  @protected
   List<TextRange> dco_decode_list_text_range(dynamic raw);
 
   @protected
@@ -473,11 +491,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PluginEntryKind? dco_decode_opt_box_autoadd_plugin_entry_kind(dynamic raw);
 
   @protected
-  PluginStyleProfile? dco_decode_opt_box_autoadd_plugin_style_profile(
-    dynamic raw,
-  );
-
-  @protected
   ProcessingStatus? dco_decode_opt_box_autoadd_processing_status(dynamic raw);
 
   @protected
@@ -504,6 +517,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SourceRevision? dco_decode_opt_box_autoadd_source_revision(dynamic raw);
+
+  @protected
+  StyleProfile? dco_decode_opt_box_autoadd_style_profile(dynamic raw);
 
   @protected
   TextRange? dco_decode_opt_box_autoadd_text_range(dynamic raw);
@@ -570,9 +586,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PluginSourceRef dco_decode_plugin_source_ref(dynamic raw);
-
-  @protected
-  PluginStyleProfile dco_decode_plugin_style_profile(dynamic raw);
 
   @protected
   PluginTemplate dco_decode_plugin_template(dynamic raw);
@@ -664,6 +677,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SourceRevision dco_decode_source_revision(dynamic raw);
+
+  @protected
+  StyleProfile dco_decode_style_profile(dynamic raw);
 
   @protected
   TextRange dco_decode_text_range(dynamic raw);
@@ -776,6 +792,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   EventType sse_decode_box_autoadd_event_type(SseDeserializer deserializer);
 
   @protected
+  ExportRequest sse_decode_box_autoadd_export_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ExtractedContent sse_decode_box_autoadd_extracted_content(
     SseDeserializer deserializer,
   );
@@ -839,11 +860,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  PluginStyleProfile sse_decode_box_autoadd_plugin_style_profile(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   ProcessingStatus sse_decode_box_autoadd_processing_status(
     SseDeserializer deserializer,
   );
@@ -893,6 +909,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  StyleProfile sse_decode_box_autoadd_style_profile(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   TextRange sse_decode_box_autoadd_text_range(SseDeserializer deserializer);
 
   @protected
@@ -915,6 +936,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DiaryDay sse_decode_diary_day(SseDeserializer deserializer);
+
+  @protected
+  DiaryDayPage sse_decode_diary_day_page(SseDeserializer deserializer);
 
   @protected
   DiaryGenerationReason sse_decode_diary_generation_reason(
@@ -945,6 +969,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   EventType sse_decode_event_type(SseDeserializer deserializer);
+
+  @protected
+  ExportRequest sse_decode_export_request(SseDeserializer deserializer);
+
+  @protected
+  ExportTicket sse_decode_export_ticket(SseDeserializer deserializer);
 
   @protected
   ExtractedContent sse_decode_extracted_content(SseDeserializer deserializer);
@@ -1014,6 +1044,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Capture> sse_decode_list_capture(SseDeserializer deserializer);
+
+  @protected
+  List<DiaryDay> sse_decode_list_diary_day(SseDeserializer deserializer);
 
   @protected
   List<DiaryVersion> sse_decode_list_diary_version(
@@ -1132,6 +1165,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<SourceKind> sse_decode_list_source_kind(SseDeserializer deserializer);
 
   @protected
+  List<StyleProfile> sse_decode_list_style_profile(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<TextRange> sse_decode_list_text_range(SseDeserializer deserializer);
 
   @protected
@@ -1239,11 +1277,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  PluginStyleProfile? sse_decode_opt_box_autoadd_plugin_style_profile(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   ProcessingStatus? sse_decode_opt_box_autoadd_processing_status(
     SseDeserializer deserializer,
   );
@@ -1280,6 +1313,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SourceRevision? sse_decode_opt_box_autoadd_source_revision(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  StyleProfile? sse_decode_opt_box_autoadd_style_profile(
     SseDeserializer deserializer,
   );
 
@@ -1360,11 +1398,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PluginSourceRef sse_decode_plugin_source_ref(SseDeserializer deserializer);
-
-  @protected
-  PluginStyleProfile sse_decode_plugin_style_profile(
-    SseDeserializer deserializer,
-  );
 
   @protected
   PluginTemplate sse_decode_plugin_template(SseDeserializer deserializer);
@@ -1468,6 +1501,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SourceRevision sse_decode_source_revision(SseDeserializer deserializer);
+
+  @protected
+  StyleProfile sse_decode_style_profile(SseDeserializer deserializer);
 
   @protected
   TextRange sse_decode_text_range(SseDeserializer deserializer);
@@ -1602,6 +1638,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_export_request(
+    ExportRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_extracted_content(
     ExtractedContent self,
     SseSerializer serializer,
@@ -1692,12 +1734,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_plugin_style_profile(
-    PluginStyleProfile self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_processing_status(
     ProcessingStatus self,
     SseSerializer serializer,
@@ -1761,6 +1797,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_style_profile(
+    StyleProfile self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_text_range(
     TextRange self,
     SseSerializer serializer,
@@ -1786,6 +1828,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_diary_day(DiaryDay self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_diary_day_page(DiaryDayPage self, SseSerializer serializer);
 
   @protected
   void sse_encode_diary_generation_reason(
@@ -1825,6 +1870,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_event_type(EventType self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_export_request(ExportRequest self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_export_ticket(ExportTicket self, SseSerializer serializer);
 
   @protected
   void sse_encode_extracted_content(
@@ -1909,6 +1960,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_capture(List<Capture> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_diary_day(List<DiaryDay> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_diary_version(
@@ -2064,6 +2118,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_style_profile(
+    List<StyleProfile> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_text_range(
     List<TextRange> self,
     SseSerializer serializer,
@@ -2205,12 +2265,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_opt_box_autoadd_plugin_style_profile(
-    PluginStyleProfile? self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_opt_box_autoadd_processing_status(
     ProcessingStatus? self,
     SseSerializer serializer,
@@ -2255,6 +2309,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_source_revision(
     SourceRevision? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_style_profile(
+    StyleProfile? self,
     SseSerializer serializer,
   );
 
@@ -2378,12 +2438,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_plugin_source_ref(
     PluginSourceRef self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_plugin_style_profile(
-    PluginStyleProfile self,
     SseSerializer serializer,
   );
 
@@ -2539,6 +2593,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     SourceRevision self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_style_profile(StyleProfile self, SseSerializer serializer);
 
   @protected
   void sse_encode_text_range(TextRange self, SseSerializer serializer);

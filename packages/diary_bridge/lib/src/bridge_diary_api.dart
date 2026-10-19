@@ -16,8 +16,11 @@ import '../diary_bridge.dart' as bridge;
 /// `testProvider` / `requestResponse` / `getResponse`，以及
 /// **语义索引重建**（`rebuildSemanticIndex`，契约 `indexes.rebuildSemantic`：设置页
 /// 要在换过模型之后触发「重建语义索引」，所以这一条必须真的能调），
-/// **日记生成与版本**：`getDay` / `generateDiary` / `listVersions` / `getVersion` /
-/// `saveDiaryEdit` / `setCurrentVersion` / `mergeDiary`。
+/// **日记生成与版本**：`getDay` / `listDays` / `generateDiary` / `listVersions` /
+/// `getVersion` / `saveDiaryEdit` / `setCurrentVersion` / `mergeDiary`。
+/// **风格（#114）**：`listStyles` / `getStyle` / `saveStyle`。
+/// **阅读导出（#113）**：`createExport`（核心同步生成文件，`jobId` 指向已完成记录；
+/// 导出不能用于恢复资料库）。
 /// **插件管理**：`inspectPluginPackage` / `installPlugin` / `enablePlugin` /
 /// `disablePlugin` / `uninstallPlugin` / `listPlugins`（B6，#88）。`invokePlugin` 仍是
 /// 契约里的**票据式**形状（返回 `jobId`），而核心的 `run_plugin` 是同步返回完整结果的；
@@ -106,6 +109,11 @@ class BridgeDiaryApi implements api.DiaryApi {
     'diary.saveEdit',
     'diary.setCurrent',
     'diary.merge',
+    'diary.listDays',
+    'styles.list',
+    'styles.get',
+    'styles.save',
+    'exports.create',
     'indexes.rebuildSemantic',
     'plugins.inspectPackage',
     'plugins.install',
@@ -674,6 +682,96 @@ class BridgeDiaryApi implements api.DiaryApi {
     return _diaryVersion(version);
   }
 
+  // ------------------------------------------------------------ 天列表（#113 前置）
+
+  @override
+  Future<api.DiaryDayPage> listDays({
+    String? fromDayKey,
+    String? toDayKey,
+    String? cursor,
+    int pageSize = 20,
+  }) async {
+    final session = _open;
+    final page = await _translate(
+      () => session.listDays(
+        fromDayKey: fromDayKey,
+        toDayKey: toDayKey,
+        cursor: cursor,
+        pageSize: pageSize,
+      ),
+    );
+    return api.DiaryDayPage(
+      days: page.days.map(_diaryDay).toList(growable: false),
+      nextCursor: page.nextCursor,
+    );
+  }
+
+  // ------------------------------------------------------------ 风格（#114）
+
+  @override
+  Future<List<api.StyleProfile>> listStyles() async {
+    final styles = await _translate(() => _open.listStyles());
+    return styles.map(_styleProfile).toList(growable: false);
+  }
+
+  @override
+  Future<api.StyleProfile> getStyle(String styleId) async =>
+      _styleProfile(await _translate(() => _open.getStyle(styleId: styleId)));
+
+  @override
+  Future<api.StyleProfile> saveStyle(
+    api.StyleProfile profile, {
+    int? expectedRevision,
+  }) async {
+    final session = _open;
+    final saved = await _translate(
+      () => session.saveStyle(
+        profile: bridge.StyleProfile(
+          id: profile.id,
+          label: profile.label,
+          revision: profile.revision,
+          updatedAt: profile.updatedAt,
+          lengthPreference: profile.lengthPreference,
+          person: profile.person,
+          tone: profile.tone,
+          emotionalTemperature: profile.emotionalTemperature,
+          rhetoricLevel: profile.rhetoricLevel,
+          examples: profile.examples,
+          bannedExpressions: profile.bannedExpressions,
+        ),
+        expectedRevision: expectedRevision,
+      ),
+    );
+    return _styleProfile(saved);
+  }
+
+  // ------------------------------------------------------------ 阅读导出（#113）
+
+  /// 契约 `exports.create`：返回 jobId + 包句柄。
+  ///
+  /// 桥接层同步生成文件（job 记录已经是 `succeeded`），`packageTicket` 是核心
+  /// 管理的导出文件绝对路径。**契约的 `ExportTicket` 没有 `path` / `byteSize`
+  /// 字段**，所以这两个值只在桥接的 `ExportTicket` 上；Dart 适配层不改契约，
+  /// 只映射契约已有的两个字段。阅读导出**不能用于恢复资料库**。
+  @override
+  Future<api.ExportTicket> createExport(api.ExportRequest request) async {
+    final session = _open;
+    final ticket = await _translate(
+      () => session.createExport(
+        request: bridge.ExportRequest(
+          fromDayKey: request.fromDayKey,
+          toDayKey: request.toDayKey,
+          format: request.format,
+          includeAssets: request.includeAssets,
+        ),
+      ),
+    );
+    return api.ExportTicket(
+      jobId: ticket.jobId,
+      packageTicket: ticket.packageTicket,
+    );
+  }
+
   Future<api.ImportStatus> finishImport({
     required String importId,
     required String ticket,
@@ -1203,6 +1301,20 @@ class BridgeDiaryApi implements api.DiaryApi {
       failed: value.materialCounts.failed.toInt(),
     ),
     coverage: api.Coverage.values.byName(value.coverage.name),
+  );
+
+  api.StyleProfile _styleProfile(bridge.StyleProfile value) => api.StyleProfile(
+    id: value.id,
+    label: value.label,
+    revision: value.revision.toInt(),
+    updatedAt: value.updatedAt,
+    lengthPreference: value.lengthPreference,
+    person: value.person,
+    tone: value.tone,
+    emotionalTemperature: value.emotionalTemperature,
+    rhetoricLevel: value.rhetoricLevel,
+    examples: value.examples,
+    bannedExpressions: value.bannedExpressions,
   );
 
   api.DiaryVersion _diaryVersion(bridge.DiaryVersion value) => api.DiaryVersion(

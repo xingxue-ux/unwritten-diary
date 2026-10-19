@@ -388,6 +388,110 @@ void main() {
       ),
     );
   });
+
+  test('风格 CRUD、天列表与阅读导出入口经契约接口可用', () async {
+    await api.open();
+
+    // #114：默认风格是真实行；保存/读取/乐观锁都经适配层映射。
+    final styles = await api.listStyles();
+    expect(styles.map((profile) => profile.id), contains('sty_default'));
+    final saved = await api.saveStyle(
+      StyleProfile(
+        id: 'sty_adapter',
+        label: '适配层的风格',
+        revision: 0,
+        updatedAt: DateTime.now().toUtc(),
+        lengthPreference: '简短',
+        tone: '平静',
+        examples: const ['像跟朋友说话'],
+        bannedExpressions: const ['治愈一切'],
+      ),
+    );
+    expect(saved.revision, 1);
+    expect(saved.id, 'sty_adapter');
+    expect(saved.tone, '平静');
+    final fetched = await api.getStyle('sty_adapter');
+    expect(fetched, saved);
+
+    await expectLater(
+      api.saveStyle(
+        StyleProfile(
+          id: 'sty_adapter',
+          label: '适配层的风格',
+          revision: 0,
+          updatedAt: DateTime.now().toUtc(),
+        ),
+        expectedRevision: 0,
+      ),
+      throwsA(
+        isA<DiaryException>().having(
+          (error) => error.code,
+          'code',
+          DiaryErrorCode.revisionConflict,
+        ),
+      ),
+    );
+
+    // #113 前置：提交一条今天的记录，天列表里就要有今天。
+    final draft = await api.createDraft(operationId: 'adapter-styles-draft');
+    final written = await api.saveDraft(
+      id: draft.id,
+      text: '风格与天列表的适配层记录。',
+      expectedRevision: draft.revision,
+      operationId: 'adapter-styles-save',
+    );
+    await api.commit(
+      id: draft.id,
+      expectedRevision: written.revision,
+      operationId: 'adapter-styles-commit',
+    );
+    final days = await api.listDays(pageSize: 20);
+    expect(days.days.map((day) => day.dayKey), contains(draft.dayKey));
+    // 同一个库里别的测试也建过今天的记录，所以只断言「至少这一条」，
+    // 不假设整天只有一条。
+    expect(
+      days.days
+          .firstWhere((day) => day.dayKey == draft.dayKey)
+          .materialCounts
+          .captures,
+      greaterThanOrEqualTo(1),
+    );
+
+    // exports.create 已经接到真核心：没有当前日记正文的日期范围如实报 notFound；
+    // 非法格式报 invalidArgument（不是 UnsupportedError，也不是静默成功）。
+    await expectLater(
+      api.createExport(
+        ExportRequest(
+          fromDayKey: draft.dayKey,
+          toDayKey: draft.dayKey,
+          format: 'markdown',
+        ),
+      ),
+      throwsA(
+        isA<DiaryException>().having(
+          (error) => error.code,
+          'code',
+          DiaryErrorCode.notFound,
+        ),
+      ),
+    );
+    await expectLater(
+      api.createExport(
+        ExportRequest(
+          fromDayKey: draft.dayKey,
+          toDayKey: draft.dayKey,
+          format: 'pdf',
+        ),
+      ),
+      throwsA(
+        isA<DiaryException>().having(
+          (error) => error.code,
+          'code',
+          DiaryErrorCode.invalidArgument,
+        ),
+      ),
+    );
+  });
 }
 
 String _defaultLibraryPath() {

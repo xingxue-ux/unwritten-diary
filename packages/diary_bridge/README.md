@@ -11,13 +11,24 @@ Dart 侧访问 Rust 核心的唯一入口，含 [flutter_rust_bridge](https://cj
 | `lib/diary_bridge.dart` | 公开入口（barrel），上层只 import 这一个文件 |
 | `lib/src/rust/` | 生成文件（`api.dart`、`lib.dart`、`frb_generated*.dart`），**禁止手改** |
 | `lib/src/rust/third_party/diary_core/model.dart` | 核心数据结构的 Dart 镜像，同样由 codegen 生成 |
-| `lib/src/bridge_diary_api.dart` | 契约 `DiaryApi` 的适配层（只覆盖记录路径） |
+| `lib/src/bridge_diary_api.dart` | 契约 `DiaryApi` 的适配层（记录、检索、日记、风格、天列表与阅读导出） |
 | `test/bridge_probe_test.dart` | 端到端测试：Dart 真正调用到 Rust cdylib 并读写资料库 |
 | `test/bridge_diary_api_test.dart` | 端到端测试：**只经 `DiaryApi`** 跑真核心（前端真正用的那条路径） |
 
 对应 Rust 侧在 `crates/diary_bridge/`，生成入口是仓库根目录的 `flutter_rust_bridge.yaml`。
 
-**`diary_api` 适配层只覆盖记录路径**：`lib/src/bridge_diary_api.dart` 里的 `BridgeDiaryApi` 把 `BridgeSession` 适配成契约的 `DiaryApi`（`open`/`snapshot`/`close`/`createDraft`/`saveDraft`/`commit`/`getCapture`/`listCaptures`），其余方法明确抛错且不出现在 `capabilities` 里。前端目前仍注入 `packages/diary_mock`——切到真核心还需要平台层给出库路径与时区（F1）。设计与取舍见 [M1 · DiaryApi 适配层](../../docs/architecture/m1-DiaryApi适配层.md)。
+**`diary_api` 适配层覆盖的范围**：`BridgeDiaryApi` 把 `BridgeSession` 适配成契约的
+`DiaryApi`——记录、导入/录音交接、提取、检索、Provider/回应、日记生成与版本（含编辑/
+指定当前/合并）、**风格 list/get/save**、**`diary.listDays`** 与 **`exports.create`**
+都在能力清单里。其余方法明确抛错且不出现在 `capabilities` 里。前端目前仍注入
+`packages/diary_mock`——切到真核心还需要平台层给出库路径与时区（F1）。设计与取舍见
+[M1 · DiaryApi 适配层](../../docs/architecture/m1-DiaryApi适配层.md)。
+
+**阅读导出（#113）**：核心同步生成 Markdown/纯文本到资料库的 `exports/` 下，并写一条
+`state = succeeded` 的 `export` 任务记录。契约的 `ExportTicket` 只有 `jobId` /
+`packageTicket`；`packageTicket` 在本构建里是导出文件的绝对路径。桥接的
+`ExportTicket` 还带 `path` / `byteSize` / `restorable = false`。**它不能用于恢复资料库**；
+需要恢复请用 `backups.*`。
 
 ## 重新生成绑定
 
@@ -63,6 +74,6 @@ dart pub get && dart test                    # 全套（当前 41 项），跑�
 
 已验证：Linux（WSL）宿主 6/6、Windows x64 6/6、Android（API 36 x86_64 模拟器）等价探针 5/5；`BridgeSession` 全链路读写、`CoreError` → 契约第 7 节错误码映射、能力清单、中文与 emoji 往返。
 
-**没接的就是 `LibraryInfo.capabilities` 里没列的**：录音会话与资产租约、回收站与清理、设置、插件、备份与导出、风格（`styles.*`）、任务的取消/重试/确认提醒。**已经接上**的是记录与导入、提取与来源定位、检索与索引、Provider 配置与回应、日记的生成与版本（含 B4c 的编辑/指定当前/合并）与队列驱动。
+**没接的就是 `LibraryInfo.capabilities` 里没列的**：回收站与清理、设置、备份与恢复的票据化入口、任务的确认提醒。**已经接上**的是记录与导入、提取与来源定位、检索与索引、Provider 配置与回应、日记的生成与版本（含 B4c 的编辑/指定当前/合并）、风格（`styles.*`）、天列表（`diary.listDays`）、阅读导出（`exports.create`）与队列驱动。
 
 未验证：event `Stream`（只有 `events_since` 拉取）、调用取消、后台运行入口、Android arm64 真机。

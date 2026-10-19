@@ -53,6 +53,16 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
+  /// 把日期范围内**当前日记正文**导成 Markdown / 纯文本，契约 `exports.create`。
+  ///
+  /// **同步完成**：返回的 `jobId` 指向一条 `state = succeeded` 的导出任务记录，
+  /// `packageTicket` 是核心管理的导出文件绝对路径。契约的 `ExportTicket` 只有
+  /// `jobId` / `packageTicket`，所以 Dart 适配层拿不到这里的 `byteSize`；桥接层
+  /// 直接暴露完整结果（`path` / `byteSize` / `restorable = false`）。
+  ///
+  /// **这不是备份**：`restorable` 恒为 false，不能用于恢复资料库。
+  Future<ExportTicket> createExport({required ExportRequest request});
+
   /// 从某个序号之后读取持久业务事件。
   Future<List<DomainEvent>> eventsSince({required PlatformInt64 fromSequence});
 
@@ -106,6 +116,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 读取一条回应，契约 `responses.get`。还没生成时正文为空（如实，不编内容）。
   Future<AiResponse> getResponse({required String responseId});
 
+  /// 读一条风格的当前版本；不存在报 `not_found`。
+  Future<StyleProfile> getStyle({required String styleId});
+
   Future<ImportStatus> importStatus({required String importId});
 
   /// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
@@ -148,6 +161,14 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required int limit,
   });
 
+  /// 有哪些天、每天多少条材料（回收站不算），按 dayKey 倒序。
+  Future<DiaryDayPage> listDays({
+    String? fromDayKey,
+    String? toDayKey,
+    String? cursor,
+    required int pageSize,
+  });
+
   /// 分页读某一天的日记版本，契约 `diary.listVersions`。最新在前。
   Future<DiaryVersionPage> listDiaryVersions({
     required String dayKey,
@@ -165,6 +186,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
   ///
   /// **不含密钥**：`credentialRef` 是凭据存储里的引用，只有「配没配」这个信息。
   Future<List<Provider>> listProviders();
+
+  /// 全部风格的当前版本；默认风格 `sty_default` 也在列表里。
+  Future<List<StyleProfile>> listStyles();
 
   /// 把 sourceRef + locator 解析成可打开的原件与可用性。
   Future<SourceLocation> locateSource({
@@ -369,6 +393,12 @@ abstract class BridgeSession implements RustOpaqueInterface {
   ///
   /// 协议/端点/模型变了会让上一次的连接测试结论作废——那是对旧配置的验证。
   Future<Provider> saveProvider({required Provider config, String? secret});
+
+  /// 新建/更新风格；带 `expectedRevision` 时是乐观锁（不符报 `revision_conflict`）。
+  Future<StyleProfile> saveStyle({
+    required StyleProfile profile,
+    PlatformInt64? expectedRevision,
+  });
 
   /// 翻页；`cursor` 为空表示接着当前进度。游标不属于这个会话报 `cursor_expired`。
   Future<SearchSnapshot> searchNextPage({
