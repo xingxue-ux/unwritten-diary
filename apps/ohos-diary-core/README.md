@@ -23,7 +23,7 @@ apps/ohos-diary-core/
 │       ├── index.d.ts
 │       └── oh-package.json5
 ├── entry/src/main/ets/
-│   ├── core/DiaryCore.ets                  # 薄封装：14 条契约方法 + rawCall/rawEnvelope
+│   ├── core/DiaryCore.ets                  # 薄封装：30 条契约方法 + rawCall/rawEnvelope
 │   ├── core/DiaryError.ets                 # 21 个核心码 + native_unavailable
 │   ├── core/Envelope.ets                   # 请求拼装 / 响应拆封
 │   ├── core/Models.ets                     # data 与参数的 ArkTS 类型（snake_case）
@@ -661,7 +661,7 @@ rc=0
 
 `DiaryCore.ets` 的 `import diaryNapi from 'libdiary_napi.so'` 在设备上拿到的是可用对象，
 不是 `undefined`：`version()`、`selfDir()`、`open()`、`call()`、`close()`、`lastError()`、
-`openHandleCount()` 都被真实调用；`DiaryCore` 的 9 条契约方法（当时）全部返回了核心 JSON；录音这一片又补了 5 条，共 14 条。
+`openHandleCount()` 都被真实调用；`DiaryCore` 的 9 条契约方法（当时）全部返回了核心 JSON；录音这一片又补了 5 条，共 14 条（#143 之后是 30 条）。
 没有出现探针 §24.1 那种「export objects of native so is undefined」。
 
 ### 第 5 项：`libc++_shared` 随包

@@ -160,10 +160,10 @@ corrupted_backup, incompatible_backup
 `native_unavailable` 是**宿主码**，不在核心码表里，只表示「调用没能发生」；出现它 = 打包或
 部署有问题（`.so` 缺失、`libc++_shared.so` 没随包、ABI 目录不对），不是业务错误。
 
-> 口径提醒：C ABI 文档 §5.1 成文时写的是「核心那 14 个码」，而
+> 口径提醒：C ABI 文档摘要里曾写「核心那 14 个码」，但
 > `crates/diary_core/src/error.rs` 的 `ErrorCode::wire()` 现在是 **21 个**
 >（后来加了 Provider / 备份相关的码）。本文与 `DiaryError.ets` 以**代码**为准，
-> 检查器直接读 `error.rs` 核对（2026-10-19 已把 C ABI 文档 §5.1 改成 21）。
+> 检查器直接读 `error.rs` 核对；C ABI 文档的摘要与 §5.1 也都已对齐到 21。
 
 ### 4.4 为什么 `open` 抛而 `call` 不抛
 
@@ -448,7 +448,8 @@ COMPILE RESULT:FAIL {ERROR:3}
 
 ```console
 $ python3 tools/check_arkts_capi_contract.py
-[核对] 契约方法（DiaryCore.ets ↔ WIRED_METHODS）：9 项一致
+[核对] 契约方法（DiaryCore.ets ↔ WIRED_METHODS）：30 项一致
+[核对] C ABI 文档 §6.1 的方法数：30 条（与 WIRED_METHODS 一致）
 [核对] 错误码（DiaryError.ets ↔ ErrorCode::wire）：21 项一致
 [核对] C 符号（napi_shim.cpp dlsym ↔ lib.rs 导出）：6 项一致
 [核对] JS 函数（index.d.ts ↔ napi_define_properties）：7 项一致
