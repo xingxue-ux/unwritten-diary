@@ -3488,6 +3488,113 @@ fn a_failed_rebuild_with_leftover_building_generation_gets_one_more_auto_attempt
     );
 }
 
+/// 评审 #128 第五轮：自动尝试上限必须**跨发现点**生效。
+///
+/// 旧指纹把「当前模型版本」编了进去，而两个发现点拿到的东西必然不同：
+///
+/// - `open` 时模型只到 `Configured`，`loaded_model_version()` 永远是 `None` ⇒ 指纹里是
+///   `"unknown"`（记作 U）；
+/// - 检索（这里用 `open_with_embedder_for_test` 把「模型已加载」那一刻提前）一定在加载
+///   之后，拿到真实版本 ⇒ 指纹是 K。
+///
+/// 同一个 `storage` 不一致因此算出两个指纹：`open` 排 U → 失败 → `Ready` 排 K → 失败 →
+/// 再 `open` 又按 U 从 0 算 → 每次启动稳定新增 1–2 条，计数永远到不了 2。这条回归走一遍
+/// 「Configured → failed → Ready → failed → Configured」，修好之后第三次必须被上限挡住。
+#[test]
+fn the_auto_attempt_limit_is_shared_across_open_and_ready_discovery_points() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let configured = configured_model(dir.path());
+    // 发现点 1：Configured open。模型没加载，版本未知（U）。
+    let first =
+        Core::open_with_embedding_config_for_test(&path, Some(configured.clone())).unwrap();
+    assert_eq!(semantic_job_count(&path), 1, "Configured open 首次自动排一条");
+    drop(first);
+    fail_all_semantic_jobs(&path);
+
+    // 发现点 2：Ready open。模型已加载，版本已知（K）——旧指纹在这里换成另一个值。
+    let ready = Core::open_with_embedder_for_test(&path, stub(&counters, vec![])).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        2,
+        "Ready open 再排一条（自动尝试 2/2）"
+    );
+    drop(ready);
+    fail_all_semantic_jobs(&path);
+
+    // 回到发现点 1：同一个 storage 不一致，第三次必须被上限挡住，而不是又当新口径。
+    let third = Core::open_with_embedding_config_for_test(&path, Some(configured)).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        2,
+        "同一口径最多自动尝试两次：open 与 Ready 两个发现点必须共用同一个指纹"
+    );
+    drop(third);
+}
+
+/// 组合不一致（`storage` + 模型版本）：`open` 只看得见 `storage`，检索两个都看得见。
+/// 若把版本再单列成指纹位，两个发现点又算出两个指纹，同样的交替会回来（旧实现就是
+/// 这样）。所以 `storage`/`dims` 已不一致时版本位被吸收：它不改变「必须按当前口径
+/// 整代重算」这个事实，而且 `open` 永远观察不到它。
+#[test]
+fn the_auto_attempt_limit_survives_a_combined_storage_and_model_mismatch() {
+    const OLD_VERSION: &str = "stub-embedder@old555555555";
+    const NEW_VERSION: &str = "stub-embedder@new666666666";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(Box::new(StubEmbedder::with_dims(
+        OLD_VERSION,
+        512,
+        &counters,
+        vec![],
+    )));
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    core.build_semantic_index(None).unwrap();
+    drop(core);
+
+    let ready_embedder = || -> Box<dyn Embedder> {
+        Box::new(StubEmbedder::with_dims(
+            NEW_VERSION,
+            512,
+            &counters,
+            vec![],
+        ))
+    };
+    // Ready open：storage 与版本都不一致 → 第一条（版本位在这里一度也是 true）。
+    let ready = Core::open_with_embedder_for_test(&path, ready_embedder()).unwrap();
+    assert_eq!(semantic_job_count(&path), 1, "组合不一致先排一条");
+    drop(ready);
+    fail_all_semantic_jobs(&path);
+
+    // Configured open：只看得到 storage → 第二条（2/2）。
+    let configured_core =
+        Core::open_with_embedding_config_for_test(&path, Some(configured_model(dir.path())))
+            .unwrap();
+    assert_eq!(semantic_job_count(&path), 2, "同一口径的第二次自动尝试");
+    drop(configured_core);
+    fail_all_semantic_jobs(&path);
+
+    // 再回到 Ready：组合不一致必须与 open 算出同一个指纹，第三次被上限挡住。
+    let ready_again = Core::open_with_embedder_for_test(&path, ready_embedder()).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        2,
+        "组合不一致也不能让 open 与检索各算一套指纹（旧实现这里会到 3）"
+    );
+    drop(ready_again);
+}
+
 /// 评审 #128 第 5 条：成功重建之后 reopen **不再排**——口径已经一致，自动触发无事可做。
 #[test]
 fn a_successful_rebuild_stops_the_auto_queue_on_reopen() {
@@ -3713,13 +3820,24 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
 }
 
 /// 统计库里 `semantic_index` 任务数（自动排队回归用）。
-fn semantic_job_count(path: &Path) -> i64 {    open(path)
+fn semantic_job_count(path: &Path) -> i64 {
+    open(path)
         .query_row(
             "SELECT COUNT(*) FROM jobs WHERE kind = 'semantic_index'",
             [],
             |row| row.get(0),
         )
         .unwrap()
+}
+
+/// 把所有还活着的 `semantic_index` 任务置成 `failed`（模拟重建反复失败）。
+fn fail_all_semantic_jobs(path: &Path) {
+    open(path)
+        .execute_batch(
+            "UPDATE jobs SET state = 'failed', error_code = 'io' \
+             WHERE kind = 'semantic_index' AND state NOT IN ('succeeded','failed','cancelled');",
+        )
+        .unwrap();
 }
 
 fn semantic_job_kind_state(path: &Path) -> (String, String) {

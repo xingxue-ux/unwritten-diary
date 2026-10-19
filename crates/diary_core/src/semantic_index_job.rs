@@ -28,6 +28,9 @@
 //!    只 `Configured`（没加载、也不许为 discovery 去读文件），只有这里才拿得到
 //!    `model_version`。换了一份同维度、同存储的模型文件，靠这一点才有人自动重建。
 //!
+//! 两个发现点对同一个不一致算出**同一个指纹**（见第 5 条）：指纹只记「不一致的
+//! 种类」，不记「当前版本」这类只有一个发现点才看得到的值。
+//!
 //! 五个条件同时成立才排：
 //!
 //! 1. 模型 `Configured` / `Ready`（`NotConfigured` / `Failed` 一律不排）；
@@ -53,9 +56,12 @@
 //! 每次 `open` 都会新建一条，`jobs` 表又没有清理机制，失败行只增不减（#128 复审
 //! 第 2 条）。标记按**口径指纹**记次数：同一口径最多自动排两次——第一次 + 失败/取消
 //! 后的一次重排（评审要求「cancel/failed 后只重排一次」）；第三次起交给显式入口。
-//! 口径一变（重建成功换了代次、用户改了 storage/dims、模型版本从「未知」变成
-//! 「已知」、或换了一份模型文件）指纹就变，自动尝试次数重新从 0 算——那是**新的**
-//! 需要重建的事实，不是同一次失败的重试。
+//! 指纹只由「生效代次 + 不一致的**种类**」构成（`storage` / `dims` / `model_version`
+//! 各一个布尔），**不编版本字符串**（#128 第五轮的真 bug）：`open` 时模型版本必然未知、
+//! 检索时必然已知，同一个 storage 不一致若按版本字符串算会得到两个指纹，上限在
+//! 「open → 检索」之间来回归零，每次启动稳定新增 1–2 条，计数永远到不了 2。
+//! 种类变了（重建成功换代次、某一项从不一致变一致、或 storage 与 dims 换着不一致）
+//! 才会重算次数；同一类不一致里换具体值（f32→int8 改成 f32→f16）不重算。
 //!
 //! 标记为什么必须占一个 schema 版本（15）：它要跨重启、按库存在；`jobs` 的业务键
 //! `(kind, target_ids, input_snapshot_hash)` 正是去重键，借它存标记会让同一个库按口径
@@ -110,6 +116,62 @@ const RECEIPT_KIND: &str = "semantic_index.rebuild";
 /// 终态，不在活着集合里）与「cancel/failed 后只重排一次」。第三次起交给显式入口。
 const AUTO_ATTEMPT_LIMIT: u32 = 2;
 
+/// 「需要重建」的**种类**：进指纹的只有这三个布尔，不编具体的版本 / 维度 / 存储值。
+///
+/// 为什么必须按种类而不是按版本字符串（#128 第五轮复审的真 bug）：`open` 时模型通常只
+/// 到 `Configured`，`loaded_model_version()` 永远是 `None`（旧指纹里编成 `"unknown"`）；
+/// 检索路径一定在加载之后，拿到的是真实版本。同一个 `storage` 不一致，两个发现点因此
+/// 曾算出两个指纹：open 排 U → 失败 → 检索排 K → 失败 → 再 open 又按 U 从 0 算 →
+/// 每次启动稳定新增 1–2 条 failed 任务，自动尝试上限永远到不了 2。
+///
+/// 现在三项都只记「是不是不一致」：`storage` / `dims` 直接比；`model_version` 只在
+/// **已知且确实不同**（或整代混了不止一种版本）时算一条。但 `storage` / `dims` 已经
+/// 不一致时，版本位**被吸收**：这两项任一不一致都要求按当前口径整代重算，版本差一项
+/// 不改变处置，而 `open` 永远看不到版本——若仍单独记一位，「storage + 换模型」这种
+/// 组合不一致会在两个发现点之间再次算出两个指纹，交替原样回来。
+///
+/// 未知只是「不比」，不是「一致」，也不会产生第二个指纹。
+#[derive(Clone, Copy)]
+struct MismatchKind {
+    storage: bool,
+    dims: bool,
+    /// 只在**纯版本不一致**（`storage` / `dims` 都一致）时为真；混合代次也算版本不一致。
+    version: bool,
+}
+
+impl MismatchKind {
+    /// 用生效代次的口径（去重后的 `versions` / `dims` / `storages`）对照当前口径。
+    ///
+    /// `current_version` 为 `None` = 内存里还没有版本（`open` 路径）：此时**不比**版本，
+    /// 不能把「未知」当成不一致。混合代次（`versions.len() > 1`）本身就算不一致。
+    fn of(
+        versions: &[String],
+        dims: &[i64],
+        storages: &[String],
+        current_dims: i64,
+        current_storage: &str,
+        current_version: Option<&str>,
+    ) -> Self {
+        let storage =
+            storages.len() > 1 || storages.iter().any(|storage| storage != current_storage);
+        let dims = dims.len() > 1 || dims.iter().any(|dims| *dims != current_dims);
+        let version = (versions.len() > 1
+            || current_version
+                .is_some_and(|current| versions.iter().any(|version| version != current)))
+            && !(storage || dims);
+        Self {
+            storage,
+            dims,
+            version,
+        }
+    }
+
+    /// 三项全一致 = 不需要重建（调用方早退）。
+    fn any(self) -> bool {
+        self.storage || self.dims || self.version
+    }
+}
+
 /// 核心在 `open`（或检索加载模型之后）检测到**整代口径不一致**时，自动排一条去重的
 /// 语义重建：`semantic_index_ready=false` 时用户看到「需重建」，核心自己把任务排上，
 /// 不依赖前端是否接了按钮。
@@ -144,23 +206,7 @@ pub(crate) fn enqueue_for_caliber_mismatch(core: &mut Core) -> Result<Option<Job
     // **只在内存里已有版本时比**：open 时模型通常只 Configured，算哈希要读一遍
     // 24 MiB 模型文件，与「启动不做重活」冲突。未知只是「不比」，不是「一致」。
     let current_version = core.loaded_model_version();
-    let storage_mismatch = caliber.storages.len() > 1
-        || caliber
-            .storages
-            .iter()
-            .any(|storage| storage != current_storage);
-    let dims_mismatch = caliber.dims.len() > 1
-        || caliber.dims.iter().any(|dims| *dims != current_dims);
-    // 混合代次（不止一种模型版本）本身就是不一致；单一版本时才需要比当前版本。
-    let model_mismatch = caliber.versions.len() > 1
-        || current_version
-            .as_deref()
-            .is_some_and(|current| caliber.versions.iter().any(|version| version != current));
-    if !(storage_mismatch || dims_mismatch || model_mismatch) {
-        return Ok(None);
-    }
-    let signature = auto_signature(
-        active,
+    let kind = MismatchKind::of(
         &caliber.versions,
         &caliber.dims,
         &caliber.storages,
@@ -168,6 +214,10 @@ pub(crate) fn enqueue_for_caliber_mismatch(core: &mut Core) -> Result<Option<Job
         current_storage,
         current_version.as_deref(),
     );
+    if !kind.any() {
+        return Ok(None);
+    }
+    let signature = auto_signature(active, kind);
     enqueue_once(core, &signature)
 }
 
@@ -183,8 +233,7 @@ pub(crate) fn enqueue_for_detected_mismatch(
     let Some(active) = crate::semantic::active_generation(core)? else {
         return Ok(None);
     };
-    let signature = auto_signature(
-        active,
+    let kind = MismatchKind::of(
         &mismatch.versions,
         &mismatch.dims,
         &mismatch.storages,
@@ -192,6 +241,11 @@ pub(crate) fn enqueue_for_detected_mismatch(
         &mismatch.current_storage,
         Some(&mismatch.current_version),
     );
+    debug_assert!(
+        kind.any(),
+        "检索路径只在整代真的跨空间时调用（CaliberMismatch 存在 ⇔ 至少一项不一致）"
+    );
+    let signature = auto_signature(active, kind);
     enqueue_once(core, &signature)
 }
 
@@ -250,31 +304,22 @@ fn auto_attempts(conn: &Connection, signature: &str) -> Result<u32> {
         .unwrap_or(0))
 }
 
-/// 「同一口径」的持久指纹：重建成功后换代次、用户改配置、模型版本从未知变已知都会
-/// 让它变——那是新的「需要重建」事实，自动尝试次数因此重新从 0 算。
-fn auto_signature(
-    active_generation: i64,
-    versions: &[String],
-    dims: &[i64],
-    storages: &[String],
-    current_dims: i64,
-    current_storage: &str,
-    current_version: Option<&str>,
-) -> String {
-    let dims = dims
-        .iter()
-        .map(i64::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
+/// 「同一口径」的持久指纹：**生效代次 + 不一致的种类**。
+///
+/// 为什么不编具体的版本 / 维度 / 存储值：同一个不一致，`open` 与检索路径能看到的当前
+/// 版本不一样（未知 vs 已知），按值算会让两个发现点得到两个指纹，尝试次数在两者之间
+/// 归零（见 [`MismatchKind`]）；按种类算，两个发现点必然相同。
+///
+/// 只有下面这些变化会重算次数：重建成功换了生效代次；某一项从不一致变一致；不一致的
+/// 种类换了（例如 storage 不一致变成 dims 不一致）。同一类不一致里换具体值不重算——
+/// 这是「上限必须跨发现点生效」的代价，不是同一次失败的重试。
+fn auto_signature(active_generation: i64, kind: MismatchKind) -> String {
     support::fingerprint(&[
         "semantic_index.auto",
         &active_generation.to_string(),
-        &versions.join(","),
-        &dims,
-        &storages.join(","),
-        &current_dims.to_string(),
-        current_storage,
-        current_version.unwrap_or("unknown"),
+        if kind.storage { "storage" } else { "-" },
+        if kind.dims { "dims" } else { "-" },
+        if kind.version { "version" } else { "-" },
     ])
 }
 
