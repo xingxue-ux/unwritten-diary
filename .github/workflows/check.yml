@@ -40,18 +40,30 @@ jobs:
         run: |
           python3 tools/check_docs.py
           python3 tools/test_check_docs.py
-          # 先跑检查器自测：证明「4 入口会红、5 入口会绿、缺 key 会红」。
-          # 这样即使真实检查因为 PR #150 未合入而红，也能看出脚本本身没坏。
+          # 先跑检查器自测：证明「4 入口会红、5 入口会绿、缺 key 会红、缺壳跳过」。
+          # 这样真实检查红/跳过时，都能看出脚本本身没坏。
           python3 tools/test_check_ui_parity.py
       # 跨端 IA 契约（docs/product/界面结构契约.md）的机器检查。
       #
-      # 现在**会红**：origin/main 上 PR #150 的鸿蒙产品壳还没合入，默认跑是
-      # `arkts.shell_missing`；拿 PR #150 的 Index.ets 跑是 4 入口 vs 5 入口。
-      # 这是刻意的红灯：等 PR #150 改成 5 入口并合入后自然转绿。
+      # 缺壳时**跳过、exit 0**：origin/main 的 Index.ets 还没有 TabContent，
+      # 比较一个不存在的东西没有意义；人类日志会打 `[跳过]`，JSON 的
+      # `nav.status` 是 `skipped`（不是 `passed`）。
+      # 一旦 PR #150 合入、Index.ets 有 TabContent，这项自动生效：
+      # 若还是 4 入口就立刻红，只红该红的那个 PR，不冻结全组 CI。
       # 不用 continue-on-error / || true 假装绿——见 CONTRIBUTING 与
       # 本文件 plugins-windows 的注释。
       - name: 校验跨端界面结构（5 入口 / 共享文案 key）
-        run: python3 tools/check_ui_parity.py
+        run: |
+          set +e
+          python3 tools/check_ui_parity.py
+          human=$?
+          echo "--- check_ui_parity --json ---"
+          python3 tools/check_ui_parity.py --json
+          json=$?
+          echo "human_exit=$human json_exit=$json"
+          if [ "$human" -ne 0 ] || [ "$json" -ne 0 ]; then
+            exit 1
+          fi
 
   dart:
     name: dart

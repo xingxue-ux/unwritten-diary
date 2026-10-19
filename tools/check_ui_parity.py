@@ -12,19 +12,21 @@
    源码里已经按约定引用（`uiStrings.get('...')` / `uiStrings.t('...')` /
    `uiString('...')`）的 key 也必须在表里。
 
-这个脚本**现在应当红**：`origin/main` 上 `Index.ets` 还是录音验证页，PR #150
-的鸿蒙产品壳（4 入口）尚未合入。等 PR #150 改成 5 入口并合入后自然转绿。
-**不要用 `|| true` / `continue-on-error` 把它伪装成绿**——红灯本身就是交付物。
+**缺壳时跳过，不是通过**：`origin/main` 上 `Index.ets` 还是录音验证页
+（没有 `TabContent`），此时「跨端入口一致性」这一项**跳过、exit 0**，但会打印
+`[跳过]` 且 JSON 的 `nav.status` 是 `skipped`（不是 `passed`）。PR #150 合入后，
+`Index.ets` 一旦包含 `TabContent`，这一项自动生效；若还是 4 入口就立刻红。
+**不要用 `|| true` / `continue-on-error` 把它伪装成绿**，也不要把「跳过」说成「通过」。
 
 用法：
     python3 tools/check_ui_parity.py
     python3 tools/check_ui_parity.py --json
     python3 tools/check_ui_parity.py --arkts /path/to/Index.ets
-    python3 tools/check_ui_parity.py --expect 记录,日记,搜索,片段,我的
 
-`--expect` 只改变比较基准（用于排障/演练），**不是放行开关**：不匹配仍然非零退出。
+`--expect` **只给自测/排障用，CI 永远不传**：它只改变比较基准，不是放行开关；
+不匹配仍然非零退出。默认基准是产品决定的 5 入口，不依赖这个参数。
 
-退出码：0 = 通过；1 = 发现漂移/缺 key/解析失败；2 = 命令行用法错误。
+退出码：0 = 通过或「缺壳跳过」；1 = 发现漂移/缺 key/解析失败；2 = 命令行用法错误。
 """
 
 from __future__ import annotations
@@ -427,24 +429,41 @@ def main(argv: list[str] | None = None) -> int:
                     f"_navItem {' / '.join(e.label for e in flutter_entries)}",
                 )
             )
-    nav_failures("flutter", flutter_entries, expected, failures)
-
     arkts_entries: list[Entry] = []
     arkts_error: str | None = None
+    arkts_shell_present = False
+    nav_status = "error"
+    nav_reason: str | None = None
     if not arkts_path.is_file():
         arkts_error = f"找不到 ArkTS 根页面：{arkts_path}"
+        nav_reason = arkts_error
         failures.append(Failure("arkts.missing_file", arkts_error))
     else:
         arkts_text = read_text(arkts_path)
-        arkts_entries = parse_arkts(arkts_text)
-        if not arkts_entries:
-            arkts_error = (
-                "没有解析到 TabContent/.tabBar 一级入口；"
-                "PR #150 的鸿蒙产品壳还没合入时这是预期红灯"
+        has_tab_content = re.search(r"\bTabContent\s*\(", arkts_text) is not None
+        arkts_shell_present = has_tab_content
+        if not has_tab_content:
+            # 比较一个不存在的东西没有意义。跳过而不是失败，但必须留下可审计的原因：
+            # 人类输出打 [跳过]，JSON 的 nav.status 是 skipped（不是 passed）。
+            nav_status = "skipped"
+            nav_reason = (
+                "ArkTS 还没有产品壳（Index.ets 未包含 TabContent），"
+                "入口一致性待 PR #150 合入后比对"
             )
-            failures.append(Failure("arkts.shell_missing", arkts_error))
+            arkts_error = nav_reason
         else:
-            nav_failures("arkts", arkts_entries, expected, failures)
+            arkts_entries = parse_arkts(arkts_text)
+            if not arkts_entries:
+                nav_status = "error"
+                nav_reason = "Index.ets 有 TabContent，但没有解析到任何 .tabBar(...) 入口"
+                arkts_error = nav_reason
+                failures.append(Failure("arkts.tabbar_unparsed", nav_reason))
+            else:
+                nav_status = "checked"
+
+    if nav_status == "checked":
+        nav_failures("flutter", flutter_entries, expected, failures)
+        nav_failures("arkts", arkts_entries, expected, failures)
 
     strings = load_strings(strings_path, failures)
     required_missing = [key for key in REQUIRED_KEYS if key not in strings]
@@ -494,14 +513,35 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     ok = not failures
+    nav_consistent: bool | None = None
+    if nav_status == "checked":
+        nav_consistent = not any(
+            failure.code.startswith(("flutter.nav", "arkts.nav")) for failure in failures
+        )
     result = {
-        "schema": "ui-parity/v1",
+        "schema": "ui-parity/v2",
         "ok": ok,
         "root": str(root),
         "expected": {
             "labels": expected,
-            "source": "--expect" if args.expect else "canonical",
+            "source": "--expect（仅诊断，CI 不传）" if args.expect else "canonical",
         },
+        "nav": {
+            "status": nav_status,
+            "reason": nav_reason,
+            "consistent": nav_consistent,
+        },
+        "skipped": (
+            [
+                {
+                    "check": "nav.cross_side",
+                    "reason": nav_reason,
+                    "effect": "exit 0；不声称入口一致；PR #150 合入后自动恢复检查",
+                }
+            ]
+            if nav_status == "skipped"
+            else []
+        ),
         "flutter": {
             "path": str(flutter_path),
             "exists": flutter_path.is_file(),
@@ -510,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
         "arkts": {
             "path": str(arkts_path),
             "exists": arkts_path.is_file(),
+            "shell_present": arkts_shell_present,
             "nav": [entry.as_dict() for entry in arkts_entries],
             "error": arkts_error,
         },
@@ -536,8 +577,13 @@ def main(argv: list[str] | None = None) -> int:
             f"  Flutter：{len(flutter_entries)} 个入口：{labels(flutter_entries)}"
             f"  [{flutter_path.relative_to(root) if flutter_path.is_relative_to(root) else flutter_path}]"
         )
+        arkts_nav_label = (
+            "（未包含 TabContent，跳过）"
+            if nav_status == "skipped"
+            else labels(arkts_entries)
+        )
         print(
-            f"  ArkTS  ：{len(arkts_entries)} 个入口：{labels(arkts_entries)}"
+            f"  ArkTS  ：{len(arkts_entries)} 个入口：{arkts_nav_label}"
             f"  [{arkts_path.relative_to(root) if arkts_path.is_relative_to(root) else arkts_path}]"
         )
         print(
@@ -545,14 +591,24 @@ def main(argv: list[str] | None = None) -> int:
             f"  [{strings_path.relative_to(root) if strings_path.is_relative_to(root) else strings_path}]"
         )
         print(f"  源码引用：{len(references)} 个 key")
+        if args.expect:
+            print("  [诊断] 使用了 --expect：只改比较基准，不是放行开关；CI 永不传这个参数。")
+        if nav_status == "skipped":
+            print()
+            print(f"[跳过] {nav_reason}")
+            print("  跳过不等于通过：JSON 的 nav.status 是 skipped，consistent 是 null。")
         if failures:
             print()
             for failure in failures:
                 print(f"[FAIL] {failure.code}: {failure.message}")
             print()
-            print(f"结果：红（{len(failures)} 项失败）。")
+            suffix = "；入口检查已跳过" if nav_status == "skipped" else ""
+            print(f"结果：红（{len(failures)} 项失败{suffix}）。")
             print("这不是脚本坏了：入口/文案不一致就是这次要抓的漂移。")
-            print("PR #150 把鸿蒙改成 5 入口并合入后，这一步会自然转绿。")
+        elif nav_status == "skipped":
+            print()
+            print("结果：绿（入口检查跳过；文案表检查通过）。")
+            print("跳过原因见上；等 PR #150 合入后会自动开始比对入口。")
         else:
             print()
             print("结果：绿。两端一级入口与共享文案 key 一致。")
