@@ -11,6 +11,8 @@
 //! | `captures.createDraft` | `Core::create_draft` | `Capture` |
 //! | `captures.saveDraft` | `Core::save_draft` | `DraftSaveResult` |
 //! | `captures.commit` | `Core::commit` | `CommitResult` |
+//! | `captures.get` | `Core::get_capture` | `Capture` |
+//! | `captures.list` | `Core::list_captures`（`day_key` + 不透明游标） | `CapturePage` |
 //! | `recordings.prepare` | `Core::prepare_recording` | `RecordingTicket` |
 //! | `recordings.registerSegment` | `Core::register_segment` | `SegmentReceipt` |
 //! | `recordings.updateState` | `Core::update_recording_state` | `RecordingSession` |
@@ -18,10 +20,23 @@
 //! | `recordings.recover` | `Core::recover_recording` | `RecordingRecovery` |
 //! | `sources.extract` | `Core::extract_source` | `ExtractedContent` |
 //! | `search.start` | `Core::start_search` | `SearchSnapshot` |
+//! | `search.nextPage` | `Core::search_next_page`（不透明游标） | `SearchSnapshot` |
+//! | `search.upgrade` | `Core::upgrade_search_to_hybrid` | `SearchSnapshot` |
+//! | `search.cancel` | `Core::cancel_search` | `SearchSnapshot` |
 //! | `indexes.rebuild` | `Core::schedule_index_rebuild` | `Job` |
 //! | `indexes.rebuildSemantic` | `Core::schedule_semantic_index`（只排任务） | `Job` |
+//! | `indexes.status` | `Core::index_status` | `IndexStatus` |
 //! | `jobs.runDue` | `Core::run_due_jobs` | `JobRunSummary` |
 //! | `jobs.status` | `Core::job_status` | `JobStatus` |
+//! | `jobs.list` | `Core::list_jobs_page`（状态筛选 + 不透明游标） | `JobPage` |
+//! | `jobs.get` | `Core::get_job` | `Job` |
+//! | `jobs.retry` | `Core::retry_job` / `retry_job_idempotent`（给了 `operation_id` 时） | `Job` |
+//! | `jobs.cancel` | `Core::cancel_job` | `Job` |
+//! | `jobs.acknowledgeAttention` | `Core::acknowledge_attention` | `null` |
+//! | `providers.save` | `Core::save_provider` | `Provider` |
+//! | `providers.list` | `Core::list_providers` | `Provider[]` |
+//! | `providers.test` | `Core::test_provider` | `ProviderTestReport` |
+//! | `providers.remove` | `Core::remove_provider` | `null` |
 //!
 //! 两条「为什么在这里」的说明（本块的任务书只点名了另外六条）：
 //!
@@ -44,20 +59,17 @@
 //!
 //! ## 还没接的（按契约第 4 节分组，TODO(#108)）
 //!
-//! - 记录与来源：`captures.get` / `captures.list` / `captures.moveDay` /
-//!   `captures.trash` / `captures.restore` / `captures.previewPurge` / `captures.purge`、
-//!   `sources.extractedContent` / `sources.previousRevision` / `sources.reviseText` /
-//!   `sources.locate`；
+//! - 记录与来源：`captures.moveDay` / `captures.trash` / `captures.restore` /
+//!   `captures.previewPurge` / `captures.purge`、`sources.extractedContent` /
+//!   `sources.previousRevision` / `sources.reviseText` / `sources.locate`；
 //! - 文件：`imports.*`、`assets.open` / `assets.release`；
-//! - 检索：`search.nextPage` / `search.snapshot` / `search.cancel` / `search.upgrade`、
-//!   `indexes.status`（`indexes.rebuildSemantic` 已接，见上表）；
-//! - 任务与事件：`jobs.list` / `jobs.get` / `jobs.retry` / `jobs.cancel` /
-//!   `jobs.nextWakeup` / `jobs.acknowledgeAttention`、`core.events`；
+//! - 检索：`search.snapshot`、`indexes.status` 已接，`search.*` 只差 `snapshot`；
+//! - 任务与事件：`jobs.nextWakeup`、`core.events`；
 //! - 备份与恢复：`backups.create` / `backups.inspect` / `backups.restore`（`diary_bridge`
 //!   已经接了同步入口，映射过来即可）；
 //! - 其余：`core.snapshot` / `core.close` / `core.setRuntimeState`、`diary.*`、`styles.*`、
-//!   `responses.*`、`providers.*`、`settings.*`、`plugins.*`、`exports.*`——这些要么核心
-//!   还没有对应实现，要么属于后面的块。
+//!   `responses.*`、`settings.*`、`plugins.*`、`exports.*`——这些要么核心还没有对应实现，
+//!   要么属于后面的块。
 //!
 //! 没接的方法一律报 `invalid_argument`，message 里点名「未接入」并附上已接入清单，
 //! **不会**静默成功、也不会假装支持。
@@ -80,6 +92,8 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "captures.createDraft",
     "captures.saveDraft",
     "captures.commit",
+    "captures.get",
+    "captures.list",
     "recordings.prepare",
     "recordings.registerSegment",
     "recordings.updateState",
@@ -87,10 +101,19 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "recordings.recover",
     "sources.extract",
     "search.start",
+    "search.nextPage",
+    "search.upgrade",
+    "search.cancel",
     "indexes.rebuild",
     "indexes.rebuildSemantic",
+    "indexes.status",
     "jobs.runDue",
     "jobs.status",
+    "jobs.list",
+    "jobs.get",
+    "jobs.retry",
+    "jobs.cancel",
+    "jobs.acknowledgeAttention",
     "providers.save",
     "providers.list",
     "providers.test",
@@ -104,6 +127,13 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
 /// 它挡「队列很长 + 多条短任务」把一轮拖成没完没了。没跑上的任务留在队列里、
 /// 如实计入摘要的 `dueBacklog`，下一轮接着跑。
 const RUN_DUE_MAX_JOBS: usize = 64;
+
+/// 分页方法的默认页大小。
+///
+/// 与 `packages/diary_bridge/lib/src/bridge_diary_api.dart` 的 `pageSize` 和
+/// `search.start` 的 `page_size` 同一口径（20），避免同一份界面在不同入口拿到
+/// 不一样的页长。上限由核心各自夹（`captures.list` 100、`jobs.list` 200）。
+const DEFAULT_PAGE_SIZE: usize = 20;
 
 /// 方法分派。`params` 为 `null` 表示调用方没给参数。
 pub(crate) fn dispatch(
@@ -147,6 +177,21 @@ pub(crate) fn dispatch(
                 &input.operation_id,
             )?;
             to_value(result)
+        }
+        // 「看今天」/历史列表/条目详情的数据源。`list` 的游标原样透传核心的
+        // `CapturePage.next_cursor`——界面不该自己解析或拼游标。
+        "captures.get" => {
+            let input: CaptureIdParams = parse(params)?;
+            to_value(core.get_capture(&input.capture_id)?)
+        }
+        "captures.list" => {
+            let input: ListCapturesParams = parse_optional(params)?;
+            let page = core.list_captures(
+                input.day_key.as_deref(),
+                input.cursor.as_deref(),
+                input.limit.unwrap_or(DEFAULT_PAGE_SIZE),
+            )?;
+            to_value(page)
         }
         // ------------------------------------------------------------ 录音
         "recordings.prepare" => {
@@ -209,6 +254,22 @@ pub(crate) fn dispatch(
             let snapshot = core.start_search(request, input.query_revision)?;
             to_value(snapshot)
         }
+        // 翻页/升级/取消：游标与会话都是核心的不透明 token，桥面只透传。
+        // `search.nextPage` 不给游标时核心用会话自己记着的下一页游标；
+        // `search.upgrade` 语义拿不出证据时如实停在 `keyword_ready`（不假装融合）。
+        "search.nextPage" => {
+            let input: SearchNextPageParams = parse(params)?;
+            let snapshot = core.search_next_page(&input.session_id, input.cursor.as_deref())?;
+            to_value(snapshot)
+        }
+        "search.upgrade" => {
+            let input: SearchSessionParams = parse(params)?;
+            to_value(core.upgrade_search_to_hybrid(&input.session_id)?)
+        }
+        "search.cancel" => {
+            let input: SearchSessionParams = parse(params)?;
+            to_value(core.cancel_search(&input.session_id)?)
+        }
         // ------------------------------------------------------------ 索引
         "indexes.rebuild" => {
             let input: RebuildIndexesParams = parse(params)?;
@@ -224,6 +285,13 @@ pub(crate) fn dispatch(
             let job = core.schedule_semantic_index(&input.reason, &input.operation_id)?;
             to_value(job)
         }
+        // 就绪状态原样暴露 `IndexStatus`：界面要的是 `semantic_index_ready` / `reasons` /
+        // `model_version`，桥面不改写、不补算。`source_scope` 省略 = 整库；给了空数组
+        // 与核心同义（「什么都不看」），见契约 4.4。
+        "indexes.status" => {
+            let input: IndexStatusParams = parse_optional(params)?;
+            to_value(core.index_status(input.source_scope.as_deref())?)
+        }
         // ------------------------------------------------------------ 任务
         "jobs.runDue" => {
             let input: RunDueParams = parse(params)?;
@@ -238,6 +306,48 @@ pub(crate) fn dispatch(
         "jobs.status" => {
             no_params(method, params)?;
             to_value(core.job_status()?)
+        }
+        // 任务中心逐条：`list` 用核心的键集游标（不是偏移），`get` 带 `progress` /
+        // `attention_key`。`states` 省略或空数组都表示「不限状态」（与核心 `list_jobs`
+        // 的口径一致：空筛选不是「什么都不看」）。
+        "jobs.list" => {
+            let input: ListJobsParams = parse_optional(params)?;
+            let states = if input.states.is_empty() {
+                None
+            } else {
+                Some(input.states.as_slice())
+            };
+            let page = core.list_jobs_page(
+                states,
+                input.cursor.as_deref(),
+                input.limit.unwrap_or(DEFAULT_PAGE_SIZE),
+            )?;
+            to_value(page)
+        }
+        "jobs.get" => {
+            let input: JobIdParams = parse(params)?;
+            to_value(core.get_job(&input.job_id)?)
+        }
+        // 人工重试：契约给了 `operationId` 就走幂等入口（同一个 op 重放返回第一次的
+        // 结果）；没给则是一次普通的「清零重跑」。两条路在核心里是同一个实现。
+        "jobs.retry" => {
+            let input: RetryJobParams = parse(params)?;
+            let job = match input.operation_id.as_deref() {
+                Some(operation_id) => core.retry_job_idempotent(&input.job_id, operation_id)?,
+                None => core.retry_job(&input.job_id)?,
+            };
+            to_value(job)
+        }
+        "jobs.cancel" => {
+            let input: CancelJobParams = parse(params)?;
+            to_value(core.cancel_job(&input.job_id, &input.operation_id)?)
+        }
+        // 「这个待处理问题已经展示过」：核心只落一条 ack，返回值就是 `null`。
+        // 同一个 `attentionKey` 重复调用是幂等的。
+        "jobs.acknowledgeAttention" => {
+            let input: AcknowledgeAttentionParams = parse(params)?;
+            core.acknowledge_attention(&input.attention_key)?;
+            Ok(Value::Null)
         }
         // ------------------------------------------------------------ 本机服务配置
         // 本机转写引擎（sherpa-onnx）的配置入口。没有这几条，宿主就没法把
@@ -339,6 +449,17 @@ fn parse<T: DeserializeOwned>(params: &Value) -> Result<T, CallError> {
         .map_err(|error| CallError::invalid_argument(format!("C ABI：参数不合法（{error}）")))
 }
 
+/// 只含可选字段的参数：`params` 省略（`null`）与空对象都按「全用默认值」处理。
+///
+/// 其余方法保持 [`parse`] 的严格口径：必填字段缺失、`null` 或字段拼错都是
+/// `invalid_argument`，不静默补默认值。
+fn parse_optional<T: DeserializeOwned + Default>(params: &Value) -> Result<T, CallError> {
+    match params {
+        Value::Null => Ok(T::default()),
+        other => parse(other),
+    }
+}
+
 fn to_value<T: serde::Serialize>(value: T) -> Result<Value, CallError> {
     // 核心模型的字段都是 JSON 表达得了的；真序列化不了说明数据本身有问题，如实报错。
     serde_json::to_value(value)
@@ -394,6 +515,28 @@ struct CommitParams {
     expected_revision: i64,
     #[serde(alias = "operationId")]
     operation_id: String,
+}
+
+/// `captures.get`：详情页的数据源。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CaptureIdParams {
+    #[serde(alias = "id", alias = "captureId")]
+    capture_id: String,
+}
+
+/// `captures.list`：「看今天」/历史列表的数据源。
+///
+/// 三个字段都可省：省略 `day_key` 是全部日期（历史列表），省略 `cursor` 是第一页，
+/// 省略 `limit` 用 [`DEFAULT_PAGE_SIZE`]。`cursor` 必须是上一页返回的
+/// `next_cursor` 原样值，桥面不解析它。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ListCapturesParams {
+    #[serde(alias = "dayKey")]
+    day_key: Option<String>,
+    cursor: Option<String>,
+    limit: Option<usize>,
 }
 
 /// `recordings.prepare`：申请录音票据与限域暂存目录。
@@ -505,6 +648,27 @@ struct SearchStartParams {
     query_revision: i64,
 }
 
+/// `search.nextPage`：会话号 + 可省略的游标。
+///
+/// 省略 `cursor` 时核心用会话自己记着的下一页游标（等价于「继续往下翻」）；
+/// 显式给游标时必须是同一会话、同一结果代次的 `cursor`，否则报 `cursor_expired`。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchNextPageParams {
+    #[serde(alias = "sessionId")]
+    session_id: String,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+/// `search.upgrade` / `search.cancel`：只要会话号。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchSessionParams {
+    #[serde(alias = "sessionId")]
+    session_id: String,
+}
+
 /// `SearchRequest` 的 JSON 形态：只有 `query` 是必填的，其余按核心默认口径。
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -580,6 +744,17 @@ struct RebuildSemanticParams {
     operation_id: String,
 }
 
+/// `indexes.status`：可选的来源范围。
+///
+/// 省略 = 整库；给了空数组 = 「什么都不看」（与核心 `index_status` 同义，见契约 4.4）。
+/// 两者刻意不同，不能把空数组当成「没给」。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct IndexStatusParams {
+    #[serde(alias = "sourceScope")]
+    source_scope: Option<Vec<String>>,
+}
+
 /// `jobs.runDue`：毫秒预算 + 唤醒来源（契约第 4.4 节）。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -587,6 +762,56 @@ struct RunDueParams {
     #[serde(alias = "budgetMs")]
     budget_ms: u64,
     trigger: String,
+}
+
+/// `jobs.list`：状态筛选 + 不透明游标 + 页大小。
+///
+/// `states` 省略或空数组都是「不限状态」（任务中心默认要看到全部）。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ListJobsParams {
+    states: Vec<JobState>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+}
+
+/// `jobs.get`。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JobIdParams {
+    #[serde(alias = "id", alias = "jobId")]
+    job_id: String,
+}
+
+/// `jobs.retry`：`operation_id` 可省。
+///
+/// 给了就走核心的幂等入口（同一个 op 重放返回第一次的结果）；省了就是一次普通的
+/// 「清零重跑」。契约建议总是给，重试按钮要能安全重放。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetryJobParams {
+    #[serde(alias = "id", alias = "jobId")]
+    job_id: String,
+    #[serde(default, alias = "operationId")]
+    operation_id: Option<String>,
+}
+
+/// `jobs.cancel`：核心要求 `operation_id`（取消也要能安全重放）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelJobParams {
+    #[serde(alias = "id", alias = "jobId")]
+    job_id: String,
+    #[serde(alias = "operationId")]
+    operation_id: String,
+}
+
+/// `jobs.acknowledgeAttention`：`attention_key` 就是 `Job.attention_key` 的原值。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcknowledgeAttentionParams {
+    #[serde(alias = "attentionKey")]
+    attention_key: String,
 }
 
 /// `providers.save`：`config` 与 `secret` 的字段名就是核心 `Provider` 的字段名。

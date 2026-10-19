@@ -108,6 +108,17 @@ export interface Capture {
   processing_summary: ProcessingSummary;
 }
 
+/**
+ * `captures.list` 的分页结果（「看今天」/历史列表）。
+ *
+ * `next_cursor` 是**不透明**字符串：原样回传给下一次 `captures.list`，不要解析、
+ * 不要自己拼。`null` 表示没有下一页。
+ */
+export interface CapturePage {
+  captures: Capture[];
+  next_cursor: string | null;
+}
+
 /** `captures.saveDraft` 的结果：只有 `durable === true` 才能显示「已保存」。 */
 export interface DraftSaveResult {
   revision: number;
@@ -234,6 +245,16 @@ export interface Job {
   updated_at: string;
 }
 
+/**
+ * `jobs.list` 的分页结果（任务中心逐条）。
+ *
+ * 每条 `Job` 里带 `attention_key` 与 `progress`；`next_cursor` 不透明，原样回传。
+ */
+export interface JobPage {
+  jobs: Job[];
+  next_cursor: string | null;
+}
+
 /** `jobs.runDue` 的摘要。 */
 export interface JobRunSummary {
   started_at: string;
@@ -274,6 +295,39 @@ export interface JobStatus {
   recent_errors: JobErrorSummary[];
 }
 
+/**
+ * `indexes.status` 的结果：索引就绪与覆盖。
+ *
+ * `semantic_index_ready` 只在**生效代次覆盖全部块且口径一致**时为 true；
+ * 为 false 时原因在 `reasons[]` 里（原样展示，不要自己改写）。`model_version`
+ * 为 null 有三种情况：还没有代次、代次里没有向量、代次里混了多种模型版本
+ * （最后一种会在 `reasons` 里点名并提示重建）。
+ */
+export interface IndexStatus {
+  /** 关键词覆盖：`complete` / `partial` / `metadata_only` / `unavailable`。 */
+  coverage: string;
+  keyword_index_ready: boolean;
+  semantic_index_ready: boolean;
+  tokenizer_version: string;
+  model_version: string | null;
+  chunker_version: string | null;
+  total_chunks: number;
+  embedded_chunks: number;
+  indexed_segments: number;
+  total_segments: number;
+  pending_segments: number;
+  stale_segments: number;
+  indexed_captures: number;
+  total_captures: number;
+  failed_sources: number;
+  indexed_chars: number;
+  index_rows: number;
+  index_terms: number;
+  /** 整库索引占用（含语义表）；不随 `source_scope` 变化。 */
+  index_bytes: number;
+  reasons: string[];
+}
+
 // ---------------------------------------------------------------- 请求参数
 //
 // 字段名以核心 Rust 参数名为准（snake_case）；契约表里的 camelCase 写法 C ABI 也接受，
@@ -305,6 +359,24 @@ export interface CommitParams {
   capture_id: string;
   expected_revision: number;
   operation_id: string;
+}
+
+/** `captures.get` 的参数。 */
+export interface CaptureIdParams {
+  capture_id: string;
+}
+
+/**
+ * `captures.list` 的参数：三个字段都可省。
+ *
+ * - `day_key` 省略 = 全部日期（历史列表）；「看今天」给当天的 `YYYY-MM-DD`；
+ * - `cursor` 原样回传上一页的 `next_cursor`，不要解析或自己拼；
+ * - `limit` 默认 20，核心最多给 100 条。
+ */
+export interface ListCapturesParams {
+  day_key?: string | null;
+  cursor?: string | null;
+  limit?: number;
 }
 
 /** `sources.extract` 的参数：`source_ref` 可以是来源 id，也可以是修订 id。 */
@@ -339,6 +411,22 @@ export interface SearchParams {
   query_revision: number;
 }
 
+/**
+ * `search.nextPage` 的参数。
+ *
+ * `cursor` 省略 = 用会话自己记着的下一页；显式给时必须是**同一会话、同一结果代次**
+ * 的游标（升级后旧游标一律 `cursor_expired`）。
+ */
+export interface SearchNextPageParams {
+  session_id: string;
+  cursor?: string | null;
+}
+
+/** `search.upgrade` / `search.cancel` 的参数。 */
+export interface SearchSessionParams {
+  session_id: string;
+}
+
 /** `indexes.rebuild` 的参数；`scope` 编码是 `all` 或 `sources:<id>[,<id>]*`。 */
 export interface RebuildIndexParams {
   scope: string;
@@ -356,11 +444,59 @@ export interface RebuildSemanticParams {
   operation_id: string;
 }
 
+/**
+ * `indexes.status` 的参数。
+ *
+ * `source_scope` 省略 = 整库；给空数组 = 「什么都不看」（两者刻意不同，与核心同义）。
+ */
+export interface IndexStatusParams {
+  source_scope?: string[] | null;
+}
+
 /** `jobs.runDue` 的参数。 */
 export interface RunDueParams {
   budget_ms: number;
   /** 唤醒来源，例如 `startup` / `foreground` / `manual`。 */
   trigger: string;
+}
+
+/**
+ * `jobs.list` 的参数。
+ *
+ * `states` 省略或空数组都是「不限状态」；`cursor` 原样回传 `next_cursor`；
+ * `limit` 默认 20，核心最多给 200 条。
+ */
+export interface ListJobsParams {
+  states?: string[] | null;
+  cursor?: string | null;
+  limit?: number;
+}
+
+/** `jobs.get` 的参数。 */
+export interface JobIdParams {
+  job_id: string;
+}
+
+/**
+ * `jobs.retry` 的参数。
+ *
+ * `operation_id` 是幂等键：同一个 op 重放返回第一次的结果。建议总是给——
+ * 重试按钮要能安全重放。
+ */
+export interface RetryJobParams {
+  job_id: string;
+  operation_id?: string | null;
+}
+
+/** `jobs.cancel` 的参数（核心要求 `operation_id`）。 */
+export interface CancelJobParams {
+  job_id: string;
+  operation_id: string;
+}
+
+/** `jobs.acknowledgeAttention` 的参数：原样传 `Job.attention_key`。 */
+export interface AcknowledgeAttentionParams {
+  attention_key: string;
 }
 
 // ---------------------------------------------------------------- 录音（契约 4.2）
@@ -510,7 +646,13 @@ export interface ProviderIdParams {
 export interface ProviderTestReport {
   provider_id: string;
   actual_call_made: boolean;
-  message: string;
+  /**
+   * 用户可读说明；核心是 `Option<String>`，**没有说明时是 null**。
+   *
+   * 这里以前声明成 `string`，直接 `.length` 会在 null 上崩——已按 Rust 模型改成
+   * `string | null`，调用方要先判空。
+   */
+  message: string | null;
   /** 能力 → `ok` / `failed` 的逐项结论（JSON 对象，键是能力名）。 */
   results: Object;
 }
