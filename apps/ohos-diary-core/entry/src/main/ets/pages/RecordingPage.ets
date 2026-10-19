@@ -268,6 +268,26 @@ export struct RecordingPage {
     return tail > 0 ? tail : 0;
   }
 
+  private finalizeStateLabel(state: string): string {
+    if (state === 'saved') {
+      return '已保存（完整）';
+    }
+    if (state === 'recoverable') {
+      return '已保存（不完整）';
+    }
+    return state;
+  }
+
+  private recoveryStateLabel(state: string): string {
+    if (state === 'recoverable') {
+      return '可恢复（有已登记片段）';
+    }
+    if (state === 'interrupted') {
+      return '被系统中断';
+    }
+    return state;
+  }
+
   private segmentCount(): number {
     const recorder: VoiceRecorder | null = this.recorder;
     return recorder === null ? 0 : recorder.segmentCount();
@@ -283,7 +303,7 @@ export struct RecordingPage {
             .fontSize(15)
             .fontWeight(FontWeight.Medium)
             .fontColor($r('sys.color.ohos_id_color_warning'))
-          StatePill({ text: (this.recovery as RecordingRecovery).state, tone: 'warn' })
+          StatePill({ text: this.recoveryStateLabel((this.recovery as RecordingRecovery).state), tone: 'warn' })
         }
         .width('100%')
         Text(`已保存 ${formatDuration((this.recovery as RecordingRecovery).persisted_ms)}（已登记 ${(this.recovery as RecordingRecovery).closed_segment_indexes.length} 段）`)
@@ -351,7 +371,7 @@ export struct RecordingPage {
             .fontWeight(FontWeight.Bold)
             .fontColor($r('sys.color.ohos_id_color_text_primary'))
           StatePill({
-            text: (this.finalized as RecordingFinalizeResult).state,
+            text: this.finalizeStateLabel((this.finalized as RecordingFinalizeResult).state),
             tone: (this.finalized as RecordingFinalizeResult).state === 'saved' ? 'ok' : 'warn',
           })
         }
