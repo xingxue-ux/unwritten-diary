@@ -19,7 +19,11 @@ import diaryNapi from 'libdiary_napi.so';
 import { DiaryError, NATIVE_UNAVAILABLE } from './DiaryError';
 import { buildRequest, unwrapEnvelope } from './Envelope';
 import {
+  AcknowledgeAttentionParams,
+  CancelJobParams,
   Capture,
+  CaptureIdParams,
+  CapturePage,
   CommitParams,
   CommitResult,
   CreateDraftParams,
@@ -27,10 +31,16 @@ import {
   ExtractedContent,
   ExtractParams,
   FinalizeRecordingParams,
+  IndexStatus,
+  IndexStatusParams,
   Job,
+  JobIdParams,
+  JobPage,
   JobRunSummary,
   JobStatus,
   LibraryInfo,
+  ListCapturesParams,
+  ListJobsParams,
   NativeRecordingStatusParams,
   PrepareRecordingParams,
   ProviderConfig,
@@ -44,10 +54,13 @@ import {
   RecordingSession,
   RecordingTicket,
   RegisterSegmentParams,
+  RetryJobParams,
   RunDueParams,
   SaveDraftParams,
   SaveProviderParams,
+  SearchNextPageParams,
   SearchParams,
+  SearchSessionParams,
   SearchSnapshot,
   SegmentReceipt,
   TestProviderParams,
@@ -158,7 +171,7 @@ export class DiaryCore {
     return diaryNapi.openHandleCount();
   }
 
-  // ---------------------------------------------------------------- 契约方法（14 条）
+  // ---------------------------------------------------------------- 契约方法（30 条）
   //
   // 一一对应 `crates/diary_capi/src/methods.rs` 的 `WIRED_METHODS`。方法名与方法体里的
   // 字符串必须一致；`tools/check_arkts_capi_contract.py` 会核对。
@@ -186,6 +199,21 @@ export class DiaryCore {
   /** `captures.commit`：草稿转正式记录，并生成原文修订（之后才能 `extract` / 检索到）。 */
   commit(params: CommitParams): CommitResult {
     return this.invokeData('captures.commit', params) as CommitResult;
+  }
+
+  /** `captures.get`：条目详情（含 `revision` / `state` / `processing_summary`）。 */
+  getCapture(params: CaptureIdParams): Capture {
+    return this.invokeData('captures.get', params) as Capture;
+  }
+
+  /**
+   * `captures.list`：「看今天」与历史列表的数据源。
+   *
+   * 翻页：把上一页的 `next_cursor` 原样放进 `cursor`；`null` 表示没有下一页。
+   * 「看今天」传 `day_key`（当天的 `YYYY-MM-DD`）；历史列表省略它。
+   */
+  listCaptures(params: ListCapturesParams | null = null): CapturePage {
+    return this.invokeData('captures.list', params) as CapturePage;
   }
 
   // ---------------------------------------------------------------- 录音（契约 4.2）
@@ -235,6 +263,35 @@ export class DiaryCore {
     return this.invokeData('search.start', params) as SearchSnapshot;
   }
 
+  /**
+   * `search.nextPage`：翻下一页。
+   *
+   * `cursor` 省略时用会话自己记着的下一页；显式给时必须是同一会话、同一结果代次的
+   * 游标。翻到头时 `cursor === null`、`phase === 'done'`；游标过期报 `cursor_expired`。
+   */
+  nextPage(params: SearchNextPageParams): SearchSnapshot {
+    return this.invokeData('search.nextPage', params) as SearchSnapshot;
+  }
+
+  /**
+   * `search.upgrade`：把 `mode = 'hybrid'` 的会话从关键词阶段升级到融合阶段。
+   *
+   * 语义拿不出证据时不假装融合：仍返回 `keyword_ready` 快照，原因在 `warnings` 里。
+   * 幂等；升级成功后旧游标一律失效（`cursor_expired`）。
+   */
+  upgradeSearch(params: SearchSessionParams): SearchSnapshot {
+    return this.invokeData('search.upgrade', params) as SearchSnapshot;
+  }
+
+  /**
+   * `search.cancel`：取消后续处理，返回 `cancelled` 快照。不删除任何原件。
+   *
+   * 重复取消是幂等的；取消后 `nextPage` 报 `invalid_state`（不是静默给空页）。
+   */
+  cancelSearch(params: SearchSessionParams): SearchSnapshot {
+    return this.invokeData('search.cancel', params) as SearchSnapshot;
+  }
+
   /** `indexes.rebuild`：只排任务，不同步建索引（真正跑要 `runDueJobs()`）。 */
   rebuildIndex(params: RebuildIndexParams): Job {
     return this.invokeData('indexes.rebuild', params) as Job;
@@ -250,6 +307,16 @@ export class DiaryCore {
     return this.invokeData('indexes.rebuildSemantic', params) as Job;
   }
 
+  /**
+   * `indexes.status`：索引就绪与覆盖（`semantic_index_ready` / `model_version` /
+   * `reasons` / 块与片段计数）。
+   *
+   * `source_scope` 省略 = 整库；空数组 = 「什么都不看」（两者刻意不同）。
+   */
+  indexStatus(params: IndexStatusParams | null = null): IndexStatus {
+    return this.invokeData('indexes.status', params) as IndexStatus;
+  }
+
   /** `jobs.runDue`：把到期的任务跑一轮（预算 + 条数上限，见 C ABI 文档 §6.1）。 */
   runDueJobs(params: RunDueParams): JobRunSummary {
     return this.invokeData('jobs.runDue', params) as JobRunSummary;
@@ -258,6 +325,43 @@ export class DiaryCore {
   /** `jobs.status`：队列计数、到期积压、最近错误。 */
   jobsStatus(): JobStatus {
     return this.invokeData('jobs.status', null) as JobStatus;
+  }
+
+  /**
+   * `jobs.list`：任务中心逐条（含 `attention_key` / `progress`）。
+   *
+   * `states` 省略或空数组都是「不限状态」；`cursor` 原样回传 `next_cursor`。
+   */
+  listJobs(params: ListJobsParams | null = null): JobPage {
+    return this.invokeData('jobs.list', params) as JobPage;
+  }
+
+  /** `jobs.get`：单条任务（`progress` / `attention_key` 都在这）。 */
+  getJob(params: JobIdParams): Job {
+    return this.invokeData('jobs.get', params) as Job;
+  }
+
+  /**
+   * `jobs.retry`：人工重试一条 `failed` 的任务（清零 `attempt_count` 重跑）。
+   *
+   * 只接受 `failed`；别的状态报 `invalid_state`。给了 `operation_id` 时可安全重放。
+   */
+  retryJob(params: RetryJobParams): Job {
+    return this.invokeData('jobs.retry', params) as Job;
+  }
+
+  /** `jobs.cancel`：取消一条未终结的任务；不删除任何原件。 */
+  cancelJob(params: CancelJobParams): Job {
+    return this.invokeData('jobs.cancel', params) as Job;
+  }
+
+  /**
+   * `jobs.acknowledgeAttention`：记录这个待处理问题已经展示过（跨重启去重）。
+   *
+   * 核心返回 `null`，所以走 `rawCall`；同一个 `attention_key` 重复调用是幂等的。
+   */
+  acknowledgeAttention(params: AcknowledgeAttentionParams): void {
+    this.rawCall('jobs.acknowledgeAttention', params);
   }
 
   // ---------------------------------------------------------------- 本机服务配置
@@ -331,7 +435,8 @@ export class DiaryCore {
   private invokeData(method: string, params: Object | null): Object {
     const data = this.rawCall(method, params);
     if (data === null) {
-      // 9 条已接方法都有返回值；走到这里说明 C ABI 的信封形状变了。
+      // 走 invokeData 的方法都有返回值（返回 null 的 acknowledgeAttention 走 rawCall）；
+      // 走到这里说明 C ABI 的信封形状变了。
       throw new DiaryError(NATIVE_UNAVAILABLE, `核心返回 ok:true 但没有 data（${method}）`);
     }
     return data;
