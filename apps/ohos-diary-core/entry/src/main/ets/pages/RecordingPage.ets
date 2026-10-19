@@ -1,15 +1,18 @@
 // 录音页：复用 `recording/VoiceRecorder.ets`（权限 / 常亮 / 分片 / 崩溃恢复）。
 //
 // 停止后的真实流程：
-//   VoiceRecorder.stop() → recordings.finalize → 同事务排转写任务
-// 但 **finalize 不 commit**：capture 仍是 draft。当前接口没有 finalize→commit
-// （#1019 的修复还没合入），`VoiceRecorder` 也不返回 capture id，所以这里：
-//   - 如实显示「已保存，但未提交」；
-//   - 不猜 revision、不自动 commit（详情页可以用 captures.get 拿到 revision 后手动提交）；
-//   - 转写任务用 `jobs.runDue` 在 worker 里推进，不在 UI 线程加载 228 MB 模型。
+//   VoiceRecorder.stop() → recordings.finalize（音频/来源落库 + 排转写任务）
+//                        → captures.commit（自动提交成篇）
+// finalize 只保证「音频已保存」；提交由 VoiceRecorder 在 finalize 之后立刻做一次，
+// 结果（committed / already_committed / failed / not_attempted）保存在
+// `commitResult()` 里。本页必须读取并如实显示：提交失败时音频仍已保存、记录仍是
+// draft，不能让用户以为存好了。
+// 转写任务用 `jobs.runDue` 在 worker 里推进，不在 UI 线程加载模型。
 
 import { common } from '@kit.AbilityKit';
 import {
+  CommitParams,
+  CommitResult,
   FinalizeRecordingParams,
   JobRunSummary,
   RecoverRecordingParams,
@@ -23,7 +26,7 @@ import { CoreOpenResult, CoreSession } from '../ui/CoreSession';
 import { AppState } from '../ui/AppState';
 import { databasePath, formatDuration, toast } from '../ui/AppRuntime';
 import { ensureMicrophonePermission, PermissionOutcome } from '../recording/MicPermission';
-import { RecorderOptions, VoiceRecorder } from '../recording/VoiceRecorder';
+import { RecorderOptions, RecordingCommitResult, VoiceRecorder } from '../recording/VoiceRecorder';
 import { ErrorBanner, InfoRow, LoadingRow, SectionTitle, StatePill } from '../ui/Common';
 
 @Component
@@ -47,6 +50,16 @@ export struct RecordingPage {
   @State runningDue: boolean = false;
   /** stop() 已经尝试过 finalize；失败时不再给「保存已录部分」，避免二次 finalize。 */
   @State finalizeAttempted: boolean = false;
+  /**
+   * finalize 之后那次自动提交的结果（来自 `VoiceRecorder.commitResult()`）。
+   *
+   * 空串 = 还没走到 finalize；其余按 state 原样显示，不做「看起来成功」的默认值。
+   */
+  @State commitState: string = '';
+  @State commitRevision: number = -1;
+  @State commitError: string = '';
+  @State commitRetrying: boolean = false;
+  @State commitRetryError: UiError = EMPTY_UI_ERROR;
 
   private recorder: VoiceRecorder | null = null;
   private timer: number = -1;
@@ -120,6 +133,10 @@ export struct RecordingPage {
     this.transcribeHint = '';
     this.interrupted = false;
     this.finalizeAttempted = false;
+    this.commitState = '';
+    this.commitRevision = -1;
+    this.commitError = '';
+    this.commitRetryError = EMPTY_UI_ERROR;
     this.permissionMessage = '';
 
     const permission: PermissionOutcome = await ensureMicrophonePermission(context);
@@ -171,6 +188,13 @@ export struct RecordingPage {
       this.persistedMs = recorder.persistedMs();
       this.interrupted = recorder.wasInterrupted();
       this.refreshHoldHints(recorder);
+      // #151：stop() 内部在 finalize 之后自动 commit；这里必须读结果，
+      // 否则 commit 失败时用户完全看不到（会误以为已存好）。
+      const commit: RecordingCommitResult = recorder.commitResult();
+      this.commitState = commit.state;
+      this.commitRevision = commit.revision_after;
+      this.commitError = commit.error;
+      this.commitRetryError = EMPTY_UI_ERROR;
       AppState.bumpDataVersion();
       this.kickRunDue();
     } catch (e) {
@@ -230,6 +254,12 @@ export struct RecordingPage {
     const finalized: RecordingFinalizeResult = result.data as RecordingFinalizeResult;
     this.finalized = finalized;
     this.phase = finalized.state;
+    // 恢复路径直接调 `recordings.finalize`，没有走 VoiceRecorder.stop()，
+    // 因此这次没有尝试提交；如实标成 not_attempted，不冒充「已提交」。
+    this.commitState = 'not_attempted';
+    this.commitRevision = -1;
+    this.commitError = '';
+    this.commitRetryError = EMPTY_UI_ERROR;
     this.recovery = null;
     AppState.bumpDataVersion();
     this.kickRunDue();
@@ -278,6 +308,88 @@ export struct RecordingPage {
     return state;
   }
 
+  /** 提交结果的标题：成功就说成功，失败就明确说「音频已保存、记录仍是草稿」。 */
+  private commitHeadline(): string {
+    if (this.commitState === 'committed') {
+      return '已保存，已成篇';
+    }
+    if (this.commitState === 'already_committed') {
+      return '已保存（此前已提交）';
+    }
+    if (this.commitState === 'failed') {
+      return '音频已保存，但这篇仍是草稿';
+    }
+    return '已保存，未提交';
+  }
+
+  private commitDetail(): string {
+    if (this.commitState === 'committed') {
+      return this.commitRevision >= 0
+        ? `记录已提交为正式记录（revision ${this.commitRevision}）。`
+        : '记录已提交为正式记录。';
+    }
+    if (this.commitState === 'already_committed') {
+      return '核心按幂等处理：这条记录此前已经提交过；权威 revision 以详情页为准。';
+    }
+    if (this.commitState === 'failed') {
+      return '音频与来源已经落库，但提交没有成功。重试成功之前，这篇在「今日」仍显示为草稿。';
+    }
+    return '这次没有执行自动提交（例如从「上次录音未收尾」恢复保存）；可到详情页手动提交。';
+  }
+
+  /** 从 `DiaryError code=… retryable=… message=…` 里只取错误码，单独显示给用户。 */
+  private commitErrorCode(): string {
+    const marker: string = 'code=';
+    const at: number = this.commitError.indexOf(marker);
+    if (at < 0) {
+      return '未知';
+    }
+    const rest: string = this.commitError.substring(at + marker.length);
+    const space: number = rest.indexOf(' ');
+    return space < 0 ? rest : rest.substring(0, space);
+  }
+
+  /**
+   * 提交失败后的重试入口。
+   *
+   * 用 finalize 返回的权威 revision 做 expected_revision；operation_id 由
+   * capture_id + revision 派生，重复点击不会重复提交（核心按操作幂等）。
+   * `invalid_state` 与 VoiceRecorder 同口径：说明此前已提交，按已提交处理。
+   */
+  private async retryCommit(): Promise<void> {
+    const finalized: RecordingFinalizeResult | null = this.finalized;
+    if (finalized === null || this.commitRetrying) {
+      return;
+    }
+    this.commitRetrying = true;
+    this.commitRetryError = EMPTY_UI_ERROR;
+    const params: CommitParams = {
+      capture_id: finalized.capture_id,
+      expected_revision: finalized.capture_revision,
+      operation_id: `op-ohos-commit-retry-${finalized.capture_id}-${finalized.capture_revision}`,
+    };
+    const result = await CoreGateway.call(this.dbPath, 'captures.commit', params);
+    this.commitRetrying = false;
+    if (!result.ok) {
+      const mapped: UiError = uiErrorOf(result);
+      if (mapped.code === 'invalid_state') {
+        this.commitState = 'already_committed';
+        this.commitError = '';
+        this.commitRevision = -1;
+        AppState.bumpDataVersion();
+        return;
+      }
+      this.commitRetryError = mapped;
+      return;
+    }
+    const committed: CommitResult = result.data as CommitResult;
+    this.commitState = 'committed';
+    this.commitError = '';
+    this.commitRevision = committed.capture.revision;
+    AppState.bumpDataVersion();
+    toast('已提交为正式记录');
+  }
+
   private recoveryStateLabel(state: string): string {
     if (state === 'recoverable') {
       return '可恢复（有已登记片段）';
@@ -302,7 +414,7 @@ export struct RecordingPage {
           Text('上次录音未收尾')
             .fontSize(15)
             .fontWeight(FontWeight.Medium)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor($r('sys.color.ohos_id_color_text_primary'))
           StatePill({ text: this.recoveryStateLabel((this.recovery as RecordingRecovery).state), tone: 'warn' })
         }
         .width('100%')
@@ -355,7 +467,9 @@ export struct RecordingPage {
       }
       .width('100%')
       .padding(14)
-      .backgroundColor($r('sys.color.ohos_id_color_warning_transparent'))
+      // 同 S2：warning_transparent 在本机主题下是不透明红，不能再当卡片底色；
+      // 警告信息用正常文字色，warning 只留给 StatePill / 具体风险句子。
+      .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
       .borderRadius(14)
       .alignItems(HorizontalAlign.Start)
     }
@@ -395,11 +509,42 @@ export struct RecordingPage {
             .fontColor($r('sys.color.ohos_id_color_warning'))
             .width('100%')
         }
-        Text('未提交（草稿）：finalize 不会 commit；这条记录现在还是 draft。当前接口没有 finalize→commit，' +
-          'VoiceRecorder 也不返回 capture id。到「今日」打开这条记录，可以用详情页的「提交为正式记录」手动提交。')
-          .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_warning'))
-          .width('100%')
+        Column({ space: 4 }) {
+          Text(this.commitHeadline())
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .width('100%')
+          Text(this.commitDetail())
+            .fontSize(12)
+            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .width('100%')
+          if (this.commitState === 'failed') {
+            Text(`错误码：${this.commitErrorCode()}`)
+              .fontSize(12)
+              .fontColor($r('sys.color.ohos_id_color_text_primary'))
+              .width('100%')
+            Text(this.commitError)
+              .fontSize(11)
+              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+              .width('100%')
+            Button(this.commitRetrying ? '重试中…' : '重试提交')
+              .fontSize(13)
+              .height(34)
+              .enabled(!this.commitRetrying)
+              .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
+              .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+              .onClick(() => {
+                this.retryCommit();
+              })
+            if (this.commitRetryError.code.length > 0) {
+              ErrorBanner({ error: this.commitRetryError, showReload: false, onReload: () => {
+              } })
+            }
+          }
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
         if (this.transcribeHint.length > 0) {
           Text(this.transcribeHint)
             .fontSize(12)
@@ -427,6 +572,10 @@ export struct RecordingPage {
               this.transcribeHint = '';
               this.recorder = null;
               this.finalizeAttempted = false;
+              this.commitState = '';
+              this.commitRevision = -1;
+              this.commitError = '';
+              this.commitRetryError = EMPTY_UI_ERROR;
               this.loadRecovery();
             })
         }
@@ -455,9 +604,9 @@ export struct RecordingPage {
                 .fontSize(13)
                 .fontColor($r('sys.color.ohos_id_color_text_secondary'))
                 .width('100%')
-              Text('停止后核心只做 finalize，不 commit；这条记录会以「未提交」出现在今日。')
+              Text('停止后会先 finalize 保存音频，再自动提交成篇；提交失败会在这里显示错误码。')
                 .fontSize(13)
-                .fontColor($r('sys.color.ohos_id_color_warning'))
+                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
                 .width('100%')
               Button('开始录音')
                 .fontSize(16)
@@ -644,6 +793,9 @@ export struct RecordingPage {
       }
       .width('100%')
       .height('100%')
+      // Scroll 的 align 默认是 Center：内容不足一屏时会被垂直居中（真机 02 截图）。
+      // 显式 Top，内容从顶部开始排。
+      .align(Alignment.Top)
       .backgroundColor($r('sys.color.ohos_id_color_background'))
     }
     .title('录音')

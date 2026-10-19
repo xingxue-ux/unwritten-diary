@@ -478,6 +478,8 @@ export struct TranscriptionConfigPage {
       }
       .width('100%')
       .height('100%')
+      // 同 CaptureDetailPage：Scroll 的 align 默认 Center，内容不足一屏会垂直居中。
+      .align(Alignment.Top)
       .backgroundColor($r('sys.color.ohos_id_color_background'))
     }
     .title('转写引擎')

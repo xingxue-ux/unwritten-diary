@@ -247,7 +247,23 @@ export struct TodayPage {
     return '（还没有正文）';
   }
 
+  /**
+   * 只有含音频来源的记录才谈得上「转写」。
+   *
+   * 依据是本页已加载的第一条来源的类型（`sourceKindOf` 由 extractor_id 判定）：
+   * `local_transcription` / `media_metadata_only` 来自音频来源；
+   * `plain_text` / `text_direct` / `markdown` 是文字来源。
+   * 纯文字记录不能显示「转写完成」——那是在说一件没有发生的事。
+   */
+  private hasAudioSource(row: CaptureRow): boolean {
+    return row.sourceKind === 'audio';
+  }
+
   private transcribeLabel(row: CaptureRow): string {
+    if (!this.hasAudioSource(row)) {
+      // 空串 = 这条记录没有音频来源，界面不渲染转写标签（类型仍由 typeLabel 显示「文字」）。
+      return '';
+    }
     if (row.extractionError.code.length > 0) {
       return '转写状态未知';
     }
@@ -304,7 +320,9 @@ export struct TodayPage {
               : (row.capture.state === 'trashed' ? 'alert' : 'ok'),
           })
           Blank()
-          StatePill({ text: this.transcribeLabel(row), tone: this.transcribeTone(row) })
+          if (this.transcribeLabel(row).length > 0) {
+            StatePill({ text: this.transcribeLabel(row), tone: this.transcribeTone(row) })
+          }
         }
         .width('100%')
         Text(this.summaryOf(row))
@@ -329,7 +347,7 @@ export struct TodayPage {
             Text('·')
               .fontSize(12)
               .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
-            Text('finalize 后未提交')
+            Text('未提交')
               .fontSize(12)
               .fontColor($r('sys.color.ohos_id_color_warning'))
           }

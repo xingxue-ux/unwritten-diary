@@ -1,11 +1,11 @@
 // 记录/详情：`captures.get` 显示来源与转写；草稿可手动提交为正式记录。
 //
 // 「未提交」是如实状态，不是装饰：
-// - `recordings.finalize` 只把音频最终化并排转写任务，**不会 commit**；
-// - 当前 `VoiceRecorder` 也不返回 capture id（#1019 的 finalize→commit 修复还没合入），
-//   所以录音停止后这条记录仍是 `draft`；
-// - 本页给「提交为正式记录」按钮，用现有 `captures.commit`（revision 来自 captures.get，
-//   不猜）；不提交也照样能看到来源与转写。
+// - `recordings.finalize` 只把音频最终化并排转写任务；#151 起 `VoiceRecorder.stop()`
+//   会在 finalize 之后自动 commit 一次，提交结果由录音页读取 `commitResult()` 显示；
+// - 但如果那次提交失败，记录仍会是 `draft`；从「上次录音未收尾」恢复保存的路径
+//   也只 finalize、不 commit。所以草稿状态仍然存在，本页保留手动提交入口；
+// - 本页用 `captures.commit`（revision 来自 captures.get，不猜）；不提交也照样能看到来源与转写。
 
 import { common } from '@kit.AbilityKit';
 import {
@@ -332,10 +332,10 @@ export struct CaptureDetailPage {
                 Text('未提交（草稿）')
                   .fontSize(15)
                   .fontWeight(FontWeight.Medium)
-                  .fontColor($r('sys.color.ohos_id_color_warning'))
+                  .fontColor($r('sys.color.ohos_id_color_text_primary'))
                   .width('100%')
-                Text('录音停止后核心只做了 finalize，不会自动 commit；这条记录现在还是草稿。' +
-                  '当前接口没有 finalize→commit（#1019 修复未合入），下面用现有的 captures.commit 手动提交。')
+                Text('这条记录还没有提交。录音停止后会自动提交一次；如果当时提交失败，录音页会显示错误码。' +
+                  '也可以在这里用 captures.commit 手动提交。')
                   .fontSize(12)
                   .fontColor($r('sys.color.ohos_id_color_text_secondary'))
                   .width('100%')
@@ -355,14 +355,17 @@ export struct CaptureDetailPage {
               }
               .width('100%')
               .padding(14)
-              .backgroundColor($r('sys.color.ohos_id_color_warning_transparent'))
+              // 同 S2：warning_transparent 在本机主题下是不透明红，不能再当卡片底色；
+              // 标题用正常文字色，「草稿」的警告语义由顶部 StatePill(tone=warn) 承担。
+              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
               .borderRadius(14)
               .alignItems(HorizontalAlign.Start)
             }
 
             if ((this.capture as Capture).draft_text.trim().length > 0) {
               Column({ space: 6 }) {
-                SectionTitle({ text: '草稿正文' })
+                // 已提交的记录，正文已经不是草稿；标题必须跟着状态走（G4）。
+                SectionTitle({ text: (this.capture as Capture).state === 'draft' ? '草稿正文' : '正文' })
                 Text((this.capture as Capture).draft_text)
                   .fontSize(16)
                   .fontColor($r('sys.color.ohos_id_color_text_primary'))
@@ -395,6 +398,9 @@ export struct CaptureDetailPage {
       }
       .width('100%')
       .height('100%')
+      // Scroll 的 align 默认是 Center：内容不足一屏时会被垂直居中（真机 07/33 的
+      // 上下各约 1/4 屏空白）。显式 Top，从顶部开始排。
+      .align(Alignment.Top)
       .backgroundColor($r('sys.color.ohos_id_color_background'))
       .scrollBar(BarState.Auto)
     }

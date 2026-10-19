@@ -285,13 +285,28 @@ export struct SearchPage {
 
   @Builder
   warningBox(text: string) {
-    Text(text)
-      .fontSize(12)
-      .fontColor($r('sys.color.ohos_id_color_warning'))
-      .width('100%')
-      .padding(10)
-      .backgroundColor($r('sys.color.ohos_id_color_warning_transparent'))
-      .borderRadius(10)
+    // 背景**不能**用 warning_transparent：本机主题把它解析成不透明红，
+    // 再配 warning 文字就是红底红字（真机 12c/29/30 的证据）。警告色只做
+    // 左侧「!」强调，正文用 text_primary，保证任何主题下都能读。
+    Row({ space: 8 }) {
+      Text('!')
+        .fontSize(12)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('sys.color.ohos_id_color_warning'))
+        .width(16)
+        .height(16)
+        .textAlign(TextAlign.Center)
+        .flexShrink(0)
+      Text(text)
+        .fontSize(12)
+        .fontColor($r('sys.color.ohos_id_color_text_primary'))
+        .layoutWeight(1)
+    }
+    .width('100%')
+    .padding(10)
+    .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
+    .borderRadius(10)
+    .alignItems(VerticalAlign.Top)
   }
 
   @Builder
@@ -387,23 +402,37 @@ export struct SearchPage {
       .padding({ left: 16, right: 16 })
 
       if (this.semanticBanner().length > 0) {
-        Column({ space: 6 }) {
-          Text(this.semanticBanner())
-            .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
-            .width('100%')
+        // 同 warningBox：背景用 sub_background，warning 只用于左侧「!」，
+        // 正文 text_primary；按钮用主色，别再用 warning_transparent 叠 warning。
+        Column({ space: 8 }) {
+          Row({ space: 8 }) {
+            Text('!')
+              .fontSize(12)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('sys.color.ohos_id_color_warning'))
+              .width(16)
+              .height(16)
+              .textAlign(TextAlign.Center)
+              .flexShrink(0)
+            Text(this.semanticBanner())
+              .fontSize(12)
+              .fontColor($r('sys.color.ohos_id_color_text_primary'))
+              .layoutWeight(1)
+          }
+          .width('100%')
+          .alignItems(VerticalAlign.Top)
           Button('去设置查看/重建语义索引')
             .fontSize(12)
             .height(30)
-            .backgroundColor($r('sys.color.ohos_id_color_warning_transparent'))
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
+            .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
             .onClick(() => {
               this.pathStack.pushPathByName('settings', '');
             })
         }
         .width('100%')
         .padding(12)
-        .backgroundColor($r('sys.color.ohos_id_color_warning_transparent'))
+        .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
         .borderRadius(12)
         .margin({ left: 16, right: 16 })
         .alignItems(HorizontalAlign.Start)
