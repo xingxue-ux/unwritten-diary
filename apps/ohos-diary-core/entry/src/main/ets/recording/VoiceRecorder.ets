@@ -285,6 +285,9 @@ export class VoiceRecorder {
     // 都在原来的 try/finally 之外；它们一抛错，phase 就停在 `stopping`，而屏幕常亮
     // 与长时任务只会在 finalize 的 finally / 无片段分支里释放 ⇒ 永远不释放。
     // 现在无论哪一步抛错都先走 finally；异常本身照常往上抛（不吞）。
+    // 用 `primaryError` 记下「已经有异常在飞」，避免 finally 里的释放失败
+    // 覆盖掉真正的原因（finally 抛错会替换原异常）。
+    let primaryError: Object | null = null;
     try {
       // 1. 停采集器。`stop()` 失败不该阻止后续收尾（可能本来就没跑起来）。
       await this.stopCapturer();
@@ -353,10 +356,23 @@ export class VoiceRecorder {
           MARK, this.errorText);
         throw DiaryError.fromThrown(e as Object);
       }
+    } catch (e) {
+      primaryError = e as Object;
+      throw e;
     } finally {
-      // 无条件释放「保持屏幕常亮」与长时任务。`releaseHold()` 自身幂等，
-      // 提前/重复调用都安全；这里**不 catch**，释放失败不该掩盖原始异常。
-      await this.releaseHold();
+      // 无条件释放「保持屏幕常亮」与长时任务。`releaseHold()` 自身幂等。
+      // 已经有异常时：先释放，释放再失败只记日志，别覆盖真正的故障；
+      // 一切正常时：释放失败照常抛给调用方（不能假装已经收掉）。
+      if (primaryError === null) {
+        await this.releaseHold();
+      } else {
+        try {
+          await this.releaseHold();
+        } catch (e) {
+          hilog.warn(DOMAIN, TAG, '%{public}s RELEASE failed while propagating %{public}s: %{public}s',
+            MARK, describeError(primaryError), describeError(e as Object));
+        }
+      }
     }
   }
 
