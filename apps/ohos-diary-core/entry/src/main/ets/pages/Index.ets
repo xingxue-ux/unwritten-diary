@@ -1,80 +1,119 @@
-/**
- * 示例页面：录音能力的**手动入口**（真机验证也可以用 hdc 的 verify_mode）。
- *
- * 点「录 5 秒」会走完整链路：申请麦克风权限 → AudioCapturer → 2 秒分片 → 核心
- * registerSegment → finalize（拼音频 + 建 Asset + 排转写任务）。结果在 hilog：
- *
- *   hdc shell "hilog -x -T DiaryRec" | grep DIARY_REC
- *
- * 页面不自己实现录音逻辑：产品代码应该直接用 `recording/VoiceRecorder.ets`。
- */
-import { common } from '@kit.AbilityKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
-import { RecordingVerify } from '../recording/RecordingVerify';
+// 产品界面根页面：底部 Tabs（今日 / 搜索 / 任务 / 设置）+ Navigation 二级页。
+//
+// 页面：
+//   pages/TodayPage              今日（captures.list）
+//   pages/CaptureDetailPage      记录详情（captures.get / sources.extract / captures.commit）
+//   pages/RecordingPage          录音（VoiceRecorder / finalize / recover）
+//   pages/SearchPage             搜索（search.start/nextPage/upgrade/cancel）
+//   pages/JobsPage               任务中心（jobs.list/get/retry/cancel/runDue）
+//   pages/SettingsPage           设置（core.info / indexes.status / indexes.rebuildSemantic）
+//   pages/TranscriptionConfigPage 转写 provider（providers.list/save/test）
+//
+// 所有核心调用都在 `ui/CoreGateway.ets` 里经 TaskPool 执行；本文件不直接调核心。
 
-const DOMAIN: number = 0x0000;
-const TAG: string = 'DiaryRec';
+import { common } from '@kit.AbilityKit';
+import { CoreGateway } from '../ui/CoreGateway';
+import { AppState } from '../ui/AppState';
+import { databasePath } from '../ui/AppRuntime';
+import { RunDueParams } from '../core/Models';
+import { TodayPage } from './TodayPage';
+import { CaptureDetailPage } from './CaptureDetailPage';
+import { RecordingPage } from './RecordingPage';
+import { SearchPage } from './SearchPage';
+import { JobsPage } from './JobsPage';
+import { SettingsPage } from './SettingsPage';
+import { TranscriptionConfigPage } from './TranscriptionConfigPage';
 
 @Entry
 @Component
 struct Index {
-  @State message: string = 'Diary Core · 录音平台能力';
-  @State status: string = '未开始';
-  @State busy: boolean = false;
-  /** 恢复摘要：已保存 vs 可能丢失的尾巴，直接显示在页面上，不藏在日志里。 */
-  @State recovery: string = '';
+  private pathStack: NavPathStack = new NavPathStack();
+  @State currentTab: number = 0;
+  private lastForegroundKickMs: number = 0;
 
-  private runMode(mode: string, label: string): void {
-    if (this.busy) {
+  aboutToAppear(): void {
+    AppState.init();
+  }
+
+  onPageShow(): void {
+    // 回到前台：让今日/任务重读；顺手推一轮到期任务（OHOS 没有后台唤醒）。
+    AppState.bumpDataVersion();
+    this.kickDueJobs();
+  }
+
+  private kickDueJobs(): void {
+    const now: number = Date.now();
+    if (now - this.lastForegroundKickMs < 30000) {
       return;
     }
-    this.busy = true;
-    this.status = `${label}中…（权限弹框请允许麦克风）`;
+    this.lastForegroundKickMs = now;
     const context = getContext(this) as common.UIAbilityContext;
-    RecordingVerify.run(mode, context, context.filesDir)
-      .then(() => {
-        this.busy = false;
-        this.status = `${label}结束，结果见 hilog（tag DiaryRec）`;
-        if (mode === 'recover') {
-          // 恢复结果必须把「已保存多少 / 可能丢多少」摆在页面上，不能只写日志。
-          this.recovery = RecordingVerify.recoveryHint();
-        }
-      })
-      .catch((err: Object) => {
-        this.busy = false;
-        this.status = `${label}失败，见 hilog`;
-        hilog.error(DOMAIN, TAG, 'INDEX %{public}s failed %{public}s', mode, JSON.stringify(err));
-      });
+    const params: RunDueParams = {
+      budget_ms: 1500,
+      trigger: 'foreground',
+    };
+    CoreGateway.call(databasePath(context), 'jobs.runDue', params).then((result) => {
+      if (result.ok) {
+        AppState.bumpDataVersion();
+      }
+    });
+  }
+
+  @Builder
+  PageMap(name: string, param: string) {
+    if (name === 'capture') {
+      CaptureDetailPage({ pathStack: this.pathStack, captureId: param as string })
+    } else if (name === 'recording') {
+      RecordingPage({ pathStack: this.pathStack })
+    } else if (name === 'transcription') {
+      TranscriptionConfigPage({ pathStack: this.pathStack })
+    } else if (name === 'settings') {
+      NavDestination() {
+        SettingsPage({ pathStack: this.pathStack })
+      }
+      .title('设置')
+    } else if (name === 'jobs') {
+      NavDestination() {
+        JobsPage({ pathStack: this.pathStack })
+      }
+      .title('任务中心')
+    }
   }
 
   build() {
-    Column({ space: 12 }) {
-      Text(this.message)
-        .fontSize(24)
-        .fontWeight(FontWeight.Bold)
-      Text(this.status)
-        .fontSize(14)
-        .margin({ top: 8 })
-      Button('录 5 秒（2 秒一段）')
-        .enabled(!this.busy)
-        .onClick(() => {
-          this.runMode('record', '录音 5 秒');
-        })
-      Button('查看上次未收尾的录音')
-        .enabled(!this.busy)
-        .onClick(() => {
-          this.runMode('recover', '查询恢复');
-        })
-      Text(this.recovery)
-        .fontSize(14)
-        .fontColor('#B45309')
-        .margin({ top: 4 })
-      Text('日志：hdc shell "hilog -x -T DiaryRec" | grep DIARY_REC')
-        .fontSize(12)
-        .margin({ top: 12 })
+    Navigation(this.pathStack) {
+      Tabs({ barPosition: BarPosition.End, index: this.currentTab }) {
+        TabContent() {
+          TodayPage({ pathStack: this.pathStack })
+        }
+        .tabBar('今日')
+
+        TabContent() {
+          SearchPage({ pathStack: this.pathStack })
+        }
+        .tabBar('搜索')
+
+        TabContent() {
+          JobsPage({ pathStack: this.pathStack })
+        }
+        .tabBar('任务')
+
+        TabContent() {
+          SettingsPage({ pathStack: this.pathStack })
+        }
+        .tabBar('设置')
+      }
+      .barMode(BarMode.Fixed)
+      .width('100%')
+      .height('100%')
+      .onChange((index: number) => {
+        this.currentTab = index;
+      })
     }
+    .navDestination(this.PageMap)
+    .hideTitleBar(true)
+    .mode(NavigationMode.Stack)
     .width('100%')
     .height('100%')
-    .justifyContent(FlexAlign.Center)
   }
 }
