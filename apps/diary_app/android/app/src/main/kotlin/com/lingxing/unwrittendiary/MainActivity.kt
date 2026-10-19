@@ -1,4 +1,4 @@
-package com.example.unwritten_diary
+package com.lingxing.unwrittendiary
 
 import io.flutter.embedding.android.FlutterActivity
 

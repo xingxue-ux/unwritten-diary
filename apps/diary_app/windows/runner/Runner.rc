@@ -89,11 +89,15 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.example" "\0"
+            // CompanyName + ProductName 决定 Windows 的资料目录
+            // %APPDATA%\<CompanyName>\<ProductName>\（path_provider_windows 的约定）。
+            // **不要删、不要改名**：删掉 CompanyName 会让目录静默变成 %APPDATA%\不写日记\，
+            // 用户看起来就是「资料没了」。发布前定案后即冻结（发布检查清单 A6）。
+            VALUE "CompanyName", "Lingxing" "\0"
             VALUE "FileDescription", "不写日记" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "unwritten_diary" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Lingxing. All rights reserved." "\0"
             VALUE "OriginalFilename", "unwritten_diary.exe" "\0"
             VALUE "ProductName", "不写日记" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
