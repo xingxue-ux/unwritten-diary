@@ -454,7 +454,7 @@ export struct TodayPage {
           }
         }
         .width('100%')
-        .layoutWeight(1)
+        .height('100%')
         .padding({ left: 16, right: 16 })
         .onReachEnd(() => {
           this.loadMore();
