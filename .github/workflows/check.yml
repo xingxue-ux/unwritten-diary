@@ -40,6 +40,18 @@ jobs:
         run: |
           python3 tools/check_docs.py
           python3 tools/test_check_docs.py
+          # 先跑检查器自测：证明「4 入口会红、5 入口会绿、缺 key 会红」。
+          # 这样即使真实检查因为 PR #150 未合入而红，也能看出脚本本身没坏。
+          python3 tools/test_check_ui_parity.py
+      # 跨端 IA 契约（docs/product/界面结构契约.md）的机器检查。
+      #
+      # 现在**会红**：origin/main 上 PR #150 的鸿蒙产品壳还没合入，默认跑是
+      # `arkts.shell_missing`；拿 PR #150 的 Index.ets 跑是 4 入口 vs 5 入口。
+      # 这是刻意的红灯：等 PR #150 改成 5 入口并合入后自然转绿。
+      # 不用 continue-on-error / || true 假装绿——见 CONTRIBUTING 与
+      # 本文件 plugins-windows 的注释。
+      - name: 校验跨端界面结构（5 入口 / 共享文案 key）
+        run: python3 tools/check_ui_parity.py
 
   dart:
     name: dart
