@@ -258,8 +258,8 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 restore/previewPurge/purge`、`sources.extractedContent/previousRevision/reviseText/locate`、
 `imports.*`、`assets.open/release`、`search.snapshot`、`jobs.nextWakeup`、
 `core.events/snapshot/close/setRuntimeState`、`backups.*`（桥上已有同步入口，映射过来即可）、
-`diary.*` / `styles.*` / `responses.*` / `settings.*` / `plugins.*` / `exports.*`（核心大多
-还没有对应实现）。`providers.*` 四条已接（见上表）。
+`diary.*` / `styles.*` / `responses.*` / `settings.*` / `plugins.*` / `exports.*`（核心已有实现，
+但 C ABI 这一层还没包装）。`providers.*` 四条已接（见上表）。
 
 未接入的方法一律 `invalid_argument` + 已接入清单，**不静默成功、不假装支持**。
 

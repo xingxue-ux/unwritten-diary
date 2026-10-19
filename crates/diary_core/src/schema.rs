@@ -34,7 +34,14 @@ use rusqlite::{params, Connection};
 /// `input_snapshot_hash` 会让同一个库按口径碎成好几条「活着」的任务，正好破坏
 /// 「至多一条活着的整代重建」。v1–v14 也没有一张键值表可借用；`index_meta` 是
 /// 单行的索引元数据，这一列与它同一个主题，所以升版本、写迁移是诚实的代价。
-pub const SCHEMA_VERSION: i64 = 15;
+///
+/// **16 留给回收站线**（`captures.trashed_from_state`），本构建不使用这个号：
+/// 两条线并行时，谁先合谁定号会撞车，所以这里直接抬到 **17** 建 `styles`。
+/// 一个真的 v16 库（回收站线写的）用本构建打开时，`current` 是 16 但本构建不知道
+/// v16 的迁移——那没有关系：v16 的列不在本构建的写路径里，`styles` 迁移照样跑，
+/// 回收站列原样保留。v17 的守卫因此**不依赖 v16 的 DDL 存在**：
+/// `current < 17 || styles 表不在`。
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -154,6 +161,21 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // **不回填标记**（NULL = 从未自动尝试）**、不用回填索引**（SQLite 从既有行建）。
         // 没有「替用户记一次自动尝试」这种默认：升级后的第一次 `open` 仍会按当时的
         // 口径如实判断该不该自动排一条。
+    }
+    // v17：风格版本表（#114）。**跳过 16**：那一段已经属于并行的回收站线
+    // （`captures.trashed_from_state`），本构建不为它写 DDL、也不改它的列；但一个
+    // 真的 v16 库照样能升上来——`current` 是 16 时本段会跑，回收站列原样保留。
+    //
+    // 守卫是「版本号 + 结构」：`current < 17 || styles 表不在`。只靠版本号，会把
+    // 「版本号已经 17、但表被手工删掉/半建失败」的库漏掉；只靠结构，会在已经是 17
+    // 的库上重复跑 DDL。`CREATE TABLE IF NOT EXISTS` 保证重复执行幂等。
+    //
+    // **无回填**：升级前没有风格配置。只种一行默认风格的空版本（`sty_default`），
+    // 让不点名风格的生成有一个**真实存在的**快照行可指；不在迁移里替用户编偏好。
+    if current < 17 || !table_exists(&tx, "styles")? {
+        tx.execute_batch(V17)?;
+        crate::styles::seed_default_style(&tx, crate::support::now())
+            .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.execute(
@@ -941,4 +963,42 @@ const V15_COLUMN: &str = "ALTER TABLE index_meta ADD COLUMN auto_rebuild_marker 
 const V15_CALIBER_INDEX: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_chunk_vectors_caliber
     ON chunk_vectors(generation, model_version, dims, storage);
+"#;
+
+/// v17：风格版本表（#114）。
+///
+/// 为什么按 `(id, revision)` 一行一个版本，而不是一条风格一行、保存时原地改：
+/// `diary_versions.style_snapshot_id` 要能回答「这一版当时用的哪一版风格」。覆盖式
+/// 存储会让历史日记在用户下次改风格时**悄悄换掉**它指向的内容——那不是审计，是
+/// 篡改。新版本不可变的代价只是表里多几行（用户改风格的次数有限）。
+///
+/// 列与契约 `StyleProfile` 一一对应：`label` / `updated_at` / `length_preference` /
+/// `person` / `tone` / `emotional_temperature` / `rhetoric_level` / `examples` /
+/// `banned_expressions`。`examples` / `banned_expressions` 存 JSON 数组：它们永远
+/// 整组读写，不需要按元素做 SQL 过滤，单独建表只会多一条 join 与一处不一致的机会。
+///
+/// `snapshot_id` 是版本行的稳定标识（默认风格的第一版就是 `sty_default`，这样既有的
+/// `styleSnapshotId = sty_default` 升级后仍指得到真实记录）。`current = 1` 是当前
+/// 版本标记；部分唯一索引保证一条风格至多一个当前版本。
+///
+/// **没有回填**：只建表；默认风格的空版本行由 `styles::seed_default_style` 种下，
+/// 值只有一个来源（`styles.rs` 的常量），不在 SQL 里再抄一遍。
+const V17: &str = r#"
+CREATE TABLE IF NOT EXISTS styles (
+    snapshot_id           TEXT PRIMARY KEY,
+    id                    TEXT NOT NULL,
+    revision              INTEGER NOT NULL,
+    label                 TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    length_preference     TEXT,
+    person                TEXT,
+    tone                  TEXT,
+    emotional_temperature TEXT,
+    rhetoric_level        TEXT,
+    examples              TEXT NOT NULL DEFAULT '[]',
+    banned_expressions    TEXT NOT NULL DEFAULT '[]',
+    current               INTEGER NOT NULL DEFAULT 0 CHECK (current IN (0, 1)),
+    UNIQUE (id, revision)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_styles_current ON styles(id) WHERE current = 1;
 "#;

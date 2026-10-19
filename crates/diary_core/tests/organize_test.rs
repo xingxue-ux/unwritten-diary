@@ -1315,9 +1315,9 @@ fn v10_library_migrates_to_latest_with_both_migrations() {
     assert_eq!(core.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
     assert_eq!(
         diary_core::SCHEMA_VERSION,
-        15,
-        "11（整理表）+ 12（revision 列）合并成 13，B6 插件表抬到 14，\
-         #128 复审的自动重建标记 + 口径索引抬到 15"
+        17,
+        "11（整理表）+ 12（revision 列）合并成 13，B6 插件表 14，\
+         #128 的标记 + 口径索引 15；16 留给回收站线；styles 表在 17"
     );
     // v11 的两张表都在（迁移真的跑了两段，而不是只跑一段）：
     // `diary_model_calls` 能查、`organize_settings` 有一行默认值。
