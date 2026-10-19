@@ -1079,7 +1079,7 @@ fn schema_13_migrates_to_latest_with_plugin_tables_and_no_backfill() {
         diary_core::SCHEMA_VERSION,
         17,
         "13 → 17：v14 是合并占位，v15 加自动重建标记与整代口径索引；\
-         16 留给回收站线，v17 加 styles 表"
+         16 回收站加列，v17 加 styles 表"
     );
     assert!(core.list_plugins().unwrap().is_empty(), "迁移不回填插件");
     assert!(core.plugin_grants("anything").unwrap().is_empty());

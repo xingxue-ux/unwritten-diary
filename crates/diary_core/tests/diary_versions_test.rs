@@ -1107,7 +1107,7 @@ fn v10_library_migrates_to_latest_with_revision_backfilled() {
         diary_core::SCHEMA_VERSION,
         17,
         "11（整理表）+ 12（revision 列）合并成 13，B6 插件表 14，\
-         #128 的标记 + 口径索引 15；16 留给回收站线；styles 表在 17"
+         #128 的标记 + 口径索引 15；16 回收站加列；styles 表在 17"
     );
     // 两段迁移都跑了：v11 的两张表在，v12 的列在（下面用行为断言 revision）。
     {

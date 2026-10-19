@@ -1,9 +1,11 @@
-//! schema v17（`styles` 表）的三条迁移证据：
+//! schema v17（`styles` 表）的迁移证据：
 //!
-//! 1. 空库直接到 17，表在、默认风格种子在；
-//! 2. 一个真的 v16 库（带回收站线的 `captures.trashed_from_state` 列）升到 17，
-//!    旧数据与 v16 列原样保留；
-//! 3. 重复 open 幂等：不重复种默认行、不重置用户已经改过的风格。
+//! 1. 空库直接到 17，styles 表、默认风格种子与 v16 的回收站列都在；
+//! 2. **v15 → 17**：合成 v15 库（没有 `trashed_from_state`、没有 `styles`）升级后
+//!    **两样都要有**。这是「只写 v17、跳过 v16」那个数据损坏回归测试；
+//! 3. v16 → 17：回收站列与数据原样保留，只加 styles；
+//! 4. v17 但缺列/缺表：打开时结构兜底补回；
+//! 5. 重复 open 幂等：不重复种默认行、不重置用户已经改过的风格。
 
 use diary_core::{Core, CreateDraftInput, StyleProfile, SCHEMA_VERSION};
 use rusqlite::Connection;
@@ -56,6 +58,8 @@ fn empty_library_migrates_to_v17_with_the_styles_table_and_default_seed() {
 
     let conn = Connection::open(&path).unwrap();
     assert!(table_exists(&conn, "styles"));
+    // v16 的回收站加列必须在：空库也要走 v16 的迁移段，不能因为最终版本是 17 就跳过。
+    assert!(column_exists(&conn, "captures", "trashed_from_state"));
     let (count, snapshot_id, id, revision, label, current): (
         i64,
         String,
@@ -108,11 +112,10 @@ fn a_real_v16_library_with_the_trash_column_migrates_to_17_and_keeps_its_data() 
     };
     {
         let conn = Connection::open(&path).unwrap();
-        conn.execute(
-            "ALTER TABLE captures ADD COLUMN trashed_from_state TEXT",
-            [],
-        )
-        .unwrap();
+        assert!(
+            column_exists(&conn, "captures", "trashed_from_state"),
+            "空库迁移已经建出 v16 的列"
+        );
         conn.execute("UPDATE captures SET trashed_from_state = 'restorable'", [])
             .unwrap();
         conn.execute("DROP TABLE styles", []).unwrap();
@@ -145,6 +148,95 @@ fn a_real_v16_library_with_the_trash_column_migrates_to_17_and_keeps_its_data() 
         )
         .unwrap();
     assert_eq!(trashed_from, "restorable", "v16 列的值不能被迁移抹掉");
+}
+
+#[test]
+fn a_v15_library_migrates_to_17_with_both_the_trash_column_and_styles() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+
+    // 当前构建建库会同时跑 v16 与 v17；先写数据，再把它退回**真的 v15 形状**：
+    // 没有 `captures.trashed_from_state`，也没有 `styles` 表。
+    let capture_id = {
+        let mut core = Core::open(&path).unwrap();
+        draft(&mut core, "v15 时期就存在的记录。")
+    };
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE captures DROP COLUMN trashed_from_state;
+             DROP TABLE styles;
+             UPDATE schema_migrations SET version = 15;
+             PRAGMA user_version = 15;",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "captures", "trashed_from_state"));
+        assert!(!table_exists(&conn, "styles"));
+    }
+
+    // v15 直升 17：两段 DDL 都必须跑。只跑 v17 会让回收站列永远补不上。
+    let core = Core::open(&path).unwrap();
+    assert_eq!(core.schema_version().unwrap(), 17);
+    assert_eq!(core.count_captures().unwrap(), 1);
+    assert_eq!(
+        core.get_capture(&capture_id).unwrap().draft_text,
+        "v15 时期就存在的记录。"
+    );
+    assert_eq!(core.list_styles().unwrap().len(), 1);
+    assert_eq!(core.get_style("sty_default").unwrap().revision, 1);
+
+    let conn = Connection::open(&path).unwrap();
+    assert!(
+        column_exists(&conn, "captures", "trashed_from_state"),
+        "v15 直升 17 必须补上 v16 的回收站列"
+    );
+    assert!(table_exists(&conn, "styles"), "v15 直升 17 必须建出 styles");
+    let old_value: Option<String> = conn
+        .query_row(
+            "SELECT trashed_from_state FROM captures WHERE id = ?1",
+            rusqlite::params![capture_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(old_value.is_none(), "老数据的新列是 NULL，不是编出来的状态");
+}
+
+#[test]
+fn a_v17_library_missing_the_v16_column_or_styles_table_is_repaired_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let capture_id = {
+        let mut core = Core::open(&path).unwrap();
+        draft(&mut core, "中间构建写下的记录。")
+    };
+    {
+        let conn = Connection::open(&path).unwrap();
+        // 模拟「只写过 v17、跳过 v16」的中间构建：版本号还是 17，结构与 17 不符。
+        conn.execute_batch(
+            "ALTER TABLE captures DROP COLUMN trashed_from_state;
+             DROP TABLE styles;",
+        )
+        .unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 17, "前提：版本号已经是最新");
+        assert!(!column_exists(&conn, "captures", "trashed_from_state"));
+        assert!(!table_exists(&conn, "styles"));
+    }
+
+    // 版本号已是最新也要做结构兜底，否则这个库永远缺列。
+    let core = Core::open(&path).unwrap();
+    assert_eq!(core.schema_version().unwrap(), 17);
+    assert_eq!(core.count_captures().unwrap(), 1);
+    assert_eq!(
+        core.get_capture(&capture_id).unwrap().draft_text,
+        "中间构建写下的记录。"
+    );
+    let conn = Connection::open(&path).unwrap();
+    assert!(column_exists(&conn, "captures", "trashed_from_state"));
+    assert!(table_exists(&conn, "styles"));
+    assert_eq!(core.get_style("sty_default").unwrap().revision, 1);
 }
 
 #[test]
