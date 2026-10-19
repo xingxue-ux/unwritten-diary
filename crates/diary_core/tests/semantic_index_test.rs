@@ -141,6 +141,14 @@ fn unit_in(dims: usize, index: usize) -> Vec<f32> {
     vector
 }
 
+/// 与 `unit(0)` 的余弦为 `cosine` 的 512 维单位向量（#135 的补位测试要精确控制先后）。
+fn at_cosine(cosine: f32) -> Vec<f32> {
+    let mut vector = vec![0_f32; 512];
+    vector[0] = cosine;
+    vector[1] = (1.0 - cosine * cosine).sqrt();
+    vector
+}
+
 fn stub(counters: &Arc<Counters>, rules: Vec<(&'static str, Vec<f32>)>) -> Box<dyn Embedder> {
     Box::new(StubEmbedder::new("stub-embedder@000000000000", counters, rules))
 }
@@ -4028,9 +4036,14 @@ fn streaming_scan_matches_the_load_all_reference() {
     }
 }
 
-/// 快速路径的**回退红线**：top-K 里有被回收的块时，不能只交回「剩下的几条」——
-/// 那可能漏掉排在它后面的有效候选。这里两篇同分、其一被回收，断言流式路径（快速
-/// 路径发现过滤掉一条 ⇒ 整条回退到精确 SQL）与全量参考路径给出同一批结果。
+/// 快速路径的**一致性红线**：top-K 里有被回收的块时，不能只交回「剩下的几条」——
+/// 那可能漏掉排在它后面的有效候选。这里两篇同分、其一被回收，断言流式路径与全量
+/// 参考路径给出同一批结果。
+///
+/// #135 之后这条红线由「补位窗口」满足（top-K 之外多留一截候选，过滤掉多少就补多少），
+/// 只有补位窗口不够时才整条回退精确 SQL；见
+/// `fast_scan_backfills_when_a_top_candidate_is_filtered_out` 与
+/// `fast_scan_falls_back_when_the_backfill_window_is_not_enough`。
 #[test]
 fn fast_scan_falls_back_when_a_top_candidate_is_filtered_out() {
     let dir = tempfile::tempdir().unwrap();
@@ -4079,6 +4092,165 @@ fn fast_scan_falls_back_when_a_top_candidate_is_filtered_out() {
         let ids: Vec<&str> = streaming.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(ids, expected, "过滤口径必须与精确路径一致");
     }
+}
+
+/// #135：top-K 里有一条被回收时，**用补位窗口补上**，不整条回退精确 SQL。
+///
+/// 把扫描深度压到 4（补位窗口 = 1），造 1 个回收 + 5 个有效候选：旧的「发现一条被
+/// 过滤就整条回退」会走精确 SQL；新逻辑用第 5 名补位后仍然留在快速路径。结果必须与
+/// 精确路径的前 4 条逐位一致（第 5 条是深度上限之外的截断，不是漏召回）。
+#[test]
+fn fast_scan_backfills_when_a_top_candidate_is_filtered_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![
+            ("妈妈", unit(0)),
+            ("垃圾", unit(0)),
+            ("候选0", at_cosine(0.90)),
+            ("候选1", at_cosine(0.85)),
+            ("候选2", at_cosine(0.80)),
+            ("候选3", at_cosine(0.75)),
+            ("候选4", at_cosine(0.70)),
+        ],
+    ));
+    let trashed = write_capture(&mut core, at(2026, 9, 20), "垃圾 无关", "opTrash");
+    let mut kept = Vec::new();
+    for (index, day) in (21..=25).enumerate() {
+        kept.push(write_capture(
+            &mut core,
+            at(2026, 9, day),
+            &format!("候选{index} 的一段文字"),
+            &format!("opKeep{index}"),
+        ));
+    }
+    core.build_semantic_index(None).unwrap();
+
+    let conn = open(&dir.path().join("library.sqlite"));
+    conn.execute(
+        "UPDATE captures SET state = 'trashed' WHERE id = ?1",
+        params![trashed],
+    )
+    .unwrap();
+    drop(conn);
+
+    // 深度 4、补位窗口 1：top-4 是「垃圾 + 候选0..2」，补位后拿回候选3。
+    core.set_semantic_scan_depth_for_test(4);
+    diary_core::set_query_profiling(true);
+    let streaming = core
+        .semantic_ranking("妈妈", &SearchFilters::default())
+        .unwrap();
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(
+        profile.fast_path,
+        "补位窗口够用时必须留在快速路径，不能整条回退精确 SQL"
+    );
+
+    let exhaustive = core
+        .semantic_ranking_load_all_for_test("妈妈", &SearchFilters::default())
+        .unwrap();
+    assert_eq!(streaming.len(), 4, "深度上限是 4 块：{streaming:?}");
+    assert_eq!(exhaustive.len(), 5, "精确路径有 5 个有效候选");
+    for (left, right) in streaming.iter().zip(&exhaustive[..4]) {
+        assert_eq!(left.0, right.0, "补位后的篇标识与顺序必须与精确路径一致");
+        assert_eq!(left.1.to_bits(), right.1.to_bits(), "分数必须逐位一致");
+    }
+    let ids: Vec<&str> = streaming.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        kept[..4].iter().map(String::as_str).collect::<Vec<_>>(),
+        "被过滤的是垃圾块，补上来的必须是第 5 名候选"
+    );
+}
+
+/// #135 的**回退上界**：补位窗口不够时必须整条回退，而不是继续无限补。
+///
+/// 深度 4、窗口 1；top-5 里有 2 个被过滤（一个回收、一个旧修订），只剩 3 个有效块。
+/// 这时无法证明窗口之外没有更该出现的候选 ⇒ 走精确 SQL；结果仍与全量参考一致。
+#[test]
+fn fast_scan_falls_back_when_the_backfill_window_is_not_enough() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![
+            ("妈妈", unit(0)),
+            ("垃圾", unit(0)),
+            ("过期", at_cosine(0.95)),
+            ("候选0", at_cosine(0.90)),
+            ("候选1", at_cosine(0.85)),
+            ("候选2", at_cosine(0.80)),
+            ("候选3", at_cosine(0.75)),
+        ],
+    ));
+    let trashed = write_capture(&mut core, at(2026, 9, 20), "垃圾 无关", "opTrash");
+    let stale = write_capture(&mut core, at(2026, 9, 21), "过期 无关", "opStale");
+    let kept = [
+        write_capture(&mut core, at(2026, 9, 22), "候选0 的一段文字", "opKeep0"),
+        write_capture(&mut core, at(2026, 9, 23), "候选1 的一段文字", "opKeep1"),
+        write_capture(&mut core, at(2026, 9, 24), "候选2 的一段文字", "opKeep2"),
+        write_capture(&mut core, at(2026, 9, 25), "候选3 的一段文字", "opKeep3"),
+    ];
+    core.build_semantic_index(None).unwrap();
+
+    let conn = open(&dir.path().join("library.sqlite"));
+    conn.execute(
+        "UPDATE captures SET state = 'trashed' WHERE id = ?1",
+        params![trashed],
+    )
+    .unwrap();
+    let stale_chunk: String = conn
+        .query_row(
+            "SELECT chunk_id FROM chunk_spans WHERE capture_id = ?1",
+            params![stale],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "INSERT INTO source_items (source_id, capture_id, kind, position, current_revision_id) \
+         VALUES ('src_stale', ?1, 'text', 0, 'rev_new')",
+        params![stale],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE chunk_spans SET source_id = 'src_stale', source_revision_id = 'rev_old' \
+         WHERE chunk_id = ?1",
+        params![stale_chunk],
+    )
+    .unwrap();
+    drop(conn);
+
+    // 深度 4、补位窗口 1：top-5 = 垃圾 + 过期 + 候选0..2，有效块只有 3 个 < 4。
+    core.set_semantic_scan_depth_for_test(4);
+    diary_core::set_query_profiling(true);
+    let streaming = core
+        .semantic_ranking("妈妈", &SearchFilters::default())
+        .unwrap();
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(
+        !profile.fast_path,
+        "补位窗口不够时必须整条回退精确 SQL，不能拿剩下的 3 条当完整答案"
+    );
+
+    let exhaustive = core
+        .semantic_ranking_load_all_for_test("妈妈", &SearchFilters::default())
+        .unwrap();
+    assert_eq!(streaming.len(), kept.len(), "回退后与精确路径候选数一致");
+    for (left, right) in streaming.iter().zip(&exhaustive) {
+        assert_eq!(left.0, right.0, "篇标识与顺序必须一致");
+        assert_eq!(left.1.to_bits(), right.1.to_bits(), "分数必须逐位一致");
+    }
+    let ids: Vec<&str> = streaming.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        kept.iter().map(String::as_str).collect::<Vec<_>>(),
+        "回收与旧修订都必须被排除"
+    );
 }
 
 /// int8 检索的结果与 f32 **同一批篇、同一顺序**（量化误差没有改变这一组用例的排序）。

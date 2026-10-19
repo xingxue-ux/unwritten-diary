@@ -1003,11 +1003,11 @@ fn candidates_impl(
     // 分数因此逐位一致。
     let query_norm: f32 = query_vector.iter().map(|value| value * value).sum();
 
-    // **快速路径（#90）**：默认过滤器下，先用一张表扫完向量、选 top-K 块，再只取这
+    // **快速路径（#90 / #135）**：默认过滤器下，先用一张表扫完向量、选 top-K 块，再只取这
     // 些块的元数据。10 万块上「逐行 join span + capture」占查询总时间的一半以上，
-    // 而默认过滤条件用不上那些列——它们只在最后 K 条上核对一次。条件与回退规则见
-    // `fast_path_eligible` / `candidates_fast`；任何一步核对不上（有块被过滤掉）就
-    // 整条回退到下面的精确 SQL，绝不拿「前 K 条里恰好没被过滤」当完整结果。
+    // 而默认过滤条件用不上那些列——它们只在最后 K 条上核对一次。后置过滤掉的块由
+    // 深度之外的**补位窗口**补上（见 `fast_scan_reserve`）；只有窗口不够时才整条回退
+    // 到下面的精确 SQL，绝不拿「窗口里恰好只剩这些」当完整结果。
     if mode == RowMode::Streaming && fast_path_eligible(filters) {
         if let Some(scored) =
             candidates_fast(
@@ -1138,9 +1138,12 @@ fn candidates_impl(
 ///
 /// 10 万块上的「深度 vs 延迟」实测（`--scan-depth`）：int8 2 048/4 096/8 192 块
 /// = P50 136/156/200 ms；f32 = 347/366/411 ms。取 4 096 是在「够深」与「P95 进
-/// 200 ms」之间选的；上限与曲线写在 `docs/architecture/m5-大库可用性.md`。测试
-/// `fast_scan_falls_back_when_a_top_candidate_is_filtered_out` 钉住回退行为，既有
-/// `streaming_scan_matches_the_load_all_reference` 钉住与精确路径逐位一致。
+/// 200 ms」之间选的；上限与曲线写在 `docs/architecture/m5-大库可用性.md`。
+///
+/// 深度之外的补位窗口见 `fast_scan_reserve`（#135）：后置过滤掉的块由窗口补上，
+/// 不再「filter 掉一条就重扫整代」。测试
+/// `fast_scan_falls_back_when_a_top_candidate_is_filtered_out` 钉住结果一致性，
+/// `fast_scan_backfills_when_a_top_candidate_is_filtered_out` 钉住补位不整条回退。
 pub(crate) const FAST_SCAN_DEPTH: usize = 4_096;
 
 /// 只有**默认过滤器**才走单表扫描。
@@ -1191,10 +1194,29 @@ impl Ord for ScoredRow {
     }
 }
 
+/// 补位窗口：结果深度之外再多保留多少块（#135）。
+///
+/// 单表扫描仍然只看 `chunk_vectors`，但窗口比结果深度多一截。后置过滤去掉 k 个块时，
+/// 窗口里排在后面的候选直接补上——**不重扫整代向量**。只有窗口里的有效块还不够
+/// （被过滤的块超过了预留）才整条回退精确 SQL。
+///
+/// 取 `depth / 4`（至少 1）：10 万块、各 2% 回收站 + 2% 旧修订时，5120 的窗口期望
+/// 混入约 205 个被过滤块，远小于 1024 的余量；稀疏混合通常只混入 0–1 个。余量用完
+/// 就回退——补位有确定上界，不会退化成「反复补位到扫完」的 O(N) 循环。
+const FAST_SCAN_RESERVE_DIVISOR: usize = 4;
+
+fn fast_scan_reserve(depth: usize) -> usize {
+    (depth / FAST_SCAN_RESERVE_DIVISOR).max(1)
+}
+
 /// 单表扫描 + 只取 top-K 元数据。返回 `None` 表示**必须回退**到精确路径。
 ///
-/// 回退条件只有一条：选中的 K 个块里有任何一个没通过后置过滤（被回收 / 修订过期）。
-/// 那时「前 K 条恰好都有效」不能证明「第 K+1 条没有更该出现」，所以不猜。
+/// 回退条件只有一条：**补位窗口里**选中的块被后置过滤掉太多，剩下的有效块不足
+/// `depth`，而窗口之外还可能有块（`scanned > selected.len()`）。那时「窗口里恰好
+/// 只剩这些」不能证明「窗口之外没有更该出现的候选」，所以不猜。
+///
+/// 反过来，只要窗口覆盖了整代（`scanned <= selected.len()`），即使有效块不足
+/// `depth`，那也是**完整的**答案——不是回退的理由。
 fn candidates_fast(
     core: &Core,
     query_vector: &[f32],
@@ -1204,8 +1226,9 @@ fn candidates_fast(
     depth: usize,
     profiling: bool,
 ) -> Result<Option<Vec<SemanticCandidate>>> {
+    let capacity = depth.saturating_add(fast_scan_reserve(depth));
     let scan_start = profiling.then(Instant::now);
-    let mut heap: BinaryHeap<ScoredRow> = BinaryHeap::with_capacity(depth + 1);
+    let mut heap: BinaryHeap<ScoredRow> = BinaryHeap::with_capacity(capacity);
     let mut scanned = 0_u64;
     {
         let mut statement = core
@@ -1257,7 +1280,7 @@ fn candidates_fast(
             }
             scanned += 1;
             let keep_start = profiling.then(Instant::now);
-            if heap.len() < depth {
+            if heap.len() < capacity {
                 heap.push(ScoredRow { score, rowid });
             } else if let Some(worst) = heap.peek() {
                 if score > worst.score {
@@ -1281,17 +1304,101 @@ fn candidates_fast(
     if selected.is_empty() {
         return Ok(Some(Vec::new()));
     }
-    // 按 rowid 升序去取元数据：选中的块散布在整表里，顺序访问时 SQLite 的页命中率
-    // 明显更好（10 万块、8192 个块行上量到 ~20% 的差别）。结果顺序不受影响——
-    // `rank_and_fold` 之后会按分数与同分键重新排。
-    selected.sort_unstable_by_key(|row| row.rowid);
+    // 分数降序、同分 rowid 升序：与扫描时「同分先到先得」的保留顺序一致。先按这个
+    // 顺序切成「结果深度」与「补位窗口」两批；两批各自按 rowid 升序去查元数据，
+    // 保住 SQLite 的页局部性。
+    selected.sort_unstable_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.rowid.cmp(&right.rowid))
+    });
     let scores: HashMap<i64, f32> = selected
         .iter()
         .map(|row| (row.rowid, row.score))
         .collect();
-    let ids = selected
+    let first_batch = selected.len().min(depth);
+    let mut scored: Vec<SemanticCandidate> = Vec::with_capacity(selected.len());
+    let mut surviving_chunks: HashSet<String> = HashSet::with_capacity(selected.len());
+    let mut chunk_positions: HashMap<String, (f32, i64)> = HashMap::with_capacity(selected.len());
+    fetch_fast_metadata(
+        core,
+        &selected[..first_batch],
+        &scores,
+        generation,
+        filters.include_trashed,
+        profiling,
+        &mut scored,
+        &mut surviving_chunks,
+        &mut chunk_positions,
+    )?;
+    // 第一批（= 结果深度）里被过滤掉一些块时，用补位窗口继续取；窗口覆盖整代、
+    // 或者有效块已经够 depth 时就不必再查第二批。
+    if surviving_chunks.len() < depth && scanned as usize > first_batch {
+        fetch_fast_metadata(
+            core,
+            &selected[first_batch..],
+            &scores,
+            generation,
+            filters.include_trashed,
+            profiling,
+            &mut scored,
+            &mut surviving_chunks,
+            &mut chunk_positions,
+        )?;
+    }
+    // 窗口之外还有块、而窗口里的有效块又不足 depth ⇒ 无法证明没有漏掉，整条回退。
+    // 反过来，整代都在窗口里（`scanned <= selected.len()`）时，剩下的就是全部答案。
+    if surviving_chunks.len() < depth && scanned as usize > selected.len() {
+        return Ok(None);
+    }
+    // 只保留分数最靠前的 `depth` 个**有效块**：补位窗口多取的那一截只是候选，
+    // 不能因为「多取」就扩大结果深度。同分仍按 rowid（扫描时的保留顺序）。
+    let mut allowed: Vec<(String, f32, i64)> = chunk_positions
+        .into_iter()
+        .map(|(chunk_id, (score, rowid))| (chunk_id, score, rowid))
+        .collect();
+    allowed.sort_unstable_by(|left, right| {
+        right
+            .1
+            .total_cmp(&left.1)
+            .then_with(|| left.2.cmp(&right.2))
+    });
+    allowed.truncate(depth);
+    let allowed: HashSet<String> = allowed
+        .into_iter()
+        .map(|(chunk_id, _, _)| chunk_id)
+        .collect();
+    scored.retain(|candidate| allowed.contains(&candidate.chunk_id));
+    Ok(Some(scored))
+}
+
+/// 取一批 `rowid` 的 span/capture 元数据并做后置过滤（回收站 / 旧来源修订）。
+///
+/// 过滤条件与精确 SQL 逐字相同；返回的每个候选都是**能出现在结果里**的。
+/// `surviving_chunks` 记「至少有一段通过过滤」的块——块只要还有有效 span，就仍然
+/// 贡献候选（与精确路径的 inner join 语义一致，不是「一块沾上回收站就整块消失」）。
+#[allow(clippy::too_many_arguments)]
+fn fetch_fast_metadata(
+    core: &Core,
+    rows: &[ScoredRow],
+    scores: &HashMap<i64, f32>,
+    generation: i64,
+    include_trashed: bool,
+    profiling: bool,
+    scored: &mut Vec<SemanticCandidate>,
+    surviving_chunks: &mut HashSet<String>,
+    chunk_positions: &mut HashMap<String, (f32, i64)>,
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    // 选中的块散布在整表里，按 rowid 升序访问时 SQLite 的页命中率明显更好。
+    let mut rowids: Vec<i64> = rows.iter().map(|row| row.rowid).collect();
+    rowids.sort_unstable();
+    let ids = rowids
         .iter()
-        .map(|row| row.rowid.to_string())
+        .map(i64::to_string)
         .collect::<Vec<_>>()
         .join(",");
     let meta_start = profiling.then(Instant::now);
@@ -1308,16 +1415,14 @@ fn candidates_fast(
                            WHERE si.source_id = s.source_id \
                              AND si.current_revision_id = s.source_revision_id))";
     let mut statement = core.conn.prepare(sql)?;
-    let mut rows = statement.query(params![
+    let mut meta_rows = statement.query(params![
         format!("[{ids}]"),
         generation,
-        i64::from(filters.include_trashed)
+        i64::from(include_trashed)
     ])?;
-    let mut scored = Vec::with_capacity(selected.len());
-    let mut surviving_chunks: HashSet<String> = HashSet::with_capacity(selected.len());
     while let Some(row) = {
         let step_start = profiling.then(Instant::now);
-        let next = rows.next()?;
+        let next = meta_rows.next()?;
         if let (Some(start), true) = (step_start, next.is_some()) {
             profile_sink::add(|profile| profile.fast_meta_query_ns += elapsed_ns(start));
         }
@@ -1332,6 +1437,9 @@ fn candidates_fast(
             });
         };
         surviving_chunks.insert(chunk_id.clone());
+        chunk_positions
+            .entry(chunk_id.clone())
+            .or_insert((score, rowid));
         let source_id: String = row.get(4)?;
         scored.push(SemanticCandidate {
             group_id: source_id.clone(),
@@ -1357,11 +1465,7 @@ fn candidates_fast(
     if let Some(start) = meta_start {
         profile_sink::add(|profile| profile.fast_meta_ns += elapsed_ns(start));
     }
-    // 选中的块有一条没通过后置过滤 ⇒ 可能漏掉了排在其后的有效候选，整条回退。
-    if surviving_chunks.len() != selected.len() {
-        return Ok(None);
-    }
-    Ok(Some(scored))
+    Ok(())
 }
 
 /// 直接按**存储字节**算余弦：不先解成 `Vec<f32>`，也不逐行重算查询向量的模长。
