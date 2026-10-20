@@ -108,6 +108,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   EventType dco_decode_box_autoadd_event_type(dynamic raw);
 
   @protected
+  ExportRequest dco_decode_box_autoadd_export_request(dynamic raw);
+
+  @protected
   ExtractedContent dco_decode_box_autoadd_extracted_content(dynamic raw);
 
   @protected
@@ -237,6 +240,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   EventType dco_decode_event_type(dynamic raw);
+
+  @protected
+  ExportRequest dco_decode_export_request(dynamic raw);
+
+  @protected
+  ExportTicket dco_decode_export_ticket(dynamic raw);
 
   @protected
   ExtractedContent dco_decode_extracted_content(dynamic raw);
@@ -779,6 +788,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   EventType sse_decode_box_autoadd_event_type(SseDeserializer deserializer);
 
   @protected
+  ExportRequest sse_decode_box_autoadd_export_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ExtractedContent sse_decode_box_autoadd_extracted_content(
     SseDeserializer deserializer,
   );
@@ -948,6 +962,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   EventType sse_decode_event_type(SseDeserializer deserializer);
+
+  @protected
+  ExportRequest sse_decode_export_request(SseDeserializer deserializer);
+
+  @protected
+  ExportTicket sse_decode_export_ticket(SseDeserializer deserializer);
 
   @protected
   ExtractedContent sse_decode_extracted_content(SseDeserializer deserializer);
@@ -1608,6 +1628,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_export_request(
+    ExportRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_extracted_content(
     ExtractedContent self,
     SseSerializer serializer,
@@ -1831,6 +1857,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_event_type(EventType self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_export_request(ExportRequest self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_export_ticket(ExportTicket self, SseSerializer serializer);
 
   @protected
   void sse_encode_extracted_content(

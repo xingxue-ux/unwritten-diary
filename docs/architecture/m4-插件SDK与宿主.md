@@ -245,16 +245,16 @@ CREATE TABLE IF NOT EXISTS plugin_grants (...);
 
 ## 10. 与 #113 / #114 的接缝
 
-#114（风格系统）的 **Rust 核心已经落地**（schema v17 的 `styles` 表；风格快照指向
-不可变版本行）；#113（可阅读导出）的 `exports.create` 仍没有核心实现。插件这一片
-仍然没有另造一套：
+#113（可阅读导出）与 #114（风格系统）的 **Rust 核心已经落地**（schema v17 的
+`styles` 表；`exports.create` 同步生成 Markdown/纯文本；风格快照指向不可变版本行）。
+插件这一片仍然没有另造一套：
 
 - 风格模板的输入 DTO 与契约 `StyleProfile` 字段一一对应，且现在就是 `styles` 表的落库
   对象（核心类型统一为 `StyleProfile`；`PluginStyleProfile` 只是旧名别名）；
 - 导出模板/代码插件的格式字符串（`markdown` / `plain_text`）与 dayKey 闭区间语义对齐
   `ExportRequest`；
-- 导出产物是同步返回的 `PluginRunResult.output` + `PluginArtifact`，可由 #113 的控制器
-  直接保存；**`exports.create` 的任务化接线仍未实现**，见第 11 节。
+- 插件导出产物仍是同步返回的 `PluginRunResult.output` + `PluginArtifact`，与
+  `exports.create` 的核心管理导出目录是**两条路**：前者归插件、后者归核心；
 - 桥接适配层已接上插件管理（inspect/install/enable/disable/uninstall/list）；
   `DiaryApi.invokePlugin` 是「返回 jobId」的票据形状，而核心 `run_plugin` 同步返回完整
   结果，两者还没任务化对齐，因此 `plugins.invoke` 仍不在 Dart 适配层的能力清单里；
@@ -268,8 +268,8 @@ CREATE TABLE IF NOT EXISTS plugin_grants (...);
    本机只实际跑了 Linux；两端真机安装未验证。
 3. **插件直接联网**：没有 socket/WASI；只能走已配置且用户授权的 Provider。
 4. **完整自定义页面、原生动态库、无限制脚本**：按任务书后置，未实现。
-5. **`exports.create` 的核心存储与任务化**：#113 的 Rust 后端仍未落地；#114 的
-   `styles.*` 已落地；本片只提供插件侧模板/导出接缝。
+5. **`exports.create` 仍是同步的**：核心已生成文件 + 写一条 `succeeded` 的 export 任务
+   记录，但没有「排队 → 执行 → 进度/取消」的异步任务链；`includeAssets` 也还没实现。
 6. **子进程隔离**：使用 wasmi + `catch_unwind`；进程级 abort（宿主 OOM 等）不可恢复。
 7. **插件市场里的自动更新**：升级是用户显式安装；没有后台自动更新。
 8. **多插件并发**：调用是同步的，没有并行调度；插件任务化（崩溃恢复、取消正在跑的

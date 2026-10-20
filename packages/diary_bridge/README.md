@@ -19,9 +19,15 @@ Dart 侧访问 Rust 核心的唯一入口，含 [flutter_rust_bridge](https://cj
 
 **`diary_api` 适配层覆盖的范围**：`BridgeDiaryApi` 把 `BridgeSession` 适配成契约的
 `DiaryApi`——记录、导入/录音交接、提取、检索、Provider/回应、日记生成与版本（含编辑/
-指定当前/合并）与**风格 list/get/save** 都在能力清单里。其余方法明确抛错且不出现在 `capabilities` 里。前端目前仍注入
+指定当前/合并）、**风格 list/get/save** 与 **`exports.create`** 都在能力清单里。其余方法明确抛错且不出现在 `capabilities` 里。前端目前仍注入
 `packages/diary_mock`——切到真核心还需要平台层给出库路径与时区（F1）。设计与取舍见
 [M1 · DiaryApi 适配层](../../docs/architecture/m1-DiaryApi适配层.md)。
+
+**阅读导出（#113）**：核心同步生成 Markdown/纯文本到资料库的 `exports/` 下，并写一条
+`state = succeeded` 的 `export` 任务记录。契约的 `ExportTicket` 只有 `jobId` /
+`packageTicket`；`packageTicket` 在本构建里是导出文件的绝对路径。桥接的
+`ExportTicket` 还带 `path` / `byteSize` / `restorable = false`。**它不能用于恢复资料库**；
+需要恢复请用 `backups.*`。
 
 ## 重新生成绑定
 
@@ -56,7 +62,7 @@ Windows 侧构建要显式带 `--target`，否则产物会写进与 WSL 共用�
 ```bash
 cargo build --release                        # 仓库根目录
 cd packages/diary_bridge
-dart pub get && dart test                    # 全套（当前 54 项），跑完整读写链路
+dart pub get && dart test                    # 全套（当前 55 项），跑完整读写链路
 ```
 
 `DIARY_BRIDGE_LIB` 可指定别的产物路径（例如 Windows 上的 `.dll`）。
@@ -67,6 +73,6 @@ dart pub get && dart test                    # 全套（当前 54 项），跑�
 
 已验证：Linux（WSL）宿主 6/6、Windows x64 6/6、Android（API 36 x86_64 模拟器）等价探针 5/5；`BridgeSession` 全链路读写、`CoreError` → 契约第 7 节错误码映射、能力清单、中文与 emoji 往返。
 
-**没接的就是 `LibraryInfo.capabilities` 里没列的**：回收站与清理、设置、备份与恢复的票据化入口、天列表、阅读导出、任务的确认提醒。**已经接上**的是记录与导入、提取与来源定位、检索与索引、Provider 配置与回应、日记的生成与版本（含 B4c 的编辑/指定当前/合并）、风格（`styles.*`）与队列驱动。
+**没接的就是 `LibraryInfo.capabilities` 里没列的**：回收站与清理、设置、备份与恢复的票据化入口、天列表、任务的确认提醒。**已经接上**的是记录与导入、提取与来源定位、检索与索引、Provider 配置与回应、日记的生成与版本（含 B4c 的编辑/指定当前/合并）、风格（`styles.*`）、阅读导出（`exports.create`）与队列驱动。
 
 未验证：event `Stream`（只有 `events_since` 拉取）、调用取消、后台运行入口、Android arm64 真机。

@@ -50,8 +50,8 @@ cd packages/diary_bridge && dart test
 ## 没有做到的
 
 - **不是全部契约方法都接了**：记录、导入/录音交接、提取、检索、Provider/回应、日记生成与版本、
-  风格（`styles.list/get/save`）与队列驱动已接；回收站/清理、设置、天列表、阅读导出、
-  备份票据化入口等仍未接，`capabilities` 里也没有它们。
+  风格（`styles.list/get/save`）、天列表（`diary.listDays`）、阅读导出（`exports.create`）
+  与队列驱动已接；回收站/清理、设置、备份票据化入口等仍未接，`capabilities` 里也没有它们。
 - **前端还没切到真核心**：`apps/diary_app` 仍注入 `MockDiaryApi`。切换是 `main.dart` 那一处 + `demoMode: false`，但真核心需要**库路径、时区**，Android 还要把 `.so` 放进 app 并加载——这些正是 F1/`platform_host` 的活，还不存在。硬切会让应用起不来，所以这一片**刻意没有动前端目录**。
 - **`trashed` 分支未验证**：回收站没有对外接口，`state <> 'trashed'` 这条只在代码里，没有端到端证据。
 - **`mock` 与核心的初始 revision 不一致**：核心从 **1** 开始，`diary_mock` 从 **0** 开始（契约没规定起点）。前端逻辑不受影响（它用 `expectedRevision: 当前值`），但**照 mock 写的断言切到真核心会红**——我自己就在这条上翻过车。已单独记 issue。

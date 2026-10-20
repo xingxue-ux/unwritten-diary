@@ -1,8 +1,9 @@
-//! #114 风格的集成测试。
+//! #114 风格 / #113 阅读导出的集成测试。
 //!
-//! 全部走真实核心路径（开库、迁移、写表、生成），不 mock 存储层：
+//! 全部走真实核心路径（开库、迁移、写表、生成、落盘），不 mock 存储层：
 //! - 风格：CRUD 往返、乐观锁、历史版本不可变、生成时 `styleSnapshotId` 指对版本；
-//! - 自由文本上限：超限 `invalid_argument` 且零落库。
+//! - 导出：Markdown / 纯文本、正文逐段一致、回收站不出现、重名不覆盖、沙箱外拒绝、
+//!   非零填充 dayKey 按日期解析后绑定。
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -10,8 +11,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use diary_core::{
-    Core, CreateDraftInput, DiaryGenerationReason, ErrorCode, HttpResponse, Provider,
-    ProviderCapability, ProviderTestStatus, ScriptedTransport, StyleProfile, Transport,
+    Core, CreateDraftInput, DiaryGenerationReason, ErrorCode, ExportRequest, HttpResponse,
+    JobState, Provider, ProviderCapability, ProviderTestStatus, ScriptedTransport, StyleProfile,
+    Transport,
 };
 use rusqlite::Connection;
 
@@ -93,6 +95,11 @@ fn drive(core: &mut Core) {
     core.run_due_jobs(Utc::now(), 30_000, "test", 16).unwrap();
 }
 
+fn generate(core: &mut Core, day_key: &str, op: &str) {
+    core.generate_diary(day_key, None, DiaryGenerationReason::Manual, op)
+        .unwrap();
+    drive(core);
+}
 
 fn style(id: &str, label: &str, tone: &str) -> StyleProfile {
     StyleProfile {
@@ -323,4 +330,193 @@ fn generation_freezes_the_style_version_and_keeps_it_after_style_updates() {
         )
         .unwrap();
     assert_eq!(old_tone, "克制", "历史日记的风格快照不能被后续修改改写");
+}
+
+// ------------------------------------------------------------------ 导出
+
+fn export_request(from: &str, to: &str, format: &str) -> ExportRequest {
+    ExportRequest {
+        from_day_key: from.to_owned(),
+        to_day_key: to.to_owned(),
+        format: format.to_owned(),
+        include_assets: false,
+    }
+}
+
+#[test]
+fn readable_export_writes_markdown_and_plain_text_from_current_bodies() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, _) = core_with_script(
+        dir.path(),
+        vec![
+            chat_ok("第一天的第一段。\n\n第一天的第二段。"),
+            chat_ok("第二天的正文。"),
+        ],
+    );
+    save_provider(&mut core);
+    capture_on(&mut core, "2026-10-14", "十四号的记录。", "op-day-14");
+    capture_on(&mut core, "2026-10-15", "十五号的记录。", "op-day-15");
+    generate(&mut core, "2026-10-14", "op-gen-14");
+    generate(&mut core, "2026-10-15", "op-gen-15");
+
+    // Markdown：正文逐字保留，日期标题按升序。
+    let markdown = core
+        .create_export(&export_request("2026-10-14", "2026-10-15", "markdown"))
+        .unwrap();
+    assert_eq!(markdown.format, "markdown");
+    assert_eq!(markdown.day_keys, vec!["2026-10-14", "2026-10-15"]);
+    assert_eq!(markdown.day_count, 2);
+    assert!(!markdown.restorable, "阅读导出不能用于恢复");
+    assert_eq!(
+        markdown.package_ticket.as_deref(),
+        Some(markdown.path.as_str())
+    );
+    let markdown_bytes = std::fs::read(&markdown.path).unwrap();
+    assert_eq!(markdown.byte_size, markdown_bytes.len() as i64);
+    let markdown_text = String::from_utf8(markdown_bytes).unwrap();
+    assert!(markdown_text.contains("## 2026-10-14"));
+    assert!(markdown_text.contains("第一天的第一段。\n\n第一天的第二段。"));
+    assert!(markdown_text.contains("## 2026-10-15"));
+    assert!(markdown_text.contains("第二天的正文。"));
+    assert!(markdown_text.contains("不能用于恢复资料库"));
+
+    // 纯文本：同一天只有一次导出，但格式与日期分隔不同，正文仍逐段一致。
+    let plain = core
+        .create_export(&export_request("2026-10-15", "2026-10-15", "plain_text"))
+        .unwrap();
+    assert_eq!(plain.format, "plain_text");
+    assert_eq!(plain.day_keys, vec!["2026-10-15"]);
+    let plain_text = std::fs::read_to_string(&plain.path).unwrap();
+    assert!(plain_text.contains("2026-10-15\n----------\n\n第二天的正文。"));
+    assert!(plain_text.contains("不能用于恢复资料库"));
+    assert_eq!(plain.byte_size, plain_text.len() as i64);
+
+    // 导出任务是一条**已完成**的记录，jobs.get 读得到（不是排队中的任务）。
+    let job = core.get_job(&markdown.job_id).unwrap();
+    assert_eq!(job.kind, "export");
+    assert_eq!(job.state, JobState::Succeeded);
+}
+
+#[test]
+fn export_never_overwrites_and_never_includes_trashed_days() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, _) = core_with_script(
+        dir.path(),
+        vec![chat_ok("十四号的日记。"), chat_ok("十五号的日记。")],
+    );
+    save_provider(&mut core);
+    capture_on(&mut core, "2026-10-14", "十四号的记录。", "op-14");
+    let day15 = capture_on(&mut core, "2026-10-15", "十五号的记录。", "op-15");
+    generate(&mut core, "2026-10-14", "op-gen-14");
+    generate(&mut core, "2026-10-15", "op-gen-15");
+
+    let first = core
+        .create_export(&export_request("2026-10-14", "2026-10-15", "markdown"))
+        .unwrap();
+    let first_text = std::fs::read_to_string(&first.path).unwrap();
+    // 同名再导一次：不覆盖，换后缀，两份文件都在且内容独立。
+    let second = core
+        .create_export(&export_request("2026-10-14", "2026-10-15", "markdown"))
+        .unwrap();
+    assert_ne!(first.path, second.path);
+    assert!(first.path.ends_with(".md"));
+    assert!(second.path.ends_with("-2.md"));
+    assert!(Path::new(&first.path).is_file());
+    assert!(Path::new(&second.path).is_file());
+    assert_eq!(std::fs::read_to_string(&first.path).unwrap(), first_text);
+
+    // 把十五号的记录放进回收站（回收站线的方法还没合进来，测试直接改状态）：
+    // 那一天的旧日记版本不能再出现在导出里。
+    Connection::open(dir.path().join("library.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE captures SET state = 'trashed' WHERE id = ?1",
+            rusqlite::params![day15],
+        )
+        .unwrap();
+    let without_trash = core
+        .create_export(&export_request("2026-10-14", "2026-10-15", "markdown"))
+        .unwrap();
+    let text = std::fs::read_to_string(&without_trash.path).unwrap();
+    assert_eq!(without_trash.day_keys, vec!["2026-10-14"]);
+    assert!(text.contains("十四号的日记。"));
+    assert!(!text.contains("十五号的日记。"), "回收站里的日子不能进导出");
+    assert!(!text.contains("十五号的记录。"), "草稿/记录正文不能进导出");
+
+    // 整段范围都只剩回收站内容：明确报 not_found，不产空文件。
+    assert_eq!(
+        core.create_export(&export_request("2026-10-15", "2026-10-15", "markdown"))
+            .unwrap_err()
+            .code(),
+        ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn export_accepts_a_non_zero_padded_start_day_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, _) = core_with_script(
+        dir.path(),
+        vec![chat_ok("五号正文。"), chat_ok("十四号正文。"), chat_ok("十五号正文。")],
+    );
+    save_provider(&mut core);
+    capture_on(&mut core, "2026-10-05", "五号的记录。", "op-05");
+    capture_on(&mut core, "2026-10-14", "十四号的记录。", "op-14");
+    capture_on(&mut core, "2026-10-15", "十五号的记录。", "op-15");
+    generate(&mut core, "2026-10-05", "op-gen-05");
+    generate(&mut core, "2026-10-14", "op-gen-14");
+    generate(&mut core, "2026-10-15", "op-gen-15");
+
+    // 非零填充的 `2026-10-5` 能通过日期解析，但字典序上小于 `2026-10-05`。
+    // 如果绑定的是原始字符串，这个范围会静默丢掉 10 月 1–19 日。
+    let ticket = core
+        .create_export(&export_request("2026-10-5", "2026-10-15", "markdown"))
+        .expect("非零填充的起点必须按日期解析后绑定，不能静默排除整个范围");
+    assert_eq!(
+        ticket.day_keys,
+        vec!["2026-10-05", "2026-10-14", "2026-10-15"]
+    );
+    let text = std::fs::read_to_string(&ticket.path).unwrap();
+    assert!(text.contains("## 2026-10-05"));
+    assert!(text.contains("五号正文。"));
+    assert!(text.contains("十四号正文。"));
+    assert!(text.contains("十五号正文。"));
+}
+
+#[test]
+fn export_rejects_bad_arguments_and_paths_outside_the_sandbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, _) = core_with_script(dir.path(), vec![chat_ok("正文。")]);
+    save_provider(&mut core);
+    capture_on(&mut core, "2026-10-14", "记录。", "op-a");
+    generate(&mut core, "2026-10-14", "op-gen");
+
+    // 格式只认契约里的两种。
+    assert_eq!(
+        core.create_export(&export_request("2026-10-14", "2026-10-14", "pdf"))
+            .unwrap_err()
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+    // 附原件：本构建明确拒绝，不静默忽略。
+    let mut with_assets = export_request("2026-10-14", "2026-10-14", "markdown");
+    with_assets.include_assets = true;
+    let error = core.create_export(&with_assets).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    assert!(error.to_string().contains("includeAssets"));
+    // 起点晚于终点。
+    assert_eq!(
+        core.create_export(&export_request("2026-10-15", "2026-10-14", "markdown"))
+            .unwrap_err()
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+
+    // 沙箱外：宿主上库在临时目录，强制启用 OHOS 判定后必须拒绝，且不创建导出目录。
+    core.set_export_sandbox_only_for_test(true);
+    let error = core
+        .create_export(&export_request("2026-10-14", "2026-10-14", "markdown"))
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::PermissionDenied);
+    assert!(!dir.path().join("exports").exists(), "拒绝时不能先建目录");
 }

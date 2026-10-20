@@ -223,6 +223,11 @@ pub enum CoreError {
     #[error("插件运行失败：{reason}")]
     PluginFailed { reason: String },
 
+    /// 导出目录越出允许的写域（OHOS 上只允许应用沙箱）。映射到契约既有的
+    /// `permission_denied`：这不是「参数写错了」，而是「这里不能写」。
+    #[error("导出目录不可用：{reason}")]
+    ExportPathRejected { reason: String },
+
     #[error("文件操作失败：{0}")]
     Io(#[from] std::io::Error),
 
@@ -269,7 +274,9 @@ impl CoreError {
                 ErrorCode::InvalidArgument
             }
             Self::PluginPackageInvalid { .. } => ErrorCode::IntegrityFailed,
-            Self::PluginPermissionDenied { .. } => ErrorCode::PermissionDenied,
+            Self::PluginPermissionDenied { .. } | Self::ExportPathRejected { .. } => {
+                ErrorCode::PermissionDenied
+            }
             Self::PluginBudgetExceeded { .. } => ErrorCode::QuotaExceeded,
             Self::PluginFailed { .. } => ErrorCode::InvalidState,
             Self::Io(err) => io_code(err),
