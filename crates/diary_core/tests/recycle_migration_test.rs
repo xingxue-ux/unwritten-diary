@@ -211,3 +211,55 @@ fn reopening_a_v16_library_is_idempotent() {
         .unwrap();
     assert_eq!(migrations, 1, "重复 open 不重复写迁移记录");
 }
+
+#[test]
+fn a_library_that_claims_v16_but_lacks_the_column_is_repaired() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let capture_id = {
+        let mut core = new_core(dir.path());
+        committed_capture(&mut core, "自称 16 但缺列的材料。")
+    };
+
+    // 制造「版本号已经 16、列却没落」的坏状态：v16 守卫若写成
+    // `current < 16 && !column_exists(...)`，这个库会被永远跳过、版本停在 16。
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE captures DROP COLUMN trashed_from_state;
+             PRAGMA user_version = 16;",
+        )
+        .unwrap();
+        assert_eq!(column_count(&path, "captures", "trashed_from_state"), 0);
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            16
+        );
+    }
+
+    // 纯结构判定：列不在就补，版本号不挡路。
+    let core = new_core(dir.path());
+    assert_eq!(core.schema_version().unwrap(), SCHEMA_VERSION);
+    assert_eq!(
+        column_count(&path, "captures", "trashed_from_state"),
+        1,
+        "自称 16 但缺列的库必须在 open 时补回这一列"
+    );
+    let capture = core.get_capture(&capture_id).unwrap();
+    assert_eq!(capture.draft_text, "自称 16 但缺列的材料。");
+    assert_eq!(capture.state, CaptureState::Committed);
+
+    // 修复路径也要幂等：再开一次不重复 ALTER、不重复写迁移记录。
+    drop(core);
+    let core = new_core(dir.path());
+    assert_eq!(core.schema_version().unwrap(), SCHEMA_VERSION);
+    assert_eq!(column_count(&path, "captures", "trashed_from_state"), 1);
+    let migrations: i64 = Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(migrations, 1, "修复路径不能重复写迁移记录");
+}

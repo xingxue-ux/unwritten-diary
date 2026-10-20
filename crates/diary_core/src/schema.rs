@@ -59,7 +59,13 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // ——`current` 是当前版本并不能证明索引在。每次 open 只多一次 `sqlite_master`
         // 查询，缺才建（#133 第 1 条，见 `ensure_v15_caliber_index`）。
         ensure_v15_caliber_index(conn)?;
-        return Ok(());
+        // **版本号也不能证明结构在**：一个自称 16、却缺 `trashed_from_state` 的库
+        // （手工改过版本，或旧构建在「版本号已写、DDL 没落」的窗口里崩过）如果在这里
+        // 直接返回，v16 的守卫永远轮不到它，版本停在 16、列永远不补。所以相等分支
+        // 也看一次结构；列在才真的什么都不做。
+        if column_exists(conn, "captures", "trashed_from_state")? {
+            return Ok(());
+        }
     }
 
     let tx = conn.transaction()?;
@@ -163,7 +169,12 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 没有「替用户记一次自动尝试」这种默认：升级后的第一次 `open` 仍会按当时的
         // 口径如实判断该不该自动排一条。
     }
-    if current < 16 && !column_exists(&tx, "captures", "trashed_from_state")? {
+    // v16 的守卫是**纯结构判定**，不掺版本号：一个 `user_version` 已经是 16、却缺
+    // 这一列的库（版本号先写、DDL 没落，或手工改过版本）也必须在这里补回来。
+    // `ALTER TABLE ADD COLUMN` 只在缺列时执行一次；列在就什么都不做，重复 open 幂等。
+    // 这是 #159 复审与 PR #155 复审同一条：`current < 16 && !column_exists(...)`
+    // 会让「自称 16 但缺列」的库永远跳过迁移。
+    if !column_exists(&tx, "captures", "trashed_from_state")? {
         tx.execute_batch(V16)?;
         // **不回填**：升级前没有「移入回收站」的入口（虽然有 `trashed` 这个值，
         // 但没有任何代码写它），所以老库里这一列只可能是 NULL。恢复时把 NULL
@@ -171,8 +182,10 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 空白草稿提交之后也是 `committed`。
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+    // `INSERT OR IGNORE`：正常升级只有一行；「自称最新但缺结构」的修复路径重开时
+    // 版本号没变，不能因为主键冲突把整个迁移回滚。
     tx.execute(
-        "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
         params![SCHEMA_VERSION, crate::support::to_iso(crate::support::now())],
     )?;
     tx.commit()?;

@@ -298,7 +298,10 @@ class LibraryCareController extends ChangeNotifier {
     return null;
   }
 
-  Future<bool> purge(PurgePreview preview) async {
+  Future<bool> purge(
+    PurgePreview preview, {
+    bool deleteDiaryVersions = false,
+  }) async {
     if (!canPurge) {
       _unavailable('当前核心还没有开放永久清理能力。');
       return false;
@@ -307,9 +310,12 @@ class LibraryCareController extends ChangeNotifier {
       await _api.purgeCapture(
         id: preview.captureId,
         previewToken: preview.previewToken,
+        deleteDiaryVersions: deleteDiaryVersions,
         operationId: _operationId('purge-capture'),
       );
-      message = '记录及预览中列出的原件已永久清理。';
+      message = deleteDiaryVersions
+          ? '记录、预览中列出的原件，以及关联日记版本已永久清理。'
+          : '记录及预览中列出的原件已永久清理；关联日记版本按你的选择保留。';
       await loadTrash();
       return true;
     } on DiaryException catch (error) {

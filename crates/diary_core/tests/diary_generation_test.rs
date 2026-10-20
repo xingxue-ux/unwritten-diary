@@ -1161,3 +1161,44 @@ fn diary_errors_use_contract_codes() {
     assert_eq!(error.code(), ErrorCode::InvalidArgument);
     assert!(!error.retryable());
 }
+#[test]
+fn a_generation_queued_before_purge_does_not_resurrect_purged_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, transport) =
+        core_with_transport(dir.path(), vec![chat_ok("不应该出现的正文。")]);
+    save_provider(&mut core);
+    let capture_id = capture_with_text(&mut core, "会被永久清理的秘密正文。", "op-purged");
+    let ticket = core
+        .generate_diary(
+            "2026-10-16",
+            None,
+            DiaryGenerationReason::Manual,
+            "op-gen-before-purge",
+        )
+        .unwrap();
+
+    // 生成任务还在排队时，用户永久清理了输入材料。
+    let capture = core.get_capture(&capture_id).unwrap();
+    core.trash_capture(&capture_id, capture.revision, "op-trash")
+        .unwrap();
+    let preview = core.preview_purge(&capture_id).unwrap();
+    let result = core
+        .purge_capture(&capture_id, &preview.preview_token, true, "op-purge")
+        .unwrap();
+    assert!(
+        result
+            .retained_source_snapshot_ids
+            .contains(&ticket.source_snapshot_id),
+        "快照按 #161 方案 A 保留，并由 purge 结果如实报告"
+    );
+
+    let summary = drive(&mut core);
+    assert_eq!(summary.processed, 1);
+    assert_eq!(summary.failed, 1, "材料已经不存在 → 终态失败");
+    assert_eq!(summary.succeeded, 0);
+    assert_eq!(transport.call_count(), 0, "不能花一次模型调用");
+    assert!(versions(&core).is_empty(), "不能拿快照里的正文复活一个版本");
+    let job = core.get_job(&ticket.job_id).unwrap();
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(job.error_code.as_deref(), Some("invalid_state"));
+}

@@ -23,11 +23,12 @@
 //! `purgeCapture`。没有预览的清理一律拒绝；预览之后清单变了（又导入原件、又生成了
 //! 引用它的日记版本）也会拒绝并要求重新预览——绝不按一份过期的清单删东西。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 
 use crate::error::{CoreError, Result};
@@ -41,6 +42,7 @@ pub(crate) const PURGE_PREVIEW_TTL_SECONDS: i64 = 10 * 60;
 
 /// 一次预览在内存里的状态。**不持久化**：令牌只在当前核心会话里有效，进程重启后
 /// 必须重新预览——这和「清空确认框」是同一件事，也避免把一个能删资料的令牌写进库。
+#[derive(Clone)]
 pub(crate) struct PurgePreviewState {
     capture_id: String,
     /// 预览那一刻记录的 revision。预览之后任何会改变清单的写入都会推进它。
@@ -49,6 +51,8 @@ pub(crate) struct PurgePreviewState {
     asset_ids: Vec<String>,
     derived_content_ids: Vec<String>,
     diary_version_ids: Vec<String>,
+    ai_response_ids: Vec<String>,
+    retained_snapshot_ids: Vec<String>,
 }
 
 /// 一次清理会碰到的全部行。预览与清理共用同一个盘点函数，避免两处口径漂移。
@@ -57,7 +61,23 @@ struct PurgePlan {
     asset_ids: Vec<String>,
     derived_content_ids: Vec<String>,
     diary_version_ids: Vec<String>,
+    ai_response_ids: Vec<String>,
+    retained_snapshot_ids: Vec<String>,
+    /// 这条记录的来源与修订 id：用来认出「结果里带正文」的幂等回执并清掉。
+    source_ids: Vec<String>,
+    revision_ids: Vec<String>,
     blobs: Vec<BlobRef>,
+    /// 这条记录的导入/录音遗留的暂存路径（`staging/...`）。已收尾的会话通常已经
+    /// 自己删掉；`error` 状态的导入会故意保留暂存文件，purge 时不能把它留成孤儿。
+    staging_paths: Vec<String>,
+}
+
+/// 还没收尾的录音/导入会话。它们一旦被 trash/purge 静默丢掉，用户丢的是一整段
+/// 正在录的音频或正在复制的原件；所以在两个入口都拒绝，并要求先结束或取消。
+struct InFlightSession {
+    kind: &'static str,
+    id: String,
+    state: String,
 }
 
 struct BlobRef {
@@ -83,6 +103,10 @@ pub(crate) fn trash(
     if capture.state == CaptureState::Trashed {
         return Err(invalid_state(&capture, "已经在回收站里"));
     }
+    // 正在录音/导入的记录不能进回收站：trash 本身不丢数据，但收起后写入口是只读的，
+    // 用户会以为录音还在继续；更危险的是接着 purge 会把在途会话与暂存材料一起删掉。
+    // 要求先结束或取消，把「这段音频还在不在」变成用户看得见的决定。
+    ensure_no_in_flight(&core.conn, &capture)?;
 
     let now = support::now();
     let new_revision = capture.revision + 1;
@@ -230,7 +254,8 @@ pub(crate) fn preview_purge(core: &mut Core, capture_id: &str) -> Result<PurgePr
     if capture.state != CaptureState::Trashed {
         return Err(invalid_state(&capture, "不在回收站里，不能永久清理"));
     }
-    let plan = plan(core, capture_id)?;
+    ensure_no_in_flight(&core.conn, &capture)?;
+    let plan = plan(&core.conn, capture_id)?;
 
     let now = support::now();
     // 顺手清掉过期令牌：预览是低频操作，不值得为它起一个清理任务。
@@ -247,6 +272,8 @@ pub(crate) fn preview_purge(core: &mut Core, capture_id: &str) -> Result<PurgePr
             asset_ids: plan.asset_ids.clone(),
             derived_content_ids: plan.derived_content_ids.clone(),
             diary_version_ids: plan.diary_version_ids.clone(),
+            ai_response_ids: plan.ai_response_ids.clone(),
+            retained_snapshot_ids: plan.retained_snapshot_ids.clone(),
         },
     );
 
@@ -256,6 +283,8 @@ pub(crate) fn preview_purge(core: &mut Core, capture_id: &str) -> Result<PurgePr
         asset_ids: plan.asset_ids,
         derived_content_ids: plan.derived_content_ids,
         diary_versions_still_referencing: plan.diary_version_ids,
+        ai_response_ids: plan.ai_response_ids,
+        retained_source_snapshot_ids: plan.retained_snapshot_ids,
     })
 }
 
@@ -263,33 +292,49 @@ pub(crate) fn preview_purge(core: &mut Core, capture_id: &str) -> Result<PurgePr
 /// 且令牌里的清单与当前库里的清单逐项一致。
 ///
 /// 删除范围（逐表）：
-/// - `diary_versions`（仍引用它的版本；当前版本被删时把 `diary_days.current_version_id`
-///   换成同一天剩下的最新一版，没有就置 NULL）；
+/// - `diary_versions`（仍引用它的版本；`delete_diary_versions = true` 才删。删时当前
+///   版本若在其中，把 `diary_days.current_version_id` 换成同一天剩下的最新一版，没有
+///   就置 NULL；false 时一个版本都不动，结果用 `retained_diary_version_ids` 返回）；
 /// - `extracted_contents`（级联 `extracted_segments` → `search_docs` → `search_grams`）；
 /// - `captures`（级联 `source_items` → `source_revisions`、`import_sessions`、
 ///   `recording_sessions`、`chunk_spans`、`search_capture_docs` → `search_capture_grams`）；
 /// - `assets`（只删确实属于这条记录的）与不再被任何资产引用的 `blobs`，以及它们在
 ///   文件系统里的内容文件；
 /// - 该记录所在日子的 `text_chunks` / `chunk_spans` / `chunk_vectors`：**整日重打包**，
-///   这样同一天别的记录的块与向量不会被误删，被清理记录的文字也不会留在块正文里。
+///   这样同一天别的记录的块与向量不会被误删，被清理记录的文字也不会留在块正文里；
+/// - 引用这条记录的 `ai_responses`（请求文字与生成正文一起删，结果里列出 id）；
+/// - 该记录**非 `captures.purge`** 的幂等回执：`captures.trash` / `commit` /
+///   `revise_text` 等的 `result_json` 里带正文，不删的话 purge 之后拿同一个
+///   `operationId` 重放会把被删的正文原样吐回来。`captures.purge` 自己的回执保留，
+///   重放仍返回同一份 `PurgeResult`（里面只有 id 与计数，没有正文）。
 ///
-/// **不删** `operation_receipts`（幂等回执）与 `domain_events`（审计事件），也不删
-/// `diary_source_snapshots`：它们是操作与生成过程的审计记录，且可能被别的版本/生成
-/// 记录引用；见 PR 的「没验到的」。
+/// **不删** `domain_events`（审计事件）与 `diary_source_snapshots`：后者是生成过程的
+/// 不可变审计记录，且没有「快照 → 来源」映射，无法外科式脱敏（#161 方案 A）。受影响的
+/// 快照 id 在预览与结果的 `retained_source_snapshot_ids` 里如实返回，**不假装删干净**。
 pub(crate) fn purge(
     core: &mut Core,
     capture_id: &str,
     preview_token: &str,
+    delete_diary_versions: bool,
     operation_id: &str,
 ) -> Result<PurgeResult> {
-    let fingerprint = support::fingerprint(&["captures.purge", capture_id, preview_token]);
+    let fingerprint = support::fingerprint(&[
+        "captures.purge",
+        capture_id,
+        preview_token,
+        if delete_diary_versions {
+            "delete_diary_versions"
+        } else {
+            "keep_diary_versions"
+        },
+    ]);
     if let Some(json) = core.receipt("captures.purge", &fingerprint, operation_id)? {
         return Ok(serde_json::from_str(&json)?);
     }
 
     let now = support::now();
     let state = match core.purge_previews.get(preview_token) {
-        Some(state) => state,
+        Some(state) => state.clone(),
         None => {
             return Err(preview_error(
                 preview_token,
@@ -308,16 +353,40 @@ pub(crate) fn purge(
         ));
     }
 
-    let plan = plan(core, capture_id)?;
+    // **IMMEDIATE + 盘点在事务里**：预览与清理之间的窗口不能再被别的连接插进来；
+    // 清单与删除对着同一份快照，不会出现「查的时候有、删的时候换了」的 TOCTOU。
+    crate::assets::reap_expired_leases(core);
+    let tx = core
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let foreign_keys: i64 = tx.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+    if foreign_keys != 1 {
+        return Err(invalid_state(
+            &crate::load_capture(&tx, capture_id)?,
+            "外键约束没有开启，清理已拒绝（级联删除不可靠时不删任何东西）",
+        ));
+    }
+    let plan = plan(&tx, capture_id)?;
     if plan.capture.state != CaptureState::Trashed {
         return Err(invalid_state(&plan.capture, "不在回收站里，不能永久清理"));
+    }
+    // 防御旧库/异常路径：trash 已经在入口拒绝在途会话，这里再挡一次，绝不静默丢掉
+    // 一段正在录的音频或正在复制的原件。
+    ensure_no_in_flight(&tx, &plan.capture)?;
+    // 有原件正在被预览/播放/导出时拒绝清理：Windows 上打开的文件删不掉，先让调用方
+    // 关闭租约，而不是「库删了、文件还在」或反过来（#155 复审 P2-5）。
+    if let Some(root) = core.root.as_deref() {
+        ensure_no_active_lease(&core.leases, root, &plan)?;
     }
     // 预览之后清单或 revision 变了：不按旧清单删东西，让用户再看一眼。
     if plan.capture.revision != state.capture_revision
         || plan.asset_ids != state.asset_ids
         || plan.derived_content_ids != state.derived_content_ids
         || plan.diary_version_ids != state.diary_version_ids
+        || plan.ai_response_ids != state.ai_response_ids
+        || plan.retained_snapshot_ids != state.retained_snapshot_ids
     {
+        drop(tx);
         core.purge_previews.remove(preview_token);
         return Err(preview_error(
             preview_token,
@@ -325,17 +394,14 @@ pub(crate) fn purge(
         ));
     }
 
-    let result = PurgeResult {
-        capture_id: plan.capture.id.clone(),
-        purged_asset_ids: plan.asset_ids.clone(),
-        purged_derived_content_ids: plan.derived_content_ids.clone(),
-        purged_diary_version_ids: plan.diary_version_ids.clone(),
-    };
-
-    let tx = core.conn.transaction()?;
-    adjust_diary_days(&tx, &plan.diary_version_ids)?;
-    delete_ids(&tx, "diary_versions", &plan.diary_version_ids)?;
+    if delete_diary_versions {
+        adjust_diary_days(&tx, &plan.diary_version_ids)?;
+        delete_ids(&tx, "diary_versions", &plan.diary_version_ids)?;
+    }
     delete_ids(&tx, "extracted_contents", &plan.derived_content_ids)?;
+    delete_ids(&tx, "ai_responses", &plan.ai_response_ids)?;
+    // 清掉带正文的非 purge 回执：purge 之后同一个 operationId 重放不能再吐出正文。
+    let cleaned_receipt_count = delete_affected_receipts(&tx, &plan)?;
     // 删记录本身：来源、导入/录音会话、块段、记录文字的检索行都由外键级联带走。
     tx.execute(
         "DELETE FROM captures WHERE id = ?1",
@@ -346,6 +412,25 @@ pub(crate) fn purge(
     // 旧块（正文里混着被清理文字的那些）在同一个事务里被删掉。
     crate::chunks::rebuild_days_in_tx(&tx, std::slice::from_ref(&plan.capture.day_key))?;
     crate::search::bump_index_epoch(&tx)?;
+
+    let result = PurgeResult {
+        capture_id: plan.capture.id.clone(),
+        purged_asset_ids: plan.asset_ids.clone(),
+        purged_derived_content_ids: plan.derived_content_ids.clone(),
+        purged_diary_version_ids: if delete_diary_versions {
+            plan.diary_version_ids.clone()
+        } else {
+            Vec::new()
+        },
+        purged_ai_response_ids: plan.ai_response_ids.clone(),
+        retained_diary_version_ids: if delete_diary_versions {
+            Vec::new()
+        } else {
+            plan.diary_version_ids.clone()
+        },
+        retained_source_snapshot_ids: plan.retained_snapshot_ids.clone(),
+        cleaned_receipt_count,
+    };
 
     for asset_id in &plan.asset_ids {
         crate::insert_event(&tx, EventType::AssetChanged, asset_id, 1)?;
@@ -369,16 +454,16 @@ pub(crate) fn purge(
     core.purge_previews.remove(preview_token);
     // 文件系统不在事务里：库行已经删干净，这里失败最多留下一个没人引用的 blob 文件
     // （内容寻址、不影响正确性），但必须留下可审计的记录。
-    remove_blob_files(core, &plan, capture_id);
+    remove_blob_files(core, &plan, &result);
     Ok(result)
 }
 
 // ------------------------------------------------------------------ 盘点
 
-fn plan(core: &Core, capture_id: &str) -> Result<PurgePlan> {
-    let capture = crate::load_capture(&core.conn, capture_id)?;
+fn plan(conn: &Connection, capture_id: &str) -> Result<PurgePlan> {
+    let capture = crate::load_capture(conn, capture_id)?;
     let source_ids: Vec<String> = {
-        let mut statement = core.conn.prepare(
+        let mut statement = conn.prepare(
             "SELECT source_id FROM source_items WHERE capture_id = ?1 ORDER BY position, source_id",
         )?;
         let rows = statement
@@ -387,8 +472,20 @@ fn plan(core: &Core, capture_id: &str) -> Result<PurgePlan> {
         rows
     };
 
+    let revision_ids: Vec<String> = {
+        let mut statement = conn.prepare(
+            "SELECT revision_id FROM source_revisions \
+             WHERE source_id IN (SELECT source_id FROM source_items WHERE capture_id = ?1) \
+             ORDER BY revision_id",
+        )?;
+        let rows = statement
+            .query_map(params![capture_id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
     let mut asset_ids: Vec<String> = {
-        let mut statement = core.conn.prepare(
+        let mut statement = conn.prepare(
             "SELECT DISTINCT a.id FROM source_items si \
              JOIN source_revisions sr ON sr.source_id = si.source_id \
              JOIN assets a ON a.id = sr.asset_id \
@@ -402,7 +499,7 @@ fn plan(core: &Core, capture_id: &str) -> Result<PurgePlan> {
     asset_ids.dedup();
 
     let mut blobs: Vec<BlobRef> = {
-        let mut statement = core.conn.prepare(
+        let mut statement = conn.prepare(
             "SELECT DISTINCT a.sha256, a.object_ref FROM source_items si \
              JOIN source_revisions sr ON sr.source_id = si.source_id \
              JOIN assets a ON a.id = sr.asset_id \
@@ -427,7 +524,7 @@ fn plan(core: &Core, capture_id: &str) -> Result<PurgePlan> {
         .dedup_by(|left, right| left.sha256 == right.sha256 && left.object_ref == right.object_ref);
 
     let derived_content_ids: Vec<String> = {
-        let mut statement = core.conn.prepare(
+        let mut statement = conn.prepare(
             "SELECT id FROM extracted_contents \
              WHERE source_id IN (SELECT source_id FROM source_items WHERE capture_id = ?1) \
              ORDER BY id",
@@ -438,14 +535,42 @@ fn plan(core: &Core, capture_id: &str) -> Result<PurgePlan> {
         rows
     };
 
-    let diary_version_ids = versions_referencing(&core.conn, &source_ids)?;
+    let diary_version_ids = versions_referencing(conn, &source_ids)?;
+    let ai_response_ids = ai_responses_referencing(conn, capture_id)?;
+    let retained_snapshot_ids = snapshots_referencing(conn, capture_id)?;
+    let staging_paths = staging_paths(conn, capture_id)?;
     Ok(PurgePlan {
         capture,
         asset_ids,
         derived_content_ids,
         diary_version_ids,
+        ai_response_ids,
+        retained_snapshot_ids,
+        source_ids,
+        revision_ids,
         blobs,
+        staging_paths,
     })
+}
+
+/// 这条记录的导入/录音会话留下的暂存路径。`error` 状态的导入会故意保留暂存文件
+/// （让用户重试或取消），所以永久清理必须自己收尾，不能把它留成没人认领的孤儿。
+fn staging_paths(conn: &Connection, capture_id: &str) -> Result<Vec<String>> {
+    let mut paths: Vec<String> = Vec::new();
+    for table in ["import_sessions", "recording_sessions"] {
+        let sql = format!(
+            "SELECT DISTINCT staging_rel_path FROM {table} WHERE capture_id = ?1 \
+             AND staging_rel_path <> '' ORDER BY staging_rel_path"
+        );
+        let mut statement = conn.prepare(&sql)?;
+        let rows = statement
+            .query_map(params![capture_id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        paths.extend(rows);
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 /// 仍引用这条记录的日记版本：`provenance_links` 里有一条指向它的来源。
@@ -476,6 +601,213 @@ fn versions_referencing(conn: &rusqlite::Connection, source_ids: &[String]) -> R
         }
     }
     Ok(versions)
+}
+
+/// 仍引用这条记录的 AI 回应。`capture_ids` 是 JSON 数组，按元素精确比对，
+/// 不做 `LIKE`：回应是围绕这条记录发起的，来源被永久清理后它的请求文字与生成正文
+/// 也一起删除（口径写进契约 §8）。
+fn ai_responses_referencing(conn: &Connection, capture_id: &str) -> Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id FROM ai_responses \
+         WHERE json_valid(capture_ids) \
+           AND EXISTS (SELECT 1 FROM json_each(ai_responses.capture_ids) WHERE value = ?1) \
+         ORDER BY id",
+    )?;
+    let rows = statement
+        .query_map(params![capture_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// 冻结了这条记录正文的日记输入快照。
+///
+/// 快照没有「快照 → 来源」映射，无法把某一条材料从已冻结的 `body` 里摘掉（#161）。
+/// 这里只**如实盘点**：先按 `"capture_id":"id"` 做一次索引外的候选筛选，再逐行解析
+/// `materials[]` 确认——列出的一定是真的引用，不会把正文里恰好出现同一串文本的行
+/// 算进来。清理不删这些行；预览与结果把 id 原样交给调用方。
+fn snapshots_referencing(conn: &Connection, capture_id: &str) -> Result<Vec<String>> {
+    let rows: Vec<(String, String)> = {
+        let mut statement = conn.prepare(
+            "SELECT id, body FROM diary_source_snapshots WHERE instr(body, ?1) > 0 ORDER BY id",
+        )?;
+        let collected = statement
+            .query_map(params![capture_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        collected
+    };
+    let mut ids = Vec::new();
+    for (id, body) in rows {
+        let affected = match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(value) => snapshot_mentions_capture(&value, capture_id),
+            // 原始 body 里确实出现了这条记录的标识、但 JSON 解析不了：按受影响列表，
+            // 宁可多报一份「可能保留了正文」的快照，也不替它保证没留。
+            Err(_) => true,
+        };
+        if affected {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+fn snapshot_mentions_capture(value: &serde_json::Value, capture_id: &str) -> bool {
+    value
+        .get("materials")
+        .and_then(serde_json::Value::as_array)
+        .map(|materials| {
+            materials.iter().any(|material| {
+                material.get("capture_id").and_then(serde_json::Value::as_str)
+                    == Some(capture_id)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// 删掉这条记录**非 `captures.purge`** 的幂等回执，返回删了几条。
+///
+/// `captures.trash` / `commit` / `revise_text` 的 `result_json` 里带正文；purge 之后
+/// 同一个 `operationId` 重放会先命中回执、把正文原样吐回来。按 id 精确比对（不扫文本），
+/// 只删结果里真的提到这条记录/它的来源/修订的回执；`captures.purge` 自己的回执保留，
+/// 重放仍返回同一份 `PurgeResult`（只有 id 与计数，没有正文）。
+fn delete_affected_receipts(
+    tx: &rusqlite::Transaction<'_>,
+    plan: &PurgePlan,
+) -> Result<i64> {
+    let mut wanted: HashSet<&str> = HashSet::new();
+    wanted.insert(plan.capture.id.as_str());
+    for id in &plan.source_ids {
+        wanted.insert(id.as_str());
+    }
+    for id in &plan.revision_ids {
+        wanted.insert(id.as_str());
+    }
+    if wanted.is_empty() {
+        return Ok(0);
+    }
+    let rows: Vec<(String, String)> = {
+        let mut statement = tx.prepare(
+            "SELECT operation_id, result_json FROM operation_receipts \
+             WHERE kind <> 'captures.purge' ORDER BY operation_id",
+        )?;
+        let collected = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        collected
+    };
+    let mut deleted = 0_i64;
+    for (operation_id, result_json) in rows {
+        let affected = serde_json::from_str::<serde_json::Value>(&result_json)
+            .map(|value| json_mentions_any(&value, &wanted))
+            .unwrap_or(false);
+        if affected {
+            tx.execute(
+                "DELETE FROM operation_receipts WHERE operation_id = ?1",
+                params![operation_id],
+            )?;
+            deleted += 1;
+        }
+    }
+    Ok(deleted)
+}
+
+fn json_mentions_any(value: &serde_json::Value, wanted: &HashSet<&str>) -> bool {
+    match value {
+        serde_json::Value::String(text) => wanted.contains(text.as_str()),
+        serde_json::Value::Array(items) => items.iter().any(|item| json_mentions_any(item, wanted)),
+        serde_json::Value::Object(map) => map
+            .values()
+            .any(|item| json_mentions_any(item, wanted)),
+        _ => false,
+    }
+}
+
+/// 正在录音/导入的会话：这些状态下会话还没有收尾，材料可能只在暂存区。
+fn in_flight_sessions(conn: &Connection, capture_id: &str) -> Result<Vec<InFlightSession>> {
+    let mut sessions = Vec::new();
+    {
+        let mut statement = conn.prepare(
+            "SELECT id, state FROM recording_sessions WHERE capture_id = ?1 \
+             AND state IN ('preparing', 'recording', 'paused', 'stopping', 'interrupted', \
+             'recoverable') ORDER BY id",
+        )?;
+        let rows = statement
+            .query_map(params![capture_id], |row| {
+                Ok(InFlightSession {
+                    kind: "录音",
+                    id: row.get(0)?,
+                    state: row.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        sessions.extend(rows);
+    }
+    {
+        let mut statement = conn.prepare(
+            "SELECT id, state FROM import_sessions WHERE capture_id = ?1 \
+             AND state IN ('prepared', 'copying', 'verifying', 'recoverable') ORDER BY id",
+        )?;
+        let rows = statement
+            .query_map(params![capture_id], |row| {
+                Ok(InFlightSession {
+                    kind: "导入",
+                    id: row.get(0)?,
+                    state: row.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        sessions.extend(rows);
+    }
+    Ok(sessions)
+}
+
+/// 还有没收尾的录音/导入就拒绝 trash/purge：先结束或取消，把「这段音频/这份原件
+/// 还在不在」变成用户看得见的决定，而不是清理时静默连带删掉。
+fn ensure_no_in_flight(conn: &Connection, capture: &Capture) -> Result<()> {
+    let sessions = in_flight_sessions(conn, &capture.id)?;
+    if sessions.is_empty() {
+        return Ok(());
+    }
+    let list = sessions
+        .iter()
+        .map(|session| format!("{} {}（{}）", session.kind, session.id, session.state))
+        .collect::<Vec<_>>()
+        .join("、");
+    Err(CoreError::InvalidState {
+        entity: "记录",
+        id: capture.id.clone(),
+        state: format!(
+            "还有未收尾的录音/导入：{list}；先结束或取消它们，再移入回收站或永久清理"
+        ),
+    })
+}
+
+/// 有原件正在被预览/播放/导出时拒绝清理：删一个打开着的文件在 Windows 上会失败，
+/// 而「库行删了、文件还在」又是另一种不诚实。先让调用方释放租约再试。
+fn ensure_no_active_lease(
+    leases: &HashMap<String, crate::assets::LeaseRecord>,
+    root: &Path,
+    plan: &PurgePlan,
+) -> Result<()> {
+    for blob in &plan.blobs {
+        let Some(path) = safe_blob_path(root, &blob.object_ref) else {
+            continue;
+        };
+        if let Some((lease_id, _)) = leases
+            .iter()
+            .find(|(_, lease)| Path::new(&lease.handle) == path)
+        {
+            return Err(CoreError::InvalidState {
+                entity: "资产租约",
+                id: lease_id.clone(),
+                state: "原件正在预览/播放/导出，先关闭再永久清理".to_owned(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// 删除当前版本被清掉的日记日：先把指针换到同一天剩下的最新一版（没有就 NULL），
@@ -591,10 +923,10 @@ fn purge_assets(tx: &rusqlite::Transaction<'_>, plan: &PurgePlan) -> Result<()> 
 /// 删文件系统里的原件，并把这次清理写成一行可审计的 JSON。
 ///
 /// 核心没有进程级日志设施，所以日志落在资料库旁边的 `diagnostics/purge.jsonl`：
-/// 追加写、一行一个清理，记录删了哪些 blob、哪些失败。写日志失败**不影响清理结果**
-/// （事务已经提交），也不向调用方报错——清理已经完成，再报一个「日志写不了」只会
-/// 让用户以为资料没删掉。
-fn remove_blob_files(core: &Core, plan: &PurgePlan, capture_id: &str) {
+/// 追加写、一行一个清理，记录这次真的删了哪些行、哪些 blob 文件、哪些失败。写日志失败
+/// **不影响清理结果**（事务已经提交），也不向调用方报错——清理已经完成，再报一个
+/// 「日志写不了」只会让用户以为资料没删掉。
+fn remove_blob_files(core: &Core, plan: &PurgePlan, result: &PurgeResult) {
     let Some(root) = &core.root else {
         return;
     };
@@ -614,7 +946,12 @@ fn remove_blob_files(core: &Core, plan: &PurgePlan, capture_id: &str) {
         if still_shared {
             continue;
         }
-        let path = root.join(&blob.object_ref);
+        // 对象路径来自数据库：只允许 `blobs/...` 下的普通路径，绝不跟着 `..` 或绝对
+        // 路径删到资料库外面去（#155 复审 P2-6）。
+        let Some(path) = safe_blob_path(root, &blob.object_ref) else {
+            failures.push(format!("{}: 越界的对象路径，拒绝删除", blob.object_ref));
+            continue;
+        };
         match fs::remove_file(&path) {
             Ok(()) => deleted.push(blob.object_ref.clone()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -623,11 +960,37 @@ fn remove_blob_files(core: &Core, plan: &PurgePlan, capture_id: &str) {
             Err(error) => failures.push(format!("{}: {error}", blob.object_ref)),
         }
     }
+    // 导入/录音的暂存文件不在事务里，也不属于 blobs：error 状态的导入会故意保留
+    // 暂存文件，purge 要收尾（#155 复审 P2-4）。
+    let mut deleted_staging = Vec::new();
+    for relative in &plan.staging_paths {
+        let Some(path) = safe_relative_path(root, relative, "staging") else {
+            failures.push(format!("{relative}: 越界的暂存路径，拒绝删除"));
+            continue;
+        };
+        let removed = match fs::metadata(&path) {
+            Ok(meta) if meta.is_dir() => fs::remove_dir_all(&path),
+            Ok(_) => fs::remove_file(&path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        };
+        match removed {
+            Ok(()) => deleted_staging.push(relative.clone()),
+            Err(error) => failures.push(format!("{relative}: {error}")),
+        }
+    }
     let entry = PurgeAudit {
         at: support::to_iso(support::now()),
-        capture_id: capture_id.to_owned(),
-        asset_ids: plan.asset_ids.clone(),
+        capture_id: result.capture_id.clone(),
+        asset_ids: result.purged_asset_ids.clone(),
+        derived_content_ids: result.purged_derived_content_ids.clone(),
+        diary_version_ids: result.purged_diary_version_ids.clone(),
+        retained_diary_version_ids: result.retained_diary_version_ids.clone(),
+        ai_response_ids: result.purged_ai_response_ids.clone(),
+        retained_snapshot_ids: result.retained_source_snapshot_ids.clone(),
+        cleaned_receipt_count: result.cleaned_receipt_count,
         deleted_blobs: deleted,
+        deleted_staging,
         failures,
     };
     let diagnostics = root.join("diagnostics");
@@ -650,8 +1013,41 @@ struct PurgeAudit {
     at: String,
     capture_id: String,
     asset_ids: Vec<String>,
+    derived_content_ids: Vec<String>,
+    diary_version_ids: Vec<String>,
+    retained_diary_version_ids: Vec<String>,
+    ai_response_ids: Vec<String>,
+    retained_snapshot_ids: Vec<String>,
+    cleaned_receipt_count: i64,
     deleted_blobs: Vec<String>,
+    deleted_staging: Vec<String>,
     failures: Vec<String>,
+}
+
+/// 只接受 `blobs/` 下的普通相对路径：`object_ref` 来自数据库，不能让它把删除带到
+/// 资料库外（`..`、绝对路径、盘符都拒绝）。不是普通文件路径时返回 `None`，由调用方
+/// 记为失败并保留可审计记录。
+fn safe_blob_path(root: &Path, object_ref: &str) -> Option<PathBuf> {
+    safe_relative_path(root, object_ref, "blobs")
+}
+
+/// `relative` 必须落在 `root/<top>/` 下且每一段都是普通名字；`..`、绝对路径、
+/// 盘符都拒绝。调用方传的 `top` 是代码里的常量（`blobs` / `staging`）。
+fn safe_relative_path(root: &Path, relative_text: &str, top: &str) -> Option<PathBuf> {
+    let path = root.join(relative_text);
+    let relative = path.strip_prefix(root).ok()?;
+    let mut components = relative.components();
+    match components.next() {
+        Some(Component::Normal(name)) if name == top => {}
+        _ => return None,
+    }
+    if relative.as_os_str().is_empty() {
+        return None;
+    }
+    if !components.all(|component| matches!(component, Component::Normal(_))) {
+        return None;
+    }
+    Some(path)
 }
 
 // ------------------------------------------------------------------ 工具

@@ -131,9 +131,14 @@ pub struct CapturePage {
 /// 永久清理的影响预览，契约 4.1 节 `captures.previewPurge`。
 ///
 /// 清单是**这一次预览时**数据库里的真实行：原件（assets）、派生内容
-/// （extracted_contents，含它的片段与检索词项）与仍引用这条记录的日记版本。
-/// `preview_token` 一次性、带过期、绑定 `capture_id`；`purge_capture` 必须带上它，
-/// 而且如果预览之后清单变了（又有新原件/新日记版本），核心会拒绝并让用户重新预览。
+/// （extracted_contents，含它的片段与检索词项）、仍引用这条记录的日记版本，以及
+/// 引用它的 AI 回应。`preview_token` 一次性、带过期、绑定 `capture_id`；
+/// `purge_capture` 必须带上它，而且如果预览之后清单变了（又有新原件/新日记版本），
+/// 核心会拒绝并让用户重新预览。
+///
+/// `retained_source_snapshot_ids` 是**清理后仍会保留**的输入快照：它们的 `body`
+/// 里冻结了这条记录的材料正文，但快照没有「快照 → 来源」映射，无法外科式脱敏
+/// （#161 方案 A）。预览与结果都如实列出，绝不假装删干净。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PurgePreview {
     pub capture_id: String,
@@ -141,18 +146,38 @@ pub struct PurgePreview {
     pub asset_ids: Vec<String>,
     pub derived_content_ids: Vec<String>,
     pub diary_versions_still_referencing: Vec<String>,
+    /// 引用这条记录、会被一并清理的 AI 回应（`ai_responses` 的请求与正文一起删）。
+    #[serde(default)]
+    pub ai_response_ids: Vec<String>,
+    /// 清理后仍保留的日记输入快照（`body` 里可能含这条记录的正文；#161 方案 A）。
+    #[serde(default)]
+    pub retained_source_snapshot_ids: Vec<String>,
 }
 
 /// 永久清理结果，契约 4.1 节 `captures.purge`。
 ///
-/// 三个列表就是真的删掉的 id；`purged_diary_version_ids` 与预览里的
-/// `diary_versions_still_referencing` 是同一批（预览之后清单变了会被拒绝）。
+/// `purged_*` 就是真的删掉的 id；`retained_*` 是**如实保留**的 id。
+/// `purged_diary_version_ids` / `retained_diary_version_ids` 按调用方的
+/// `delete_diary_versions` 二选一：删除时前者等于预览里的
+/// `diary_versions_still_referencing`；保留时后者等于它，日记日与当前指针不动。
+/// `retained_source_snapshot_ids` 与预览同名项一致：快照 body 里的材料正文不删
+/// （#161 方案 A），`purge` 后用同一 operationId 重放也不会吐出正文——该记录的非
+/// purge 回执已经一起清掉。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PurgeResult {
     pub capture_id: String,
     pub purged_asset_ids: Vec<String>,
     pub purged_derived_content_ids: Vec<String>,
     pub purged_diary_version_ids: Vec<String>,
+    #[serde(default)]
+    pub purged_ai_response_ids: Vec<String>,
+    #[serde(default)]
+    pub retained_diary_version_ids: Vec<String>,
+    #[serde(default)]
+    pub retained_source_snapshot_ids: Vec<String>,
+    /// 被清掉的该记录幂等回执数量（`captures.purge` 自己的回执保留，供重放）。
+    #[serde(default)]
+    pub cleaned_receipt_count: i64,
 }
 
 /// 任务分页结果。cursor 对调用方不透明。

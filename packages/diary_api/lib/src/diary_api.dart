@@ -110,13 +110,19 @@ abstract class DiaryApi {
     required String operationId,
   });
 
-  /// 预览永久清理的影响：将删除的原件、派生内容，以及仍引用它的日记版本。
+  /// 预览永久清理的影响：将删除的原件、派生内容、AI 回应，仍引用它的日记版本，
+  /// 以及清理后仍会保留的输入快照（`retainedSourceSnapshotIds`）。
   Future<PurgePreview> previewPurge(String id);
 
   /// 永久清理，只由明确的用户操作发起。
+  ///
+  /// [deleteDiaryVersions] 对应契约 §8「由用户决定是否同时删日记版本」：默认
+  /// `false` 保留仍引用这条记录的版本（一次生成可能覆盖同一天多条记录，删 A
+  /// 会连带删掉含 B 内容的日记）；`true` 才一并删除并调整 `diary_days` 当前指针。
   Future<PurgeResult> purgeCapture({
     required String id,
     required String previewToken,
+    bool deleteDiaryVersions = false,
     required String operationId,
   });
 

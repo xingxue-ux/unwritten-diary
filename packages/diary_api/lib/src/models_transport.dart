@@ -36,12 +36,12 @@ class CoreInfo {
 
   @override
   int get hashCode => Object.hash(
-        apiVersion,
-        dataSchemaVersion,
-        buildVersion,
-        libraryId,
-        unorderedHash(capabilities),
-      );
+    apiVersion,
+    dataSchemaVersion,
+    buildVersion,
+    libraryId,
+    unorderedHash(capabilities),
+  );
 
   @override
   String toString() => 'CoreInfo(api $apiVersion, schema $dataSchemaVersion)';
@@ -71,11 +71,11 @@ class RecoverySummary {
 
   @override
   int get hashCode => Object.hash(
-        recoveredDraftCount,
-        orphanedImportCount,
-        unrecoveredRecordingCount,
-        Object.hashAll(notes),
-      );
+    recoveredDraftCount,
+    orphanedImportCount,
+    unrecoveredRecordingCount,
+    Object.hashAll(notes),
+  );
 
   @override
   String toString() => 'RecoverySummary(drafts: $recoveredDraftCount, '
@@ -109,12 +109,12 @@ class CoreSnapshot {
 
   @override
   int get hashCode => Object.hash(
-        coreInfo,
-        recovery,
-        pendingJobCount,
-        lastEventSequence,
-        captureCount,
-      );
+    coreInfo,
+    recovery,
+    pendingJobCount,
+    lastEventSequence,
+    captureCount,
+  );
 
   @override
   String toString() => 'CoreSnapshot(pending jobs: $pendingJobCount)';
@@ -285,6 +285,8 @@ class PurgePreview {
     this.assetIds = const [],
     this.derivedContentIds = const [],
     this.diaryVersionsStillReferencing = const [],
+    this.aiResponseIds = const [],
+    this.retainedSourceSnapshotIds = const [],
   });
 
   final String captureId;
@@ -298,6 +300,14 @@ class PurgePreview {
   /// 正文里可能仍包含当时信息的历史版本，必须单独列出让用户决定。
   final List<String> diaryVersionsStillReferencing;
 
+  /// 引用这条记录、永久清理时会一并删除的 AI 回应。
+  final List<String> aiResponseIds;
+
+  /// 清理后**仍会保留**的日记输入快照。快照 body 里冻结了当时的材料正文；
+  /// 没有「快照→来源」映射就无法外科式脱敏（#161 方案 A）。界面必须如实告知，
+  /// 不能宣称已经删干净。
+  final List<String> retainedSourceSnapshotIds;
+
   @override
   bool operator ==(Object other) =>
       other is PurgePreview &&
@@ -305,20 +315,26 @@ class PurgePreview {
       other.previewToken == previewToken &&
       listEquals(other.assetIds, assetIds) &&
       listEquals(other.derivedContentIds, derivedContentIds) &&
-      listEquals(other.diaryVersionsStillReferencing, diaryVersionsStillReferencing);
+      listEquals(
+        other.diaryVersionsStillReferencing,
+        diaryVersionsStillReferencing,
+      ) &&
+      listEquals(other.aiResponseIds, aiResponseIds) &&
+      listEquals(other.retainedSourceSnapshotIds, retainedSourceSnapshotIds);
 
   @override
   int get hashCode => Object.hash(
-        captureId,
-        previewToken,
-        Object.hashAll(assetIds),
-        Object.hashAll(derivedContentIds),
-        Object.hashAll(diaryVersionsStillReferencing),
-      );
+    captureId,
+    previewToken,
+    Object.hashAll(assetIds),
+    Object.hashAll(derivedContentIds),
+    Object.hashAll(diaryVersionsStillReferencing),
+    Object.hashAll(aiResponseIds),
+    Object.hashAll(retainedSourceSnapshotIds),
+  );
 
   @override
-  String toString() =>
-      'PurgePreview($captureId, ${assetIds.length} 个原件受影响)';
+  String toString() => 'PurgePreview($captureId, ${assetIds.length} 个原件受影响)';
 }
 
 /// 永久清理结果。
@@ -328,12 +344,29 @@ class PurgeResult {
     this.purgedAssetIds = const [],
     this.purgedDerivedContentIds = const [],
     this.purgedDiaryVersionIds = const [],
+    this.purgedAiResponseIds = const [],
+    this.retainedDiaryVersionIds = const [],
+    this.retainedSourceSnapshotIds = const [],
+    this.cleanedReceiptCount = 0,
   });
 
   final String captureId;
   final List<String> purgedAssetIds;
   final List<String> purgedDerivedContentIds;
+
+  /// 真的删掉的日记版本；`deleteDiaryVersions = false` 时为空。
   final List<String> purgedDiaryVersionIds;
+
+  final List<String> purgedAiResponseIds;
+
+  /// 按用户选择**保留**的日记版本（与 [purgedDiaryVersionIds] 二选一）。
+  final List<String> retainedDiaryVersionIds;
+
+  /// 如实报告仍保留的输入快照：body 里可能含被清理记录的正文（#161 方案 A）。
+  final List<String> retainedSourceSnapshotIds;
+
+  /// 清掉的、带正文的幂等回执数量（`captures.purge` 自己的回执保留）。
+  final int cleanedReceiptCount;
 
   @override
   bool operator ==(Object other) =>
@@ -341,15 +374,23 @@ class PurgeResult {
       other.captureId == captureId &&
       listEquals(other.purgedAssetIds, purgedAssetIds) &&
       listEquals(other.purgedDerivedContentIds, purgedDerivedContentIds) &&
-      listEquals(other.purgedDiaryVersionIds, purgedDiaryVersionIds);
+      listEquals(other.purgedDiaryVersionIds, purgedDiaryVersionIds) &&
+      listEquals(other.purgedAiResponseIds, purgedAiResponseIds) &&
+      listEquals(other.retainedDiaryVersionIds, retainedDiaryVersionIds) &&
+      listEquals(other.retainedSourceSnapshotIds, retainedSourceSnapshotIds) &&
+      other.cleanedReceiptCount == cleanedReceiptCount;
 
   @override
   int get hashCode => Object.hash(
-        captureId,
-        Object.hashAll(purgedAssetIds),
-        Object.hashAll(purgedDerivedContentIds),
-        Object.hashAll(purgedDiaryVersionIds),
-      );
+    captureId,
+    Object.hashAll(purgedAssetIds),
+    Object.hashAll(purgedDerivedContentIds),
+    Object.hashAll(purgedDiaryVersionIds),
+    Object.hashAll(purgedAiResponseIds),
+    Object.hashAll(retainedDiaryVersionIds),
+    Object.hashAll(retainedSourceSnapshotIds),
+    cleanedReceiptCount,
+  );
 
   @override
   String toString() => 'PurgeResult($captureId)';
@@ -406,7 +447,8 @@ class ImportManifest {
       other.originalName == originalName;
 
   @override
-  int get hashCode => Object.hash(copiedBytes, sha256, detectedMime, originalName);
+  int get hashCode =>
+      Object.hash(copiedBytes, sha256, detectedMime, originalName);
 
   @override
   String toString() => 'ImportManifest($originalName, $copiedBytes bytes)';
@@ -445,14 +487,14 @@ class ImportStatus {
 
   @override
   int get hashCode => Object.hash(
-        importId,
-        state,
-        copiedBytes,
-        totalBytes,
-        assetId,
-        errorCode,
-        message,
-      );
+    importId,
+    state,
+    copiedBytes,
+    totalBytes,
+    assetId,
+    errorCode,
+    message,
+  );
 
   @override
   String toString() => 'ImportStatus($importId, ${state.wire})';
@@ -517,13 +559,13 @@ class SegmentManifest {
 
   @override
   int get hashCode => Object.hash(
-        segmentId,
-        relativeFileName,
-        durationMs,
-        sha256,
-        byteSize,
-        closedAt,
-      );
+    segmentId,
+    relativeFileName,
+    durationMs,
+    sha256,
+    byteSize,
+    closedAt,
+  );
 
   @override
   String toString() => 'SegmentManifest($segmentId, ${durationMs}ms)';
@@ -594,14 +636,14 @@ class NativeRecordingStatus {
 
   @override
   int get hashCode => Object.hash(
-        recordingId,
-        state,
-        wallClock,
-        elapsedMs,
-        persistedThroughMs,
-        inputDeviceChanged,
-        message,
-      );
+    recordingId,
+    state,
+    wallClock,
+    elapsedMs,
+    persistedThroughMs,
+    inputDeviceChanged,
+    message,
+  );
 
   @override
   String toString() =>
@@ -641,14 +683,14 @@ class RecordingSession {
 
   @override
   int get hashCode => Object.hash(
-        recordingId,
-        assetId,
-        state,
-        elapsedMs,
-        durableThroughMs,
-        segmentCount,
-        lastError,
-      );
+    recordingId,
+    assetId,
+    state,
+    elapsedMs,
+    durableThroughMs,
+    segmentCount,
+    lastError,
+  );
 
   @override
   String toString() =>
@@ -685,13 +727,13 @@ class RecordingFinalizeResult {
 
   @override
   int get hashCode => Object.hash(
-        recordingId,
-        assetId,
-        state,
-        segmentCount,
-        transcriptionQueued,
-        logicalDurationMs,
-      );
+    recordingId,
+    assetId,
+    state,
+    segmentCount,
+    transcriptionQueued,
+    logicalDurationMs,
+  );
 
   @override
   String toString() => 'RecordingFinalizeResult($recordingId, $segmentCount 段)';
@@ -726,12 +768,12 @@ class RecordingRecovery {
 
   @override
   int get hashCode => Object.hash(
-        recordingId,
-        state,
-        Object.hashAll(closedSegmentIndexes),
-        gapMs,
-        Object.hashAll(notes),
-      );
+    recordingId,
+    state,
+    Object.hashAll(closedSegmentIndexes),
+    gapMs,
+    Object.hashAll(notes),
+  );
 
   @override
   String toString() =>
@@ -886,14 +928,14 @@ class AiResponse {
 
   @override
   int get hashCode => Object.hash(
-        id,
-        requestText,
-        body,
-        createdAt,
-        Object.hashAll(captureIds),
-        providerId,
-        model,
-      );
+    id,
+    requestText,
+    body,
+    createdAt,
+    Object.hashAll(captureIds),
+    providerId,
+    model,
+  );
 
   @override
   String toString() => 'AiResponse($id)';
@@ -937,15 +979,15 @@ class IndexStatus {
 
   @override
   int get hashCode => Object.hash(
-        coverage,
-        keywordIndexReady,
-        semanticIndexReady,
-        modelVersion,
-        chunkerVersion,
-        pendingCount,
-        failedCount,
-        Object.hashAll(reasons),
-      );
+    coverage,
+    keywordIndexReady,
+    semanticIndexReady,
+    modelVersion,
+    chunkerVersion,
+    pendingCount,
+    failedCount,
+    Object.hashAll(reasons),
+  );
 
   @override
   String toString() =>
@@ -1052,22 +1094,23 @@ class DueRunSummary {
 
   @override
   int get hashCode => Object.hash(
-        startedAt,
-        trigger,
-        processed,
-        succeeded,
-        failed,
-        retrying,
-        backfilled,
-        recovered,
-        dueBacklog,
-        waitingDependency,
-        dependencyFailed,
-        nextWakeup,
-      );
+    startedAt,
+    trigger,
+    processed,
+    succeeded,
+    failed,
+    retrying,
+    backfilled,
+    recovered,
+    dueBacklog,
+    waitingDependency,
+    dependencyFailed,
+    nextWakeup,
+  );
 
   @override
-  String toString() => 'DueRunSummary(trigger: $trigger, processed: $processed, '
+  String toString() =>
+      'DueRunSummary(trigger: $trigger, processed: $processed, '
       'dueBacklog: $dueBacklog, waitingDependency: $waitingDependency)';
 }
 
@@ -1095,12 +1138,12 @@ class ProviderTestReport {
 
   @override
   int get hashCode => Object.hash(
-        providerId,
-        unorderedHash(results.entries.map((e) => e.key)),
-        unorderedHash(results.entries.map((e) => e.value)),
-        actualCallMade,
-        message,
-      );
+    providerId,
+    unorderedHash(results.entries.map((e) => e.key)),
+    unorderedHash(results.entries.map((e) => e.value)),
+    actualCallMade,
+    message,
+  );
 
   @override
   String toString() =>
@@ -1136,15 +1179,14 @@ class Settings {
     String? defaultStyleId,
     int? revision,
     DateTime? updatedAt,
-  }) =>
-      Settings(
-        diaryTimeZone: diaryTimeZone ?? this.diaryTimeZone,
-        revision: revision ?? this.revision,
-        updatedAt: updatedAt ?? this.updatedAt,
-        autoOrganizeEnabled: autoOrganizeEnabled ?? this.autoOrganizeEnabled,
-        autoOrganizeTime: autoOrganizeTime ?? this.autoOrganizeTime,
-        defaultStyleId: defaultStyleId ?? this.defaultStyleId,
-      );
+  }) => Settings(
+    diaryTimeZone: diaryTimeZone ?? this.diaryTimeZone,
+    revision: revision ?? this.revision,
+    updatedAt: updatedAt ?? this.updatedAt,
+    autoOrganizeEnabled: autoOrganizeEnabled ?? this.autoOrganizeEnabled,
+    autoOrganizeTime: autoOrganizeTime ?? this.autoOrganizeTime,
+    defaultStyleId: defaultStyleId ?? this.defaultStyleId,
+  );
 
   @override
   bool operator ==(Object other) =>
@@ -1158,13 +1200,13 @@ class Settings {
 
   @override
   int get hashCode => Object.hash(
-        diaryTimeZone,
-        revision,
-        updatedAt,
-        autoOrganizeEnabled,
-        autoOrganizeTime,
-        defaultStyleId,
-      );
+    diaryTimeZone,
+    revision,
+    updatedAt,
+    autoOrganizeEnabled,
+    autoOrganizeTime,
+    defaultStyleId,
+  );
 
   @override
   String toString() =>
@@ -1209,15 +1251,15 @@ class PluginPackageReport {
 
   @override
   int get hashCode => Object.hash(
-        packageId,
-        version,
-        apiRange,
-        compatible,
-        Object.hashAll(supportedPlatforms),
-        unorderedHash(requestedPermissions),
-        entryKind,
-        Object.hashAll(issues),
-      );
+    packageId,
+    version,
+    apiRange,
+    compatible,
+    Object.hashAll(supportedPlatforms),
+    unorderedHash(requestedPermissions),
+    entryKind,
+    Object.hashAll(issues),
+  );
 
   @override
   String toString() =>
@@ -1295,17 +1337,18 @@ class BackupInspection {
 
   @override
   int get hashCode => Object.hash(
-        packageTicket,
-        schemaVersion,
-        apiVersion,
-        byteSize,
-        createdAt,
-        assetCount,
-        Object.hashAll(issues),
-      );
+    packageTicket,
+    schemaVersion,
+    apiVersion,
+    byteSize,
+    createdAt,
+    assetCount,
+    Object.hashAll(issues),
+  );
 
   @override
-  String toString() => 'BackupInspection($packageTicket, schema $schemaVersion)';
+  String toString() =>
+      'BackupInspection($packageTicket, schema $schemaVersion)';
 }
 
 /// 恢复选项。默认新建资料库，不覆盖现库。

@@ -856,6 +856,7 @@ impl Core {
                 state: capture.state.wire().to_owned(),
             });
         }
+        ensure_not_trashed(&capture, "改正文")?;
 
         // 记录自己的文字（`captures.draft_text`）与「这一篇的上一版」可能是**同一段文字
         // 的两种存法**：提交时会把 `draft_text` 复制成一条 text 修订。改正文如果只改
@@ -1063,13 +1064,25 @@ impl Core {
     }
 
     /// 永久清理，契约 4.1 节 `captures.purge`。必须带 `previewPurge` 的令牌。
+    ///
+    /// `delete_diary_versions` 是契约 §8 的「由用户决定是否同时删日记版本」：`false`
+    /// （调用方默认）保留仍引用这条记录的版本，`true` 才删并把 `diary_days` 当前指针
+    /// 换到同一天剩下的最新一版。删的是 `generated` 版本，一次生成可能覆盖同一天多条
+    /// 记录，所以默认保留；这个选择会存进幂等指纹，同一个 `operationId` 换选择报冲突。
     pub fn purge_capture(
         &mut self,
         capture_id: &str,
         preview_token: &str,
+        delete_diary_versions: bool,
         operation_id: &str,
     ) -> Result<PurgeResult> {
-        recycle::purge(self, capture_id, preview_token, operation_id)
+        recycle::purge(
+            self,
+            capture_id,
+            preview_token,
+            delete_diary_versions,
+            operation_id,
+        )
     }
 
     /// 仅供测试：改预览令牌有效期（秒）。产品默认 10 分钟。
@@ -2059,6 +2072,21 @@ fn ensure_revision(capture: &Capture, expected_revision: i64) -> Result<()> {
         return Err(CoreError::RevisionConflict {
             expected: expected_revision,
             actual: capture.revision,
+        });
+    }
+    Ok(())
+}
+
+/// 回收站里的记录是**只读**的：先恢复，再改正文/导入/最终化录音。
+///
+/// trash 已经拒绝「还有在途录音/导入」的记录；这个检查是第二道闸：旧库、异常路径或
+/// 直接构造出来的 trashed 会话都不能再被写入口复活成「回收站里还在长内容」。
+pub(crate) fn ensure_not_trashed(capture: &Capture, action: &str) -> Result<()> {
+    if capture.state == CaptureState::Trashed {
+        return Err(CoreError::InvalidState {
+            entity: "记录",
+            id: capture.id.clone(),
+            state: format!("在回收站里，不能{action}；先恢复再操作"),
         });
     }
     Ok(())
