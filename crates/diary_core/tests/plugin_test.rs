@@ -859,13 +859,14 @@ fn wasm_infinite_loop_is_stopped_by_instruction_budget() {
     );
     core.install_plugin(&package.path, "linux", &[]).unwrap();
     let run = invocation("test.spin", "command:spin");
-    let started = std::time::Instant::now();
     let result = core.run_plugin(&run).unwrap();
-    let elapsed = started.elapsed();
+    // 断言语义：预算耗尽 → timeout + quota_exceeded + 明确说「指令预算」。
+    // **不断言墙钟 5 秒**：并行负载下会把实验室机器的繁忙误报成功能回归
+    // （2026-10-20 已发生过一次；同一条断言第二次在负载下超时）。
     assert_eq!(result.status, "timeout", "{:?}", result.error_message);
     assert_eq!(result.error_code.as_deref(), Some("quota_exceeded"));
     assert!(result.error_message.as_deref().unwrap().contains("指令预算"));
-    assert!(elapsed.as_secs() < 5, "fuel 应在秒级内中止死循环");
+    assert!(result.output.is_none(), "预算耗尽不能产出一份看似成功的正文");
     // 核心没有被打垮。
     assert_eq!(core.list_plugins().unwrap().len(), 1);
 }
