@@ -31,7 +31,7 @@ pub(crate) fn prepare(
     operation_id: &str,
 ) -> Result<RecordingTicket> {
     let root = core.root_dir()?.to_path_buf();
-    let capture = crate::load_capture(&core.conn, capture_id)?;
+    let capture = crate::load_capture_raw(&core.conn, capture_id)?;
     // 回收站里的记录只读：不在 trash 之后开始一段新录音。
     crate::ensure_not_trashed(&capture, "开始录音")?;
 
@@ -371,7 +371,7 @@ pub(crate) fn finalize(
         params![revision_id, source_id, session.asset_id, support::to_iso(now)],
     )?;
 
-    let capture = crate::load_capture(&tx, &session.capture_id)?;
+    let capture = crate::load_capture_raw(&tx, &session.capture_id)?;
     let new_revision = capture.revision + 1;
     tx.execute(
         "UPDATE captures SET revision = ?1, updated_at = ?2 WHERE id = ?3",
@@ -405,6 +405,10 @@ pub(crate) fn finalize(
 
     Ok(RecordingFinalizeResult {
         recording_id: recording_id.to_owned(),
+        capture_id: session.capture_id,
+        // 就是上面那条 UPDATE 写进去的 revision：客户端拿它当 commit 的
+        // expected_revision，不要自己猜。
+        capture_revision: new_revision,
         asset_id: session.asset_id,
         state: final_state,
         segment_count: present.len() as i64,

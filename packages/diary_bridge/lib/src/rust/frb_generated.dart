@@ -6623,15 +6623,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RecordingFinalizeResult dco_decode_recording_finalize_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return RecordingFinalizeResult(
       recordingId: dco_decode_String(arr[0]),
-      assetId: dco_decode_String(arr[1]),
-      state: dco_decode_recording_state(arr[2]),
-      segmentCount: dco_decode_i_64(arr[3]),
-      transcriptionQueued: dco_decode_bool(arr[4]),
-      logicalDurationMs: dco_decode_i_64(arr[5]),
+      captureId: dco_decode_String(arr[1]),
+      captureRevision: dco_decode_i_64(arr[2]),
+      assetId: dco_decode_String(arr[3]),
+      state: dco_decode_recording_state(arr[4]),
+      segmentCount: dco_decode_i_64(arr[5]),
+      transcriptionQueued: dco_decode_bool(arr[6]),
+      logicalDurationMs: dco_decode_i_64(arr[7]),
     );
   }
 
@@ -9460,6 +9462,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_recordingId = sse_decode_String(deserializer);
+    var var_captureId = sse_decode_String(deserializer);
+    var var_captureRevision = sse_decode_i_64(deserializer);
     var var_assetId = sse_decode_String(deserializer);
     var var_state = sse_decode_recording_state(deserializer);
     var var_segmentCount = sse_decode_i_64(deserializer);
@@ -9467,6 +9471,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_logicalDurationMs = sse_decode_i_64(deserializer);
     return RecordingFinalizeResult(
       recordingId: var_recordingId,
+      captureId: var_captureId,
+      captureRevision: var_captureRevision,
       assetId: var_assetId,
       state: var_state,
       segmentCount: var_segmentCount,
@@ -11958,6 +11964,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.recordingId, serializer);
+    sse_encode_String(self.captureId, serializer);
+    sse_encode_i_64(self.captureRevision, serializer);
     sse_encode_String(self.assetId, serializer);
     sse_encode_recording_state(self.state, serializer);
     sse_encode_i_64(self.segmentCount, serializer);
