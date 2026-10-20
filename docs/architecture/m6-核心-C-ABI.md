@@ -62,7 +62,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 | 符号 | 签名 | 说明 |
 |---|---|---|
-| `diary_capi_version` | `char *diary_capi_version(void)` | 诊断用版本戳 `diary_capi/0.1.0 apiVersion=1.0`；**协议版本在信封的 `apiVersion` 里**，不用它协商 |
+| `diary_capi_version` | `char *diary_capi_version(void)` | 诊断用版本戳 `diary_capi/0.1.0 apiVersion=1.1`；**协议版本在信封的 `apiVersion` 里**，不用它协商 |
 | `diary_open` | `handle *diary_open(const char *path)` | 打开/创建资料库；失败返回 `NULL`，原因在 `diary_last_error` |
 | `diary_close` | `int diary_close(handle *h)` | `0` 成功；`1` 空指针；`2` 句柄无效或已关闭；`3` 桥面内部错误。重复关闭返回 `2`，不崩 |
 | `diary_call` | `char *diary_call(handle *h, const char *method_json)` | 方法调用；**永远返回信封 JSON**（失败也是 `ok:false` 信封） |
@@ -94,8 +94,8 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 ### 4.3 响应（信封）
 
 ```json
-{"apiVersion":"1.0","data":{…},"ok":true}
-{"apiVersion":"1.0","error":{"code":"invalid_argument","message":"…","retryable":false},"ok":false}
+{"apiVersion":"1.1","data":{…},"ok":true}
+{"apiVersion":"1.1","error":{"code":"invalid_argument","message":"…","retryable":false},"ok":false}
 ```
 
 - **成功与失败都带 `apiVersion`**（`apiVersion` = `diary_core::API_VERSION`，契约第 1.2 节口径）；
@@ -321,7 +321,7 @@ diary_call(h, json)
 
 ```
 >>> {"method":"core.info","params":null}
-<<< {"apiVersion":"1.0","data":{"api_version":"1.0","build_version":"0.1.0",
+<<< {"apiVersion":"1.1","data":{"api_version":"1.1","build_version":"0.1.0",
     "capabilities":["core.info","captures.createDraft","captures.saveDraft","captures.commit",
     "sources.extract","search.start","indexes.rebuild","jobs.runDue","jobs.status"],
     "capture_count":0,"data_schema_version":8,"last_event_sequence":0,"library_id":"library",
@@ -329,11 +329,11 @@ diary_call(h, json)
 
 >>> {"method":"captures.saveDraft","params":{"capture_id":"cap_01a14a7f…",
     "expected_revision":1,"operation_id":"op-capi-save","text":"今天在鸿蒙上验证核心的 C ABI，关键词是鹅掌楸与检索。"}}
-<<< {"apiVersion":"1.0","data":{"durable":true,"revision":2,"saved_at":"2026-10-17T15:33:57.630Z"},"ok":true}
+<<< {"apiVersion":"1.1","data":{"durable":true,"revision":2,"saved_at":"2026-10-17T15:33:57.630Z"},"ok":true}
 
 >>> {"method":"search.start","params":{"query_revision":1,
     "request":{"mode":"keyword","page_size":10,"query":"关键词"}}}
-<<< {"apiVersion":"1.0","data":{"cursor":null,"index_coverage":"complete","phase":"done",
+<<< {"apiVersion":"1.1","data":{"cursor":null,"index_coverage":"complete","phase":"done",
     "query_revision":1,"results":[{"hit_id":"seg_01a14a80…","group_id":"src_01a14a80…",
     "capture_id":"cap_01a14a7f…",
     "matched_by":["keyword"],"snippet":"今天在鸿蒙上验证核心的 C ABI，关键词是鹅掌楸与检索。",
@@ -342,11 +342,11 @@ diary_call(h, json)
     "session_id":"search_01a14a8004af72b78f660abe43b1a9c8","warnings":[]},"ok":true}
 
 >>> {"method":"indexes.rebuild","params":{"operation_id":"op-capi-index","reason":"capi e2e","scope":"all"}}
-<<< {"apiVersion":"1.0","data":{"attempt_count":0,"id":"job_01a14a80…","kind":"index",
+<<< {"apiVersion":"1.1","data":{"attempt_count":0,"id":"job_01a14a80…","kind":"index",
     "state":"queued","target_ids":[],"max_attempts":5,"priority":10,"requires_user_action":false},"ok":true}
 
 >>> {"method":"jobs.runDue","params":{"budget_ms":30000,"trigger":"manual"}}
-<<< {"apiVersion":"1.0","data":{"backfilled":0,"dependency_failed":0,"due_backlog":0,
+<<< {"apiVersion":"1.1","data":{"backfilled":0,"dependency_failed":0,"due_backlog":0,
     "failed":0,"next_wakeup":null,"processed":1,"recovered":0,"retrying":0,
     "started_at":"2026-10-17T15:33:58.094915204Z","succeeded":1,"trigger":"manual",
     "waiting_dependency":0},"ok":true}
@@ -356,14 +356,14 @@ diary_call(h, json)
 
 ```
 >>> {"method":"captures.purge","params":{"id":"cap_1"}}
-<<< {"apiVersion":"1.0","error":{"code":"invalid_argument","message":"C ABI：未接入的方法
+<<< {"apiVersion":"1.1","error":{"code":"invalid_argument","message":"C ABI：未接入的方法
     `captures.purge`（已接入：core.info、captures.createDraft、…、jobs.status）","retryable":false},"ok":false}
 
 >>> {"method":"sources.extract","params":{"source_ref":"src_不存在"}}
-<<< {"apiVersion":"1.0","error":{"code":"not_found","message":"找不到来源修订：src_不存在","retryable":false},"ok":false}
+<<< {"apiVersion":"1.1","error":{"code":"not_found","message":"找不到来源修订：src_不存在","retryable":false},"ok":false}
 
 >>> {"method":"__test.panic","params":null}
-<<< {"apiVersion":"1.0","error":{"code":"invalid_state","message":"C ABI：panic 已被拦截
+<<< {"apiVersion":"1.1","error":{"code":"invalid_state","message":"C ABI：panic 已被拦截
     （diary_call，进程未中止）：diary_capi 测试钩子：注入的 panic","retryable":false},"ok":false}
 ```
 

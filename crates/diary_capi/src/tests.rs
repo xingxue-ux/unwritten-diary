@@ -233,7 +233,7 @@ fn version_and_last_error_travel_through_the_c_api() {
     // SAFETY: 同上，只释放一次。
     unsafe { diary_string_free(raw) };
     assert!(text.starts_with("diary_capi/"), "{text}");
-    assert!(text.contains("apiVersion=1.0"), "{text}");
+    assert!(text.contains("apiVersion=1.1"), "{text}");
 
     let (dir, _path, handle) = open_temp("version");
 
@@ -374,7 +374,7 @@ fn end_to_end_draft_to_search_to_jobs() {
     let text = "今天在鸿蒙上验证核心的 C ABI，关键词是鹅掌楸与检索。";
 
     let info = expect_ok(&call(handle, "core.info", Value::Null));
-    assert_eq!(info["api_version"], json!("1.0"));
+    assert_eq!(info["api_version"], json!("1.1"));
     assert_eq!(info["library_id"], json!("library"));
     assert!(info["data_schema_version"].as_i64().unwrap() > 0);
     let capabilities = info["capabilities"].as_array().unwrap();
@@ -416,6 +416,51 @@ fn end_to_end_draft_to_search_to_jobs() {
     ));
     let results = snapshot["results"].as_array().unwrap();
     assert!(!results.is_empty(), "应当命中刚保存的正文：{snapshot}");
+    // **线格式**断言：`capture_id` 真的过了 FFI 边界（`check_arkts_capi_contract.py`
+    // 只核对方法/错误码/符号，不检查 payload，所以这里是唯一证据），且两种命中的
+    // 口径与核心契约一致：片段命中是「这篇片段所属的记录」，记录文字命中才等于
+    // `group_id`。只查 `results` 非空的话，字段序列化成空串、或者干脆还是
+    // `source_id`，测试都照样绿。
+    let segment_hit = results
+        .iter()
+        .find(|hit| hit["group_id"] == json!(&source_id))
+        .unwrap_or_else(|| panic!("应当有一条片段命中（group_id = source_id）：{snapshot}"));
+    assert_eq!(
+        segment_hit["source_id"],
+        json!(&source_id),
+        "片段命中的 source_id 是来源篇的 id：{segment_hit}"
+    );
+    assert_eq!(
+        segment_hit["capture_id"],
+        json!(&capture_id),
+        "片段命中的 capture_id 是这篇片段所属的记录，不是来源篇：{segment_hit}"
+    );
+    assert_ne!(
+        segment_hit["capture_id"], segment_hit["group_id"],
+        "片段命中上 capture_id 与 group_id 不是一回事：{segment_hit}"
+    );
+
+    let capture_hit = results
+        .iter()
+        .find(|hit| hit["hit_id"] == json!(format!("cap_{capture_id}")))
+        .unwrap_or_else(|| {
+            panic!("应当有一条记录文字命中（hit_id = cap_<capture_id>）：{snapshot}")
+        });
+    assert_eq!(
+        capture_hit["capture_id"],
+        json!(&capture_id),
+        "记录文字命中的 capture_id 是这篇记录：{capture_hit}"
+    );
+    assert_eq!(
+        capture_hit["capture_id"], capture_hit["group_id"],
+        "记录文字命中天然自成一组，capture_id 与 group_id 相同：{capture_hit}"
+    );
+    assert_eq!(
+        capture_hit["hit_id"],
+        json!(format!("cap_{capture_id}")),
+        "记录文字命中的 hit_id 由 capture_id 派生：{capture_hit}"
+    );
+
     assert!(
         snapshot["session_id"]
             .as_str()
@@ -1870,7 +1915,11 @@ fn search_pagination_upgrade_and_cancel() {
 fn capabilities_include_every_wired_method() {
     let (dir, _path, handle) = open_temp("capabilities");
     let info = expect_ok(&call(handle, "core.info", Value::Null));
-    assert_eq!(info["api_version"], json!("1.0"), "加方法不升 apiVersion");
+    assert_eq!(
+        info["api_version"],
+        json!("1.1"),
+        "加方法不升 apiVersion（1.1 是必填字段升的，与本块的方法数无关）"
+    );
 
     let capabilities: Vec<&str> = info["capabilities"]
         .as_array()
