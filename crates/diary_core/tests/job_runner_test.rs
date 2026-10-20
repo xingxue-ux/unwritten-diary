@@ -74,8 +74,9 @@ fn import_text(core: &mut Core, text: &[u8], name: &str, operation_id: &str) -> 
 }
 
 fn job_changed_count(core: &Core) -> usize {
-    core.events_since(0)
+    core.events_page(0, 1000)
         .unwrap()
+        .events
         .into_iter()
         .filter(|event| event.event_type == EventType::JobChanged)
         .count()

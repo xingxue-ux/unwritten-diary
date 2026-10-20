@@ -14,6 +14,8 @@ import 'ai_provider_panel.dart';
 import 'file_import_controller.dart';
 import 'file_import_journal.dart';
 import 'core_wakeup.dart';
+import 'index_settings_controller.dart';
+import 'index_settings_panel.dart';
 import 'library_care_controller.dart';
 import 'library_care_panel.dart';
 import 'readable_export_controller.dart';
@@ -56,6 +58,7 @@ class _ExperienceShellState extends State<ExperienceShell>
   String? _importsNotice;
   late final RevisionController _revisions;
   late final LibraryCareController _libraryCare;
+  late final IndexSettingsController _indexSettings;
   late final StyleSettingsController _styleSettings;
   late final ReadableExportController _readableExport;
   late final Listenable _contentChanges;
@@ -110,6 +113,10 @@ class _ExperienceShellState extends State<ExperienceShell>
       capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
       captureCount: widget.snapshot?.captureCount ?? 0,
     );
+    _indexSettings = IndexSettingsController(
+      widget.api,
+      capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
+    );
     _styleSettings = StyleSettingsController(
       widget.api,
       capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
@@ -124,11 +131,13 @@ class _ExperienceShellState extends State<ExperienceShell>
       _fileImports,
       _revisions,
       _libraryCare,
+      _indexSettings,
       _styleSettings,
       _readableExport,
     ]);
     if (!widget.demoMode) {
       unawaited(_initializeImports());
+      unawaited(_indexSettings.load());
     }
     _search.addListener(_onSearchValueChanged);
     unawaited(
@@ -181,6 +190,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     _fileImports.dispose();
     _revisions.dispose();
     _libraryCare.dispose();
+    _indexSettings.dispose();
     _styleSettings.dispose();
     _readableExport.dispose();
     _editor.dispose();
@@ -196,6 +206,9 @@ class _ExperienceShellState extends State<ExperienceShell>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !widget.demoMode) {
+      unawaited(_indexSettings.load());
+    }
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
@@ -361,6 +374,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     });
     if (panel == 'storage') unawaited(_libraryCare.loadTrash());
     if (panel == 'style') unawaited(_styleSettings.load());
+    if (panel == 'index') unawaited(_indexSettings.load());
   }
 
   Future<String?> _pickBackupTarget() async {
@@ -1654,6 +1668,9 @@ class _ExperienceShellState extends State<ExperienceShell>
         ],
         const SizedBox(height: 18),
         _section('创作与整理', [
+          if (!widget.demoMode &&
+              _indexSettings.status?.semanticIndexReady == false)
+            ('搜索索引 · 需要处理', '语义检索尚未就绪，点此查看原因并重建', 'index', Icons.manage_search),
           ('风格偏好', '篇幅、语气与叙述方式', 'style', Icons.tune),
           ('模型服务', '能力、连接与使用范围', 'model', Icons.auto_awesome_outlined),
           ('整理时机', '安静地安排每天的整理', 'schedule', Icons.schedule),
@@ -1661,6 +1678,9 @@ class _ExperienceShellState extends State<ExperienceShell>
         ]),
         const SizedBox(height: 18),
         _section('资料与应用', [
+          if (widget.demoMode ||
+              _indexSettings.status?.semanticIndexReady != false)
+            ('搜索索引', '状态与语义索引重建', 'index', Icons.manage_search),
           ('插件', '查看权限与启停', 'plugins', Icons.extension_outlined),
           ('备份与恢复', '完整备份和阅读导出', 'backup', Icons.backup_outlined),
           ('阅读导出', '按日期生成便于阅读的副本', 'export', Icons.article_outlined),
@@ -1741,6 +1761,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       'response' => _responsePanel(),
       'tasks' => _tasksPanel(),
       'style' => StyleSettingsPanel(controller: _styleSettings),
+      'index' => IndexSettingsPanel(controller: _indexSettings),
       'model' => _modelPanel(),
       'schedule' => _schedulePanel(),
       'plugins' => _pluginsPanel(),
@@ -1982,6 +2003,19 @@ class _ExperienceShellState extends State<ExperienceShell>
       _title('模型服务', '记录不需要先配置模型。'),
       const SizedBox(height: 20),
       _notice('配置界面预览：这里不会保存密钥，也不会发起真实连接测试。'),
+      if (!widget.demoMode &&
+          _indexSettings.status?.semanticIndexReady == false) ...[
+        const SizedBox(height: 14),
+        _notice('本地模型或索引尚未就绪。换用本地模型后，建议重建语义索引。'),
+        const SizedBox(height: 10),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: SketchAction(
+            label: '查看并重建语义索引',
+            onPressed: () => _openPanel('index'),
+          ),
+        ),
+      ],
       const SizedBox(height: 18),
       SketchFrame(
         child: Column(

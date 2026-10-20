@@ -19,6 +19,10 @@
 //! | `recordings.finalize` | `Core::finalize_recording` | `RecordingFinalizeResult` |
 //! | `recordings.recover` | `Core::recover_recording` | `RecordingRecovery` |
 //! | `sources.extract` | `Core::extract_source` | `ExtractedContent` |
+//! | `sources.extractedContent` | `Core::extracted_content` | `ExtractedContent \| null` |
+//! | `sources.previousRevision` | `Core::previous_source_revision` | `SourceRevision \| null` |
+//! | `sources.reviseText` | `Core::revise_text` | `SourceRevision` |
+//! | `sources.locate` | `Core::locate_source` | `SourceLocation` |
 //! | `search.start` | `Core::start_search` | `SearchSnapshot` |
 //! | `search.nextPage` | `Core::search_next_page`（不透明游标） | `SearchSnapshot` |
 //! | `search.upgrade` | `Core::upgrade_search_to_hybrid` | `SearchSnapshot` |
@@ -37,12 +41,22 @@
 //! | `providers.list` | `Core::list_providers` | `Provider[]` |
 //! | `providers.test` | `Core::test_provider` | `ProviderTestReport` |
 //! | `providers.remove` | `Core::remove_provider` | `null` |
+//! | `backups.create` | `Core::create_backup`（目标路径必须是沙箱内） | `BackupReport` |
+//! | `backups.inspect` | `Core::inspect_backup`（来源路径必须是沙箱内） | `BackupInspection` |
+//! | `backups.restore` | `Core::restore_backup`（来源与目标都必须是沙箱内） | `RestoreReport` |
+//! | `core.events` | `Core::events_page`（按序号轮询，一页一次 LIMIT） | `{events,next_sequence,truncated}` |
 //! | `diary.getDay` | `Core::get_diary_day` | `DiaryDay` |
 //! | `diary.listVersions` | `Core::list_diary_versions`（不透明游标） | `DiaryVersionPage` |
 //! | `diary.getVersion` | `Core::get_diary_version` | `DiaryVersion` |
 //! | `diary.saveEdit` | `Core::save_diary_edit` | `DiaryVersion` |
 //! | `diary.setCurrent` | `Core::set_diary_current` | `DiaryDay` |
 //! | `diary.merge` | `Core::merge_diary_versions` | `DiaryVersion` |
+//!
+//! `core.events` **不是**推送流：C ABI 只有请求/响应，所以它把核心持久事件表当游标读。
+//! 核心在**每次写事务里**就落了 `domain_events`（不是订阅后才产生），因此这一层不需要
+//! 建立订阅、也不需要进程内缓存：`from_sequence` 省略时从当前最新序号开始（只等下一条），
+//! 给了就从该序号之后补；`next_sequence` 原样回传给下一次调用。`limit` 默认 200、上限
+//! 1000，超出部分不返回并如实标 `truncated: true`（下一页从 `next_sequence` 继续）。
 //!
 //! 六条 `diary.*` 是「日记」一级入口的数据源（契约 §2.2）：没有它们，鸿蒙日记页
 //! 无数据可取。它们**只做转接**——候选/当前、revision 闸门、幂等与版本链都在核心
@@ -75,23 +89,24 @@
 //!
 //! ## 还没接的（按契约第 4 节分组，TODO(#108)）
 //!
-//! - 记录与来源：`captures.moveDay` / `captures.trash` / `captures.restore` /
-//!   `captures.previewPurge` / `captures.purge`、`sources.extractedContent` /
-//!   `sources.previousRevision` / `sources.reviseText` / `sources.locate`；
+//! - 回收站：`captures.moveDay` / `captures.trash` / `captures.restore` /
+//!   `captures.previewPurge` / `captures.purge`——**核心还没有对应入口**（没有
+//!   `trash_capture` / `preview_purge` / `purge_capture` / `move_day`），不是桥面漏接；
 //! - 文件：`imports.*`、`assets.open` / `assets.release`；
-//! - 检索：`search.snapshot`、`indexes.status` 已接，`search.*` 只差 `snapshot`；
-//! - 任务与事件：`jobs.nextWakeup`、`core.events`；
-//! - 备份与恢复：`backups.create` / `backups.inspect` / `backups.restore`（`diary_bridge`
-//!   已经接了同步入口，映射过来即可）；
-//! - 其余：`core.snapshot` / `core.close` / `core.setRuntimeState`、`styles.*`、
-//!   `responses.*`、`settings.*`、`plugins.*`、`exports.*`、`diary.listDays` /
-//!   `diary.generate`——这些要么核心还没有对应实现，要么属于后面的块。
+//! - 检索：`search.snapshot`（`search.*` 只差它）；
+//! - 任务：`jobs.nextWakeup`；
+//! - 风格与导出：`styles.*` / `exports.create`——**核心还没有**风格落库与导出入口；
+//! - 日记：`diary.listDays`（核心还没有按天枚举入口）/ `diary.generate`（核心有
+//!   `generate_diary`，但要排 AI 任务，属于生成那一片）；
+//! - 其余：`core.snapshot` / `core.close` / `core.setRuntimeState`、`responses.*`、
+//!   `settings.*`、`plugins.*`——要么核心还没有对应实现，要么属于后面的块。
 //!
 //! 没接的方法一律报 `invalid_argument`，message 里点名「未接入」并附上已接入清单，
 //! **不会**静默成功、也不会假装支持。
 
 use chrono::Utc;
-use diary_core::model::{NativeRecordingStatus, RecordingState, SegmentManifest};
+use diary_core::model::{NativeRecordingStatus, RecordingState, SegmentManifest, SourceLocator};
+use diary_core::provider::local_engine::is_ohos_app_data_path;
 use diary_core::{
     Core, CoreError, CreateDraftInput, JobState, Provider, ProviderCapability, SearchFilters,
     SearchMode, SearchRequest,
@@ -99,6 +114,7 @@ use diary_core::{
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::path::{Component, Path};
 
 use crate::CallError;
 
@@ -116,6 +132,10 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "recordings.finalize",
     "recordings.recover",
     "sources.extract",
+    "sources.extractedContent",
+    "sources.previousRevision",
+    "sources.reviseText",
+    "sources.locate",
     "search.start",
     "search.nextPage",
     "search.upgrade",
@@ -134,6 +154,10 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "providers.list",
     "providers.test",
     "providers.remove",
+    "backups.create",
+    "backups.inspect",
+    "backups.restore",
+    "core.events",
     "diary.getDay",
     "diary.listVersions",
     "diary.getVersion",
@@ -156,6 +180,15 @@ const RUN_DUE_MAX_JOBS: usize = 64;
 /// `search.start` 的 `page_size` 同一口径（20），避免同一份界面在不同入口拿到
 /// 不一样的页长。上限由核心各自夹（`captures.list` 100、`jobs.list` 200）。
 const DEFAULT_PAGE_SIZE: usize = 20;
+
+/// `core.events` 一页的默认条数与硬上限。
+///
+/// 上限由**核心**在 SQL 里执行（`Core::events_page` 的 `LIMIT limit+1`）：它只多读
+/// 一条用来如实回答 `truncated`，不会先把整张事件表读进内存。桥面只做参数校验与
+/// 投影。默认 200 够界面一次补完常见的积压；1000 是单次响应「别拖太久」的防御线。
+/// 要补更多就按返回的 `next_sequence` 继续调。
+const DEFAULT_EVENTS_LIMIT: usize = 200;
+const MAX_EVENTS_LIMIT: usize = 1000;
 
 /// 方法分派。`params` 为 `null` 表示调用方没给参数。
 pub(crate) fn dispatch(
@@ -263,6 +296,33 @@ pub(crate) fn dispatch(
             let input: ExtractParams = parse(params)?;
             let content = core.extract_source(&input.source_ref)?;
             to_value(content)
+        }
+        // 当前修订的派生内容 / 上一版正文：**没提取过、没有上一版都是 null**，不是错误。
+        // ArkTS 侧用可空返回（`invokeNullable`）接，不能把 null 当成信封坏了。
+        "sources.extractedContent" => {
+            let input: SourceIdParams = parse(params)?;
+            to_value(core.extracted_content(&input.source_id)?)
+        }
+        "sources.previousRevision" => {
+            let input: SourceIdParams = parse(params)?;
+            to_value(core.previous_source_revision(&input.source_id)?)
+        }
+        // 改正文：核心建**新修订**、不覆盖旧内容；乐观锁以记录 revision 为准。
+        "sources.reviseText" => {
+            let input: ReviseTextParams = parse(params)?;
+            let revision = core.revise_text(
+                &input.source_id,
+                &input.text,
+                input.expected_revision,
+                &input.operation_id,
+            )?;
+            to_value(revision)
+        }
+        // 定位：`source_ref` 可以是来源 id 或修订 id；locator 原样交给核心。
+        // 找不到 / 纯文字没有原件时核心返回 `available:false` + `reason`，**不报错**。
+        "sources.locate" => {
+            let input: LocateSourceParams = parse(params)?;
+            to_value(core.locate_source(&input.source_ref, input.locator)?)
         }
         // ------------------------------------------------------------ 检索
         "search.start" => {
@@ -395,6 +455,62 @@ pub(crate) fn dispatch(
             let input: ProviderIdParams = parse(params)?;
             core.remove_provider(&input.provider_id)?;
             Ok(Value::Null)
+        }
+        // ------------------------------------------------------------ 备份与恢复
+        // 核心这三个是**同步**入口（契约那三行返回 jobId 的任务化是 #70，不在本块）。
+        // C ABI 只做「路径校验 + 调核心 + 原样序列化」；版本/哈希/路径安全全在核心
+        // （`Core::create_backup` / `inspect_backup` / `restore_backup`）。
+        //
+        // 为什么在桥面拦沙箱外路径：鸿蒙宿主只能写自己的应用数据目录；把 `/sdcard`
+        // 或 `/data/storage/el1/bundle`（安装目录，只读）传下去，核心会先做一堆工作
+        // 才在文件系统上失败，错误也指不到「你没权限写这里」。与 `asrEngineLib` 的
+        // 校验复用同一个路径判定（`is_ohos_app_data_path`），方向按备份的诉求：
+        // 原生库必须在安装目录，备份包/恢复目标必须在应用数据目录。
+        "backups.create" => {
+            let input: CreateBackupParams = parse(params)?;
+            ensure_full_backup(&input)?;
+            let target_path = path_param(
+                "target_path",
+                input.target_path,
+                "targetTicket",
+                input.target_ticket,
+            )?;
+            validate_sandbox_path("backups.create.target_path", &target_path)?;
+            to_value(core.create_backup(&target_path)?)
+        }
+        "backups.inspect" => {
+            let input: InspectBackupParams = parse(params)?;
+            let package_path = path_param(
+                "package_path",
+                input.package_path,
+                "packageTicket",
+                input.package_ticket,
+            )?;
+            validate_sandbox_path("backups.inspect.package_path", &package_path)?;
+            to_value(core.inspect_backup(&package_path)?)
+        }
+        "backups.restore" => {
+            let input: RestoreBackupParams = parse(params)?;
+            ensure_restore_to_new_library(&input)?;
+            let package_path = path_param(
+                "package_path",
+                input.package_path,
+                "packageTicket",
+                input.package_ticket,
+            )?;
+            let target_dir = input.target_dir.ok_or_else(|| {
+                CallError::invalid_argument("C ABI：backups.restore 缺少 `target_dir`")
+            })?;
+            validate_sandbox_path("backups.restore.package_path", &package_path)?;
+            validate_sandbox_path("backups.restore.target_dir", &target_dir)?;
+            to_value(core.restore_backup(&package_path, &target_dir)?)
+        }
+        // ------------------------------------------------------------ 事件
+        // 请求/响应形态的「按序号轮询」：核心在写事务里持久化事件，桥面不退化成推送。
+        // 不建订阅、不缓存，`from_sequence` 省略 = 从当前最新序号开始（只等下一条）。
+        "core.events" => {
+            let input: EventsParams = parse_optional(params)?;
+            events_page(core, &input)
         }
         // ------------------------------------------------------------ 日记
         // 契约 §2.2 的「日记」一级入口：按天读、读版本、人工编辑、切当前版本、合并。
@@ -540,6 +656,160 @@ fn to_value<T: serde::Serialize>(value: T) -> Result<Value, CallError> {
     // 核心模型的字段都是 JSON 表达得了的；真序列化不了说明数据本身有问题，如实报错。
     serde_json::to_value(value)
         .map_err(|error| CallError::invalid_state(format!("C ABI：结果序列化失败（{error}）")))
+}
+
+// ---------------------------------------------------------------- 事件轮询
+
+/// `core.events` 的一页。
+///
+/// `next_sequence` 是下一次调用的 `from_sequence`：有事件时是本页最后一条的序号，
+/// 没事件时是本次的起点（**已由核心夹到当前最大序号**，游标超前时不会原样返回一个
+/// 未来的序号）。`truncated` 为 true 表示「本页之后还有」，必须继续按 `next_sequence`
+/// 拉，不能把一页当成全部。
+///
+/// 有界读在**核心**（`Core::events_page` 的 SQL `LIMIT limit+1`）：桥面不再「先读全部
+/// 再截断」。事件表的积压上限与保留策略也在核心（`EVENT_BACKLOG_LIMIT`）；游标早于
+/// 保留窗口时核心报 `cursor_expired`，这里原样透传，调用方按契约第 6 节重读快照。
+fn events_page(core: &Core, input: &EventsParams) -> Result<Value, CallError> {
+    if let Some(from) = input.from_sequence {
+        if from < 0 {
+            return Err(CallError::invalid_argument(
+                "C ABI：core.events 的 from_sequence 不能为负数",
+            ));
+        }
+    }
+    let limit = input.limit.unwrap_or(DEFAULT_EVENTS_LIMIT);
+    if limit == 0 || limit > MAX_EVENTS_LIMIT {
+        return Err(CallError::invalid_argument(format!(
+            "C ABI：core.events 的 limit 必须在 1..={MAX_EVENTS_LIMIT} 之间（收到 {limit}）"
+        )));
+    }
+
+    // 省略 from_sequence = 从现在开始等：先读当前最大序号，再从它之后取（通常为空）。
+    // 这**不是**「从 0 补齐历史」——要历史就显式给 0；两种语义刻意不同。
+    let from = match input.from_sequence {
+        Some(from) => from,
+        None => core.last_event_sequence()?,
+    };
+    let page = core.events_page(from, limit)?;
+    // 事件类型必须按**线上字符串**（`capture.changed`）给，不能把 `EventType` 的
+    // serde 默认变体名（`CaptureChanged`）漏出去：契约 `DomainEventType` 与
+    // `EventType::wire()` 是同一套写法。核心的这个枚举没有 serde rename，桥面在这里
+    // 显式投影一次（只改枚举的写法，不改任何字段/语义）。
+    let events: Vec<Value> = page
+        .events
+        .iter()
+        .map(|event| {
+            json!({
+                "event_id": event.event_id,
+                "sequence": event.sequence,
+                "type": event.event_type.wire(),
+                "entity_id": event.entity_id,
+                "revision": event.revision,
+                "emitted_at": event.emitted_at,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "events": events,
+        "next_sequence": page.next_sequence,
+        "truncated": page.truncated,
+    }))
+}
+
+// ---------------------------------------------------------------- 备份路径
+
+/// `backups.create` 只支持完整备份：`include_assets: false` 明确报错。
+///
+/// 核心的 `create_backup` 承诺「含原件的一致性备份」，没有「只备份库、不备份原件」
+/// 的入口。静默忽略这个字段会产出一份调用方以为更小的包——不如在参数层说清楚。
+fn ensure_full_backup(input: &CreateBackupParams) -> Result<(), CallError> {
+    if !input.include_assets {
+        return Err(CallError::invalid_argument(
+            "C ABI：backups.create 只支持完整备份，include_assets 不能为 false",
+        ));
+    }
+    Ok(())
+}
+
+/// `backups.restore` 只恢复到**新库**：`restore_as_new_library: false` 明确报错。
+///
+/// 核心的 `restore_backup` 绝不覆盖当前资料库（目标必须是新目录）。契约的默认值就是
+/// `true`；把 `false` 静默当成 `true` 会让调用方以为「覆盖恢复了」。
+///
+/// `include_indexes` 不做拦截：核心恢复的是快照整体，索引/向量本来就在快照里，
+/// 恢复后同样可以重建；这个开关不改变结果（文档里写明，不假装能删索引）。
+fn ensure_restore_to_new_library(input: &RestoreBackupParams) -> Result<(), CallError> {
+    if !input.options.restore_as_new_library {
+        return Err(CallError::invalid_argument(
+            "C ABI：backups.restore 只支持恢复到新库，restore_as_new_library 不能为 false",
+        ));
+    }
+    Ok(())
+}
+
+/// 备份路径校验：OHOS 上必须是**应用沙箱内**路径。
+///
+/// 与 `asrEngineLib` 的校验复用同一个前缀判定（`is_ohos_app_data_path`），但方向相反：
+/// 原生库必须在 HAP 安装目录（沙箱里的 `.so` 不能 dlopen），备份包与恢复目标必须在
+/// 应用数据目录（安装目录只读）。其它平台不限制（桌面端测试/CLI 想放哪都行）。
+fn validate_sandbox_path(field: &str, path: &str) -> Result<(), CallError> {
+    validate_sandbox_path_with(field, path, cfg!(target_env = "ohos"))
+}
+
+/// 把「路径字段 + 同名票据字段」解析成一个路径：**票据一律拒绝**。
+///
+/// 契约里 `targetTicket` / `packageTicket` 是 `PlatformHost` 的**限域票据**——宿主拿到
+/// 它、解析成自己能访问的真实路径，再交给核心。C ABI 在票据层**之下**，只认路径：
+/// 把票据字符串当路径用，桌面端会按它建一个奇怪的文件、OHOS 上会被沙箱前缀拒绝，
+/// 两种错误都指不到「你在错误的层传了票据」。所以这里显式报错，并把该做的事写进
+/// 消息（先解析成沙箱内路径，再传 `target_path` / `package_path`）。
+fn path_param(
+    field: &str,
+    path: Option<String>,
+    ticket_field: &str,
+    ticket: Option<String>,
+) -> Result<String, CallError> {
+    if ticket.is_some() {
+        return Err(CallError::invalid_argument(format!(
+            "C ABI：`{ticket_field}` 是 PlatformHost 的限域票据，不是文件路径；请先在宿主侧\
+             把它解析成沙箱内路径，再传 `{field}`"
+        )));
+    }
+    path.ok_or_else(|| CallError::invalid_argument(format!("C ABI：缺少 `{field}`")))
+}
+
+/// [`validate_sandbox_path`] 的可测内核：`enforce` 由调用方给，宿主单测能同时覆盖两半。
+pub(crate) fn validate_sandbox_path_with(
+    field: &str,
+    path: &str,
+    enforce: bool,
+) -> Result<(), CallError> {
+    if !enforce {
+        return Ok(());
+    }
+    if !is_inside_ohos_sandbox(path) {
+        return Err(CallError::invalid_argument(format!(
+            "C ABI：{field} 必须是应用沙箱内的路径（OHOS 只允许 \
+             /data/storage/el2|el1/base|database|cache/… 与 /data/app/el2|el1/base/…），\
+             收到 {path}"
+        )));
+    }
+    Ok(())
+}
+
+/// 沙箱内判定：命中应用数据前缀，且**不含量级上跳**（`..`）。
+///
+/// 纯字符串/组件判断，与核心的 `is_ohos_app_data_path` 同一口径；不解析符号链接
+/// （备份目标通常还不存在，没法 canonicalize）。`..` 必须拒绝，否则
+/// `/data/storage/el2/base/../../../etc/x` 也能命中前缀。
+fn is_inside_ohos_sandbox(path: &str) -> bool {
+    if !is_ohos_app_data_path(path) {
+        return false;
+    }
+    !Path::new(path)
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
 }
 
 // ---------------------------------------------------------------- 参数
@@ -713,6 +983,44 @@ struct RecoverRecordingParams {
 struct ExtractParams {
     #[serde(alias = "sourceRef")]
     source_ref: String,
+}
+
+/// `sources.extractedContent` / `sources.previousRevision`：只要来源 id。
+///
+/// 两个方法都可能返回 `null`（还没提取过 / 没有上一版），这是正常结果，不是错误。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceIdParams {
+    #[serde(alias = "id", alias = "sourceId")]
+    source_id: String,
+}
+
+/// `sources.reviseText`：改正文会建**新修订**，不动旧内容。
+///
+/// `expected_revision` 是记录（聚合根）的 revision：不符报 `revision_conflict`，
+/// 核心一个字节都不改。`operation_id` 是幂等键，重放返回同一条修订。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviseTextParams {
+    #[serde(alias = "id", alias = "sourceId")]
+    source_id: String,
+    text: String,
+    #[serde(alias = "expectedRevision")]
+    expected_revision: i64,
+    #[serde(alias = "operationId")]
+    operation_id: String,
+}
+
+/// `sources.locate`：来源引用 + 定位信息。
+///
+/// 契约表写 `sourceRef`，Dart 方法用的是 `ref`，核心参数是 `source_ref`；三个都收，
+/// 避免宿主为了一个字段名改写请求。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocateSourceParams {
+    #[serde(alias = "ref", alias = "sourceRef")]
+    source_ref: String,
+    locator: SourceLocator,
 }
 
 /// `search.start`：`SearchRequest` + `queryRevision`（契约第 4.4 节）。
@@ -919,6 +1227,103 @@ struct TestProviderParams {
     provider_id: String,
     #[serde(default)]
     scope: Vec<ProviderCapability>,
+}
+
+// ---------------------------------------------------------------- 备份与恢复
+
+/// `backups.create`：目标路径 + 是否含原件。
+///
+/// 契约的 Dart 形状是 `BackupRequest { targetTicket, includeAssets }`；C ABI 在票据层
+/// 之下，只收**已经解析成沙箱路径**的 `target_path` / `targetPath`。
+///
+/// `targetTicket` / `target_ticket` **刻意不是** `target_path` 的别名：票据是
+/// `PlatformHost` 的限域句柄，不是文件路径。当路径用会在桌面端按票据字符串真的建文件，
+/// 在 OHOS 上则被沙箱判定拒绝、错误还指向「路径不在沙箱内」——两种都误导人。收到票据
+/// 字段时由 [`path_param`] 显式报错，说清它该在哪一层解析。
+///
+/// `include_assets` 默认 true；false 会被明确拒绝（核心只做完整备份，见
+/// [`ensure_full_backup`]）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateBackupParams {
+    #[serde(alias = "targetPath")]
+    target_path: Option<String>,
+    #[serde(default = "default_true", alias = "includeAssets")]
+    include_assets: bool,
+    #[serde(alias = "targetTicket")]
+    target_ticket: Option<String>,
+}
+
+/// `backups.inspect`：包路径（同样在票据层之下，必须是沙箱内）。
+///
+/// `packageTicket` 与 `targetTicket` 同一条规则：票据不是路径，见 [`path_param`]。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InspectBackupParams {
+    #[serde(alias = "packagePath")]
+    package_path: Option<String>,
+    #[serde(alias = "packageTicket")]
+    package_ticket: Option<String>,
+}
+
+/// `backups.restore`：包路径 + 恢复目标目录 + 契约的 `RestoreOptions`。
+///
+/// 契约的 Dart 形状只有 `packageTicket + options`，目标库由平台决定；C ABI 必须把
+/// 目标目录也说清楚（核心要求一个**新的空目录**），所以多一个 `target_dir`。这是
+/// **加性参数**，不是另一套业务规则。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreBackupParams {
+    #[serde(alias = "packagePath")]
+    package_path: Option<String>,
+    #[serde(alias = "targetDir")]
+    target_dir: Option<String>,
+    #[serde(default)]
+    options: RestoreOptionsParams,
+    #[serde(alias = "packageTicket")]
+    package_ticket: Option<String>,
+}
+
+/// `RestoreOptions` 的 JSON 形态：默认「恢复到新库、不动当前库」。
+///
+/// `include_indexes` 只做形状兼容：核心恢复的是快照整体（索引/向量都在里面），
+/// 这个开关不改变结果——不假装能「不恢复索引」。
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RestoreOptionsParams {
+    #[serde(alias = "restoreAsNewLibrary")]
+    restore_as_new_library: bool,
+    #[serde(alias = "includeIndexes")]
+    include_indexes: bool,
+}
+
+impl Default for RestoreOptionsParams {
+    fn default() -> Self {
+        Self {
+            // 契约 `RestoreOptions.restoreAsNewLibrary` 的默认值。
+            restore_as_new_library: true,
+            include_indexes: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+// ---------------------------------------------------------------- 事件
+
+/// `core.events`：按序号轮询持久事件。
+///
+/// - `from_sequence` 省略 = 从**当前最新**序号开始（只等下一条，不补历史）；
+///   显式给 0 才是「从头补」；
+/// - `limit` 默认 [`DEFAULT_EVENTS_LIMIT`]，上限 [`MAX_EVENTS_LIMIT`]。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EventsParams {
+    #[serde(alias = "fromSequence")]
+    from_sequence: Option<i64>,
+    limit: Option<usize>,
 }
 
 // ---------------------------------------------------------------- 日记（契约 4.3 / 2.5）
