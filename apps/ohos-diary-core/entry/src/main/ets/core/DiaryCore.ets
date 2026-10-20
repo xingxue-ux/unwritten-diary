@@ -209,7 +209,13 @@ export class DiaryCore {
     return this.invokeData('captures.saveDraft', params) as DraftSaveResult;
   }
 
-  /** `captures.commit`：草稿转正式记录，并生成原文修订（之后才能 `extract` / 检索到）。 */
+  /**
+   * `captures.commit`：草稿转正式记录（`state='committed'`），有正文时生成原文修订。
+   *
+   * **不产生来源、也不产生检索内容**：文字来源是 commit 从 `draft_text` 复制出来的；
+   * 录音的音频来源在 `recordings.finalize` 时就已经建好，转写/关键词索引也在那时
+   * 或由 finalize 排的任务负责。commit 对录音只做「记录成篇」这一步，不会重复排队。
+   */
   commit(params: CommitParams): CommitResult {
     return this.invokeData('captures.commit', params) as CommitResult;
   }

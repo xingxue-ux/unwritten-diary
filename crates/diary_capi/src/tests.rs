@@ -430,7 +430,8 @@ fn end_to_end_draft_to_search_to_jobs() {
     let text = "今天在鸿蒙上验证核心的 C ABI，关键词是鹅掌楸与检索。";
 
     let info = expect_ok(&call(handle, "core.info", Value::Null));
-    assert_eq!(info["api_version"], json!("1.1"));
+    // 同一类写死：用常量，别把下一次抬版本又变成一次「main 变红」。
+    assert_eq!(info["api_version"], json!(API_VERSION));
     assert_eq!(info["library_id"], json!("library"));
     assert!(info["data_schema_version"].as_i64().unwrap() > 0);
     let capabilities = info["capabilities"].as_array().unwrap();
@@ -753,6 +754,12 @@ fn recordings_flow_prepare_register_finalize_and_recover() {
         }),
     ));
     assert_eq!(finalized["recording_id"], json!(recording_id));
+    assert_eq!(finalized["capture_id"], json!(capture_id));
+    assert_eq!(
+        finalized["capture_revision"],
+        json!(2),
+        "new field: finalize must expose the authoritative capture revision"
+    );
     assert_eq!(finalized["asset_id"], json!(asset_id));
     assert_eq!(finalized["state"], json!("saved"));
     assert_eq!(finalized["segment_count"], json!(2));
@@ -766,6 +773,19 @@ fn recordings_flow_prepare_register_finalize_and_recover() {
     assert_eq!(&blob_bytes[0..4], b"RIFF");
     assert_eq!(&blob_bytes[8..12], b"WAVE");
     assert_eq!(blob_bytes.len(), logical_bytes);
+
+    // 平台层用 finalize 返回的 revision 提交，记录才离开 draft。
+    let committed = expect_ok(&call(
+        handle,
+        "captures.commit",
+        json!({
+            "capture_id": finalized["capture_id"],
+            "expected_revision": finalized["capture_revision"],
+            "operation_id": "op-capi-rec-commit",
+        }),
+    ));
+    assert_eq!(committed["capture"]["state"], json!("committed"));
+    assert_eq!(committed["capture"]["revision"], json!(3));
 
     // 最终化之后不能再上报状态（核心会拒绝，桥面不吞掉）。
     let closed_session = expect_error(
@@ -2009,7 +2029,7 @@ fn capabilities_include_every_wired_method() {
     assert_eq!(
         info["api_version"],
         json!("1.1"),
-        "加方法不升 apiVersion（1.1 是必填字段升的，与本块的方法数无关）"
+        "apiVersion 必须与核心同源；加方法本身不抬版本（1.1 是必填响应字段升的）"
     );
 
     let capabilities: Vec<&str> = info["capabilities"]
@@ -2472,10 +2492,16 @@ fn backups_create_inspect_and_restore_round_trip() {
         json!({"target_path": package_text}),
     ));
     assert_eq!(created["package_path"], json!(package_text));
+    // 备份清单里的 `apiVersion` 必须与核心同源（`diary_core::API_VERSION`），
+    // 不是某个写死的字面量。这条断言原本写死 "1.0"，用来钉「#153 加 8 个方法
+    // 不抬版本」；但 #160 因为给 `SearchHit` 加了一个**必填**响应字段把版本抬到
+    // 1.1 之后，它就在 main 上一直红（两次合并的顺序让两边各自本地都绿）。
+    //
+    // 它真正要守的是「桥面不自造版本号」，所以改成与常量比。
     assert_eq!(
         created["api_version"],
-        json!(crate::API_VERSION),
-        "备份清单的 apiVersion 必须跟随核心常量（#160 已到 1.1），不在测试里写死"
+        json!(API_VERSION),
+        "备份清单的 apiVersion 必须与核心同源，不许自造"
     );
     assert!(package.is_file(), "备份包必须真的落在目标路径");
     assert!(created["counts"]["captures"].as_i64().unwrap() >= 1);
@@ -2488,7 +2514,7 @@ fn backups_create_inspect_and_restore_round_trip() {
         json!({"package_path": package_text}),
     ));
     assert_eq!(inspect["package_path"], json!(package_text));
-    assert_eq!(inspect["api_version"], json!(crate::API_VERSION));
+    assert_eq!(inspect["api_version"], json!(API_VERSION));
     assert_eq!(inspect["compatible"], json!(true));
     assert_eq!(inspect["hashes_verified"], json!(true));
     assert_eq!(inspect["issues"], json!([]));
@@ -2506,7 +2532,7 @@ fn backups_create_inspect_and_restore_round_trip() {
     ));
     let library_path = restored["library_path"].as_str().unwrap().to_owned();
     assert!(Path::new(&library_path).is_file(), "恢复出来的库必须存在");
-    assert_eq!(restored["api_version"], json!(crate::API_VERSION));
+    assert_eq!(restored["api_version"], json!(API_VERSION));
     assert!(restored["counts"]["captures"].as_i64().unwrap() >= 1);
     assert_eq!(restored["counts"], created["counts"]);
 
