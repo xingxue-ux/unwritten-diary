@@ -56,9 +56,16 @@ impl AuthorType {
     }
 }
 
-/// 未处理 / 处理中 / 可检索 / 需关注的数量。
+/// 未处理 / 处理中 / 可检索 / 需关注的数量（#146）。
 ///
-/// B1a 还没有提取与索引，所以这些数字现在恒为 0；等 B1b/B2 接上后再算。
+/// 每次读 `Capture` 都按库里的真实状态重算（`processing` 模块是唯一写入路径），
+/// 不是快照、不是累计。四个数字的口径（含失败任务落哪个桶）写在
+/// `docs/development/01-共享接口契约.md` 2.1 节，必须与 `processing.rs` 一起改。
+///
+/// 只有**还没有来源**的记录才全为 0：刚创建的草稿，以及没有任何来源的空白提交
+/// （空正文不会建文字来源；若之前导入过材料，来源仍在，摘要就不是全 0）。
+/// **已经提交、但提交时正文为空且没有材料**的记录也是全 0，不能反过来把它当成
+/// 「刚建草稿」的同义词（复审 #158 指出的旧注释错误）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ProcessingSummary {
     pub unprocessed: u32,
@@ -115,6 +122,9 @@ pub struct DraftSaveResult {
 }
 
 /// 提交结果：记录本身与提交时创建的原始文字版本。
+///
+/// `capture.processing_summary` 是**提交那一刻**的快照（事务里算的，回执里也是它）；
+/// 之后的读取走 `get_capture` / `list_captures` 的当下值。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitResult {
     pub capture: Capture,
