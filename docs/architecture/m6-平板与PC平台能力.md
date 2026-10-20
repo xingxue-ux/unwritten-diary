@@ -230,8 +230,9 @@ await this.win.setWindowKeepScreenOn(false);  // 停止 / 异常 / abort / onDes
 
 - **失败不阻断录音**：拿不到窗口或系统拒绝（`1300002` 窗口状态异常 / `1300003` WMS 异常等）时，
   只把 `ok=false` + 系统错误码写进 `KEEP_SCREEN_ON ok=false code=… message=…`，录音继续；
-- **停止/异常必须关掉**：`VoiceRecorder.stop()` 的 `finally`、`abort()`、`fail()`、
-  `cleanupAfterFailure()` 都会走 `ScreenKeepOn.disable()`；`RecordingVerify.shutdown()`
+- **停止/异常必须关掉**：`VoiceRecorder.stop()` 的外层 `try/finally`（包住「停采集 → 封闭
+  尾段 → 上报 stopping → finalize」全流程，所以 `writer.finish()` 或 `reportState()` 抛错也
+  会释放）、`abort()`、`fail()`、`cleanupAfterFailure()` 都会走 `ScreenKeepOn.disable()`；`RecordingVerify.shutdown()`
   在 Ability 销毁时也走 `abort()`。日志 `KEEP_SCREEN_ON released` 是收回成功的证据；
 - **不碰电源状态**：不按 Power、不 `power-shell suspend`、不改息屏超时（见 §0）；
 - 系统文档提醒 `setWindowKeepScreenOn(true)` 只应在必要场景使用，非标准使用可能被系统判定并
@@ -267,7 +268,7 @@ PR #117 的 C ABI 只接了 9 条方法，**没有 `recordings.*`**；这一片�
   与参数错误用例（本机受重线约束**没有跑 `cargo test`**，只做了 `cargo check --all-targets`；
   真机上的录音链路本身就是这 5 条方法的端到端实测）。
 
-`DiaryCore.ets` 同步补了 5 个类型化方法（14 条契约方法），
+`DiaryCore.ets` 同步补了 5 个类型化方法（当时 14 条契约方法；#143 之后 30 条），
 `python3 tools/check_arkts_capi_contract.py` 通过。
 
 ## 6 恢复（进程被杀之后）

@@ -23,7 +23,7 @@ apps/ohos-diary-core/
 │       ├── index.d.ts
 │       └── oh-package.json5
 ├── entry/src/main/ets/
-│   ├── core/DiaryCore.ets                  # 薄封装：14 条契约方法 + rawCall/rawEnvelope
+│   ├── core/DiaryCore.ets                  # 薄封装：30 条契约方法 + rawCall/rawEnvelope
 │   ├── core/DiaryError.ets                 # 21 个核心码 + native_unavailable
 │   ├── core/Envelope.ets                   # 请求拼装 / 响应拆封
 │   ├── core/Models.ets                     # data 与参数的 ArkTS 类型（snake_case）
@@ -610,7 +610,7 @@ hdc shell "hilog -x" | grep DIARY_HAP
 | 11 | release / 混淆 | ⚠️ **门控前的历史证据**（当前 release 不跑 Smoke） | 门控前那次 release 构建：`BUILD_MODE=release` 签名安装成功、`debug:false`、Smoke 通过；混淆 HAP 也跑通 Smoke（构建后已还原 `enable:false`）。**现在** release 下 `EntryAbility` 走 `PROBE_DISABLED`，Smoke / record* / asr_* / hap_both 都不跑，`INTERNET` 也不在 release 包内 ⇒ 该证据只说明「当初验过」，不代表「现在还能验」；本轮也没装 release 真机（见「没验到的」） |
 | 12 | 升级回滚（同 bundleName 重装，数据仍在） | ✅ 升级通过 | v1 `1000000/1.0.0` → v2 `1000001/1.0.1`；升级前后 `captures=4`、`hits=2`、`dbBytes=389120`、`schema=13` 完全一致 |
 | 13 | hilog 实际输出 | ✅ 通过 | `DIARY_SMOKE JSON[...]` 10 个 label 全部按分片还原成合法 JSON（`search` 占 2 片）；`CLOSED handles=0` 出现 |
-| 14 | C++ OOM 兜底 | ⚠️ 现状确认（未修） | shim 中没有 `try/catch`、没有 `nothrow`/`bad_alloc` 处理；`std::string`/`std::vector` 分配失败会以 C++ 异常穿透 NAPI 边界。未做 OOM 注入 |
+| 14 | C++ OOM 兜底 | ✅ 已修（#133；host 注入，**设备未跑 OOM**） | 所有 NAPI 入口统一走 `Guarded()`：`std::bad_alloc` / 其它 C++ 异常兜底成既有 `ERR_DIARY_CALL`，不再穿透边界；`CoreText`/`PendingHandle` RAII 保证异常路径归还 `char *`/句柄。host harness（[`tests/napi_host/run.sh`](tests/napi_host/run.sh)）对 8 个入口逐个注入 `bad_alloc`：修前 8/8 逃逸，修后 8/8 变成 `ERR_DIARY_CALL`，`diary_string_free` 恰好 1 次；另注入 `open()` 在 `Add` 之后抛异常，断言 `openHandleCount()==0`（修前虚报 1，且 `close(id)` double-free abort） |
 
 ### 第 1 项：dlopen / dlsym（11.37 MB 那份）
 
@@ -673,7 +673,7 @@ rc=0
 
 `DiaryCore.ets` 的 `import diaryNapi from 'libdiary_napi.so'` 在设备上拿到的是可用对象，
 不是 `undefined`：`version()`、`selfDir()`、`open()`、`call()`、`close()`、`lastError()`、
-`openHandleCount()` 都被真实调用；`DiaryCore` 的 9 条契约方法（当时）全部返回了核心 JSON；录音这一片又补了 5 条，共 14 条。
+`openHandleCount()` 都被真实调用；`DiaryCore` 的 9 条契约方法（当时）全部返回了核心 JSON；录音这一片又补了 5 条，共 14 条（#143 之后是 30 条）。
 没有出现探针 §24.1 那种「export objects of native so is undefined」。
 
 ### 第 5 项：`libc++_shared` 随包
@@ -897,12 +897,25 @@ DONE processed=0 succeeded=0
 （`processed=0` 是因为重复 Smoke 复用固定的 `operation_id=op-arkts-index`，核心按幂等返回
 已成功的任务，不是 `runDueJobs` 坏了。）
 
-### 第 14 项：C++ OOM 现状
+### 第 14 项：C++ OOM 兜底（#133 已修）
 
-`napi_shim.cpp` 里没有 `try/catch`，也没有 `new (std::nothrow)` / `bad_alloc` 处理；
-`ReadString` 的 `std::vector<char>`、`MakeString` 的 `std::string`、句柄表的
-`std::unordered_map` 等分配失败都会抛 `std::bad_alloc`。C++ 异常穿过 NAPI 边界会终止进程。
-本次没有做 OOM 注入（不可安全触发），只确认现状；与文档 §9 第 14 条一致，**未修**。
+原状：`ReadString` 的 `std::vector<char>`、`MakeString` 的 `std::string`、句柄表的
+`std::unordered_map` 等分配失败抛 `std::bad_alloc`，没有任何 `try/catch`；C++ 异常穿过
+NAPI 边界 = 进程终止。
+
+现在：`napi_shim.cpp` 的 8 个入口（`version/open/close/call/lastError/selfDir/
+openHandleCount/init`）都是 `Guarded()` 的薄包装，异常统一兜底成**既有**的
+`ERR_DIARY_CALL`（没有新增错误码）；`CoreText` / `PendingHandle` 用 RAII 归还 C 字符串
+与句柄。验证用 host harness（stub `napi/native_api.h` + 故意抛 `bad_alloc`）逐个入口注入：
+
+```text
+修前（HEAD）：FAIL open/call/close/version/selfDir/lastError/openHandleCount/init:
+              std::bad_alloc escaped the NAPI callback（真实 NAPI 下即 terminate）
+修后：        PASS ×8，code=ERR_DIARY_CALL；
+              PASS version: C string freed exactly once on the exception path
+```
+
+设备上**没有**做 OOM 注入（无法安全触发），也没有跑新一轮真机；这条的“未验到”见文末。
 
 ### 问题清单（按严重度）
 
@@ -912,7 +925,7 @@ DONE processed=0 succeeded=0
 | P1 | 主线程同步链路：Smoke 268 ms（17 帧）、`jobs.runDue` 687 ms、大 `extract` 305 ms；产品直接在主线程调用会卡 UI，大库可能 AppFreeze | 示例可接受；**产品接入前必须挪到 TaskPool/worker** |
 | P1 | `open` 失败时核心错误码被降级成 `native_unavailable` | **已修**（`DiaryError.ets` 兼容完整信封与 `: {` 前缀），设备复测通过 |
 | P2 | C ABI 文档说 `diary_last_error` 与 `error` 同形，实现却返回完整失败信封 | 已在 ArkTS 侧兼容；建议后续统一 C ABI 文档或实现 |
-| P2 | shim 的 C++ OOM 无兜底 | 已知未修；OOM 属不可恢复错误，建议至少加 `bad_alloc` 边界 |
+| P2 | shim 的 C++ OOM 无兜底 | **已修（#133）**：`Guarded()` 把 `bad_alloc` 兜底成 `ERR_DIARY_CALL`；host 注入 8/8 入口通过，设备 OOM 未注入 |
 | P2 | `jobs.runDue` 单轮 687 ms（40 条 + 512 KiB 正文的索引重建） | 与 P1 同源；评估预算/异步/分段 |
 | P3 | release 包 hilog 默认被系统过滤，排障需先 `hilog -b D` | 运维注意事项，不是代码 bug |
 | P3 | `DiaryCore.nativeLibraryDir()` 返回带结尾 `/` 的目录（`.../arm64/`） | 与文档示例的 `.../arm64` 差一个斜杠，无功能影响 |
@@ -954,7 +967,8 @@ hdc install /mnt/e/tmp/ohos-core-smoke/user-original.hap → install bundle succ
   验证系统 AppFreeze 行为（不想在用户设备上人为制造 ANR）。
 - **降级/回滚安装**：只验证了同 bundleName 升级（1000000→1000001），没有验证旧版本覆盖
   新版本；OHOS 通常拒绝降级。
-- **OOM 注入**：只做代码检查，没有触发 `bad_alloc`。
+- **OOM 注入**：只在 host harness（stub NAPI + 故意抛 `bad_alloc`）上注入，8 个入口逐个验证；
+  **没有**在真机/真实核心上制造 OOM，也没有验证真实内存耗尽时的系统行为。
 - **产品混淆规则**：release 混淆验证用的是空规则；产品规则集可能不同。
 - **release 签名身份**：release HAP 仍用现有 debug Profile 签名（`appProvisionType=debug`），
   不是 AGC 正式发布 Profile。

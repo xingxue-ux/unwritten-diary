@@ -315,7 +315,7 @@ fn semantic_search(
     core: &mut Core,
     request: &SearchRequest,
     needle: &str,
-    _page_size: i64,
+    page_size: i64,
     warnings: &mut Vec<String>,
 ) -> Result<(Vec<RankedRef>, Coverage, SearchPhase)> {
     if needle.is_empty() {
@@ -341,7 +341,16 @@ fn semantic_search(
             return Ok((Vec::new(), coverage, SearchPhase::Done));
         }
     };
-    let outcome = semantic::candidates(core, &*embedder, needle, &request.filters)?;
+    // 把「首屏要多少条」交给快速路径：它只在折叠后不够一屏、且窗口外还有块时回退。
+    // 这样过滤/补位不会把精确路径的前 page_size 条换掉，也不会为了不存在的更深页
+    // 白跑一次精确 SQL。
+    let outcome = semantic::candidates(
+        core,
+        &*embedder,
+        needle,
+        &request.filters,
+        usize::try_from(page_size).unwrap_or(usize::MAX),
+    )?;
     // 查询超长被 token 截断：**不算错误**（#109），但必须说清「只有前 510 个 token
     // 参与了匹配」，否则用户会以为整句都参与了语义匹配。
     if let Some(truncation) = outcome.query_truncation {
@@ -614,7 +623,9 @@ fn fuse_hybrid(
     let keyword_groups = keyword_groups(core, needle, filters)?;
 
     // —— 语义那一路：候选已按篇折叠，过门槛，再截断 ——
-    let semantic_outcome = semantic::candidates(core, embedder, needle, filters)?;
+    // 混合融合只要语义前 `RRF_CANDIDATE_DEPTH` 条：够这个数就是精确路径的同一批。
+    let semantic_outcome =
+        semantic::candidates(core, embedder, needle, filters, RRF_CANDIDATE_DEPTH)?;
     if let Some(truncation) = semantic_outcome.query_truncation {
         warnings.push(format!(
             "查询太长，只有前 {} 个 token 参与了语义匹配（{truncation}），结果可能不完整",

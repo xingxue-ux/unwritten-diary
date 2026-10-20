@@ -65,8 +65,9 @@ struct PieceRow {
 
 /// 库里块的计数。`total` 是范围内的块数，`embedded` 是其中有生效代次向量的块数。
 ///
-/// `fast` 记录这次计数有没有走快路径（没有无 span 的块、没有过期 span）。量测要
-/// 如实报告「混合状态下有多少查询退回了精确计数」，所以把路径本身报出来。
+/// `fast` 记录这次计数有没有走快路径（局部修正也算快路径；只有异常规模超过上界才
+/// 退回精确 SQL）。量测要如实报告「混合状态下有多少查询退回了精确计数」，所以把
+/// 路径本身报出来。
 pub(crate) struct ChunkCounts {
     pub total: i64,
     pub embedded: i64,
@@ -613,11 +614,11 @@ fn coverage_rank(coverage: Coverage) -> u8 {
 /// 空白范围是「什么都不看」。块只要有一段来自范围里的记录，就算范围里的块——块可能
 /// 混着范围外的篇，但它的内容确实属于这个范围。
 pub(crate) fn counts(core: &Core, source_scope: Option<&[String]>) -> Result<ChunkCounts> {
-    // **快路径（#90）**：没有 `source_scope`、且库里没有「没有 span 的块」「过期 span」
-    // 这两个异常时，两个计数退化成三条 O(1)~O(n) 的简单查询，不必让每条语义查询都跑
-    // 两遍「逐块相关子查询」的全表扫描。10 万块上后者是 ~480 ms/查询（占总延迟三成），
-    // 而快路径 ~45 ms。异常时仍走下面的精确 SQL：宁可慢，也不把「其实用不上的块」
-    // 算成已嵌入。
+    // **快路径（#90 / #135）**：没有 `source_scope` 时，两个计数退化成几条简单查询，
+    // 不必让每条语义查询都跑两遍「逐块相关子查询」的全表扫描。10 万块上后者是
+    // ~480 ms/查询（占总延迟三成），而快路径 ~45 ms。库里出现「没有 span 的块」或
+    // 「过期 span」时，**不再整库回退**：把异常块的 id 取出来做局部修正
+    // （见 `counts_fast_checked`），只有异常规模超过上界才退回精确 SQL。
     if source_scope.is_none() {
         if let Some(counts) = counts_fast_checked(core)? {
             return Ok(counts);
@@ -649,7 +650,9 @@ pub(crate) fn counts(core: &Core, source_scope: Option<&[String]>) -> Result<Chu
     );
     let total = core
         .conn
-        .query_row(&total_sql, params_from_iter(&scope_values), |row| row.get(0))?;
+        .query_row(&total_sql, params_from_iter(&scope_values), |row| {
+            row.get(0)
+        })?;
 
     // 没有生效代次就是 0：不是「碰巧没查到」，是没有可算的代次。
     let embedded = match generations(core)?.0 {
@@ -678,49 +681,122 @@ pub(crate) fn counts(core: &Core, source_scope: Option<&[String]>) -> Result<Chu
     })
 }
 
-/// `counts` 的快路径：先花三条小查询确认「全库没有异常块」，再直接数表。
+/// `counts` 的快路径：先花几条小查询确认「全库的异常块有多少」，再**局部修正**计数。
 ///
-/// 返回 `None` 表示库里存在需要逐块判断的异常（没有 span 的块，或某个非记录文字的
-/// span 记的修订已经不是当前修订），调用方必须走精确 SQL。
+/// 精确 SQL 的语义是：
+/// - `total` = 有 span、且**没有任何过期 span** 的块数；
+/// - `embedded` = 这些块里，在生效代次有向量的块数。
+///
+/// 正常库里 `total` 就是块总数。出现异常时，下面把两项修正回来，而不是整库重算：
+/// - 「没有 span 的块」：`total_chunks - chunks_with_spans`；
+/// - 「过期 span 的块」：`SELECT DISTINCT chunk_id`（一块只要有一段过期就整块不可用，
+///   与精确 SQL 的 `NOT EXISTS` 同一口径），再减去这些块在生效代次里的向量数；
+/// - 没有 span 的块若也有向量，同样从 `embedded` 里减掉。
+///
+/// 取过期块 id 的查询走 `idx_chunk_spans_revision`（`source_revision_id > ''`，
+/// 10 万块上约 0–10 ms），不是两次逐块相关子查询的 COUNT。注意这里扫的是**索引里
+/// 非空 revision 的部分**：本仓库的基准语料是「每块一篇记录文字」，`source_revision_id`
+/// 全是空串，索引几乎是空的，所以「干净库 ~0 ms」是**语料产物**；换成 10 万块都有
+/// 非空 revision 的语料（§5.2 的敏感性测试）这一笔约 **86 ms**。
+///
+/// **上界按不同块数算，不是过期 span 行数**：一块只要有一段过期就整块排除，多段
+/// 过期只计一次；`MAX_LOCAL_COUNT_CORRECTION` 限制的是前者。
+///
+/// 这几条查询**没有包在同一个事务里**：计数是给覆盖状态/warning 用的，不参与排序；
+/// 并发重建或写入时可能读到「块表与 span/向量表来自不同瞬间」的瞬时不一致。这里
+/// 不用读事务换一致性——代价是偶尔报一个偏保守的覆盖状态，不会把结果排序改错。
 fn counts_fast_checked(core: &Core) -> Result<Option<ChunkCounts>> {
     // 一次拿两个数：块总数、有 span 的不同块数。两者相等 ⇔ 没有「没有 span 的块」。
     // 用 `COUNT(DISTINCT chunk_id)`（走 `chunk_spans` 主键索引，10 万块 ~9 ms）而不是
     // 逐块 `NOT EXISTS`（~30 ms）——后者是这条快路径上最贵的一笔。
-    let (total, chunks_with_spans): (i64, i64) = core.conn.query_row(
+    let (total_chunks, chunks_with_spans): (i64, i64) = core.conn.query_row(
         "SELECT (SELECT COUNT(*) FROM text_chunks), \
                 (SELECT COUNT(DISTINCT chunk_id) FROM chunk_spans)",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    let without_spans = total - chunks_with_spans;
-    // 「过期 span」= 来源修订非空、但该来源的当前修订不是它。任何一条存在，
-    // 都可能让某个块整块不可用，必须回精确 SQL 逐块判断。
-    let stale_spans: i64 = core.conn.query_row(
-        "SELECT COUNT(*) FROM chunk_spans s WHERE s.source_revision_id <> '' \
-           AND NOT EXISTS (SELECT 1 FROM source_items si \
-                           WHERE si.source_id = s.source_id \
-                             AND si.current_revision_id = s.source_revision_id)",
-        [],
+    let without_spans = total_chunks - chunks_with_spans;
+
+    // 「过期 span」= 来源修订非空、但该来源的当前修订不是它。按**块**去重：一块只要
+    // 有一段过期，整块就不计入 total / embedded（精确 SQL 里是 `NOT EXISTS`）。
+    //
+    // 条件写成 `> ''` 而不是 `<> ''`：后者对 SQLite 不可索引，会退化成全表扫 + DISTINCT
+    // 临时表（10 万块上 ~200 ms）；`source_revision_id` 是 NOT NULL TEXT，任何非空串
+    // 都大于空串，两者等价，而 `> ''` 能走 `idx_chunk_spans_revision`（干净库 ~0 ms）。
+    // 重复的块 id 在 Rust 侧去重；超过上界立即返回 `None`，不把整库 id 攒进内存。
+    let stale_chunks: Vec<String> = {
+        let mut statement = core.conn.prepare(
+            "SELECT s.chunk_id FROM chunk_spans s WHERE s.source_revision_id > '' \
+               AND NOT EXISTS (SELECT 1 FROM source_items si \
+                               WHERE si.source_id = s.source_id \
+                                 AND si.current_revision_id = s.source_revision_id)",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut chunks: std::collections::HashSet<String> =
+            std::collections::HashSet::with_capacity(16);
+        while let Some(row) = rows.next()? {
+            let chunk_id: String = row.get(0)?;
+            if chunks.insert(chunk_id) && chunks.len() > MAX_LOCAL_COUNT_CORRECTION {
+                return Ok(None);
+            }
+        }
+        chunks.into_iter().collect()
+    };
+    let stale_chunk_count = i64::try_from(stale_chunks.len()).unwrap_or(i64::MAX);
+    let total = total_chunks - without_spans - stale_chunk_count;
+
+    let Some(generation) = generations(core)?.0 else {
+        // 没有生效代次就是 0（与精确路径同一口径）。
+        return Ok(Some(ChunkCounts {
+            total,
+            embedded: 0,
+            fast: true,
+        }));
+    };
+    let embedded_total: i64 = core.conn.query_row(
+        "SELECT COUNT(*) FROM chunk_vectors WHERE generation = ?1",
+        params![generation],
         |row| row.get(0),
     )?;
-    if without_spans != 0 || stale_spans != 0 {
-        return Ok(None);
-    }
-    let embedded = match generations(core)?.0 {
-        // 没有生效代次就是 0（与精确路径同一口径）。
-        None => 0,
-        Some(generation) => core.conn.query_row(
-            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = ?1",
+    // 过期块的向量：块 id 进 JSON 数组，按 `(chunk_id, generation)` 主键逐条探查。
+    // 10 万块、2 000 个过期块时约 2 ms；异常规模有上界，见下面的阈值。
+    let stale_vectors: i64 = if stale_chunks.is_empty() {
+        0
+    } else {
+        let ids = serde_json::to_string(&stale_chunks)?;
+        core.conn.query_row(
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = ?1 \
+               AND chunk_id IN (SELECT value FROM json_each(?2))",
+            params![generation, ids],
+            |row| row.get(0),
+        )?
+    };
+    // 没有 span 的块不该有向量（正常路径产不出来），但精确 SQL 不认它们；有就减掉。
+    // 这种异常很少见，才值得跑一次逐向量 `NOT EXISTS`：代价是 **O(向量行数)**，
+    // 不是 O(块数)；向量行本身也受 `without_spans` 这个异常前提限制，正常库不跑。
+    let orphan_vectors: i64 = if without_spans == 0 {
+        0
+    } else {
+        core.conn.query_row(
+            "SELECT COUNT(*) FROM chunk_vectors v WHERE v.generation = ?1 \
+               AND NOT EXISTS (SELECT 1 FROM chunk_spans s WHERE s.chunk_id = v.chunk_id)",
             params![generation],
             |row| row.get(0),
-        )?,
+        )?
     };
     Ok(Some(ChunkCounts {
         total,
-        embedded,
+        embedded: embedded_total - stale_vectors - orphan_vectors,
         fast: true,
     }))
 }
+
+/// 局部修正的上界：异常块多到这份上就退回精确 SQL（不拼一个巨大的 JSON 数组）。
+///
+/// 32 768 与 SQLite 默认的单语句变量上限同量级；到这个规模时，局部修正已经没有
+/// 性能优势，精确 SQL 反而更简单。**数的是不同块 id**：一块有多段过期 span 只算
+/// 一块，所以它不限制过期 span 的行数（那些行会被逐行扫过、在 Rust 侧去重）。
+const MAX_LOCAL_COUNT_CORRECTION: usize = 32_768;
 
 #[cfg(test)]
 mod tests {
@@ -750,7 +826,9 @@ mod tests {
                     .unwrap();
             }
         }
-        let keep: Vec<String> = (0..40_000).map(|index| format!("chunk_{index:05}")).collect();
+        let keep: Vec<String> = (0..40_000)
+            .map(|index| format!("chunk_{index:05}"))
+            .collect();
         delete_stale_chunks(&tx, "1 = 1", &[], &keep).unwrap();
         let count = |tx: &rusqlite::Transaction<'_>| -> i64 {
             tx.query_row("SELECT COUNT(*) FROM text_chunks", [], |row| row.get(0))
@@ -775,8 +853,12 @@ mod tests {
         tx.commit().unwrap();
     }
 
-    /// #90 快路径的**红线**：库里真的出现「没有 span 的块」时，两个计数必须退回精确
-    /// 口径——那块不算「可检索」，不能因为 `COUNT(*) FROM text_chunks` 快就把它算进去。
+    /// #90 快路径的**红线**：库里真的出现「没有 span 的块」时，两个计数必须与精确
+    /// 口径一致——那块不算「可检索」，不能因为 `COUNT(*) FROM text_chunks` 快就把它
+    /// 算进去。
+    ///
+    /// #135 起不再为此整库回退：`counts_fast_checked` 用「块总数 − 有 span 的块数」
+    /// 局部扣掉，仍然走快路径（`fast = true`）。
     ///
     /// 正常路径产不出这种块（`rebuild` 在一个事务里先写块、再写 span），所以这里直接
     /// 写 SQL 造一个，专门钉住守卫本身。
@@ -819,5 +901,171 @@ mod tests {
             "没有 span 的块不可检索，不能计入 total（快路径必须回退到精确口径）"
         );
         assert_eq!(counts.embedded, 0);
+        assert!(
+            counts.fast,
+            "没有 span 的块只做局部修正，不应让整个覆盖计数回退精确 SQL"
+        );
+    }
+
+    /// 与快路径逐项对照的精确计数（测试里的独立 oracle，SQL 与 `counts` 的慢路径同义）。
+    fn exact_counts(conn: &rusqlite::Connection, generation: i64) -> (i64, i64) {
+        let current_filter = " AND NOT EXISTS (SELECT 1 FROM chunk_spans s2 \
+             WHERE s2.chunk_id = t.chunk_id AND s2.source_revision_id <> '' \
+               AND NOT EXISTS (SELECT 1 FROM source_items si2 \
+                               WHERE si2.source_id = s2.source_id \
+                                 AND si2.current_revision_id = s2.source_revision_id))";
+        let total: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM text_chunks t WHERE EXISTS \
+                     (SELECT 1 FROM chunk_spans s WHERE s.chunk_id = t.chunk_id){current_filter}"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let embedded: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM text_chunks t WHERE EXISTS \
+                     (SELECT 1 FROM chunk_spans s WHERE s.chunk_id = t.chunk_id){current_filter} \
+                     AND EXISTS (SELECT 1 FROM chunk_vectors v \
+                                 WHERE v.chunk_id = t.chunk_id AND v.generation = ?1)"
+                ),
+                params![generation],
+                |row| row.get(0),
+            )
+            .unwrap();
+        (total, embedded)
+    }
+
+    /// #135：过期 span 只按**块**做局部修正，不再让整个覆盖计数回退精确 SQL。
+    ///
+    /// 造四类块：干净块、过期块、一块两段（一旧一新——精确 SQL 的 `NOT EXISTS` 口径
+    /// 使整块被排除，不是「只排除旧的那一段」）、没有 span 但意外有向量的块。
+    /// 快路径的 `total` / `embedded` 必须与精确 SQL 逐项一致，且 `fast = true`。
+    #[test]
+    fn counts_correct_stale_chunks_locally_without_a_full_fallback() {
+        let core = crate::Core::open_in_memory().unwrap();
+        core.conn
+            .execute(
+                "INSERT INTO captures (id, revision, state, occurred_at, created_at, updated_at, \
+                 time_zone, utc_offset_minutes, day_key, draft_text) \
+                 VALUES ('cap_a', 0, 'active', '2026-10-18T00:00:00.000Z', \
+                         '2026-10-18T00:00:00.000Z', '2026-10-18T00:00:00.000Z', \
+                         'Asia/Shanghai', 480, '2026-10-18', '正文')",
+                [],
+            )
+            .unwrap();
+        core.conn
+            .execute(
+                "INSERT INTO source_items (source_id, capture_id, kind, position, current_revision_id) \
+                 VALUES ('src_a', 'cap_a', 'text', 0, 'rev_new')",
+                [],
+            )
+            .unwrap();
+        let chunks = ["chunk_clean", "chunk_stale", "chunk_mixed", "chunk_orphan"];
+        for chunk_id in chunks {
+            core.conn
+                .execute(
+                    "INSERT INTO text_chunks (chunk_id, ordinal, text, kind, coverage, day_key, \
+                     chunker_version, created_at) \
+                     VALUES (?1, 0, 'x', 'text', 'complete', '2026-10-18', ?2, \
+                             '2026-10-18T00:00:00.000Z')",
+                    params![chunk_id, CHUNKER_VERSION],
+                )
+                .unwrap();
+        }
+        for (chunk_id, ordinal, revision) in [
+            ("chunk_clean", 0, "rev_new"),
+            ("chunk_stale", 0, "rev_old"),
+            // 一块两段：一段旧修订、一段当前修订。精确 SQL 的 `NOT EXISTS` 会把整块
+            // 排除；局部修正必须与它一致，不能只扣掉旧的那一段。
+            ("chunk_mixed", 0, "rev_old"),
+            ("chunk_mixed", 1, "rev_new"),
+        ] {
+            core.conn
+                .execute(
+                    "INSERT INTO chunk_spans (chunk_id, ordinal, capture_id, source_id, \
+                     source_revision_id, start_char, end_char, kind, coverage) \
+                     VALUES (?1, ?2, 'cap_a', 'src_a', ?3, 0, 2, 'text', 'complete')",
+                    params![chunk_id, ordinal, revision],
+                )
+                .unwrap();
+        }
+        // 四个块都有生效代次的向量：没有 span 的 `chunk_orphan` 也必须从 embedded 里扣掉。
+        for chunk_id in chunks {
+            core.conn
+                .execute(
+                    "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, \
+                     storage, vector, created_at) \
+                     VALUES (?1, 7, 'stub', 512, 'int8', X'00000000', \
+                             '2026-10-18T00:00:00.000Z')",
+                    params![chunk_id],
+                )
+                .unwrap();
+        }
+        core.conn
+            .execute(
+                "UPDATE index_meta SET active_generation = 7 WHERE id = 1",
+                [],
+            )
+            .unwrap();
+
+        let counts = counts(&core, None).unwrap();
+        let (total, embedded) = exact_counts(&core.conn, 7);
+        assert_eq!(
+            (counts.total, counts.embedded),
+            (total, embedded),
+            "局部修正必须与精确 SQL 逐项一致"
+        );
+        assert_eq!(total, 1, "只有 chunk_clean 是可检索的块");
+        assert_eq!(embedded, 1, "只有 chunk_clean 有生效向量");
+        assert!(
+            counts.fast,
+            "过期 span 只做局部修正，不应让整个覆盖计数回退精确 SQL"
+        );
+    }
+
+    /// #135 的**局部修正上界**：过期块超过 `MAX_LOCAL_COUNT_CORRECTION` 时，
+    /// `counts_fast_checked` 必须返回 `None`（调用方据此退回精确 SQL），而不是拼一个
+    /// 巨大的 JSON 数组。这里直接造 `32769` 个过期块，刚好越过 32768 的界。
+    #[test]
+    fn counts_fall_back_when_local_corrections_exceed_the_bound() {
+        let core = crate::Core::open_in_memory().unwrap();
+        core.conn
+            .execute(
+                "INSERT INTO captures (id, revision, state, occurred_at, created_at, updated_at, \
+                 time_zone, utc_offset_minutes, day_key, draft_text) \
+                 VALUES ('cap_a', 0, 'active', '2026-10-18T00:00:00.000Z', \
+                         '2026-10-18T00:00:00.000Z', '2026-10-18T00:00:00.000Z', \
+                         'Asia/Shanghai', 480, '2026-10-18', '正文')",
+                [],
+            )
+            .unwrap();
+        let last = MAX_LOCAL_COUNT_CORRECTION; // 0..=32768 共 32769 行
+        core.conn
+            .execute_batch(&format!(
+                "WITH RECURSIVE seq(i) AS (\
+                     SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}\
+                 ) \
+                 INSERT INTO text_chunks (chunk_id, ordinal, text, kind, coverage, day_key, \
+                                          chunker_version, created_at) \
+                 SELECT 'chunk_stale_' || i, 0, 'x', 'text', 'complete', '2026-10-18', \
+                        '{CHUNKER_VERSION}', '2026-10-18T00:00:00.000Z' FROM seq; \
+                 WITH RECURSIVE seq(i) AS (\
+                     SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}\
+                 ) \
+                 INSERT INTO chunk_spans (chunk_id, ordinal, capture_id, source_id, \
+                                          source_revision_id, start_char, end_char, kind, coverage) \
+                 SELECT 'chunk_stale_' || i, 0, 'cap_a', 'src_stale', 'rev_old', 0, 1, \
+                        'text', 'complete' FROM seq;"
+            ))
+            .unwrap();
+
+        assert!(
+            counts_fast_checked(&core).unwrap().is_none(),
+            "过期块超过 {MAX_LOCAL_COUNT_CORRECTION} 时必须退回精确 SQL，而不是继续局部修正"
+        );
     }
 }
