@@ -14,7 +14,7 @@
 |---|---|---|
 | 1 | 「核心 ↔ 界面」此前只有 `flutter_rust_bridge` 一条 Flutter 专用通道；现在多了一条**与宿主语言无关**的 C ABI，ArkTS/NAPI、CLI、离线测试都能调 | 实测（本机 `cargo test` 8/8 绿） |
 | 2 | 接口面 = **6 个导出符号**（版本 / 打开 / 关闭 / 调用 / 释放字符串 / 读最近错误；句柄是不透明指针）；调用是**句柄 + JSON 进 / JSON 出** | 实测（`llvm-nm -D` 实测 6 个） |
-| 3 | 错误码**只可能是核心既有 14 码之一**，桥面不新增码；空指针 / 非法 JSON / 未知方法 / 参数不合法 → `invalid_argument`，句柄已关闭 / 锁中毒 / panic → `invalid_state` | 实测（错误码透传用例） |
+| 3 | 错误码**只可能是核心既有 21 码之一**，桥面不新增码；空指针 / 非法 JSON / 未知方法 / 参数不合法 → `invalid_argument`，句柄已关闭 / 锁中毒 / panic → `invalid_state` | 实测（错误码透传用例） |
 | 4 | **panic 绝不穿过 FFI**：每个入口 `catch_unwind`，panic 变成 `ok:false`；把 `catch_unwind` 拿掉做红证据 → 进程 `SIGABRT`（`panic in a function that cannot unwind`） | 实测（红证据见 §9.3） |
 | 5 | 句柄是**地址令牌**：桥面从不解引用调用方传进来的指针 ⇒ 关闭后再用、野指针都是明确的错误，而不是 UB | 实测 |
 | 6 | 同一路径共享一个核心（与 `diary_bridge` 的 `OPEN_LIBRARIES` 同口径），同一句柄可被多线程调用（核心串行） | 实测（跨线程用例） |
