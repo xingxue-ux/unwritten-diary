@@ -430,7 +430,7 @@ fn end_to_end_draft_to_search_to_jobs() {
     let text = "今天在鸿蒙上验证核心的 C ABI，关键词是鹅掌楸与检索。";
 
     let info = expect_ok(&call(handle, "core.info", Value::Null));
-    // 与常量比，不写死数字：下一次抬版本不该再让 main 变红。
+    // 同一类写死：用常量，别把下一次抬版本又变成一次「main 变红」。
     assert_eq!(info["api_version"], json!(API_VERSION));
     assert_eq!(info["library_id"], json!("library"));
     assert!(info["data_schema_version"].as_i64().unwrap() > 0);
@@ -2009,7 +2009,7 @@ fn capabilities_include_every_wired_method() {
     let info = expect_ok(&call(handle, "core.info", Value::Null));
     assert_eq!(
         info["api_version"],
-        json!(API_VERSION),
+        json!("1.1"),
         "apiVersion 必须与核心同源；加方法本身不抬版本（1.1 是必填响应字段升的）"
     );
 
