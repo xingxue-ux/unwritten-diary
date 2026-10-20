@@ -212,7 +212,7 @@ void main() {
     await api.acknowledgeAttention('job-config:adapter-test');
   });
 
-  test('inspectBackup 读真备份包的结构与哈希', () async {
+  test('inspectBackupAtPath 读真备份包的结构与哈希', () async {
     await api.open();
     final package = '${workDir.path}/inspect.diarybak';
     final session = await BridgeSession.open(libraryPath: libraryPath);
@@ -224,10 +224,10 @@ void main() {
       session.dispose();
     }
 
-    final inspection = await api.inspectBackup(package);
+    final inspection = await api.inspectBackupAtPath(package);
     expect(inspection.packageTicket, package);
     expect(inspection.schemaVersion, expectedDataSchemaVersion);
-    expect(inspection.apiVersion, '1.0');
+    expect(inspection.apiVersion, '1.1');
     expect(inspection.byteSize, greaterThan(0));
     expect(inspection.assetCount, greaterThanOrEqualTo(0));
     expect(inspection.issues, isEmpty);
@@ -251,7 +251,7 @@ void main() {
             .having(
               (error) => error.message,
               'message',
-              isNot(contains('backups.create')),
+              contains('backups.create'),
             )
             .having(
               (error) => error.message,
@@ -278,13 +278,14 @@ void main() {
       'indexes.status',
       'indexes.rebuild',
       'jobs.acknowledgeAttention',
-      'backups.create',
-      'backups.inspect',
-      'backups.restore',
     ]) {
       expect(capabilities, contains(capability), reason: capability);
     }
     for (final capability in [
+      // 契约收 PlatformHost 票据，票据解析未实现；只有路径专用入口，故不宣告。
+      'backups.create',
+      'backups.inspect',
+      'backups.restore',
       'core.setRuntimeState',
       'captures.trash',
       'settings.get',

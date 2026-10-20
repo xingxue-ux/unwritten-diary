@@ -330,12 +330,13 @@ void main() {
     expect(snapshot.coreInfo.capabilities, contains('indexes.status'));
     expect(snapshot.coreInfo.capabilities, contains('indexes.rebuild'));
     expect(snapshot.coreInfo.capabilities, contains('indexes.rebuildSemantic'));
-    // 备份三条都接上了：create/restore 返回 succeeded 记录的 jobId。
-    expect(snapshot.coreInfo.capabilities, contains('backups.create'));
-    expect(snapshot.coreInfo.capabilities, contains('backups.inspect'));
-    expect(snapshot.coreInfo.capabilities, contains('backups.restore'));
+    // 备份契约三条**不宣告**：契约收的是 PlatformHost 的限域票据，而票据解析
+    // 尚未实现；本轮只有显式带 AtPath 的路径专用入口（见适配层类注释）。
     // 仍然没接的（原因见 `noSuchMethod` 与适配层文档）：不列进能力清单。
     for (final capability in [
+      'backups.create',
+      'backups.inspect',
+      'backups.restore',
       'settings.get',
       'settings.update',
       'plugins.invoke',
@@ -348,6 +349,18 @@ void main() {
         reason: capability,
       );
     }
+
+    // 契约入口必须诚实报错，而不是把票据当路径或返回空结果。
+    await expectLater(
+      () => api.inspectBackup('ticket:backup-package'),
+      throwsA(
+        isA<UnsupportedError>().having(
+          (error) => error.message,
+          'message',
+          contains('backups.inspect'),
+        ),
+      ),
+    );
   });
 
   test('到期任务入口经 DiaryApi 返回真实核心摘要', () async {

@@ -18,15 +18,25 @@ import '../diary_bridge.dart' as bridge;
 /// `getResponse` / `indexesStatus` / `rebuildIndexes` / `rebuildSemanticIndex` /
 /// 任务读取、取消、重试、到期执行与 `acknowledgeAttention` / `getDay` /
 /// `generateDiary` / `listVersions` / `getVersion` / `saveDiaryEdit` /
-/// `setCurrentVersion` / `mergeDiary` / 插件管理与 `inspectBackup`。
+/// `setCurrentVersion` / `mergeDiary` / 插件管理。
 ///
-/// **备份的同步任务取舍**：`backups.create` / `backups.restore` 的核心入口是同步的，
-/// 适配层在同步完成之后写一条 `succeeded` 的 `backup` / `restore` 任务记录，返回的
-/// `jobId` 指向这条**已经完成**的记录，不是排队任务。任务的 `targetIds` 记真实产物
-/// 路径（备份包 / 恢复出来的库），`getJob` 读得到。代码注释、README 与 m5 文档都写明
-/// 这一点，避免调用方把 `jobId` 当成进度句柄。
+/// **备份：契约入口未接，只有路径专用临时入口**。契约的 `backups.create` /
+/// `backups.inspect` / `backups.restore` 收的是 `PlatformHost` 管理的**限域文件
+/// 票据**，而 `PlatformHost` 目前没有票据→路径的解析协议。适配层不把票据字符串
+/// 当路径用：这三条**不在** [_wiredMethods]（因此也不在 `capabilities`）里，调用
+/// 契约方法会走 [noSuchMethod] 并点名；可用的是显式带 `AtPath` 的三个路径专用
+/// 入口——`createBackupAtPath` / `inspectBackupAtPath` / `restoreBackupAtPath`。
+/// 票据解析就绪后，契约入口应先在宿主侧解析成授权路径，再接到这三个入口上。
+///
+/// **路径专用入口的同步任务取舍**：核心的备份/恢复入口是同步的，`AtPath` 入口在
+/// 同步完成之后写一条 `succeeded` 的 `backup` / `restore` 任务记录，返回的
+/// `jobId` 指向这条**已经完成**的记录，不是排队任务。任务的 `targetIds` 记真实
+/// 产物路径（备份包 / 恢复出来的库），`getJob` 读得到。
 ///
 /// **仍没接的**（都会走 [noSuchMethod] 并在异常消息里点名）：
+/// - 备份三条（`backups.create` / `backups.inspect` / `backups.restore`）：
+///   契约收 `PlatformHost` 的限域票据，票据解析协议尚未实现；本轮只有路径专用
+///   入口，不宣告契约能力；
 /// - 回收站五条（`moveDay` / `trashCapture` / `restoreCapture` / `previewPurge` /
 ///   `purgeCapture`）：核心实现还在 PR #155，main 上没有对应入口；
 /// - 天列表与风格/导出（`listDays` / `listStyles` / `getStyle` / `saveStyle` /
@@ -138,9 +148,6 @@ class BridgeDiaryApi implements api.DiaryApi {
     'indexes.status',
     'indexes.rebuild',
     'indexes.rebuildSemantic',
-    'backups.create',
-    'backups.inspect',
-    'backups.restore',
     'plugins.inspectPackage',
     'plugins.install',
     'plugins.enable',
@@ -343,8 +350,7 @@ class BridgeDiaryApi implements api.DiaryApi {
       final first = batch.first.sequence.toInt();
       if (first > cursor + 1) {
         throw api.CursorExpiredException(
-          message:
-              '事件游标 $cursor 与最早可读事件 $first 之间有缺口；事件表可能被裁剪过，请重新读取快照。',
+          message: '事件游标 $cursor 与最早可读事件 $first 之间有缺口；事件表可能被裁剪过，请重新读取快照。',
         );
       }
       for (final event in batch) {
@@ -1233,20 +1239,27 @@ class BridgeDiaryApi implements api.DiaryApi {
     return plugins.map(_plugin).toList(growable: false);
   }
 
-  // ------------------------------------------------------------ 备份
+  // ------------------------------------------------------------ 备份（路径专用）
 
-  /// 检查备份包，契约 `backups.inspect`。
+  /// 检查**路径**指向的备份包。**不是契约的 `backups.inspect`。**
   ///
-  /// 契约的 `packageTicket` 在这里就是用户选中的包路径（平台票据层未接入前由
-  /// 调用方给出，与 `inspectPluginPackage` 同一个口径）。核心**不抛错**报坏包：
-  /// 哈希、路径、版本问题都进 `issues`，界面先展示再决定要不要恢复。
-  @override
-  Future<api.BackupInspection> inspectBackup(String packageTicket) async {
+  /// 契约的 `packageTicket` 是 `PlatformHost` 管理的限域文件票据，不保证是本地
+  /// 路径；本适配层还没有票据→路径的解析（`PlatformHost` 没有对应协议），所以这个
+  /// 入口只收文件系统路径，名字里的 `AtPath` 就是在自曝边界。票据层就绪后，契约的
+  /// `inspectBackup(packageTicket)` 应先在宿主侧解析，再调用这里。
+  ///
+  /// `packagePath` 为空或以 `ticket:` 之类的 URI scheme 开头时，抛
+  /// [api.DiaryException]（`invalidArgument`），**不会**把它当文件名交给核心。
+  /// 核心**不抛错**报坏包：哈希、路径、版本问题都进 `issues`，界面先展示再决定
+  /// 要不要恢复。
+  Future<api.BackupInspection> inspectBackupAtPath(String packagePath) async {
+    final path = _requireFilesystemPath(packagePath, 'packagePath');
     final inspection = await _translate(
-      () => _open.inspectBackup(packagePath: packageTicket),
+      () => _open.inspectBackup(packagePath: path),
     );
     return api.BackupInspection(
-      packageTicket: packageTicket,
+      // 契约模型只有 `packageTicket` 字段；这里如实回显输入路径，不假装做过票据解析。
+      packageTicket: path,
       schemaVersion: inspection.schemaVersion.toInt(),
       apiVersion: inspection.apiVersion,
       byteSize: inspection.byteSize.toInt(),
@@ -1256,71 +1269,51 @@ class BridgeDiaryApi implements api.DiaryApi {
     );
   }
 
-  /// 创建完整备份，契约 `backups.create`。
+  /// 创建完整备份到 [targetPath]。**不是契约的 `backups.create`。**
   ///
   /// **同步完成 + 已完成任务记录**：核心生成并自校验备份包之后，写一条
   /// `state = succeeded` 的 `backup` 任务记录；返回的 `jobId` 指向这条**已经完成**
   /// 的记录，不是排队任务。`getJob(jobId).targetIds` 是备份包路径（单个）。
   /// 大库上这个调用会占住线程，界面应显示「正在备份」而不是进度轮询。
   ///
-  /// `targetTicket` 在平台票据层接入前就是包文件的完整路径（与 `inspectBackup`
-  /// 同一口径）。`includeAssets = false` 明确拒绝：完整备份必须含原件，否则产出的
-  /// 包不能恢复资料库。
-  @override
-  Future<api.JobTicket> createBackup(api.BackupRequest request) async {
-    if (request.targetTicket.trim().isEmpty) {
-      throw const api.DiaryException(
-        code: api.DiaryErrorCode.invalidArgument,
-        message: '备份目标不能为空。',
-      );
-    }
-    if (!request.includeAssets) {
+  /// 路径专用：`targetPath` 是文件系统路径（票据解析尚未实现，见类注释）；
+  /// 票据形态会在进入核心之前被拒绝。`includeAssets = false` 明确拒绝：完整备份
+  /// 必须含原件，否则产出的包不能恢复资料库。
+  Future<api.JobTicket> createBackupAtPath(
+    String targetPath, {
+    bool includeAssets = true,
+  }) async {
+    final path = _requireFilesystemPath(targetPath, 'targetPath');
+    if (!includeAssets) {
       throw const api.DiaryException(
         code: api.DiaryErrorCode.invalidArgument,
         message: '完整备份必须包含原件；includeAssets = false 会产出不可恢复的包，已拒绝。',
       );
     }
-    final job = await _translate(
-      () => _open.createBackupJob(targetPath: request.targetTicket),
-    );
-    return _completedJobTicket(job, 'backups.create');
+    final job = await _translate(() => _open.createBackupJob(targetPath: path));
+    return _completedJobTicket(job, 'createBackupAtPath');
   }
 
-  /// 恢复备份，契约 `backups.restore`。
+  /// 从 [packagePath] 恢复到 [targetDir]。**不是契约的 `backups.restore`。**
   ///
   /// **同步完成 + 已完成任务记录**：恢复成功后写一条 `state = succeeded` 的
   /// `restore` 任务记录，`jobId` 指向已完成记录，不是排队任务。`getJob(jobId)`
   /// 的 `targetIds` 是 `[恢复出来的 libraryPath, rootDir]`，调用方据此打开新库。
   ///
-  /// 契约的这个方法没有目标目录参数（平台票据层也未接），所以默认恢复到当前库
-  /// 同级的 `<库名>-restored-<微秒>`；**目标必须是新目录/空目录**，非空会被核心
-  /// 拒绝（`invalid_state`），当前库一字不改。
+  /// 路径专用：包与目标目录都必须是文件系统路径；票据形态在进入核心之前被拒绝。
+  /// **目标必须是新目录/空目录**，非空会被核心拒绝（`invalid_state`），当前库
+  /// 一字不改。
   ///
   /// `options.restoreAsNewLibrary = false` 明确拒绝：核心只恢复到新库，绝不覆盖
   /// 当前库。`includeIndexes` 不改变核心的整库快照：false 不会剔除索引表，true 也
   /// 不会额外重建；索引始终可以在恢复后重建。
-  @override
-  Future<api.JobTicket> restoreBackup({
-    required String packageTicket,
-    api.RestoreOptions options = const api.RestoreOptions(),
-  }) {
-    return restoreBackupTo(
-      packageTicket: packageTicket,
-      targetDirectory: _defaultRestoreDirectory(),
-      options: options,
-    );
-  }
-
-  /// 恢复到指定目录（平台层/测试入口，**不是契约方法**）。
-  ///
-  /// `targetDirectory` 必须是新目录或空目录，且不能是当前资料库目录；否则核心在
-  /// 写任何东西之前报 `invalid_state`。恢复成功后 `getJob(jobId).targetIds` 是
-  /// `[libraryPath, rootDir]`。
-  Future<api.JobTicket> restoreBackupTo({
-    required String packageTicket,
-    required String targetDirectory,
+  Future<api.JobTicket> restoreBackupAtPath({
+    required String packagePath,
+    required String targetDir,
     api.RestoreOptions options = const api.RestoreOptions(),
   }) async {
+    final package = _requireFilesystemPath(packagePath, 'packagePath');
+    final target = _requireFilesystemPath(targetDir, 'targetDir');
     if (!options.restoreAsNewLibrary) {
       throw const api.DiaryException(
         code: api.DiaryErrorCode.invalidArgument,
@@ -1328,12 +1321,9 @@ class BridgeDiaryApi implements api.DiaryApi {
       );
     }
     final job = await _translate(
-      () => _open.restoreBackupJob(
-        packagePath: packageTicket,
-        targetDir: targetDirectory,
-      ),
+      () => _open.restoreBackupJob(packagePath: package, targetDir: target),
     );
-    return _completedJobTicket(job, 'backups.restore');
+    return _completedJobTicket(job, 'restoreBackupAtPath');
   }
 
   /// 同步完成的任务记录必须真的是 `succeeded`；不是就如实报错，不把排队/失败任务
@@ -1342,29 +1332,49 @@ class BridgeDiaryApi implements api.DiaryApi {
     if (job.state != bridge.JobState.succeeded) {
       throw api.DiaryException(
         code: api.DiaryErrorCode.invalidState,
-        message: '$operation 没有落成 succeeded 任务（实际 ${job.state.name}）；请重试或查看任务面板。',
+        message:
+            '$operation 没有落成 succeeded 任务（实际 ${job.state.name}）；请重试或查看任务面板。',
       );
     }
     return api.JobTicket(jobId: job.id);
   }
 
-  /// 契约没有目标目录参数：默认恢复到当前库同级的 `<库名>-restored-<微秒>`。
+  /// 路径专用入口的入参校验：**只接受文件系统路径，票据形态一律拒绝**。
   ///
-  /// 不用 `dart:io`：适配层还要能在 web 目标上分析/编译；这里只做字符串路径处理，
-  /// 目录是否存在交给核心校验（非空/已存在会被拒绝，绝不覆盖）。
-  String _defaultRestoreDirectory() {
-    final separator = libraryPath.contains('\\') ? '\\' : '/';
-    final cut = libraryPath.lastIndexOf(separator);
-    final directory = cut >= 0 ? libraryPath.substring(0, cut) : '.';
-    final fileName = cut >= 0 ? libraryPath.substring(cut + 1) : libraryPath;
-    final stem = fileName.endsWith('.sqlite')
-        ? fileName.substring(0, fileName.length - '.sqlite'.length)
-        : fileName;
-    final prefix = directory.endsWith(separator)
-        ? directory
-        : '$directory$separator';
-    final stamp = DateTime.now().toUtc().microsecondsSinceEpoch;
-    return '${prefix}$stem-restored-$stamp';
+  /// 契约里 `targetTicket` / `packageTicket` 是 `PlatformHost` 的限域票据，不保证
+  /// 是路径。把 `ticket:...` 这类字符串直接递给核心，桌面端会按它真的建文件、OHOS
+  /// 上会被沙箱前缀拒绝，两种错误都指不到「票据该在宿主层解析」。所以这里在进核心
+  /// 之前显式拒绝，并在消息里说清该在哪一层做解析。
+  ///
+  /// 允许 Windows 盘符（`C:\...` / `C:/...`）；其余 `scheme:` 形态（`ticket:`、
+  /// `content:`、`file:`…）都按票据/URI 处理，不当路径。
+  static String _requireFilesystemPath(String value, String argument) {
+    if (value.trim().isEmpty) {
+      throw api.DiaryException(
+        code: api.DiaryErrorCode.invalidArgument,
+        message: '$argument 不能为空：路径专用入口需要一个文件系统路径，不是 PlatformHost 票据。',
+      );
+    }
+    final scheme = RegExp(r'^([A-Za-z][A-Za-z0-9+.\-]*):').firstMatch(value);
+    if (scheme != null) {
+      final name = scheme.group(1)!;
+      // Windows 盘符（`C:\` / `C:/`）不是 URI scheme；`C:relative` 语义含糊，按
+      // 票据形态拒绝，调用方应给出绝对路径。
+      final windowsDrive =
+          name.length == 1 &&
+          value.length > 2 &&
+          (value[2] == '\\' || value[2] == '/');
+      if (!windowsDrive) {
+        throw api.DiaryException(
+          code: api.DiaryErrorCode.invalidArgument,
+          message:
+              '$argument 收到的是票据/URI 形态（`$value`），不是文件路径。'
+              '契约的备份入口收 PlatformHost 的限域票据，但适配层的票据→路径解析'
+              '尚未实现；请先在宿主侧把票据解析成授权路径，再调用路径专用入口。',
+        );
+      }
+    }
+    return value;
   }
 
   /// 没接的方法一律明确报错——照 `diary_mock` 的做法，避免悄悄返回空数据。

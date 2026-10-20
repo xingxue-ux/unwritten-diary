@@ -8,11 +8,14 @@ import 'package:diary_bridge/diary_bridge.dart'
     show BridgeDiaryApi, BridgeSession;
 import 'package:test/test.dart';
 
-/// `backups.create` / `backups.restore` 经 `DiaryApi` 的端到端测试。
+/// 备份**路径专用入口**（`*AtPath`）的端到端测试。
 ///
-/// 两条都是**同步完成 + 已完成任务记录**：`jobId` 指向 `succeeded` 记录，不是排队
-/// 任务；任务的 `targetIds` 记真实产物路径。这里同时钉住破坏性保证：
-/// 非空目标/坏包被拒时当前库零改动、不留下假任务，恢复成功也不覆盖当前库。
+/// 契约 `backups.*` 收的是 `PlatformHost` 的限域票据，而票据解析尚未实现；这些
+/// 入口只收文件系统路径，且**不在** `_wiredMethods`/`capabilities` 里（见
+/// `bridge_diary_api_test.dart` 的能力断言）。这里同时钉住：票据形态在进核心之前
+/// 被拒、不创建以票据命名的文件；create/restore 是**同步完成 + 已完成任务记录**，
+/// `jobId` 指向 `succeeded` 记录，不是排队任务；非空目标/坏包被拒时当前库零改动、
+/// 不留下假任务，恢复成功也不覆盖当前库。
 ///
 /// 运行前先构建宿主产物：
 ///   cargo build --release
@@ -51,7 +54,7 @@ void main() {
     }
   });
 
-  test('createBackup 返回已完成 job，包可检查且不含密钥/凭据', () async {
+  test('createBackupAtPath 返回已完成 job，包可检查且不含密钥/凭据', () async {
     await api.open();
     final capture = await _newCommittedCapture(api, 'backup-create');
     await _importTextAsset(api, 'backup-asset', '备份里要有原件。');
@@ -75,9 +78,7 @@ void main() {
     expect(withCredential.credentialRef, isNotNull);
 
     final package = '${workDir.path}/api-create.diarybak';
-    final ticket = await api.createBackup(
-      BackupRequest(targetTicket: package),
-    );
+    final ticket = await api.createBackupAtPath(package);
     expect(ticket.jobId, isNotEmpty);
 
     final job = await api.getJob(ticket.jobId);
@@ -86,7 +87,7 @@ void main() {
     expect(job.targetIds, [package], reason: '任务的 targetIds 是包路径');
     expect(File(package).existsSync(), isTrue);
 
-    final inspection = await api.inspectBackup(package);
+    final inspection = await api.inspectBackupAtPath(package);
     expect(inspection.issues, isEmpty);
     expect(inspection.schemaVersion, greaterThan(0));
     expect(inspection.assetCount, greaterThanOrEqualTo(1));
@@ -105,9 +106,11 @@ void main() {
       );
     }
     expect(
-      archive.map((entry) => entry.name).any(
-        (name) => name.contains('secret') || name.contains('credential'),
-      ),
+      archive
+          .map((entry) => entry.name)
+          .any(
+            (name) => name.contains('secret') || name.contains('credential'),
+          ),
       isFalse,
       reason: '备份包不应携带密钥/凭据文件',
     );
@@ -115,9 +118,7 @@ void main() {
     // 不完整备份不是一个可恢复的备份：明确拒绝，不产出一个空壳包。
     final noAssets = '${workDir.path}/no-assets.diarybak';
     await expectLater(
-      api.createBackup(
-        BackupRequest(targetTicket: noAssets, includeAssets: false),
-      ),
+      api.createBackupAtPath(noAssets, includeAssets: false),
       throwsA(
         isA<DiaryException>().having(
           (error) => error.code,
@@ -130,7 +131,7 @@ void main() {
 
     // 已存在的包绝不覆盖。
     await expectLater(
-      api.createBackup(BackupRequest(targetTicket: package)),
+      api.createBackupAtPath(package),
       throwsA(
         isA<DiaryException>().having(
           (error) => error.code,
@@ -142,22 +143,20 @@ void main() {
     expect((await api.getCapture(capture.id)).id, capture.id);
   });
 
-  test('restoreBackup 恢复到新库，job 指向已完成记录，现库内容不变', () async {
+  test('restoreBackupAtPath 恢复到新库，job 指向已完成记录，现库内容不变', () async {
     await api.open();
     final capture = await _newCommittedCapture(api, 'backup-restore');
     final before = await api.snapshot();
     final textBefore = (await api.getCapture(capture.id)).draftText;
 
     final package = '${workDir.path}/api-restore.diarybak';
-    final backupTicket = await api.createBackup(
-      BackupRequest(targetTicket: package),
-    );
-    expect(
-      (await api.getJob(backupTicket.jobId)).state,
-      JobState.succeeded,
-    );
+    final backupTicket = await api.createBackupAtPath(package);
+    expect((await api.getJob(backupTicket.jobId)).state, JobState.succeeded);
 
-    final restoreTicket = await api.restoreBackup(packageTicket: package);
+    final restoreTicket = await api.restoreBackupAtPath(
+      packagePath: package,
+      targetDir: '${workDir.path}/restored-for-api',
+    );
     final job = await api.getJob(restoreTicket.jobId);
     expect(job.kind, 'restore');
     expect(job.state, JobState.succeeded);
@@ -178,9 +177,7 @@ void main() {
         reason: '恢复出来的库应包含备份时的记录',
       );
       expect(
-        page.captures
-            .firstWhere((item) => item.id == capture.id)
-            .draftText,
+        page.captures.firstWhere((item) => item.id == capture.id).draftText,
         textBefore,
       );
     } finally {
@@ -194,19 +191,19 @@ void main() {
     expect((await api.getCapture(capture.id)).draftText, textBefore);
   });
 
-  test('restoreBackupTo 拒绝非空目标/坏包/覆盖现库，不写任务也不动现库', () async {
+  test('restoreBackupAtPath 拒绝非空目标/坏包/覆盖现库，不写任务也不动现库', () async {
     await api.open();
     await _newCommittedCapture(api, 'backup-refuse');
     final package = '${workDir.path}/api-refuse.diarybak';
-    await api.createBackup(BackupRequest(targetTicket: package));
+    await api.createBackupAtPath(package);
 
     final libraryFile = File(libraryPath);
     final fingerprintBefore = sha256
         .convert(libraryFile.readAsBytesSync())
         .toString();
-    final restoreJobsBefore = (await api.listJobs(pageSize: 200)).jobs
-        .where((job) => job.kind == 'restore')
-        .length;
+    final restoreJobsBefore = (await api.listJobs(
+      pageSize: 200,
+    )).jobs.where((job) => job.kind == 'restore').length;
     final occupied = Directory('${workDir.path}/occupied')..createSync();
     File('${occupied.path}/keep.txt').writeAsStringSync('别动我');
     // 坏包先造好，再取目录快照：后面的对比只看「恢复动作」留下了什么。
@@ -214,16 +211,11 @@ void main() {
     final brokenBytes = File(package).readAsBytesSync();
     brokenBytes[brokenBytes.length ~/ 2] ^= 0xff;
     File(broken).writeAsBytesSync(brokenBytes);
-    final childrenBefore = Directory(workDir.path)
-        .listSync()
-        .map((entry) => entry.path)
-        .toList()
-      ..sort();
+    final childrenBefore = Directory(
+      workDir.path,
+    ).listSync().map((entry) => entry.path).toList()..sort();
     await expectLater(
-      api.restoreBackupTo(
-        packageTicket: package,
-        targetDirectory: occupied.path,
-      ),
+      api.restoreBackupAtPath(packagePath: package, targetDir: occupied.path),
       throwsA(
         isA<DiaryException>().having(
           (error) => error.code,
@@ -236,8 +228,9 @@ void main() {
 
     // 契约的 restoreAsNewLibrary = false 等于「覆盖现库」，核心没有这个能力，拒绝。
     await expectLater(
-      api.restoreBackup(
-        packageTicket: package,
+      api.restoreBackupAtPath(
+        packagePath: package,
+        targetDir: '${workDir.path}/refused-overwrite',
         options: const RestoreOptions(restoreAsNewLibrary: false),
       ),
       throwsA(
@@ -251,7 +244,10 @@ void main() {
 
     // 坏包：哈希/结构不过，拒绝且不留半成品。
     await expectLater(
-      api.restoreBackup(packageTicket: broken),
+      api.restoreBackupAtPath(
+        packagePath: broken,
+        targetDir: '${workDir.path}/broken-target',
+      ),
       throwsA(
         isA<DiaryException>().having(
           (error) => error.code,
@@ -261,9 +257,9 @@ void main() {
       ),
     );
 
-    final restoreJobsAfter = (await api.listJobs(pageSize: 200)).jobs
-        .where((job) => job.kind == 'restore')
-        .length;
+    final restoreJobsAfter = (await api.listJobs(
+      pageSize: 200,
+    )).jobs.where((job) => job.kind == 'restore').length;
     expect(
       restoreJobsAfter,
       restoreJobsBefore,
@@ -274,15 +270,70 @@ void main() {
       fingerprintBefore,
       reason: '拒绝恢复不能改动当前资料库',
     );
-    final childrenAfter = Directory(workDir.path)
-        .listSync()
-        .map((entry) => entry.path)
-        .toList()
-      ..sort();
+    final childrenAfter = Directory(
+      workDir.path,
+    ).listSync().map((entry) => entry.path).toList()..sort();
+    expect(childrenAfter, childrenBefore, reason: '拒绝恢复不能留下暂存/半成品目录');
+  });
+
+  test('路径专用入口拒绝票据形态，不把 ticket: 字符串当路径/文件名', () async {
+    await api.open();
+    const ticket = 'ticket:backup-target-0199';
+    final jobsBefore = (await api.listJobs(pageSize: 200)).jobs.length;
+
+    Future<void> expectRejected(Future<Object?> future) async {
+      await expectLater(
+        future,
+        throwsA(
+          isA<DiaryException>()
+              .having(
+                (error) => error.code,
+                'code',
+                DiaryErrorCode.invalidArgument,
+              )
+              .having((error) => error.message, 'message', contains('票据')),
+        ),
+      );
+    }
+
+    await expectRejected(api.createBackupAtPath(ticket));
+    await expectRejected(api.inspectBackupAtPath(ticket));
+    await expectRejected(
+      api.restoreBackupAtPath(
+        packagePath: ticket,
+        targetDir: '${workDir.path}/ticket-restore-target',
+      ),
+    );
+
+    // 目标目录参数同样只收路径：先造一个真包，再只让 targetDir 是票据。
+    final package = '${workDir.path}/ticket-guard.diarybak';
+    await api.createBackupAtPath(package);
+    await expectRejected(
+      api.restoreBackupAtPath(
+        packagePath: package,
+        targetDir: 'ticket:restore-target',
+      ),
+    );
+
+    // 被拒绝的调用一次都没进核心：没有以票据命名的文件/目录，也没有多余任务。
+    expect(File(ticket).existsSync(), isFalse);
+    expect(File('${workDir.path}/$ticket').existsSync(), isFalse);
     expect(
-      childrenAfter,
-      childrenBefore,
-      reason: '拒绝恢复不能留下暂存/半成品目录',
+      Directory('${workDir.path}/ticket-restore-target').existsSync(),
+      isFalse,
+    );
+    expect(
+      Directory(workDir.path)
+          .listSync(recursive: true)
+          .map((entry) => entry.path)
+          .where((path) => path.contains('ticket:')),
+      isEmpty,
+      reason: '票据字符串不能变成文件/目录',
+    );
+    expect(
+      (await api.listJobs(pageSize: 200)).jobs.length,
+      jobsBefore + 1,
+      reason: '只有显式创建的那个真包写任务，被拒绝的票据调用不留任务',
     );
   });
 }
