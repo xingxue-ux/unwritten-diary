@@ -80,6 +80,10 @@ fn an_ahead_cursor_is_clamped_to_the_current_max() {
         page.next_sequence, max,
         "超前游标要夹到当前最大序号，不能返回一个未来的序号"
     );
+    assert!(
+        page.next_sequence < max + 999,
+        "返回值必须小于调用方传的超前游标：调用方据此判断「被夹过」，而不是本来就在末尾"
+    );
     assert!(!page.truncated);
 
     // 夹住之后的下一次写入能被收到：不是「永久跳过」。

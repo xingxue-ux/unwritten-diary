@@ -2345,6 +2345,10 @@ fn events_poll_by_sequence_and_report_truncation() {
         "超前游标必须夹到当前最大序号（当前是 {}）：{ahead}",
         page["next_sequence"]
     );
+    assert!(
+        ahead["next_sequence"].as_i64().unwrap() < 999_999,
+        "返回的 next_sequence 要小于调用方传的超前游标（调用方据此识别被夹过）：{ahead}"
+    );
     assert_eq!(ahead["truncated"], json!(false));
 
     // 夹住之后的新事件仍然收得到：不是「永久跳过」。
