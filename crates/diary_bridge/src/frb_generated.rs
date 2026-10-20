@@ -6255,6 +6255,7 @@ const _: fn() = || {
         let SearchHit = None::<diary_core::model::SearchHit>.unwrap();
         let _: String = SearchHit.hit_id;
         let _: String = SearchHit.group_id;
+        let _: String = SearchHit.capture_id;
         let _: diary_core::model::SourceKind = SearchHit.source_kind;
         let _: Vec<diary_core::model::MatchedBy> = SearchHit.matched_by;
         let _: diary_core::model::Coverage = SearchHit.coverage;
@@ -8948,6 +8949,7 @@ impl SseDecode for diary_core::model::SearchHit {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_hitId = <String>::sse_decode(deserializer);
         let mut var_groupId = <String>::sse_decode(deserializer);
+        let mut var_captureId = <String>::sse_decode(deserializer);
         let mut var_sourceKind = <diary_core::model::SourceKind>::sse_decode(deserializer);
         let mut var_matchedBy = <Vec<diary_core::model::MatchedBy>>::sse_decode(deserializer);
         let mut var_coverage = <diary_core::model::Coverage>::sse_decode(deserializer);
@@ -8961,6 +8963,7 @@ impl SseDecode for diary_core::model::SearchHit {
         return diary_core::model::SearchHit {
             hit_id: var_hitId,
             group_id: var_groupId,
+            capture_id: var_captureId,
             source_kind: var_sourceKind,
             matched_by: var_matchedBy,
             coverage: var_coverage,
@@ -11659,6 +11662,7 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::SearchHit> 
         [
             self.0.hit_id.into_into_dart().into_dart(),
             self.0.group_id.into_into_dart().into_dart(),
+            self.0.capture_id.into_into_dart().into_dart(),
             self.0.source_kind.into_into_dart().into_dart(),
             self.0.matched_by.into_into_dart().into_dart(),
             self.0.coverage.into_into_dart().into_dart(),
@@ -13893,6 +13897,7 @@ impl SseEncode for diary_core::model::SearchHit {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.hit_id, serializer);
         <String>::sse_encode(self.group_id, serializer);
+        <String>::sse_encode(self.capture_id, serializer);
         <diary_core::model::SourceKind>::sse_encode(self.source_kind, serializer);
         <Vec<diary_core::model::MatchedBy>>::sse_encode(self.matched_by, serializer);
         <diary_core::model::Coverage>::sse_encode(self.coverage, serializer);

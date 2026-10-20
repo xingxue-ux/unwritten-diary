@@ -3473,7 +3473,16 @@ class SearchHit {
   final String hitId;
 
   /// 同一来源的命中归到一组，避免一份长材料占满结果。
+  ///
+  /// **不是**「这一条属于哪篇记录」：片段命中时它是 `source_id`，记录文字命中时
+  /// 才是 `capture_id`。要跳到记录详情页请用 [`SearchHit::capture_id`]。
   final String groupId;
+
+  /// 这一条命中属于哪篇记录（`captures.id`）。
+  ///
+  /// **与 `group_id` 不是一回事**：`group_id` 只是折叠/归组用的键，片段命中时
+  /// 是 `source_id`；`capture_id` 才是「这一条属于哪篇记录」，两种命中都一定有。
+  final String captureId;
   final SourceKind sourceKind;
   final List<MatchedBy> matchedBy;
   final Coverage coverage;
@@ -3494,6 +3503,7 @@ class SearchHit {
   const SearchHit({
     required this.hitId,
     required this.groupId,
+    required this.captureId,
     required this.sourceKind,
     required this.matchedBy,
     required this.coverage,
@@ -3510,6 +3520,7 @@ class SearchHit {
   int get hashCode =>
       hitId.hashCode ^
       groupId.hashCode ^
+      captureId.hashCode ^
       sourceKind.hashCode ^
       matchedBy.hashCode ^
       coverage.hashCode ^
@@ -3528,6 +3539,7 @@ class SearchHit {
           runtimeType == other.runtimeType &&
           hitId == other.hitId &&
           groupId == other.groupId &&
+          captureId == other.captureId &&
           sourceKind == other.sourceKind &&
           matchedBy == other.matchedBy &&
           coverage == other.coverage &&

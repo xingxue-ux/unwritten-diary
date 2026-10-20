@@ -43,6 +43,7 @@ class ExpiringCursorApi extends MockDiaryApi {
         SearchHit(
           hitId: 'hit-$searches',
           groupId: 'capture-$searches',
+          captureId: 'capture-$searches',
           sourceKind: SourceKind.text,
           matchedBy: const {MatchedBy.keyword},
           coverage: Coverage.complete,
@@ -111,6 +112,7 @@ class HybridUpgradeApi extends MockDiaryApi {
 SearchHit _hit(String id, String text) => SearchHit(
   hitId: id,
   groupId: id,
+  captureId: id,
   sourceKind: SourceKind.text,
   matchedBy: const {MatchedBy.keyword},
   coverage: Coverage.complete,
@@ -126,6 +128,7 @@ SearchSnapshot result(String session, String text, int revision) =>
         SearchHit(
           hitId: session,
           groupId: session,
+          captureId: session,
           sourceKind: SourceKind.text,
           matchedBy: const {MatchedBy.keyword},
           coverage: Coverage.complete,

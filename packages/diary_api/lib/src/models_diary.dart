@@ -410,6 +410,7 @@ class SearchHit {
   const SearchHit({
     required this.hitId,
     required this.groupId,
+    required this.captureId,
     required this.sourceKind,
     required this.matchedBy,
     required this.coverage,
@@ -425,7 +426,16 @@ class SearchHit {
   final String hitId;
 
   /// 同一记录或来源的命中归到一组，避免相邻块占满结果。
+  ///
+  /// **不是**「这一条属于哪篇记录」：片段命中时它是 sourceId，记录文字命中时
+  /// 才是 captureId。跳记录详情页请用 [captureId]。
   final String groupId;
+
+  /// 这一条命中属于哪篇记录（`captures.id`）。两种命中都一定有。
+  ///
+  /// 与 [groupId] **不是一回事**：groupId 只是折叠归组用的键，片段命中时是
+  /// sourceId。界面跳记录详情页必须用这个字段。
+  final String captureId;
 
   final SourceKind sourceKind;
 
@@ -446,6 +456,7 @@ class SearchHit {
       other is SearchHit &&
       other.hitId == hitId &&
       other.groupId == groupId &&
+      other.captureId == captureId &&
       other.sourceKind == sourceKind &&
       setEquals(other.matchedBy, matchedBy) &&
       other.coverage == coverage &&
@@ -461,6 +472,7 @@ class SearchHit {
   int get hashCode => Object.hash(
         hitId,
         groupId,
+        captureId,
         sourceKind,
         unorderedHash(matchedBy.map((e) => e.wire)),
         coverage,
@@ -474,7 +486,7 @@ class SearchHit {
       );
 
   @override
-  String toString() => 'SearchHit($hitId, group: $groupId)';
+  String toString() => 'SearchHit($hitId, capture: $captureId, group: $groupId)';
 }
 
 /// 检索会话的完整快照。每次事件发当前页的完整快照，前端按 hitId 更新；

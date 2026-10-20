@@ -97,7 +97,7 @@ void main() {
 
       // 能力项：桥接真的把这三个方法接上了。
       final info = await session.info();
-      expect(info.apiVersion, '1.0');
+      expect(info.apiVersion, '1.1');
       expect(
         info.capabilities,
         containsAll(['backups.create', 'backups.inspect', 'backups.restore']),
