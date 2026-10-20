@@ -25,6 +25,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -34,7 +35,15 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).resolve().with_name("export_diagnostics.py")
 ERROR_RS = ROOT / "crates" / "diary_core" / "src" / "error.rs"
 JOBS_RS = ROOT / "crates" / "diary_core" / "src" / "jobs.rs"
+MODEL_RS = ROOT / "crates" / "diary_core" / "src" / "model.rs"
+EMBEDDING_RS = ROOT / "crates" / "diary_core" / "src" / "embedding.rs"
+CHUNKER_RS = ROOT / "crates" / "diary_core" / "src" / "chunker.rs"
+SEARCH_RS = ROOT / "crates" / "diary_core" / "src" / "search.rs"
 CORE_WAKEUP_DART = ROOT / "apps" / "diary_app" / "lib" / "src" / "core_wakeup.dart"
+API_VALUES_DART = ROOT / "packages" / "diary_api" / "lib" / "src" / "values.dart"
+NAPI_SHIM_CPP = (
+    ROOT / "apps" / "ohos-diary-core" / "entry" / "src" / "main" / "cpp" / "napi_shim.cpp"
+)
 
 CANARIES = [
     "CANARY_DRAFT_7f3a9c",
@@ -45,6 +54,12 @@ CANARIES = [
     "CANARY_LOG_8e2f4a",
     "CANARY_BLOB_3a9c6e",
     "CANARY_JOB_6b1d8f",
+    # Canaries for columns that were previously copied verbatim:
+    "CANARY_STATE_4c1e8a",      # captures.state
+    "CANARY_STATE_7d2f9b",      # jobs.state
+    "CANARY_MODEL_2f6a0c@abc123",  # chunk_vectors.model_version
+    "CANARY_CHUNKER_8b3d5e",    # text_chunks.chunker_version
+    "CANARY_LOGTIME_6e4a1d",    # log expectedAt/completedAt must be ISO
 ]
 
 # Short lowercase alphanumerics are exactly the shape a "looks like a machine
@@ -114,6 +129,9 @@ def build_fixture(base: Path) -> tuple[Path, Path, Path]:
         [
             ("cap_1", "committed", f"日记草稿 {CANARIES[0]}"),
             ("cap_2", "trashed", "已删除"),
+            # `captures.state` is plain TEXT in schema.rs: a poisoned/edited
+            # library can put arbitrary text there. It must be redacted.
+            ("cap_3", CANARIES[8], ""),
         ],
     )
     conn.execute("INSERT INTO source_items VALUES('src_1','cap_1')")
@@ -134,6 +152,9 @@ def build_fixture(base: Path) -> tuple[Path, Path, Path]:
         "INSERT INTO text_chunks VALUES('chunk_1', ?, 'chunker-1-packday-line400-overlap48')",
         (CANARIES[3],),
     )
+    # Real on-disk format: `MODEL_ID@sha256[:12]` (embedding.rs). The healthy
+    # fixture must keep it so the `modelVersionMatchesExpected == true`
+    # positive case exists; a canary here made that branch untestable.
     conn.execute(
         "INSERT INTO chunk_vectors VALUES('chunk_1', 1, 'bge-small-zh-v1.5-ours@abc123', 512, X'00000000')"
     )
@@ -150,6 +171,9 @@ def build_fixture(base: Path) -> tuple[Path, Path, Path]:
     conn.execute("INSERT INTO jobs VALUES('job_3','failed',?)", (SHORT_SECRETS[0],))
     conn.execute("INSERT INTO jobs VALUES('job_4','failed',?)", (SHORT_SECRETS[1],))
     conn.execute("INSERT INTO jobs VALUES('job_5','failed','invalid_argument')")
+    # `jobs.state` is plain TEXT too; the canary state must be grouped as
+    # <redacted> instead of appearing in counts.jobs.byState.
+    conn.execute("INSERT INTO jobs VALUES('job_6',?,'no_handler')", (CANARIES[9],))
     conn.execute("INSERT INTO import_sessions VALUES('imp_1','prepared')")
     conn.execute("INSERT INTO recording_sessions VALUES('rec_1','recording')")
     conn.execute("INSERT INTO domain_events VALUES(7)")
@@ -170,6 +194,10 @@ def build_fixture(base: Path) -> tuple[Path, Path, Path]:
                     {
                         "observedAt": "2026-10-18T08:00:00Z",
                         "trigger": "wake",
+                        # Both are written by core_wakeup.dart on every wake;
+                        # dropping them made "the wake ran on time" uncheckable.
+                        "expectedAt": "2026-10-18T07:59:30Z",
+                        "completedAt": "2026-10-18T08:00:01Z",
                         "processed": 2,
                         "succeeded": 1,
                         "failed": 1,
@@ -204,6 +232,15 @@ def build_fixture(base: Path) -> tuple[Path, Path, Path]:
                         # Unknown trigger (even one shaped like a code) is
                         # dropped by the closed trigger vocabulary.
                         "trigger": SHORT_SECRETS[0],
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        # Timestamp fields accept ISO only: a canary (or any
+                        # free-form text) is redacted, not echoed.
+                        "expectedAt": CANARIES[12],
+                        "completedAt": CANARIES[12],
                     },
                     ensure_ascii=False,
                 ),
@@ -243,6 +280,40 @@ def parse_error_rs_wire_codes() -> set[str]:
     if body is None:
         raise AssertionError("could not find ErrorCode::wire() in error.rs")
     return set(WIRE_ARM_RE.findall(body.group(1)))
+
+
+def parse_model_wire_values(enum_name: str) -> set[str]:
+    """Parse one `impl <Enum> { pub fn wire() }` block out of model.rs."""
+    text = MODEL_RS.read_text(encoding="utf-8")
+    impl = re.search(rf"impl {enum_name} \{{(.*?)\n\}}", text, re.DOTALL)
+    if impl is None:
+        raise AssertionError(f"could not find impl {enum_name} in model.rs")
+    body = re.search(
+        r"pub fn wire\(self\) -> &'static str \{(.*?)\n    \}",
+        impl.group(1),
+        re.DOTALL,
+    )
+    if body is None:
+        raise AssertionError(f"could not find {enum_name}::wire() in model.rs")
+    return set(WIRE_ARM_RE.findall(body.group(1)))
+
+
+def parse_rust_str_const(path: Path, name: str) -> str:
+    """Read `pub const <name>: &str = "…";` out of a Rust source file."""
+    text = path.read_text(encoding="utf-8")
+    match = re.search(rf'pub const {name}: &str = "([^"]+)";', text)
+    if match is None:
+        raise AssertionError(f"could not find {name} in {path.name}")
+    return match.group(1)
+
+
+def build_fixed_data(library: Path, logs: Path) -> dict[str, Any]:
+    """Build the real bundle payload once, with a frozen `generatedAt`."""
+    from export_diagnostics import build_diagnostics
+
+    data = build_diagnostics(library, logs, 50, 13)
+    data["generatedAt"] = "2026-10-18T14:07:13Z"
+    return data
 
 
 class DiagnosticsPrivacyTest(unittest.TestCase):
@@ -317,17 +388,37 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
         self.assertEqual(data["library"]["extension"], "sqlite")
         self.assertEqual(data["logs"]["source"], {"present": True, "extension": "jsonl"})
 
-        self.assertEqual(data["counts"]["captures"]["total"], 2)
+        self.assertEqual(data["counts"]["captures"]["total"], 3)
         self.assertEqual(data["counts"]["captures"]["byState"]["committed"], 1)
+        self.assertEqual(data["counts"]["captures"]["byState"]["trashed"], 1)
+        # Canary state -> grouped, never echoed.
+        self.assertEqual(data["counts"]["captures"]["byState"]["<redacted>"], 1)
+        self.assertNotIn(CANARIES[8], json.dumps(data, ensure_ascii=False))
+        job_states = data["counts"]["jobs"]["byState"]
+        self.assertEqual(job_states["queued"], 1)
+        self.assertEqual(job_states["failed"], 4)
+        self.assertEqual(job_states["<redacted>"], 1)
+        self.assertNotIn(CANARIES[9], json.dumps(data, ensure_ascii=False))
         by_error = data["counts"]["jobs"]["byErrorCode"]
         self.assertEqual(by_error.get("<redacted>"), 3)
-        self.assertEqual(by_error.get("no_handler"), 1)
+        self.assertEqual(by_error.get("no_handler"), 2)
         self.assertEqual(by_error.get("invalid_argument"), 1)
         self.assertNotIn(SHORT_SECRETS[0], json.dumps(data, ensure_ascii=False))
         self.assertNotIn(SHORT_SECRETS[1], json.dumps(data, ensure_ascii=False))
         self.assertEqual(data["index"]["semantic"]["totalChunks"], 1)
         self.assertEqual(data["index"]["semantic"]["embeddedChunks"], 1)
         self.assertTrue(data["index"]["semantic"]["ready"])
+        # Only matchesExpected booleans; the raw model/chunker strings never
+        # leave the exporter (they are user-writable TEXT columns). A healthy
+        # library stores `MODEL_ID@sha256[:12]`, so both must be true.
+        semantic = data["index"]["semantic"]
+        self.assertTrue(semantic["modelVersionMatchesExpected"])
+        self.assertTrue(semantic["chunkerVersionMatchesExpected"])
+        self.assertNotIn("modelVersions", semantic)
+        self.assertNotIn("chunkerVersion", semantic)
+        # The hash half is user-specific (it identifies the local model file):
+        # only the expected id constant may appear, never `MODEL_ID@hash`.
+        self.assertNotIn("abc123", json.dumps(data, ensure_ascii=False))
         self.assertNotIn("CANARY", json.dumps(data, ensure_ascii=False))
 
         keys = set(walk_keys(data))
@@ -341,14 +432,18 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
                     "observedAt", "trigger", "error", "processed", "succeeded",
                     "failed", "retrying", "backfilled", "recovered", "dueBacklog",
                     "waitingDependency", "dependencyFailed", "nextWakeup",
+                    "expectedAt", "completedAt",
                 }
             ))
+        # The two wakeup-path timestamps now survive instead of being dropped.
+        self.assertEqual(entries[0]["expectedAt"], "2026-10-18T07:59:30Z")
+        self.assertEqual(entries[0]["completedAt"], "2026-10-18T08:00:01Z")
         self.assertEqual(entries[0]["error"], "invalid_argument")
         self.assertEqual(entries[1]["error"], "<redacted>")
         self.assertEqual(entries[2]["error"], "<redacted>")
         self.assertNotIn("trigger", entries[3])
         self.assertGreaterEqual(data["logs"]["malformedLines"], 1)
-        self.assertGreaterEqual(data["logs"]["redactedValues"], 5)
+        self.assertGreaterEqual(data["logs"]["redactedValues"], 7)
 
         # The bundle documents its own exact whitelist and name policy.
         privacy = data["privacy"]
@@ -357,6 +452,12 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
         self.assertNotIn("password123", privacy["errorCodeWhitelist"])
         self.assertTrue(privacy["namePolicy"])
         self.assertTrue(any("whitelist" in rule for rule in privacy["logRules"]))
+        self.assertEqual(
+            privacy["stateWhitelists"]["captures"], ["committed", "draft", "trashed"]
+        )
+        self.assertIn("queued", privacy["stateWhitelists"]["jobs"])
+        self.assertIn("ERR_DIARY_CALL", privacy["errorCodeWhitelist"])
+        self.assertIn("plugin_denied", privacy["errorCodeWhitelist"])
 
     def test_json_output_is_also_metadata_only(self) -> None:
         out = self.base / "diagnostics.json"
@@ -407,6 +508,163 @@ class DiagnosticsPrivacyTest(unittest.TestCase):
             self.assertTrue(
                 f"'{trigger}'" in dart, f"trigger {trigger} is no longer in core_wakeup.dart"
             )
+
+    def test_state_whitelists_match_model_rs(self) -> None:
+        from export_diagnostics import CAPTURE_STATE_WHITELIST, JOB_STATE_WHITELIST
+
+        self.assertEqual(
+            sorted(CAPTURE_STATE_WHITELIST),
+            sorted(parse_model_wire_values("CaptureState")),
+            "diagnostics capture-state whitelist drifted from model.rs",
+        )
+        self.assertEqual(
+            sorted(JOB_STATE_WHITELIST),
+            sorted(parse_model_wire_values("JobState")),
+            "diagnostics job-state whitelist drifted from model.rs",
+        )
+
+    def test_expected_versions_match_rust_constants(self) -> None:
+        # The exporter repeats three Rust constants. If either side changes the
+        # format/name (as `MODEL_ID@sha` did), the matchesExpected booleans go
+        # silently false; pin them to the source of truth instead.
+        from export_diagnostics import (
+            EXPECTED_CHUNKER,
+            EXPECTED_MODEL_ID,
+            EXPECTED_TOKENIZER,
+        )
+
+        self.assertEqual(
+            EXPECTED_MODEL_ID, parse_rust_str_const(EMBEDDING_RS, "MODEL_ID")
+        )
+        self.assertEqual(
+            EXPECTED_CHUNKER, parse_rust_str_const(CHUNKER_RS, "CHUNKER_VERSION")
+        )
+        self.assertEqual(
+            EXPECTED_TOKENIZER, parse_rust_str_const(SEARCH_RS, "TOKENIZER_VERSION")
+        )
+
+    def test_app_only_log_codes_match_dart_enum(self) -> None:
+        from export_diagnostics import APP_ONLY_ERROR_CODES, LOG_ONLY_ERROR_CODES
+
+        text = API_VALUES_DART.read_text(encoding="utf-8")
+        enum = re.search(r"enum DiaryErrorCode \{(.*?)\n\}", text, re.DOTALL)
+        self.assertIsNotNone(enum, "could not find enum DiaryErrorCode in values.dart")
+        wires = set(re.findall(r"[a-zA-Z]+\(\'([a-z0-9_]+)\'\)", enum.group(1)))
+        self.assertTrue(APP_ONLY_ERROR_CODES.issubset(wires))
+        self.assertIn("unclassified_error", LOG_ONLY_ERROR_CODES)
+        self.assertIn("unclassified_error", CORE_WAKEUP_DART.read_text(encoding="utf-8"))
+
+    def test_napi_error_codes_are_sourced_from_shim(self) -> None:
+        from export_diagnostics import NAPI_ERROR_CODES
+
+        cpp = NAPI_SHIM_CPP.read_text(encoding="utf-8")
+        for code in sorted(NAPI_ERROR_CODES):
+            self.assertIn(f'"{code}"', cpp, f"{code} is no longer in napi_shim.cpp")
+
+    def test_zip_members_use_utc_fixed_time_and_are_deterministic(self) -> None:
+        """Same payload, different local clock => identical zip bytes.
+
+        Before the fix `zipfile` stamped every member with `time.localtime()`,
+        so two exports from different timezones differed (and the member time
+        minus `generatedAt` exposed the user's UTC offset).
+
+        `time.tzset` is POSIX-only (Windows has no such attribute) and on
+        Windows `TZ` does not affect `localtime` anyway, so a `tzset`-based
+        probe is either a hard ERROR or a fake green there. Poison
+        `time.localtime` itself instead: no platform API, and any regression
+        that starts stamping members from the local clock changes the bytes.
+        """
+        from export_diagnostics import ZIP_MEMBER_DATE_TIME, write_bundle
+
+        data = build_fixed_data(self.library, self.logs)
+        first = self.base / "first.zip"
+        second = self.base / "second.zip"
+        write_bundle(data, first, True)
+        real_localtime = time.localtime
+        try:
+            # A deliberately absurd local time; if any member picked it up,
+            # the digest below would differ.
+            time.localtime = lambda *_args, **_kwargs: time.struct_time(
+                (2038, 1, 2, 3, 4, 5, 6, 7, -1)
+            )
+            write_bundle(data, second, True)
+        finally:
+            time.localtime = real_localtime
+
+        self.assertEqual(
+            hashlib.sha256(first.read_bytes()).hexdigest(),
+            hashlib.sha256(second.read_bytes()).hexdigest(),
+            "same data exported under a different local clock produced different bytes",
+        )
+        with zipfile.ZipFile(first) as archive:
+            self.assertEqual(
+                archive.namelist(),
+                ["diagnostics.json", "README.txt", "manifest.json"],
+            )
+            for info in archive.infolist():
+                self.assertEqual(info.date_time, ZIP_MEMBER_DATE_TIME)
+                self.assertEqual(info.create_system, 3)
+                self.assertEqual(info.external_attr >> 16, 0o600)
+
+    def test_semantic_version_booleans_from_function(self) -> None:
+        data = build_fixed_data(self.library, self.logs)
+        semantic = data["index"]["semantic"]
+        self.assertEqual(
+            set(semantic),
+            {
+                "expectedModelId",
+                "expectedChunkerVersion",
+                "activeGeneration",
+                "buildingGeneration",
+                "totalChunks",
+                "embeddedChunks",
+                "modelVersionMatchesExpected",
+                "chunkerVersionMatchesExpected",
+                "ready",
+            },
+        )
+
+    def test_model_and_chunker_version_canaries_stay_redacted(self) -> None:
+        # `chunk_vectors.model_version` / `text_chunks.chunker_version` are
+        # writable TEXT columns; a poisoned library must only yield `false`,
+        # never echo the value itself.
+        conn = sqlite3.connect(self.library)
+        conn.execute("UPDATE chunk_vectors SET model_version = ?", (CANARIES[10],))
+        conn.execute("UPDATE text_chunks SET chunker_version = ?", (CANARIES[11],))
+        conn.commit()
+        conn.close()
+
+        result = self.run_export(self.out)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        raw = all_archive_bytes(self.out)
+        for canary in (CANARIES[10], CANARIES[11]):
+            self.assertNotIn(canary.encode("utf-8"), raw, f"leaked: {canary}")
+        with zipfile.ZipFile(self.out) as archive:
+            semantic = json.loads(archive.read("diagnostics.json"))["index"]["semantic"]
+        self.assertFalse(semantic["modelVersionMatchesExpected"])
+        self.assertFalse(semantic["chunkerVersionMatchesExpected"])
+
+    def test_no_effective_generation_reports_null_model_match(self) -> None:
+        # Without an effective generation there is nothing to compare: the
+        # field must be `null` ("unknown"), not `false` ("the model is wrong").
+        mutations = [
+            ("active_generation NULL", "UPDATE index_meta SET active_generation = NULL", 0),
+            ("chunk_vectors table missing", "DROP TABLE chunk_vectors", None),
+        ]
+        for index, (label, sql, embedded) in enumerate(mutations):
+            with self.subTest(label):
+                conn = sqlite3.connect(self.library)
+                conn.execute(sql)
+                conn.commit()
+                conn.close()
+                out = self.base / f"empty-{index}.zip"
+                result = self.run_export(out)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                with zipfile.ZipFile(out) as archive:
+                    semantic = json.loads(archive.read("diagnostics.json"))["index"]["semantic"]
+                self.assertIsNone(semantic["modelVersionMatchesExpected"], label)
+                self.assertFalse(semantic["ready"], label)
+                self.assertEqual(semantic["embeddedChunks"], embedded, label)
 
     def test_unknown_short_code_is_redacted_by_function(self) -> None:
         from export_diagnostics import sanitize_log_entry
