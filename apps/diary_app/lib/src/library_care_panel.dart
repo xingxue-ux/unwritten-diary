@@ -286,6 +286,23 @@ class StorageTrashPanel extends StatelessWidget {
                       '（#161）。永久清理不会删除这些快照，界面不宣称已清干净。',
                     ),
                   ),
+                if (preview.derivedDiaryVersionIds.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      '另有 ${preview.derivedDiaryVersionIds.length} 个版本是从上面这些版本'
+                      '编辑/合并出来的（正文是你确认过的内容），永久清理不会删除它们；'
+                      '但它们可能仍含这条记录的文字。',
+                    ),
+                  ),
+                if (preview.undeterminedDiaryVersionIds.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      '还有 ${preview.undeterminedDiaryVersionIds.length} 个版本查不出归属'
+                      '（缺少输入记录）。为避免误删其他内容，永久清理不会删除它们。',
+                    ),
+                  ),
                 const Padding(
                   padding: EdgeInsets.only(top: 12),
                   child: Text('此操作不能撤销。'),

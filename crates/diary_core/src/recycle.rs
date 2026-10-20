@@ -51,6 +51,8 @@ pub(crate) struct PurgePreviewState {
     asset_ids: Vec<String>,
     derived_content_ids: Vec<String>,
     diary_version_ids: Vec<String>,
+    derived_diary_version_ids: Vec<String>,
+    undetermined_diary_version_ids: Vec<String>,
     ai_response_ids: Vec<String>,
     retained_snapshot_ids: Vec<String>,
 }
@@ -60,7 +62,12 @@ struct PurgePlan {
     capture: Capture,
     asset_ids: Vec<String>,
     derived_content_ids: Vec<String>,
+    /// 与这条记录有可判定关联、可由 `delete_diary_versions` 一并删除的版本。
     diary_version_ids: Vec<String>,
+    /// 由上面那些版本派生/合并来的版本：**不删**，如实列出。
+    derived_diary_version_ids: Vec<String>,
+    /// 归属判不出来的版本：**不删**，如实列出（判不出来就不删，更不按整日全删）。
+    undetermined_diary_version_ids: Vec<String>,
     ai_response_ids: Vec<String>,
     retained_snapshot_ids: Vec<String>,
     /// 这条记录的来源与修订 id：用来认出「结果里带正文」的幂等回执并清掉。
@@ -247,6 +254,11 @@ pub(crate) fn move_day(
 
 /// 预览永久清理的影响：原件、派生内容、仍引用它的日记版本。
 ///
+/// 日记版本按 [`scan_diary_versions`] 分三类，都如实返回：会随 `deleteDiaryVersions`
+/// 删除的（`diary_versions_still_referencing`）、派生出来但**不删**的
+/// （`derived_diary_version_ids`）、归属判不出来因此**不删**的
+/// （`undetermined_diary_version_ids`）。后两类绝不省略：省略就等于告诉用户「没有」。
+///
 /// 只允许回收站里的记录：清理不可逆，产品路径上用户是先「移入回收站」再决定
 /// 「永久清理」。令牌绑定 `capture_id`、一次性、带过期；`purge` 必须原样带上。
 pub(crate) fn preview_purge(core: &mut Core, capture_id: &str) -> Result<PurgePreview> {
@@ -272,6 +284,8 @@ pub(crate) fn preview_purge(core: &mut Core, capture_id: &str) -> Result<PurgePr
             asset_ids: plan.asset_ids.clone(),
             derived_content_ids: plan.derived_content_ids.clone(),
             diary_version_ids: plan.diary_version_ids.clone(),
+            derived_diary_version_ids: plan.derived_diary_version_ids.clone(),
+            undetermined_diary_version_ids: plan.undetermined_diary_version_ids.clone(),
             ai_response_ids: plan.ai_response_ids.clone(),
             retained_snapshot_ids: plan.retained_snapshot_ids.clone(),
         },
@@ -285,6 +299,8 @@ pub(crate) fn preview_purge(core: &mut Core, capture_id: &str) -> Result<PurgePr
         diary_versions_still_referencing: plan.diary_version_ids,
         ai_response_ids: plan.ai_response_ids,
         retained_source_snapshot_ids: plan.retained_snapshot_ids,
+        derived_diary_version_ids: plan.derived_diary_version_ids,
+        undetermined_diary_version_ids: plan.undetermined_diary_version_ids,
     })
 }
 
@@ -292,9 +308,13 @@ pub(crate) fn preview_purge(core: &mut Core, capture_id: &str) -> Result<PurgePr
 /// 且令牌里的清单与当前库里的清单逐项一致。
 ///
 /// 删除范围（逐表）：
-/// - `diary_versions`（仍引用它的版本；`delete_diary_versions = true` 才删。删时当前
-///   版本若在其中，把 `diary_days.current_version_id` 换成同一天剩下的最新一版，没有
-///   就置 NULL；false 时一个版本都不动，结果用 `retained_diary_version_ids` 返回）；
+/// - `diary_versions`（**有可判定关联**的版本，见 [`scan_diary_versions`]；
+///   `delete_diary_versions = true` 才删。删时当前版本若在其中，把
+///   `diary_days.current_version_id` 换成同一天剩下的最新一版，没有就置 NULL；false 时
+///   一个版本都不动，结果用 `retained_diary_version_ids` 返回）。
+///   **派生版本与判不出归属的版本一个都不删**，但必须在结果的
+///   `derived_diary_version_ids` / `undetermined_diary_version_ids` 里如实回填——
+///   「没删」要说出来，不能报成「没有」；
 /// - `extracted_contents`（级联 `extracted_segments` → `search_docs` → `search_grams`）；
 /// - `captures`（级联 `source_items` → `source_revisions`、`import_sessions`、
 ///   `recording_sessions`、`chunk_spans`、`search_capture_docs` → `search_capture_grams`）；
@@ -383,6 +403,8 @@ pub(crate) fn purge(
         || plan.asset_ids != state.asset_ids
         || plan.derived_content_ids != state.derived_content_ids
         || plan.diary_version_ids != state.diary_version_ids
+        || plan.derived_diary_version_ids != state.derived_diary_version_ids
+        || plan.undetermined_diary_version_ids != state.undetermined_diary_version_ids
         || plan.ai_response_ids != state.ai_response_ids
         || plan.retained_snapshot_ids != state.retained_snapshot_ids
     {
@@ -429,6 +451,10 @@ pub(crate) fn purge(
             plan.diary_version_ids.clone()
         },
         retained_source_snapshot_ids: plan.retained_snapshot_ids.clone(),
+        // 这两类**一个都不删**（前者正文是用户确认的内容，后者归属判不出来），
+        // 与 `delete_diary_versions` 无关：结果里如实回填，不假装删干净。
+        derived_diary_version_ids: plan.derived_diary_version_ids.clone(),
+        undetermined_diary_version_ids: plan.undetermined_diary_version_ids.clone(),
         cleaned_receipt_count,
     };
 
@@ -535,7 +561,7 @@ fn plan(conn: &Connection, capture_id: &str) -> Result<PurgePlan> {
         rows
     };
 
-    let diary_version_ids = versions_referencing(conn, &source_ids)?;
+    let versions = scan_diary_versions(conn, capture_id, &source_ids)?;
     let ai_response_ids = ai_responses_referencing(conn, capture_id)?;
     let retained_snapshot_ids = snapshots_referencing(conn, capture_id)?;
     let staging_paths = staging_paths(conn, capture_id)?;
@@ -543,7 +569,9 @@ fn plan(conn: &Connection, capture_id: &str) -> Result<PurgePlan> {
         capture,
         asset_ids,
         derived_content_ids,
-        diary_version_ids,
+        diary_version_ids: versions.referencing,
+        derived_diary_version_ids: versions.derived,
+        undetermined_diary_version_ids: versions.undetermined,
         ai_response_ids,
         retained_snapshot_ids,
         source_ids,
@@ -573,34 +601,263 @@ fn staging_paths(conn: &Connection, capture_id: &str) -> Result<Vec<String>> {
     Ok(paths)
 }
 
-/// 仍引用这条记录的日记版本：`provenance_links` 里有一条指向它的来源。
+/// 日记版本的三种判定（#155 复审）。
+struct DiaryVersionScan {
+    /// 与这条记录**有可判定关联**的版本：`provenance_links` 指向它的来源，**或**
+    /// 这一版的输入快照里冻结着它的材料（`materials[].capture_id`）。
+    referencing: Vec<String>,
+    /// 由 `referencing` 里的版本派生/合并来的版本（`user_edit` / `merge`）。
+    derived: Vec<String>,
+    /// 归属判不出来的版本。**一个都不删**，如实列出。
+    undetermined: Vec<String>,
+}
+
+/// 一行 `diary_versions` 在关联判定里要用到的字段。
+struct VersionRow {
+    id: String,
+    origin: String,
+    snapshot_id: Option<String>,
+    /// `provenance_links` 反序列化结果；`None` = 这一行解析不了（按判不出来处理）。
+    links: Option<Vec<crate::model::ProvenanceLink>>,
+    parent: Option<String>,
+    /// `generationInfo.generationOptions.mergeSourceVersionIds`：合并的输入版本。
+    /// `Some(空)` = 明确没有合并输入；`None` = 没写或解析不了。
+    merge_sources: Option<Vec<String>>,
+}
+
+/// 盘点仍与这条记录有关的日记版本。
 ///
-/// 不用 `LIKE '%source_id%'` 扫 JSON：那样会把正文里恰好出现同一个 id 文本的行也
-/// 算进来。逐行反序列化是清理路径，次数很少，换来的是「列出来的就是真的引用」。
-fn versions_referencing(conn: &rusqlite::Connection, source_ids: &[String]) -> Result<Vec<String>> {
-    if source_ids.is_empty() {
-        return Ok(Vec::new());
-    }
+/// **为什么不能只看 `provenance_links`**（#155 复审）：草稿期生成时记录还没有
+/// `source_items`（提交才把草稿正文复制成一条文字修订），快照里的那份材料
+/// `source_id: None`，`link_for_material` 因此不写 provenance link。于是
+/// 「来源为空 → 返回空」会把**明明是拿这条记录正文生成的版本**漏掉：确认框报
+/// 「没有关联版本」，用户勾了删除也删不掉它——**界面说了谎**。
+///
+/// 判定口径（都是可判定的列/字段，不扫正文文本）：
+/// 1. **来源关联**：`provenance_links` 里有一条 `source_id` 属于这条记录；
+/// 2. **输入快照关联**：`diary_versions.source_snapshot_id` → `diary_source_snapshots.body`
+///    的 `materials[]` 里有一条 `capture_id` 是这条记录。快照是生成输入的冻结清单，
+///    材料条目**一定带 `capture_id`**（草稿材料缺的只是 `source_id`），所以这条关联
+///    在草稿期也判得出来；
+/// 3. **派生**：`parent_version_id`（用户编辑）或 `mergeSourceVersionIds`（合并）链上
+///    能走到 1 / 2 认出来的版本。正文是用户确认过的内容，**不删**，但可能仍含被清理
+///    记录的文字，必须列出；
+/// 4. 剩下的按谱系判断：能确定「输入里没有这条记录」的（快照解析得出来、材料里没有它）
+///    不算关联；**判不出来的**（快照正文解析不了、父版本行已经不在、合并输入读不出来）
+///    进 `undetermined`——查不出来 ≠ 没有，**不删**，如实报。
+///
+/// 绝不按整日全删：判不出来时宁可少删并如实报，也不连累同一天其他记录的内容。
+fn scan_diary_versions(
+    conn: &rusqlite::Connection,
+    capture_id: &str,
+    source_ids: &[String],
+) -> Result<DiaryVersionScan> {
     let wanted: HashSet<&str> = source_ids.iter().map(String::as_str).collect();
-    let mut statement = conn.prepare(
-        "SELECT id, provenance_links FROM diary_versions ORDER BY created_at DESC, id DESC",
-    )?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut versions = Vec::new();
-    for (id, links_json) in rows {
-        let links: Vec<crate::model::ProvenanceLink> = serde_json::from_str(&links_json)?;
-        if links
-            .iter()
-            .any(|link| wanted.contains(link.source_id.as_str()))
-        {
-            versions.push(id);
+    let rows: Vec<VersionRow> = {
+        let mut statement = conn.prepare(
+            "SELECT id, origin, source_snapshot_id, provenance_links, parent_version_id, \
+             generation_info FROM diary_versions ORDER BY created_at DESC, id DESC",
+        )?;
+        let collected = statement
+            .query_map([], |row| {
+                let links_json: String = row.get(3)?;
+                let generation_info: Option<String> = row.get(5)?;
+                Ok(VersionRow {
+                    id: row.get(0)?,
+                    origin: row.get(1)?,
+                    snapshot_id: row.get(2)?,
+                    links: serde_json::from_str(&links_json).ok(),
+                    parent: row.get(4)?,
+                    merge_sources: merge_source_ids(generation_info.as_deref()),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        collected
+    };
+
+    // 同一份快照可能被多版引用：解析一次，结果复用。`None` = 解析不了。
+    let mut snapshot_mentions: HashMap<String, Option<bool>> = HashMap::new();
+    let mut status: HashMap<String, VersionStatus> = HashMap::new();
+
+    for row in &rows {
+        let direct = row
+            .links
+            .as_ref()
+            .map(|links| {
+                links
+                    .iter()
+                    .any(|link| wanted.contains(link.source_id.as_str()))
+            })
+            .unwrap_or(false);
+        if direct {
+            status.insert(row.id.clone(), VersionStatus::Referencing);
+            continue;
+        }
+        // `provenance_links` 读不出来：这一行的关联无从核对，按判不出来处理。
+        if row.links.is_none() {
+            status.insert(row.id.clone(), VersionStatus::Undetermined);
+            continue;
+        }
+        let Some(snapshot_id) = row.snapshot_id.as_deref() else {
+            // 没有输入快照（用户编辑 / 合并 / 旧库）：谱系在下面统一解析。
+            continue;
+        };
+        let mentions = snapshot_mentions
+            .entry(snapshot_id.to_owned())
+            .or_insert_with(|| snapshot_mentions_capture_or_none(conn, snapshot_id, capture_id));
+        match mentions {
+            Some(true) => {
+                status.insert(row.id.clone(), VersionStatus::Referencing);
+            }
+            // 快照解析得出来、材料里没有这条记录：确定不相关（材料可能来自同一天别的记录）。
+            Some(false) => {
+                status.insert(row.id.clone(), VersionStatus::Unrelated);
+            }
+            // 快照正文解析不了：**不能**替它保证没留这条记录的文字，按判不出来处理。
+            None => {
+                status.insert(row.id.clone(), VersionStatus::Undetermined);
+            }
         }
     }
-    Ok(versions)
+
+    // 谱系传递：派生关系可能跨多版（编辑再编辑、合并再合并），迭代到不动点。
+    // 表很小且这是清理路径，迭代写法比递归/拓扑排序更好核对。
+    loop {
+        let mut changed = false;
+        for row in &rows {
+            if status.contains_key(&row.id) {
+                continue;
+            }
+            // 快照解析不了的行已经在上面定成 Undetermined，这里只剩真的没有快照的行。
+            let Some(inputs) = lineage_inputs(row) else {
+                // 合并信息读不出来：这一版的输入看不见，判不出来就不删。
+                status.insert(row.id.clone(), VersionStatus::Undetermined);
+                changed = true;
+                continue;
+            };
+            if inputs.is_empty() {
+                // 没有快照、也没有任何谱系：这一版是从哪儿来的查不出来。
+                status.insert(row.id.clone(), VersionStatus::Undetermined);
+                changed = true;
+                continue;
+            }
+            let mut derived = false;
+            let mut unknown = false;
+            for input in &inputs {
+                match status.get(input.as_str()) {
+                    Some(VersionStatus::Referencing) | Some(VersionStatus::Derived) => {
+                        derived = true
+                    }
+                    Some(VersionStatus::Undetermined) => unknown = true,
+                    // 输入是「确定不相关」：这一条边不构成关联。
+                    Some(VersionStatus::Unrelated) => {}
+                    // 输入行不在（父版本已经没了）或还没轮到：先当判不出来。
+                    None => unknown = true,
+                }
+            }
+            if derived {
+                status.insert(row.id.clone(), VersionStatus::Derived);
+                changed = true;
+            } else if !unknown {
+                status.insert(row.id.clone(), VersionStatus::Unrelated);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut scan = DiaryVersionScan {
+        referencing: Vec::new(),
+        derived: Vec::new(),
+        undetermined: Vec::new(),
+    };
+    for row in &rows {
+        match status.get(row.id.as_str()) {
+            Some(VersionStatus::Referencing) => scan.referencing.push(row.id.clone()),
+            Some(VersionStatus::Derived) => scan.derived.push(row.id.clone()),
+            Some(VersionStatus::Undetermined) | None => scan.undetermined.push(row.id.clone()),
+            Some(VersionStatus::Unrelated) => {}
+        }
+    }
+    Ok(scan)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VersionStatus {
+    /// 判得出来：这一版与这条记录有关联。
+    Referencing,
+    /// 判得出来：这一版派生自有关联的版本。
+    Derived,
+    /// 判得出来：这一版与这条记录无关。
+    Unrelated,
+    /// 判不出来（宁可少删，如实报）。
+    Undetermined,
+}
+
+/// 这一版的直接输入版本：父版本 + 合并来源。
+///
+/// `None` = 谱系读不出来（`origin = merge` 却解析不了 `generationInfo`）：这时**不能**
+/// 当成「没有输入」，要按判不出来处理。
+fn lineage_inputs(row: &VersionRow) -> Option<Vec<String>> {
+    let mut inputs: Vec<String> = Vec::new();
+    if let Some(parent) = row.parent.as_deref().filter(|id| !id.is_empty()) {
+        inputs.push(parent.to_owned());
+    }
+    // 合并版本的输入记在 generationInfo 里；读不出来就等于看不见它的输入。
+    if row.origin == "merge" && row.merge_sources.is_none() {
+        return None;
+    }
+    if let Some(sources) = &row.merge_sources {
+        inputs.extend(sources.iter().cloned());
+    }
+    inputs.sort();
+    inputs.dedup();
+    Some(inputs)
+}
+
+/// `generationInfo` 里的 `generationOptions.mergeSourceVersionIds`（逗号分隔）。
+///
+/// 落库的 JSON 是 Rust DTO 的序列化结果，**字段名是 snake_case**
+/// （`generation_options`）；只有这张 map 里的键是契约的 camelCase
+/// （`mergeSourceVersionIds`，见 `merge_generation_info`）。
+/// `None` = 这一行没有生成信息、或它不是一次合并（没有这一项）、或解析不了。
+fn merge_source_ids(generation_info: Option<&str>) -> Option<Vec<String>> {
+    let value: serde_json::Value = serde_json::from_str(generation_info?).ok()?;
+    let joined = value
+        .get("generation_options")?
+        .get("mergeSourceVersionIds")?
+        .as_str()?;
+    let mut ids: Vec<String> = joined
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect();
+    ids.sort();
+    ids.dedup();
+    Some(ids)
+}
+
+/// 快照 body 里的材料有没有这条记录。`None` = 快照行不在或 body 解析不了——
+/// 这时**不能**回答「没有」。
+fn snapshot_mentions_capture_or_none(
+    conn: &Connection,
+    snapshot_id: &str,
+    capture_id: &str,
+) -> Option<bool> {
+    let body: Option<String> = conn
+        .query_row(
+            "SELECT body FROM diary_source_snapshots WHERE id = ?1",
+            params![snapshot_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let value: serde_json::Value = serde_json::from_str(body.as_deref()?).ok()?;
+    Some(snapshot_mentions_capture(&value, capture_id))
 }
 
 /// 仍引用这条记录的 AI 回应。`capture_ids` 是 JSON 数组，按元素精确比对，

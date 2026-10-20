@@ -139,6 +139,17 @@ pub struct CapturePage {
 /// `retained_source_snapshot_ids` 是**清理后仍会保留**的输入快照：它们的 `body`
 /// 里冻结了这条记录的材料正文，但快照没有「快照 → 来源」映射，无法外科式脱敏
 /// （#161 方案 A）。预览与结果都如实列出，绝不假装删干净。
+///
+/// 日记版本分三类，**只有第一类会随 `deleteDiaryVersions` 删除**：
+/// - `diary_versions_still_referencing`：与这条记录**有可判定关联**的版本。关联口径是
+///   「`provenance_links` 指向它的来源」**或**「这一版的输入快照里冻结了它的材料」——
+///   草稿期的材料还没有 `source_id`，只能靠快照 `materials[].capture_id` 认（#155 复审）；
+/// - `derived_diary_version_ids`：正文由上面那些版本派生/合并来的版本（`user_edit` /
+///   `merge`）。**不删**：正文是用户自己确认过的内容；但它们可能仍含被清理记录的文字，
+///   所以如实列出，不让界面把「没删」说成「没有」；
+/// - `undetermined_diary_version_ids`：**归属判不出来**的版本（没有输入快照可核对，
+///   谱系又断了，例如父版本行已经不在、快照正文解析不了）。查不出来 ≠ 没有：
+///   **一个都不删**，如实列出由用户自己处置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PurgePreview {
     pub capture_id: String,
@@ -152,6 +163,13 @@ pub struct PurgePreview {
     /// 清理后仍保留的日记输入快照（`body` 里可能含这条记录的正文；#161 方案 A）。
     #[serde(default)]
     pub retained_source_snapshot_ids: Vec<String>,
+    /// 由 `diary_versions_still_referencing` 派生/合并来的版本：**不会被删除**，
+    /// 但正文可能仍含这条记录的文字，预览与结果都如实列出。
+    #[serde(default)]
+    pub derived_diary_version_ids: Vec<String>,
+    /// 归属判不出来的版本：**不会被删除**（判不出来就不删），如实列出。
+    #[serde(default)]
+    pub undetermined_diary_version_ids: Vec<String>,
 }
 
 /// 永久清理结果，契约 4.1 节 `captures.purge`。
@@ -160,6 +178,9 @@ pub struct PurgePreview {
 /// `purged_diary_version_ids` / `retained_diary_version_ids` 按调用方的
 /// `delete_diary_versions` 二选一：删除时前者等于预览里的
 /// `diary_versions_still_referencing`；保留时后者等于它，日记日与当前指针不动。
+/// `derived_diary_version_ids` / `undetermined_diary_version_ids` 与预览同名项一致，
+/// 且**与 `delete_diary_versions` 无关**：这两类版本一个都不会被删除（前者正文是
+/// 用户确认的内容，后者归属判不出来），结果里如实回填，绝不假装删干净。
 /// `retained_source_snapshot_ids` 与预览同名项一致：快照 body 里的材料正文不删
 /// （#161 方案 A），`purge` 后用同一 operationId 重放也不会吐出正文——该记录的非
 /// purge 回执已经一起清掉。
@@ -175,6 +196,12 @@ pub struct PurgeResult {
     pub retained_diary_version_ids: Vec<String>,
     #[serde(default)]
     pub retained_source_snapshot_ids: Vec<String>,
+    /// 由被删除版本派生/合并来的版本：**保留**，但正文可能仍含这条记录的文字。
+    #[serde(default)]
+    pub derived_diary_version_ids: Vec<String>,
+    /// 归属判不出来的版本：**保留**（判不出来就不删）。
+    #[serde(default)]
+    pub undetermined_diary_version_ids: Vec<String>,
     /// 被清掉的该记录幂等回执数量（`captures.purge` 自己的回执保留，供重放）。
     #[serde(default)]
     pub cleaned_receipt_count: i64,

@@ -2474,8 +2474,8 @@ fn backups_create_inspect_and_restore_round_trip() {
     assert_eq!(created["package_path"], json!(package_text));
     assert_eq!(
         created["api_version"],
-        json!("1.0"),
-        "加方法不升 apiVersion"
+        json!("1.1"),
+        "备份包的 apiVersion 就是核心 API_VERSION（#160 因必填字段升到 1.1）；加方法不升 apiVersion"
     );
     assert!(package.is_file(), "备份包必须真的落在目标路径");
     assert!(created["counts"]["captures"].as_i64().unwrap() >= 1);
@@ -2488,7 +2488,7 @@ fn backups_create_inspect_and_restore_round_trip() {
         json!({"package_path": package_text}),
     ));
     assert_eq!(inspect["package_path"], json!(package_text));
-    assert_eq!(inspect["api_version"], json!("1.0"));
+    assert_eq!(inspect["api_version"], json!("1.1"));
     assert_eq!(inspect["compatible"], json!(true));
     assert_eq!(inspect["hashes_verified"], json!(true));
     assert_eq!(inspect["issues"], json!([]));
@@ -2506,7 +2506,7 @@ fn backups_create_inspect_and_restore_round_trip() {
     ));
     let library_path = restored["library_path"].as_str().unwrap().to_owned();
     assert!(Path::new(&library_path).is_file(), "恢复出来的库必须存在");
-    assert_eq!(restored["api_version"], json!("1.0"));
+    assert_eq!(restored["api_version"], json!("1.1"));
     assert!(restored["counts"]["captures"].as_i64().unwrap() >= 1);
     assert_eq!(restored["counts"], created["counts"]);
 

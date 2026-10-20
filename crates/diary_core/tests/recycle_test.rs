@@ -15,9 +15,10 @@
 use std::path::{Path, PathBuf};
 
 use diary_core::{
-    CaptureState, Core, CreateDraftInput, EmbedOptions, Embedder, Embedding, ErrorCode, EventType,
-    ImportManifest, ImportOrigin, ImportRequest, NativeRecordingStatus, ProvenanceLink,
-    RecordingState, SearchFilters, SearchMode, SearchRequest, SegmentManifest, SourceLocator,
+    CaptureState, Core, CreateDraftInput, DiaryGenerationReason, EmbedOptions, Embedder, Embedding,
+    ErrorCode, EventType, HttpResponse, ImportManifest, ImportOrigin, ImportRequest,
+    NativeRecordingStatus, ProvenanceLink, RecordingState, ScriptedTransport, SearchFilters,
+    SearchMode, SearchRequest, SegmentManifest, SourceLocator, Transport,
 };
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
@@ -334,8 +335,9 @@ fn trash_and_restore_round_trip_keeps_content_and_bumps_revision_once_per_write(
     let replay = core.trash_capture(&a, before.revision, "op-trash").unwrap();
     assert_eq!(replay, trashed);
     let trash_events = core
-        .events_since(0)
+        .events_page(0, 10_000)
         .unwrap()
+        .events
         .into_iter()
         .filter(|event| event.event_type == EventType::CaptureTrashed && event.entity_id == a)
         .count();
@@ -352,8 +354,9 @@ fn trash_and_restore_round_trip_keeps_content_and_bumps_revision_once_per_write(
         .unwrap();
     assert_eq!(replay, restored);
     let restore_events = core
-        .events_since(0)
+        .events_page(0, 10_000)
         .unwrap()
+        .events
         .into_iter()
         .filter(|event| event.event_type == EventType::CaptureRestored && event.entity_id == a)
         .count();
@@ -521,8 +524,9 @@ fn move_day_changes_attribution_and_rebuilds_chunks_for_both_days() {
         "旧 day 不能留下块：{chunk_days:?}"
     );
     let moved_events = core
-        .events_since(0)
+        .events_page(0, 10_000)
         .unwrap()
+        .events
         .into_iter()
         .filter(|event| event.event_type == EventType::CaptureMovedDay && event.entity_id == a)
         .count();
@@ -532,8 +536,9 @@ fn move_day_changes_attribution_and_rebuilds_chunks_for_both_days() {
     let same = core.move_day(&a, "2026-09-21", moved.revision).unwrap();
     assert_eq!(same.revision, moved.revision);
     assert_eq!(
-        core.events_since(0)
+        core.events_page(0, 10_000)
             .unwrap()
+            .events
             .into_iter()
             .filter(|event| event.event_type == EventType::CaptureMovedDay)
             .count(),
@@ -723,8 +728,9 @@ fn preview_and_purge_delete_exactly_the_previewed_rows() {
     assert!(keyword_count(core, "海边的风", None, false) >= 1);
     assert_eq!(diary_captures(core, &day), 1);
     let purged_events = core
-        .events_since(0)
+        .events_page(0, 10_000)
         .unwrap()
+        .events
         .into_iter()
         .filter(|event| event.event_type == EventType::CapturePurged && event.entity_id == a)
         .count();
@@ -736,8 +742,9 @@ fn preview_and_purge_delete_exactly_the_previewed_rows() {
         .unwrap();
     assert_eq!(replay, result);
     assert_eq!(
-        core.events_since(0)
+        core.events_page(0, 10_000)
             .unwrap()
+            .events
             .into_iter()
             .filter(|event| event.event_type == EventType::CapturePurged)
             .count(),
@@ -1459,4 +1466,423 @@ fn purge_refuses_while_an_asset_lease_is_open() {
     core.release_asset(&lease.lease_id).unwrap();
     core.purge_capture(&a, &preview.preview_token, true, "op-purge-lease")
         .unwrap();
+}
+
+// ------------------------------------------------------------------ #155 复审：草稿期生成的材料
+
+fn chat_ok(text: &str) -> HttpResponse {
+    HttpResponse::new(
+        200,
+        serde_json::json!({
+            "model": "qwen-test",
+            "choices": [{"message": {"role": "assistant", "content": text}}],
+        })
+        .to_string(),
+    )
+}
+
+fn save_provider(core: &mut Core) {
+    use diary_core::{Provider, ProviderCapability, ProviderTestStatus};
+    let mut capabilities = std::collections::HashSet::new();
+    capabilities.insert(ProviderCapability::GenerateText);
+    core.save_provider(
+        &Provider {
+            id: "prv_recycle".to_owned(),
+            label: "测试服务".to_owned(),
+            adapter_id: diary_core::OPENAI_COMPATIBLE.to_owned(),
+            endpoint: Some("http://127.0.0.1:11434/v1".to_owned()),
+            model: Some("qwen-test".to_owned()),
+            capabilities,
+            credential_ref: None,
+            enabled: true,
+            test_status: ProviderTestStatus::Untested,
+        },
+        Some("sk-test-secret-0123456789"),
+    )
+    .unwrap();
+}
+
+/// **真实产品路径回归**：草稿正文 → 生成版本 → trash → previewPurge → purge。
+///
+/// 草稿（`state = 'draft'`）的正文参与生成，但这时记录**还没有 `source_items`**
+/// （提交时才把草稿正文复制成一条文字修订）。于是快照里的那份材料 `source_id: None`，
+/// `link_for_material` 不写 provenance link——但它确实是**用这条记录的正文生成的**。
+/// 确认框必须列出这一版；勾了「同时删除日记版本」就必须真的把它删掉，而不是报
+/// 「没有关联版本」然后留着它。
+#[test]
+fn draft_period_version_is_listed_and_purged_on_the_real_path() {
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    core.set_transport_for_test(Arc::new(ScriptedTransport::ok(vec![chat_ok(
+        "外婆的樟木箱搬到了阳台。",
+    )])) as Arc<dyn Transport>);
+    save_provider(&mut core);
+
+    // 1) 草稿期：只写正文，不提交（没有来源）。
+    let created = core
+        .create_draft(CreateDraftInput {
+            occurred_at: Some(at(21)),
+            time_zone: "Asia/Shanghai",
+            utc_offset_minutes: 480,
+            operation_id: "op-draft-create",
+        })
+        .unwrap();
+    let capture_id = created.id.clone();
+    core.save_draft(
+        &capture_id,
+        "外婆的樟木箱里有旧照片。",
+        created.revision,
+        "op-draft-save",
+    )
+    .unwrap();
+    let draft = core.get_capture(&capture_id).unwrap();
+    assert_eq!(draft.state, CaptureState::Draft);
+    assert!(
+        draft.ordered_source_ids.is_empty(),
+        "前提：草稿期这条记录一条来源都没有"
+    );
+    let day = draft.day_key.clone();
+
+    // 2) 用草稿正文生成一版日记（真实生成链路，不塞合成版本）。
+    core.generate_diary(&day, None, DiaryGenerationReason::Manual, "op-gen")
+        .unwrap();
+    let summary = core
+        .run_due_jobs(chrono::Utc::now(), 30_000, "test", 16)
+        .unwrap();
+    assert_eq!(summary.succeeded, 1, "生成要真的成功：{summary:?}");
+    let versions = core.list_diary_versions(&day, None, 10).unwrap().versions;
+    assert_eq!(versions.len(), 1, "这一天只有这一版");
+    let generated = versions[0].id.clone();
+
+    // 落库事实：这一版挂在快照上；快照里的材料确实属于这条草稿，且 source_id 为空。
+    let conn = Connection::open(dir.path().join("library.sqlite")).unwrap();
+    let (snapshot_id, links): (Option<String>, String) = conn
+        .query_row(
+            "SELECT source_snapshot_id, provenance_links FROM diary_versions WHERE id = ?1",
+            params![generated],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let snapshot_id = snapshot_id.expect("生成的版本一定要有输入快照");
+    let body: String = conn
+        .query_row(
+            "SELECT body FROM diary_source_snapshots WHERE id = ?1",
+            params![snapshot_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let material = parsed["materials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|material| material["capture_id"] == serde_json::json!(capture_id))
+        .expect("快照里必须有这条草稿的材料");
+    assert_eq!(material["source_id"], serde_json::Value::Null);
+    assert_eq!(links, "[]", "前提：草稿期材料没有 provenance link");
+
+    // 3) trash → previewPurge → purge。
+    let capture = core.get_capture(&capture_id).unwrap();
+    core.trash_capture(&capture_id, capture.revision, "op-trash")
+        .unwrap();
+    let preview = core.preview_purge(&capture_id).unwrap();
+    assert_eq!(
+        preview.diary_versions_still_referencing,
+        vec![generated.clone()],
+        "确认框必须列出这份用草稿正文生成的版本，不能误报「没有关联版本」"
+    );
+    let result = core
+        .purge_capture(&draft.id, &preview.preview_token, true, "op-purge")
+        .unwrap();
+    assert_eq!(result.purged_diary_version_ids, vec![generated.clone()]);
+    let alive: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM diary_versions WHERE id = ?1",
+            params![generated],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(alive, 0, "勾了「同时删除日记版本」就必须真的删掉");
+}
+
+/// 派生版本（用户编辑 / 合并）：**一个都不删**，但必须如实列出。
+///
+/// 产品路径：草稿 → 生成 V1 → 用户编辑出 V2 → 再合并出 V3 → trash → previewPurge。
+/// V1 是「生成自这条记录」的那一版，勾选后删除；V2/V3 的正文是用户确认过的内容，
+/// 不跟着删——但它们可能仍含被清理记录的文字，所以列在
+/// `derived_diary_version_ids` 里，绝不假装没有。
+#[test]
+fn derived_versions_are_reported_and_never_deleted() {
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    core.set_transport_for_test(Arc::new(ScriptedTransport::ok(vec![chat_ok(
+        "外婆的樟木箱搬到了阳台。",
+    )])) as Arc<dyn Transport>);
+    save_provider(&mut core);
+
+    let created = core
+        .create_draft(CreateDraftInput {
+            occurred_at: Some(at(21)),
+            time_zone: "Asia/Shanghai",
+            utc_offset_minutes: 480,
+            operation_id: "op-d-create",
+        })
+        .unwrap();
+    let capture_id = created.id.clone();
+    core.save_draft(
+        &capture_id,
+        "外婆的樟木箱里有旧照片。",
+        created.revision,
+        "op-d-save",
+    )
+    .unwrap();
+    let day = core.get_capture(&capture_id).unwrap().day_key.clone();
+
+    core.generate_diary(&day, None, DiaryGenerationReason::Manual, "op-d-gen")
+        .unwrap();
+    core.run_due_jobs(chrono::Utc::now(), 30_000, "test", 16)
+        .unwrap();
+    let v1 = core.list_diary_versions(&day, None, 10).unwrap().versions[0]
+        .id
+        .clone();
+
+    let revision = core.get_diary_day(&day).unwrap().revision;
+    let v2 = core
+        .save_diary_edit(
+            &v1,
+            "我改写过的正文：樟木箱搬到了阳台。",
+            revision,
+            "op-d-edit",
+        )
+        .unwrap()
+        .id;
+    let revision = core.get_diary_day(&day).unwrap().revision;
+    let v3 = core
+        .merge_diary_versions(
+            &v2,
+            std::slice::from_ref(&v1),
+            "合并后的正文。",
+            revision,
+            "op-d-merge",
+        )
+        .unwrap()
+        .id;
+
+    let capture = core.get_capture(&capture_id).unwrap();
+    core.trash_capture(&capture_id, capture.revision, "op-d-trash")
+        .unwrap();
+    let preview = core.preview_purge(&capture_id).unwrap();
+    assert_eq!(preview.diary_versions_still_referencing, vec![v1.clone()]);
+    let mut derived = preview.derived_diary_version_ids.clone();
+    derived.sort();
+    let mut expected = vec![v2.clone(), v3.clone()];
+    expected.sort();
+    assert_eq!(
+        derived, expected,
+        "用户编辑与合并出来的版本要如实列出（它们可能仍含被清理记录的文字）"
+    );
+    assert!(
+        preview.undetermined_diary_version_ids.is_empty(),
+        "谱系完整时不该报「判不出来」"
+    );
+
+    let result = core
+        .purge_capture(&capture_id, &preview.preview_token, true, "op-d-purge")
+        .unwrap();
+    assert_eq!(result.purged_diary_version_ids, vec![v1.clone()]);
+    assert_eq!(
+        result.derived_diary_version_ids,
+        preview.derived_diary_version_ids
+    );
+    assert!(result.undetermined_diary_version_ids.is_empty());
+
+    let conn = Connection::open(dir.path().join("library.sqlite")).unwrap();
+    let alive = |id: &str| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM diary_versions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(alive(&v1), 0, "生成自这条记录的版本要删掉");
+    assert_eq!(alive(&v2), 1, "用户编辑的正文不能跟着删");
+    assert_eq!(alive(&v3), 1, "用户确认的合并正文不能跟着删");
+}
+
+/// 判不出来就**如实报**：不把「查不出来」当「没有」，也不删。
+///
+/// 这里造一条输入记录已经丢失的版本（没有输入快照、父版本行也不在了——旧库或异常
+/// 路径才可能出现这种行）。它跟这条记录到底有没有关系**判不出来**，所以：
+/// 列表里如实出现，purge 之后一行不动。
+#[test]
+fn version_with_lost_lineage_is_reported_as_undetermined_and_kept() {
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    core.set_transport_for_test(Arc::new(ScriptedTransport::ok(vec![chat_ok(
+        "外婆的樟木箱搬到了阳台。",
+    )])) as Arc<dyn Transport>);
+    save_provider(&mut core);
+
+    let created = core
+        .create_draft(CreateDraftInput {
+            occurred_at: Some(at(21)),
+            time_zone: "Asia/Shanghai",
+            utc_offset_minutes: 480,
+            operation_id: "op-u-create",
+        })
+        .unwrap();
+    let capture_id = created.id.clone();
+    core.save_draft(
+        &capture_id,
+        "外婆的樟木箱里有旧照片。",
+        created.revision,
+        "op-u-save",
+    )
+    .unwrap();
+    let day = core.get_capture(&capture_id).unwrap().day_key.clone();
+    core.generate_diary(&day, None, DiaryGenerationReason::Manual, "op-u-gen")
+        .unwrap();
+    core.run_due_jobs(chrono::Utc::now(), 30_000, "test", 16)
+        .unwrap();
+
+    // 异常行：父版本行已经不在了（`parent_version_id` 没有外键），输入快照也没有。
+    {
+        let conn = Connection::open(dir.path().join("library.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO diary_versions (id, day_key, parent_version_id, origin, body, \
+             source_snapshot_id, style_snapshot_id, generation_info, provenance_links, \
+             operation_id, created_at) VALUES ('ver_lost', ?1, 'ver_gone', 'user_edit', \
+             '这一版从哪儿来的查不出来。', NULL, NULL, NULL, '[]', NULL, \
+             '2026-09-21T23:00:00Z')",
+            params![day],
+        )
+        .unwrap();
+    }
+
+    let capture = core.get_capture(&capture_id).unwrap();
+    core.trash_capture(&capture_id, capture.revision, "op-u-trash")
+        .unwrap();
+    let preview = core.preview_purge(&capture_id).unwrap();
+    assert_eq!(
+        preview.undetermined_diary_version_ids,
+        vec!["ver_lost".to_owned()],
+        "归属判不出来的版本必须如实列出，不能报成「没有历史版本」"
+    );
+    assert_eq!(preview.diary_versions_still_referencing.len(), 1);
+
+    let result = core
+        .purge_capture(&capture_id, &preview.preview_token, true, "op-u-purge")
+        .unwrap();
+    assert_eq!(
+        result.undetermined_diary_version_ids,
+        vec!["ver_lost".to_owned()]
+    );
+    assert!(
+        !result
+            .purged_diary_version_ids
+            .contains(&"ver_lost".to_owned()),
+        "判不出来就不删：绝不按整日全删"
+    );
+    let conn = Connection::open(dir.path().join("library.sqlite")).unwrap();
+    let alive: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM diary_versions WHERE id = 'ver_lost'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(alive, 1, "判不出来的版本一行都不能动");
+}
+
+/// 判得出来「不相关」的就不列：同一天另一条记录的版本不受牵连。
+///
+/// 先给 B 生成一版（快照里只有 B 的材料），再补一条 A 并生成第二版（快照里有 A 和 B）。
+/// 清理 A 时**只有**第二版会进清单——第一版的输入快照里没有 A，判得出来不相关；
+/// 这也保证不会「按整日全删」。
+#[test]
+fn unrelated_version_on_the_same_day_is_not_listed_or_deleted() {
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    core.set_transport_for_test(Arc::new(ScriptedTransport::ok(vec![
+        chat_ok("海边的风把帽子吹走了。"),
+        chat_ok("海边的风和樟木箱都在今天。"),
+    ])) as Arc<dyn Transport>);
+    save_provider(&mut core);
+
+    let draft_of = |core: &mut Core, text: &str, op: &str| -> String {
+        let created = core
+            .create_draft(CreateDraftInput {
+                occurred_at: Some(at(21)),
+                time_zone: "Asia/Shanghai",
+                utc_offset_minutes: 480,
+                operation_id: &format!("{op}-create"),
+            })
+            .unwrap();
+        let id = created.id.clone();
+        core.save_draft(&id, text, created.revision, &format!("{op}-save"))
+            .unwrap();
+        id
+    };
+
+    let b = draft_of(&mut core, "海边的风把帽子吹走了。", "op-nb");
+    let day = core.get_capture(&b).unwrap().day_key.clone();
+    core.generate_diary(&day, None, DiaryGenerationReason::Manual, "op-nb-gen")
+        .unwrap();
+    core.run_due_jobs(chrono::Utc::now(), 30_000, "test", 16)
+        .unwrap();
+    let v_b = core.list_diary_versions(&day, None, 10).unwrap().versions[0]
+        .id
+        .clone();
+
+    let a = draft_of(&mut core, "外婆的樟木箱里有旧照片。", "op-na");
+    core.generate_diary(&day, None, DiaryGenerationReason::Manual, "op-na-gen")
+        .unwrap();
+    core.run_due_jobs(chrono::Utc::now(), 30_000, "test", 16)
+        .unwrap();
+    let versions = core.list_diary_versions(&day, None, 10).unwrap().versions;
+    assert_eq!(versions.len(), 2);
+    let v_ab = versions
+        .iter()
+        .find(|version| version.id != v_b)
+        .unwrap()
+        .id
+        .clone();
+
+    let capture = core.get_capture(&a).unwrap();
+    core.trash_capture(&a, capture.revision, "op-na-trash")
+        .unwrap();
+    let preview = core.preview_purge(&a).unwrap();
+    assert_eq!(
+        preview.diary_versions_still_referencing,
+        vec![v_ab.clone()],
+        "只有输入快照里含 A 的那一版进清单"
+    );
+    assert!(
+        preview.undetermined_diary_version_ids.is_empty()
+            && preview.derived_diary_version_ids.is_empty(),
+        "B 的那一版判得出来不相关，不该进任何一份清单"
+    );
+
+    core.purge_capture(&a, &preview.preview_token, true, "op-na-purge")
+        .unwrap();
+    let conn = Connection::open(dir.path().join("library.sqlite")).unwrap();
+    let alive = |id: &str| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM diary_versions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(alive(&v_ab), 0, "含 A 材料的版本按用户选择删除");
+    assert_eq!(alive(&v_b), 1, "同一天另一条记录的版本不能被牵连");
 }

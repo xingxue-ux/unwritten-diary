@@ -278,6 +278,10 @@ class CommitResult {
 }
 
 /// 永久清理的影响预览。契约第 4.1 节 `captures.previewPurge`。
+///
+/// 日记版本分三类，**只有 `diaryVersionsStillReferencing` 会随
+/// `deleteDiaryVersions` 删除**；另外两类一个都不删，但界面必须如实告知，
+/// 不能把「没删」说成「没有」。
 class PurgePreview {
   const PurgePreview({
     required this.captureId,
@@ -287,6 +291,8 @@ class PurgePreview {
     this.diaryVersionsStillReferencing = const [],
     this.aiResponseIds = const [],
     this.retainedSourceSnapshotIds = const [],
+    this.derivedDiaryVersionIds = const [],
+    this.undeterminedDiaryVersionIds = const [],
   });
 
   final String captureId;
@@ -297,7 +303,11 @@ class PurgePreview {
   final List<String> assetIds;
   final List<String> derivedContentIds;
 
-  /// 正文里可能仍包含当时信息的历史版本，必须单独列出让用户决定。
+  /// 与这条记录**有可判定关联**、勾选后会一并删除的版本。
+  ///
+  /// 关联口径（契约 §8）：`provenanceLinks` 指向它的来源，**或**这一版的输入快照里
+  /// 冻结着这条记录的材料（`materials[].captureId`）——草稿期的材料还没有来源 id，
+  /// 只能靠快照认；只看来源关联会把草稿期生成的版本漏报成「没有关联版本」。
   final List<String> diaryVersionsStillReferencing;
 
   /// 引用这条记录、永久清理时会一并删除的 AI 回应。
@@ -307,6 +317,14 @@ class PurgePreview {
   /// 没有「快照→来源」映射就无法外科式脱敏（#161 方案 A）。界面必须如实告知，
   /// 不能宣称已经删干净。
   final List<String> retainedSourceSnapshotIds;
+
+  /// 由 [diaryVersionsStillReferencing] 派生/合并来的版本（用户编辑、合并）：
+  /// **不会被删除**（正文是用户确认过的内容），但可能仍含这条记录的文字。
+  final List<String> derivedDiaryVersionIds;
+
+  /// 归属判不出来的版本：**不会被删除**（判不出来就不删，也不按整日全删），
+  /// 但也要如实列出，不能报成「没有历史版本」。
+  final List<String> undeterminedDiaryVersionIds;
 
   @override
   bool operator ==(Object other) =>
@@ -320,7 +338,9 @@ class PurgePreview {
         diaryVersionsStillReferencing,
       ) &&
       listEquals(other.aiResponseIds, aiResponseIds) &&
-      listEquals(other.retainedSourceSnapshotIds, retainedSourceSnapshotIds);
+      listEquals(other.retainedSourceSnapshotIds, retainedSourceSnapshotIds) &&
+      listEquals(other.derivedDiaryVersionIds, derivedDiaryVersionIds) &&
+      listEquals(other.undeterminedDiaryVersionIds, undeterminedDiaryVersionIds);
 
   @override
   int get hashCode => Object.hash(
@@ -331,6 +351,8 @@ class PurgePreview {
     Object.hashAll(diaryVersionsStillReferencing),
     Object.hashAll(aiResponseIds),
     Object.hashAll(retainedSourceSnapshotIds),
+    Object.hashAll(derivedDiaryVersionIds),
+    Object.hashAll(undeterminedDiaryVersionIds),
   );
 
   @override
@@ -347,6 +369,8 @@ class PurgeResult {
     this.purgedAiResponseIds = const [],
     this.retainedDiaryVersionIds = const [],
     this.retainedSourceSnapshotIds = const [],
+    this.derivedDiaryVersionIds = const [],
+    this.undeterminedDiaryVersionIds = const [],
     this.cleanedReceiptCount = 0,
   });
 
@@ -365,6 +389,13 @@ class PurgeResult {
   /// 如实报告仍保留的输入快照：body 里可能含被清理记录的正文（#161 方案 A）。
   final List<String> retainedSourceSnapshotIds;
 
+  /// 派生版本：**一个都没删**（正文是用户确认过的内容），但可能仍含被清理记录的文字。
+  /// 与 `deleteDiaryVersions` 无关，永远如实回填。
+  final List<String> derivedDiaryVersionIds;
+
+  /// 归属判不出来的版本：**一个都没删**（判不出来就不删）。
+  final List<String> undeterminedDiaryVersionIds;
+
   /// 清掉的、带正文的幂等回执数量（`captures.purge` 自己的回执保留）。
   final int cleanedReceiptCount;
 
@@ -378,6 +409,8 @@ class PurgeResult {
       listEquals(other.purgedAiResponseIds, purgedAiResponseIds) &&
       listEquals(other.retainedDiaryVersionIds, retainedDiaryVersionIds) &&
       listEquals(other.retainedSourceSnapshotIds, retainedSourceSnapshotIds) &&
+      listEquals(other.derivedDiaryVersionIds, derivedDiaryVersionIds) &&
+      listEquals(other.undeterminedDiaryVersionIds, undeterminedDiaryVersionIds) &&
       other.cleanedReceiptCount == cleanedReceiptCount;
 
   @override
@@ -389,6 +422,8 @@ class PurgeResult {
     Object.hashAll(purgedAiResponseIds),
     Object.hashAll(retainedDiaryVersionIds),
     Object.hashAll(retainedSourceSnapshotIds),
+    Object.hashAll(derivedDiaryVersionIds),
+    Object.hashAll(undeterminedDiaryVersionIds),
     cleanedReceiptCount,
   );
 
