@@ -29,6 +29,11 @@ class CountingMockDiaryApi extends MockDiaryApi {
 
 class IndexSettingsUiApi extends MockDiaryApi {
   int rebuildCount = 0;
+  IndexStatus indexStatus = const IndexStatus(
+    coverage: Coverage.complete,
+    semanticIndexReady: false,
+    reasons: ['本地模型已更换，需要重建'],
+  );
 
   @override
   Future<CoreSnapshot> snapshot({Set<String>? scopes}) async {
@@ -52,11 +57,7 @@ class IndexSettingsUiApi extends MockDiaryApi {
 
   @override
   Future<IndexStatus> indexesStatus({Set<String>? sourceScope}) async =>
-      const IndexStatus(
-        coverage: Coverage.complete,
-        semanticIndexReady: false,
-        reasons: ['本地模型已更换，需要重建'],
-      );
+      indexStatus;
 
   @override
   Future<JobTicket> rebuildSemanticIndex({
@@ -845,6 +846,28 @@ void main() {
     await tester.pumpAndSettle();
     expect(api.rebuildCount, 1);
     expect(find.textContaining('已加入本地队列'), findsOneWidget);
+  });
+
+  testWidgets('partial semantic coverage remains visibly searchable', (
+    tester,
+  ) async {
+    final api = IndexSettingsUiApi()
+      ..indexStatus = const IndexStatus(
+        coverage: Coverage.partial,
+        semanticIndexReady: false,
+        pendingCount: 3,
+      );
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('搜索索引 · 需要处理'));
+    await tester.tap(find.text('搜索索引 · 需要处理'));
+    await tester.pumpAndSettle();
+    expect(find.text('语义检索部分可用'), findsOneWidget);
+    expect(find.textContaining('已嵌入的内容可以搜到'), findsOneWidget);
+    expect(find.text('还有 3 块待嵌入。'), findsOneWidget);
+    expect(find.text('语义检索暂不可用'), findsNothing);
   });
 
   testWidgets('main routes fit a narrow screen at two times text scale', (

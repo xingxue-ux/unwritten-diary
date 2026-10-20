@@ -14,7 +14,9 @@ class IndexSettingsPanel extends StatelessWidget {
     animation: controller,
     builder: (context, _) {
       final status = controller.status;
+      final coverage = status?.coverage ?? Coverage.unavailable;
       final ready = status?.semanticIndexReady == true;
+      final partiallySearchable = !ready && coverage == Coverage.partial;
       final progress = controller.progress;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -43,6 +45,8 @@ class IndexSettingsPanel extends StatelessWidget {
                       ? '正在确认索引状态'
                       : ready
                       ? '语义检索已就绪'
+                      : partiallySearchable
+                      ? '语义检索部分可用'
                       : '语义检索暂不可用',
                   style: const TextStyle(
                     color: SketchColors.ink,
@@ -52,11 +56,22 @@ class IndexSettingsPanel extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  ready
+                  status == null
+                      ? '正在读取本机索引的覆盖情况。'
+                      : ready
                       ? '当前生效的索引可以用于语义检索。'
+                      : partiallySearchable
+                      ? '已嵌入的内容可以搜到，索引覆盖还不完整。'
                       : '文字记录和关键词搜索仍可使用；语义检索要等本地模型与索引就绪。',
                   style: const TextStyle(color: SketchColors.text, height: 1.5),
                 ),
+                if (partiallySearchable && status!.pendingCount > 0) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    '还有 ${status.pendingCount} 块待嵌入。',
+                    style: const TextStyle(color: SketchColors.text),
+                  ),
+                ],
                 if (status?.modelVersion != null) ...[
                   const SizedBox(height: 10),
                   Text(
@@ -93,7 +108,7 @@ class IndexSettingsPanel extends StatelessWidget {
                   ),
                   const SizedBox(height: 10),
                   Text(_jobLabel(controller.job!.state)),
-                  if (progress != null) ...[
+                  if (controller.hasActiveJob && progress != null) ...[
                     const SizedBox(height: 10),
                     LinearProgressIndicator(value: progress.clamp(0, 1)),
                     const SizedBox(height: 5),

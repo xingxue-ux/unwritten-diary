@@ -129,21 +129,23 @@ class IndexSettingsController extends ChangeNotifier {
       }
       if (canReadStatus) status = await _api.indexesStatus();
       if (job?.state.isTerminal ?? false) _poller?.cancel();
-      message = switch (job?.state) {
-        JobState.succeeded =>
-          status?.semanticIndexReady == true
-              ? '语义索引已重建，可以使用语义检索。'
-              : '重建任务已结束，但索引仍未就绪；请查看下方原因。',
-        JobState.failed => '重建未完成，请查看索引状态并重试。',
-        JobState.cancelled => '重建任务已取消。',
-        JobState.waitingConfiguration => '正在等待本地模型配置；配置完成后任务会继续。',
-        JobState.waitingDependency => '正在等待材料处理完成。',
-        JobState.waitingNetwork => '任务正在等待网络恢复。',
-        JobState.retryWait => '暂时停下，稍后会自动重试。',
-        JobState.running => '正在重建语义索引…',
-        JobState.queued => '重建任务正在本地队列中等待。',
-        null => message,
-      };
+      final state = job?.state;
+      if (state != null) {
+        message = switch (state) {
+          JobState.succeeded =>
+            status?.semanticIndexReady == true
+                ? '语义索引已重建，可以使用语义检索。'
+                : '重建任务已结束，但索引仍未就绪；请查看下方原因。',
+          JobState.failed => '重建未完成，请查看索引状态并重试。',
+          JobState.cancelled => '重建任务已取消。',
+          JobState.waitingConfiguration => '正在等待本地模型配置；配置完成后任务会继续。',
+          JobState.waitingDependency => '正在等待材料处理完成。',
+          JobState.waitingNetwork => '任务正在等待网络恢复。',
+          JobState.retryWait => '暂时停下，稍后会自动重试。',
+          JobState.running => '正在重建语义索引…',
+          JobState.queued => '重建任务正在本地队列中等待。',
+        };
+      }
       _notify();
     } on DiaryException catch (error) {
       message = error.message;
