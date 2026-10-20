@@ -1109,7 +1109,7 @@ fn v9_library_migrates_to_current_and_keeps_old_data_intact() {
              DROP TABLE diary_versions;
              DROP TABLE diary_source_snapshots;
              DROP TABLE diary_model_calls;
-             DROP TABLE organize_settings;
+             DROP TABLE settings;
              UPDATE schema_migrations SET version = 9;
              PRAGMA user_version = 9;",
         )

@@ -7,9 +7,9 @@
 //!
 //! # 五条不可动摇的口径
 //!
-//! 1. **默认关**：`organize_settings.enabled` 的默认值是 0，迁移也不替用户打开。
-//!    没开启时排期函数直接返回，**一个 Provider 调用都不会发生**（有测试用
-//!    `PanicTransport` 钉住）；
+//! 1. **默认关**：`settings.enabled`（v18 前的 `organize_settings.enabled`）的默认值是 0，
+//!    迁移也不替用户打开。没开启时排期函数直接返回，**一个 Provider 调用都不会发生**
+//!    （有测试用 `PanicTransport` 钉住）；
 //! 2. **待处理是可判定的**：判据只有「有没有可读正文」「这一份输入（材料清单 + 模板）
 //!    有没有冻结过」「这一天有没有当前版本」「到没到计划时刻」，没有一条是
 //!    「AI 觉得该整理」；
@@ -32,6 +32,7 @@ use crate::error::{CoreError, Result};
 use crate::model::{
     DiaryGenerationReason, OrganizePendingDay, OrganizePlanSummary, OrganizeQuota, OrganizeRunInfo,
     OrganizeSettings, OrganizeSkippedDay, OrganizeStatus, OrganizeTemplate, OrganizeTemplateParam,
+    Settings,
 };
 use crate::support;
 use crate::Core;
@@ -488,16 +489,55 @@ pub(crate) fn freeze_for_settings(core: &Core) -> Result<OrganizeFreeze> {
 
 // ------------------------------------------------------------------ 设置
 
-/// `organize_settings` 那一行的原始形态（解析前先按位置取出来）。
-type SettingsRow = (i64, String, String, i64, i64, i64, i64, f64, String, i64, i64, String);
+/// `settings` 那一行的原始形态（解析前先按位置取出来）。
+///
+/// **完整设置与整理设置是同一行**：`diary_time_zone` / `default_style_id` 只在完整对象
+/// 里出现，`enabled` / 模板 / 上限等只在整理对象里出现，`revision` / `updated_at` 两边
+/// 共用。两个读取入口都从这里取数，不存在第二张表或第二份真值。
+type SettingsRow = (
+    String,
+    Option<String>,
+    i64,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    f64,
+    String,
+    i64,
+    i64,
+    String,
+);
 
-fn read_settings(conn: &rusqlite::Connection) -> Result<Option<OrganizeSettings>> {
+/// 同一行设置拆成两个 DTO 的中间形态。
+struct SettingsRecord {
+    diary_time_zone: String,
+    default_style_id: Option<String>,
+    organize: OrganizeSettings,
+}
+
+impl SettingsRecord {
+    fn into_full(self) -> Settings {
+        Settings {
+            diary_time_zone: self.diary_time_zone,
+            revision: self.organize.revision,
+            updated_at: self.organize.updated_at,
+            auto_organize_enabled: self.organize.enabled,
+            auto_organize_time: self.organize.auto_organize_time,
+            default_style_id: self.default_style_id,
+        }
+    }
+}
+
+fn read_settings(conn: &rusqlite::Connection) -> Result<Option<SettingsRecord>> {
     let row: Option<SettingsRow> = conn
         .query_row(
-            "SELECT enabled, template_id, template_params, max_materials, max_chars, \
-             max_calls_per_run, max_calls_per_day, max_failure_rate, auto_organize_time, \
-             supplement_on_new_materials, revision, updated_at \
-             FROM organize_settings WHERE id = 1",
+            "SELECT diary_time_zone, default_style_id, enabled, template_id, template_params, \
+             max_materials, max_chars, max_calls_per_run, max_calls_per_day, max_failure_rate, \
+             auto_organize_time, supplement_on_new_materials, revision, updated_at \
+             FROM settings WHERE id = 1",
             [],
             |row| {
                 Ok((
@@ -513,6 +553,8 @@ fn read_settings(conn: &rusqlite::Connection) -> Result<Option<OrganizeSettings>
                     row.get(9)?,
                     row.get(10)?,
                     row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
                 ))
             },
         )
@@ -520,32 +562,47 @@ fn read_settings(conn: &rusqlite::Connection) -> Result<Option<OrganizeSettings>
     let Some(row) = row else {
         return Ok(None);
     };
-    let template_params: HashMap<String, String> = serde_json::from_str(&row.2)?;
-    Ok(Some(OrganizeSettings {
-        enabled: row.0 != 0,
-        template_id: row.1,
-        template_params,
-        max_materials: row.3,
-        max_chars: row.4,
-        max_calls_per_run: row.5,
-        max_calls_per_day: row.6,
-        max_failure_rate: row.7,
-        auto_organize_time: row.8,
-        supplement_on_new_materials: row.9 != 0,
-        revision: row.10,
-        updated_at: support::parse_iso(&row.11)?,
+    let template_params: HashMap<String, String> = serde_json::from_str(&row.4)?;
+    Ok(Some(SettingsRecord {
+        diary_time_zone: row.0,
+        default_style_id: row.1,
+        organize: OrganizeSettings {
+            enabled: row.2 != 0,
+            template_id: row.3,
+            template_params,
+            max_materials: row.5,
+            max_chars: row.6,
+            max_calls_per_run: row.7,
+            max_calls_per_day: row.8,
+            max_failure_rate: row.9,
+            auto_organize_time: row.10,
+            supplement_on_new_materials: row.11 != 0,
+            revision: row.12,
+            updated_at: support::parse_iso(&row.13)?,
+        },
     }))
 }
 
-/// 迁移里种下的默认设置行：**enabled = 0（默认关）**。
-pub(crate) fn seed_default_settings(tx: &Transaction<'_>, now: DateTime<Utc>) -> Result<()> {
+/// 往指定表种默认设置行（只给代码里的两个常量表名用）。
+///
+/// v11 迁移建的是 `organize_settings`，v18 之后运行时用的是 `settings`。两张表的
+/// 整理列相同，默认值也只有这里一套（`LIMITS` + `DEFAULT_TEMPLATE_ID` +
+/// `DEFAULT_AUTO_ORGANIZE_TIME`），不在 SQL 或第二个函数里另抄一份。
+fn seed_default_settings_into(
+    tx: &Transaction<'_>,
+    table: &str,
+    now: DateTime<Utc>,
+) -> Result<()> {
     tx.execute(
-        "INSERT OR IGNORE INTO organize_settings (id, enabled, template_id, template_params, \
-         max_materials, max_chars, max_calls_per_run, max_calls_per_day, max_failure_rate, \
-         auto_organize_time, supplement_on_new_materials, revision, updated_at) \
-         VALUES (1, 0, ?1, '{}', ?2, ?3, ?4, ?5, ?6, ?7, 1, 1, ?8)",
+        &format!(
+            "INSERT OR IGNORE INTO {table} (id, enabled, template_id, template_params, \
+             max_materials, max_chars, max_calls_per_run, max_calls_per_day, max_failure_rate, \
+             auto_organize_time, supplement_on_new_materials, revision, updated_at) \
+             VALUES (1, 0, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, ?9)"
+        ),
         params![
             DEFAULT_TEMPLATE_ID,
+            "{}",
             LIMITS.max_materials.default_value,
             LIMITS.max_chars.default_value,
             LIMITS.max_calls_per_run.default_value,
@@ -558,20 +615,44 @@ pub(crate) fn seed_default_settings(tx: &Transaction<'_>, now: DateTime<Utc>) ->
     Ok(())
 }
 
+/// v11 迁移里种下的默认整理设置行：**enabled = 0（默认关）**。
+pub(crate) fn seed_default_organize_settings(
+    tx: &Transaction<'_>,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    seed_default_settings_into(tx, "organize_settings", now)
+}
+
+/// v18 之后（含新库与升级库）种下的默认设置行：**enabled = 0（默认关）**，
+/// `diary_time_zone` 用表上的默认值 `UTC`（核心不知道设备时区，见 [`Settings`] 文档）。
+pub(crate) fn seed_default_settings(tx: &Transaction<'_>, now: DateTime<Utc>) -> Result<()> {
+    seed_default_settings_into(tx, "settings", now)
+}
+
 /// 默认计划触发时间（任务书 7.3 节：默认整理时间为计划建议 22:30，可配置）。
 pub const DEFAULT_AUTO_ORGANIZE_TIME: &str = "22:30";
 
-/// 读整理设置。行不在（例如手工删过）就补一行默认值再读——**默认关**这一点不变。
-pub(crate) fn load_settings(core: &Core) -> Result<OrganizeSettings> {
-    if let Some(settings) = read_settings(&core.conn)? {
-        return Ok(settings);
+/// 读设置行；行不在（例如手工删过）就补一行默认值再读——**默认关**这一点不变。
+fn load_record(core: &Core) -> Result<SettingsRecord> {
+    if let Some(record) = read_settings(&core.conn)? {
+        return Ok(record);
     }
     let tx = core.conn.unchecked_transaction()?;
     seed_default_settings(&tx, support::now())?;
     tx.commit()?;
     read_settings(&core.conn)?.ok_or_else(|| CoreError::CorruptedData {
-        message: "整理设置行写入后仍然读不到".to_owned(),
+        message: "设置行写入后仍然读不到".to_owned(),
     })
+}
+
+/// 读整理设置（完整设置行的「整理这一段」视图）。
+pub(crate) fn load_settings(core: &Core) -> Result<OrganizeSettings> {
+    Ok(load_record(core)?.organize)
+}
+
+/// 读完整设置（与 [`load_settings`] 是同一行）。
+pub(crate) fn load_full_settings(core: &Core) -> Result<Settings> {
+    Ok(load_record(core)?.into_full())
 }
 
 /// 读全部模板（内置三类；插件模板见 #88）。
@@ -717,7 +798,7 @@ pub(crate) fn update_settings(
 
     let now = support::now();
     core.conn.execute(
-        "UPDATE organize_settings SET enabled = ?1, template_id = ?2, template_params = ?3, \
+        "UPDATE settings SET enabled = ?1, template_id = ?2, template_params = ?3, \
          max_materials = ?4, max_chars = ?5, max_calls_per_run = ?6, max_calls_per_day = ?7, \
          max_failure_rate = ?8, auto_organize_time = ?9, supplement_on_new_materials = ?10, \
          revision = ?11, updated_at = ?12 WHERE id = 1",
@@ -753,6 +834,128 @@ fn is_same_settings(current: &OrganizeSettings, candidate: &OrganizeSettings) ->
         && (current.max_failure_rate - candidate.max_failure_rate).abs() < f64::EPSILON
         && current.auto_organize_time == candidate.auto_organize_time
         && current.supplement_on_new_materials == candidate.supplement_on_new_materials
+}
+
+/// 校验完整设置里的 `diaryTimeZone`。
+///
+/// 核心**不解析** IANA 时区（`chrono` 不带 tz 数据库，日归属现在仍由调用方在
+/// `createDraft` 里给的时区与偏移决定），所以这里只做「像一个时区名」的机械校验：
+/// 非空、不超过 64 字节、只含 IANA 名会出现的 ASCII 字符（字母/数字/`/`/`_`/`+`/`-`）。
+/// 不在这里猜一个默认时区，也不把非法值静默换成 UTC。
+fn validate_diary_time_zone(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(CoreError::InvalidArgument {
+            reason: "日记时区不能为空（例如 Asia/Shanghai；首次由平台层写入设备时区）"
+                .to_owned(),
+        });
+    }
+    if trimmed.len() > 64 {
+        return Err(CoreError::InvalidArgument {
+            reason: format!("日记时区名太长（{} 字节，上限 64）：「{trimmed}」", trimmed.len()),
+        });
+    }
+    if !trimmed
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'+' | b'-'))
+    {
+        return Err(CoreError::InvalidArgument {
+            reason: format!(
+                "日记时区要写成 IANA 名（例如 Asia/Shanghai），不能含空白或其他字符：「{value}」"
+            ),
+        });
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// 校验一份完整设置（不含乐观锁）。返回规范形。
+///
+/// 与整理设置的校验**各管各的字段**：完整对象只有 `diaryTimeZone` /
+/// `autoOrganizeEnabled` / `autoOrganizeTime` / `defaultStyleId` 四个可写字段，
+/// 模板、参数与上限不在这里校验，也不会被 `settings.update` 改掉。
+fn validate_full_settings(incoming: &Settings) -> Result<Settings> {
+    let diary_time_zone = validate_diary_time_zone(&incoming.diary_time_zone)?;
+    let auto_organize_time = normalize_time(&incoming.auto_organize_time)?;
+    let default_style_id = incoming
+        .default_style_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    if let Some(style_id) = &default_style_id {
+        if style_id.len() > 128 {
+            return Err(CoreError::InvalidArgument {
+                reason: format!(
+                    "默认风格 id 太长（{} 字节，上限 128）：「{style_id}」",
+                    style_id.len()
+                ),
+            });
+        }
+    }
+    Ok(Settings {
+        diary_time_zone,
+        // revision / updated_at 是核心的，不认调用方给的值（与整理设置同一个口径）。
+        revision: incoming.revision,
+        updated_at: incoming.updated_at,
+        auto_organize_enabled: incoming.auto_organize_enabled,
+        auto_organize_time,
+        default_style_id,
+    })
+}
+
+fn is_same_full_settings(current: &Settings, candidate: &Settings) -> bool {
+    current.diary_time_zone == candidate.diary_time_zone
+        && current.auto_organize_enabled == candidate.auto_organize_enabled
+        && current.auto_organize_time == candidate.auto_organize_time
+        && current.default_style_id == candidate.default_style_id
+}
+
+/// `settings.update` 的落地：完整设置对象 + `expectedRevision` 乐观锁。
+///
+/// 口径（与整理设置那一路一致）：
+/// - **同一行**：只改 `diary_time_zone` / `default_style_id` / `enabled` /
+///   `auto_organize_time` 四列，模板、参数与各项上限原样留在同一行上；
+/// - **校验先行**：时区/时间/风格 id 不合法 `invalid_argument`，且**零改动**；
+/// - **过期就拒绝**：`expectedRevision` 不符报 `revision_conflict`，零改动；
+/// - **按目标状态幂等**：值没变就是无操作（`revision` 不 +1、`updatedAt` 不动）。
+///
+/// 传入对象里的 `revision` / `updatedAt` 是**只读结论，会被忽略**。
+pub(crate) fn update_full_settings(
+    core: &mut Core,
+    incoming: &Settings,
+    expected_revision: i64,
+) -> Result<Settings> {
+    let current = load_record(core)?;
+    let revision = current.organize.revision;
+    if revision != expected_revision {
+        return Err(CoreError::SettingsRevisionConflict {
+            expected: expected_revision,
+            actual: revision,
+        });
+    }
+    let validated = validate_full_settings(incoming)?;
+    let current_full = current.into_full();
+    if is_same_full_settings(&current_full, &validated) {
+        return Ok(current_full);
+    }
+
+    let now = support::now();
+    core.conn.execute(
+        "UPDATE settings SET diary_time_zone = ?1, default_style_id = ?2, enabled = ?3, \
+         auto_organize_time = ?4, revision = ?5, updated_at = ?6 WHERE id = 1",
+        params![
+            validated.diary_time_zone,
+            validated.default_style_id,
+            i64::from(validated.auto_organize_enabled),
+            validated.auto_organize_time,
+            revision + 1,
+            support::to_iso(now),
+        ],
+    )?;
+    let mut updated = validated;
+    updated.revision = revision + 1;
+    updated.updated_at = now;
+    Ok(updated)
 }
 
 // ------------------------------------------------------------------ 用量账本

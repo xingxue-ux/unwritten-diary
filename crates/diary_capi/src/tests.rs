@@ -1865,7 +1865,7 @@ fn search_pagination_upgrade_and_cancel() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// 能力清单必须随接线增长：`core.info.capabilities == WIRED_METHODS`，30 条、无重复。
+/// 能力清单必须随接线增长：`core.info.capabilities == WIRED_METHODS`，32 条、无重复。
 #[test]
 fn capabilities_include_every_wired_method() {
     let (dir, _path, handle) = open_temp("capabilities");
@@ -1878,7 +1878,7 @@ fn capabilities_include_every_wired_method() {
         .iter()
         .map(|name| name.as_str().unwrap())
         .collect();
-    assert_eq!(capabilities.len(), 30, "{capabilities:?}");
+    assert_eq!(capabilities.len(), 32, "{capabilities:?}");
     let mut unique = capabilities.clone();
     unique.sort_unstable();
     unique.dedup();
@@ -1896,9 +1896,110 @@ fn capabilities_include_every_wired_method() {
         "search.nextPage",
         "search.upgrade",
         "search.cancel",
+        "settings.get",
+        "settings.update",
     ] {
         assert!(capabilities.contains(&name), "能力清单缺 {name}");
     }
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `settings.get / settings.update`（契约 4.4）走 C ABI 的 JSON 面：
+/// 默认值、往返、`revision_conflict` 零改动，以及 **capabilities 真的把它们列出来**。
+#[test]
+fn settings_get_and_update_roundtrip_through_the_c_abi() {
+    let (dir, _path, handle) = open_temp("settings");
+    let info = expect_ok(&call(handle, "core.info", Value::Null));
+    let capabilities = info["capabilities"].as_array().unwrap();
+    assert!(capabilities.iter().any(|name| name == "settings.get"));
+    assert!(capabilities.iter().any(|name| name == "settings.update"));
+
+    let initial = expect_ok(&call(handle, "settings.get", Value::Null));
+    assert_eq!(initial["diary_time_zone"], json!("UTC"));
+    assert_eq!(initial["revision"], json!(1));
+    assert_eq!(initial["auto_organize_enabled"], json!(false));
+    assert_eq!(initial["auto_organize_time"], json!("22:30"));
+    assert!(initial["default_style_id"].is_null());
+
+    // 入参用契约的 camelCase 也接受（C ABI 同时接受 snake_case 与 camelCase）。
+    let updated = expect_ok(&call(
+        handle,
+        "settings.update",
+        json!({
+            "settings": {
+                "diaryTimeZone": "Asia/Shanghai",
+                "autoOrganizeEnabled": true,
+                "autoOrganizeTime": "23:15",
+                "defaultStyleId": "sty_default",
+            },
+            "expectedRevision": 1,
+        }),
+    ));
+    assert_eq!(updated["revision"], json!(2));
+    assert_eq!(updated["diary_time_zone"], json!("Asia/Shanghai"));
+    assert_eq!(updated["auto_organize_enabled"], json!(true));
+    assert_eq!(updated["auto_organize_time"], json!("23:15"));
+    assert_eq!(updated["default_style_id"], json!("sty_default"));
+
+    let reread = expect_ok(&call(handle, "settings.get", Value::Null));
+    assert_eq!(reread, updated, "update 之后 get 必须一致");
+
+    // 过期 revision：错误码是 revision_conflict，且一个字节不改。
+    let before_conflict = expect_ok(&call(handle, "settings.get", Value::Null));
+    let error = expect_error(
+        &call(
+            handle,
+            "settings.update",
+            json!({
+                "settings": {
+                    "diary_time_zone": "Europe/Berlin",
+                    "auto_organize_enabled": false,
+                    "auto_organize_time": "08:00",
+                    "default_style_id": null,
+                },
+                "expected_revision": 1,
+            }),
+        ),
+        "revision_conflict",
+    );
+    assert!(error.contains("重新读取设置"), "{error}");
+    let after_conflict = expect_ok(&call(handle, "settings.get", Value::Null));
+    assert_eq!(after_conflict, before_conflict, "冲突必须零改动");
+
+    // 参数拼错 / 时区非法都是 invalid_argument（不静默回落 UTC）。
+    expect_error(
+        &call(
+            handle,
+            "settings.update",
+            json!({
+                "settings": {
+                    "diary_time_zone": "Asia / Shanghai",
+                    "auto_organize_enabled": true,
+                    "auto_organize_time": "23:15",
+                },
+                "expected_revision": 2,
+            }),
+        ),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(
+            handle,
+            "settings.update",
+            json!({
+                "settings": {
+                    "diary_time_zone": "Asia/Shanghai",
+                    "auto_organize_enabled": true,
+                    "auto_organize_time": "23:15",
+                    "diaryTimeZone": "UTC",
+                },
+                "expected_revision": 2,
+            }),
+        ),
+        "invalid_argument",
+    );
 
     assert_eq!(diary_close(handle), 0);
     std::fs::remove_dir_all(dir).unwrap();

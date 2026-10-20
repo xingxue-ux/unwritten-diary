@@ -68,8 +68,8 @@
 //! - 备份与恢复：`backups.create` / `backups.inspect` / `backups.restore`（`diary_bridge`
 //!   已经接了同步入口，映射过来即可）；
 //! - 其余：`core.snapshot` / `core.close` / `core.setRuntimeState`、`diary.*`、`styles.*`、
-//!   `responses.*`、`settings.*`、`plugins.*`、`exports.*`——这些要么核心还没有对应实现，
-//!   要么属于后面的块。
+//!   `responses.*`、`plugins.*`、`exports.*`——这些要么核心还没有对应实现，
+//!   要么属于后面的块。（`settings.get` / `settings.update` 已接上，见 `WIRED_METHODS`。）
 //!
 //! 没接的方法一律报 `invalid_argument`，message 里点名「未接入」并附上已接入清单，
 //! **不会**静默成功、也不会假装支持。
@@ -78,7 +78,7 @@ use chrono::Utc;
 use diary_core::model::{NativeRecordingStatus, RecordingState, SegmentManifest};
 use diary_core::{
     Core, CoreError, CreateDraftInput, JobState, Provider, ProviderCapability, SearchFilters,
-    SearchMode, SearchRequest,
+    SearchMode, SearchRequest, Settings,
 };
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -118,6 +118,8 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "providers.list",
     "providers.test",
     "providers.remove",
+    "settings.get",
+    "settings.update",
 ];
 
 /// 一轮 `jobs.runDue` 最多跑几条任务（防御性上限）。
@@ -373,6 +375,18 @@ pub(crate) fn dispatch(
             let input: ProviderIdParams = parse(params)?;
             core.remove_provider(&input.provider_id)?;
             Ok(Value::Null)
+        }
+        // ------------------------------------------------------------ 设置（契约 4.4）
+        // 完整设置对象与整理设置共用核心 `settings` 表的同一行；这里不拼业务规则，
+        // 只做「JSON ↔ 核心对象」的搬运与参数形状校验。
+        "settings.get" => {
+            no_params(method, params)?;
+            to_value(core.get_settings()?)
+        }
+        "settings.update" => {
+            let input: UpdateSettingsParams = parse(params)?;
+            let settings = input.settings.into_settings();
+            to_value(core.update_settings(&settings, input.expected_revision)?)
         }
         // ------------------------------------------------------------ 测试钩子
         // 只在 `cargo test` 的构建里存在：证明「核心 panic 不会穿过 FFI」。
@@ -843,4 +857,51 @@ struct TestProviderParams {
     provider_id: String,
     #[serde(default)]
     scope: Vec<ProviderCapability>,
+}
+
+/// `settings.update`：完整设置对象 + `expectedRevision`（契约第 4.4 节）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateSettingsParams {
+    settings: SettingsInput,
+    #[serde(alias = "expectedRevision")]
+    expected_revision: i64,
+}
+
+/// `Settings` 的入参形态。
+///
+/// 字段名与响应一样以核心的 snake_case 为准，同时接受契约里的 camelCase。
+/// `revision` / `updated_at` 是**只读结论**：调用方给不给都不影响写入（核心忽略它们，
+/// 冲突保护只认外层的 `expected_revision`），所以这里允许省略——首次设置不必先伪造
+/// 一个时间戳。其余四个字段是必填的，拼错/漏字段都是 `invalid_argument`。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsInput {
+    #[serde(alias = "diaryTimeZone")]
+    diary_time_zone: String,
+    #[serde(default, alias = "revision")]
+    revision: i64,
+    #[serde(default, alias = "updatedAt")]
+    updated_at: Option<chrono::DateTime<Utc>>,
+    #[serde(alias = "autoOrganizeEnabled")]
+    auto_organize_enabled: bool,
+    #[serde(alias = "autoOrganizeTime")]
+    auto_organize_time: String,
+    #[serde(default, alias = "defaultStyleId")]
+    default_style_id: Option<String>,
+}
+
+impl SettingsInput {
+    /// 转成核心对象。`revision` / `updated_at` 会被 `update_settings` 忽略，这里给 0 /
+    /// 当前时间只是为了满足结构体的形状，不参与任何判断。
+    fn into_settings(self) -> Settings {
+        Settings {
+            diary_time_zone: self.diary_time_zone,
+            revision: self.revision,
+            updated_at: self.updated_at.unwrap_or_else(Utc::now),
+            auto_organize_enabled: self.auto_organize_enabled,
+            auto_organize_time: self.auto_organize_time,
+            default_style_id: self.default_style_id,
+        }
+    }
 }

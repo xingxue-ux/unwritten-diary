@@ -115,7 +115,7 @@ pub use model::{
     RecordingRecovery, RecordingSession, RecordingState, RecordingTicket, ResponseTicket,
     RestoreReport, SearchFilters, SearchHit,
     SearchMode, SearchPhase, SearchRequest, SearchSnapshot, SegmentManifest, SegmentReceipt,
-    SourceItem, SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
+    Settings, SourceItem, SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
 };
 pub use provider::CapabilityGate;
 pub use diary::{
@@ -1788,6 +1788,39 @@ impl Core {
         )
     }
 
+    // ------------------------------------------------------------ 设置（契约 4.4）
+
+    /// 读完整设置对象（契约第 4.4 节 `settings.get`）。
+    ///
+    /// 与 [`Core::organize_settings`] 读的是 **`settings` 表的同一行**：
+    /// - `auto_organize_enabled` 就是整理设置的 `enabled`，`auto_organize_time` 就是
+    ///   整理设置的同一字段；`revision` / `updated_at` 也是同一个数；
+    /// - 整理设置的模板、参数与上限不在契约的 `Settings` 对象里，但它们仍在同一行上，
+    ///   由 [`Core::organize_settings`] 读写，`settings.update` 不会碰。
+    ///
+    /// 新库的 `diary_time_zone` 是 **`UTC`**：核心不知道设备时区，平台层应在首次启动时
+    /// 用设备时区调用一次 [`Core::update_settings`]（见 [`Settings`] 的文档）。
+    pub fn get_settings(&self) -> Result<Settings> {
+        organize::load_full_settings(self)
+    }
+
+    /// 更新完整设置对象（契约第 4.4 节 `settings.update`）。
+    ///
+    /// - **同一行**：只改 `diary_time_zone` / `default_style_id` / `auto_organize_enabled` /
+    ///   `auto_organize_time` 四列，模板与各项上限原样不动；
+    /// - **过期就拒绝**：`expectedRevision` 不符报 `revision_conflict`，一个字节不改；
+    /// - **校验先行**：时区/时间/风格 id 不合法 `invalid_argument`，零改动；
+    /// - **按目标状态幂等**：值没变就是无操作（`revision` 不 +1）。
+    ///
+    /// 传入对象里的 `revision` / `updatedAt` 是**只读结论，会被忽略**。
+    pub fn update_settings(
+        &mut self,
+        settings: &Settings,
+        expected_revision: i64,
+    ) -> Result<Settings> {
+        organize::update_full_settings(self, settings, expected_revision)
+    }
+
     // ------------------------------------------------------------ 整理与自动化（B4e）
 
     /// 全部可用整理模板（现在只有三个核心内置的；插件模板见 #88）。
@@ -1799,11 +1832,14 @@ impl Core {
     }
 
     /// 整理设置：开关（**默认关**）、模板与参数、各项上限、计划触发时间。
+    ///
+    /// 这是完整设置行里「整理这一段」的读写视图，不是第二张表：开关与计划时间与
+    /// [`Core::get_settings`] 的 `autoOrganizeEnabled` / `autoOrganizeTime` 是同一份真值。
     pub fn organize_settings(&self) -> Result<OrganizeSettings> {
         organize::load_settings(self)
     }
 
-    /// 更新整理设置，契约第 4.4 节 `settings.update` 的落地（整理这一段）。
+    /// 更新整理设置（完整设置行里「整理这一段」）。
     ///
     /// 口径：
     /// - **必须显式开启**：`enabled` 默认是 `false`，只有调用方明确传 `true` 才会打开；
@@ -1812,8 +1848,10 @@ impl Core {
     /// - **过期就拒绝**：`expectedRevision` 不符报 `revision_conflict`，零改动；
     /// - **按目标状态幂等**：值没变就是无操作（`revision` 不 +1）。
     ///
-    /// 传入对象里的 `revision` / `updatedAt` 是**只读结论，会被忽略**（与
-    /// `providers.save` 忽略 `testStatus` 同一个口径）。
+    /// 它只改整理那几列，不碰 `diary_time_zone` / `default_style_id`；反之
+    /// [`Core::update_settings`] 也不碰模板与上限。传入对象里的 `revision` /
+    /// `updatedAt` 是**只读结论，会被忽略**（与 `providers.save` 忽略 `testStatus`
+    /// 同一个口径）。
     pub fn update_organize_settings(
         &mut self,
         settings: &OrganizeSettings,

@@ -63,7 +63,9 @@ import {
   SearchSessionParams,
   SearchSnapshot,
   SegmentReceipt,
+  Settings,
   TestProviderParams,
+  UpdateSettingsParams,
 } from './Models';
 
 /** 默认资料库文件名；与 Flutter 侧 `apps/diary_app/lib/src/app_services.dart` 用的是同一个。 */
@@ -171,7 +173,7 @@ export class DiaryCore {
     return diaryNapi.openHandleCount();
   }
 
-  // ---------------------------------------------------------------- 契约方法（30 条）
+  // ---------------------------------------------------------------- 契约方法（32 条）
   //
   // 一一对应 `crates/diary_capi/src/methods.rs` 的 `WIRED_METHODS`。方法名与方法体里的
   // 字符串必须一致；`tools/check_arkts_capi_contract.py` 会核对。
@@ -388,6 +390,29 @@ export class DiaryCore {
   /** `providers.remove`：只删配置行，不删任何日记/派生内容（核心返回 `null`）。 */
   removeProvider(params: ProviderIdParams): void {
     this.rawCall('providers.remove', params);
+  }
+
+  // ---------------------------------------------------------------- 设置（契约 4.4）
+
+  /**
+   * `settings.get`：读完整设置对象。
+   *
+   * 与 `organizeSettings()`（Flutter 桥接入口）是**同一行**：开关与计划时间的变化
+   * 两个入口都看得到。新库的 `diary_time_zone` 是 `UTC`，平台层首次启动时应把设备
+   * 时区（`i18n.System.getTimeZone()`）通过 `updateSettings()` 写进去。
+   */
+  getSettings(): Settings {
+    return this.invokeData('settings.get', null) as Settings;
+  }
+
+  /**
+   * `settings.update`：更新完整设置对象；`expected_revision` 是乐观锁。
+   *
+   * `settings.revision` / `settings.updated_at` 是只读结论，核心会忽略；冲突返回
+   * `revision_conflict`，一个字节不改。
+   */
+  updateSettings(params: UpdateSettingsParams): Settings {
+    return this.invokeData('settings.update', params) as Settings;
   }
 
   // ---------------------------------------------------------------- 逃生口

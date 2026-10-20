@@ -168,7 +168,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 ## 6 方法映射表
 
-### 6.1 已接（30 条，`core.info.capabilities` 就是这份清单）
+### 6.1 已接（32 条，`core.info.capabilities` 就是这份清单）
 
 | 契约方法 | 核心调用 | `data` |
 |---|---|---|
@@ -202,6 +202,14 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `providers.list` | `Core::list_providers` | `Provider[]` |
 | `providers.test` | `Core::test_provider` | `ProviderTestReport` |
 | `providers.remove` | `Core::remove_provider` | `null` |
+| `settings.get` | `Core::get_settings` | `Settings`（与整理设置同一行；新库 `diary_time_zone = UTC`、自动整理默认关） |
+| `settings.update` | `Core::update_settings`（`settings` + `expected_revision`） | 更新后的 `Settings`；`revision_conflict` 时零改动 |
+
+`settings.get` 的 `data` 是完整设置对象，字段名与核心 serde 输出一致（snake_case）：
+`diary_time_zone` / `revision` / `updated_at` / `auto_organize_enabled` /
+`auto_organize_time` / `default_style_id`。`settings.update` 的 `settings` 入参同时接受
+契约的 camelCase 写法（`diaryTimeZone` 等）；`revision` / `updated_at` 是只读结论，核心
+忽略，冲突保护只认外层的 `expected_revision`。
 
 `search.start` 的 `request` 里只有 `query` 必填，`mode`（默认 `keyword`；`semantic` 是
 语义那一路）、`filters`（全字段可选）、`page_size`（默认 20，与 `bridge_diary_api.dart`
@@ -258,8 +266,9 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 restore/previewPurge/purge`、`sources.extractedContent/previousRevision/reviseText/locate`、
 `imports.*`、`assets.open/release`、`search.snapshot`、`jobs.nextWakeup`、
 `core.events/snapshot/close/setRuntimeState`、`backups.*`（桥上已有同步入口，映射过来即可）、
-`diary.*` / `styles.*` / `responses.*` / `settings.*` / `plugins.*` / `exports.*`（核心大多
-还没有对应实现）。`providers.*` 四条已接（见上表）。
+`diary.*` / `styles.*` / `responses.*` / `plugins.*` / `exports.*`（核心大多
+还没有对应实现）。`providers.*` 四条已接（见上表）；`settings.get / update` 两条也已接
+（整理设置与完整设置共用核心 `settings` 表的同一行）。
 
 未接入的方法一律 `invalid_argument` + 已接入清单，**不静默成功、不假装支持**。
 
@@ -447,7 +456,7 @@ cargo +1.94.1 build -p diary_capi --release --target aarch64-unknown-linux-ohos
    `DiaryCore` 薄封装 + 参考工程，本机能编、HAP 能打；真机仍未验**；
 4. **鸿蒙真机验证**：只验到「能交叉编过」。`dlopen` 能不能拿到符号、沙箱里能不能建库、
    SQLite 能不能落盘——**全部未验证**（探针验过的是探针自己那份薄 ABI，不是这一份）；
-5. **方法子集**：只接了 30 条（§6.1；录音 5 条、`providers.*` 4 条、界面缺口 11 条都是后续
+5. **方法子集**：只接了 32 条（§6.1；录音 5 条、`providers.*` 4 条、界面缺口 11 条都是后续
    分片补的），其余仍是扩展点；
 6. **性能**：没测吞吐、没测 JSON 序列化占比、没测大库（十万条记录）下的表现；
 7. **并发压力**：跨线程用例是 15 次循环的**正确性**验证，不是压测（没有 P50/P99）；

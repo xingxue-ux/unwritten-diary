@@ -858,7 +858,7 @@ fn v7_library_migrates_to_v8_without_backfilling_chunks() {
              DROP TABLE diary_versions;
              DROP TABLE diary_source_snapshots;
              DROP TABLE diary_model_calls;
-             DROP TABLE organize_settings;
+             DROP TABLE settings;
              UPDATE schema_migrations SET version = 7;
              PRAGMA user_version = 7;",
         )

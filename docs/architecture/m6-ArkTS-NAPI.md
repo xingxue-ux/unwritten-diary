@@ -15,13 +15,13 @@
 | # | 结论 | 强度 |
 |---|---|---|
 | 1 | C ABI **不在 main 里**（PR #117 未合）⇒ 本分支从 `origin/main` = `e4e3c0a` 起步，**merge** 了 `origin/feat/B8a-core-c-abi`（`29a076e`），没有改写 C ABI 的任何一行 | 实测（`git log --oneline`） |
-| 2 | 模块形状是**三层**：`libdiary_capi.so`（Rust，6 个 C 符号）→ `libdiary_napi.so`（C++，7 个 JS 函数）→ `DiaryCore.ets`（30 条契约方法）；JSON **一进一出**，中间不拆不拼 | 实测（能编 + 静态核对） |
+| 2 | 模块形状是**三层**：`libdiary_capi.so`（Rust，6 个 C 符号）→ `libdiary_napi.so`（C++，7 个 JS 函数）→ `DiaryCore.ets`（32 条契约方法）；JSON **一进一出**，中间不拆不拼 | 实测（能编 + 静态核对） |
 | 3 | NAPI 层**只在「调用没能发生」时抛 JS 异常**（`ERR_DIARY_LIB/ARGS/HANDLE/OPEN/CALL`）；业务错误仍返回 `ok:false` 信封，由 ArkTS 侧统一转成 `DiaryError` 异常 | 实测（代码 + 契约核对） / 真机已验（临时身份） |
 | 4 | **错误码一个没新增**：21 个核心码原样透传；唯一的宿主码 `native_unavailable` 表示「调用没能发生」，不进核心码表 | 实测（`tools/check_arkts_capi_contract.py`） |
 | 5 | 交叉编译 + shim 编译过：`libdiary_capi.so` 11,369,880 B（`NEEDED` 只有 `libc.so`）、`libdiary_napi.so` 46,824 B（`NEEDED` = `libace_napi.z.so` / `libc++_shared.so` / `libc.so`）、6 个 C 符号全在 | 实测（见 §8.1） |
 | 6 | **ArkTS 真的编过了**：`hvigorw assembleHap` `BUILD SUCCESSFUL`，`CompileArkTS` 8 s，unsigned HAP 12,815,707 B，包内三个 `.so`（含 `libc++_shared.so`） | 实测（见 §8.2） |
 | 7 | `index.d.ts` **没有退化成 any**：把 `diaryNapi.open(123)` 故意写错 → 编译报 2 条类型错误（红证据见 §8.3） | 实测 |
-| 8 | 静态契约核对：30 个方法名、21 个错误码、6 个 C 符号、7 个 JS 函数、打包三件套全部一致（改坏一处就红，见 §8.4） | 实测 |
+| 8 | 静态契约核对：32 个方法名、21 个错误码、6 个 C 符号、7 个 JS 函数、打包三件套全部一致（改坏一处就红，见 §8.4） | 实测 |
 | 9 | **真机已验**（2026-10-18，HAD-W32 / API 23，临时 bundleName `com.example.myapplication`）：`dlopen`/`dlsym`、沙箱建库（schema 13）、HAP 安装启动、hilog、性能、并发、多 Ability/多进程、错误路径、release/混淆、升级保留全部跑过；产品名 `com.lingxing.unwrittendiary` 仍未验（Profile 未生成） | 实测（见工程 README「真机验证结果」） |
 
 **一句话**：ArkTS 现在有一份**能编、能打包、契约对得上**的 `DiaryCore`；2026-10-18 已在
@@ -176,7 +176,7 @@ corrupted_backup, incompatible_backup
 
 ## 5 ArkTS 薄封装 ↔ C ABI 的对应
 
-`DiaryCore.ets` 的 30 个方法**一一对应** `crates/diary_capi/src/methods.rs` 的
+`DiaryCore.ets` 的 32 个方法**一一对应** `crates/diary_capi/src/methods.rs` 的
 `WIRED_METHODS`（方法体里的字符串与方法名必须一致，检查器会核对）。下面的表只列
 #143 之前的 9 条契约方法是**当时的子集**；#143 补的 11 条见
 [`m6-核心-C-ABI.md` §6.1](m6-核心-C-ABI.md#L171-L209)：
@@ -203,7 +203,7 @@ corrupted_backup, incompatible_backup
   多出来的字段运行时仍在）；
 - `search` 的 `params` 是 `{ request, query_revision }`（C ABI 的形状），
   不是扁平的 `{ query }`——因为 `query_revision` 是检索会话的一部分；
-- 方法子集 30 条：`capabilities` 里没列出来的就是还没接，不会假装支持。
+- 方法子集 32 条：`capabilities` 里没列出来的就是还没接，不会假装支持。
 
 ## 6 库放置与打包
 
@@ -450,8 +450,8 @@ COMPILE RESULT:FAIL {ERROR:3}
 
 ```console
 $ python3 tools/check_arkts_capi_contract.py
-[核对] 契约方法（DiaryCore.ets ↔ WIRED_METHODS）：30 项一致
-[核对] C ABI 文档 §6.1 的方法数：30 条（与 WIRED_METHODS 一致）
+[核对] 契约方法（DiaryCore.ets ↔ WIRED_METHODS）：32 项一致
+[核对] C ABI 文档 §6.1 的方法数：32 条（与 WIRED_METHODS 一致）
 [核对] 错误码（DiaryError.ets ↔ ErrorCode::wire）：21 项一致
 [核对] C 符号（napi_shim.cpp dlsym ↔ lib.rs 导出）：6 项一致
 [核对] JS 函数（index.d.ts ↔ napi_define_properties）：7 项一致
@@ -513,7 +513,7 @@ $ python3 tools/check_arkts_capi_contract.py
      当数据用；好处是不用 `try/catch`、异步化时更自然；
    - **我的建议**：保持抛异常（ArkTS 的 `try/finally` 与 `close()` 天然配套），
      同时保留 `rawEnvelope()` 给需要原始信封的场景。若要改，改动面 =
-     `DiaryCore` 的 30 个方法 + 示例的调用点，**不涉及 C ABI**。
+     `DiaryCore` 的 32 个方法 + 示例的调用点，**不涉及 C ABI**。
 2. **模块归属**：现在放在 `apps/ohos-diary-core`（可复制的参考工程）。要不要抽成
    独立 HAR / 独立仓包（`@diary/core`），由应用 `ohpm install` 依赖？抽的话要处理
    「HAR 里怎么带 `.so` 与 `types` 三件套」——本块没有验证 HAR 形态。
@@ -524,7 +524,7 @@ $ python3 tools/check_arkts_capi_contract.py
    JSON / hilog 里都要特殊处理。
 5. **`stringFree` 要不要暴露**：现在不暴露（内部复制+释放，§3.3）。暴露它只会多一类
    「重复释放」的错误，没有收益。
-6. **方法子集**：C ABI 现在接了 30 条（录音 5 条、`providers.*` 4 条、界面缺口 11 条都是后续分片补的），
+6. **方法子集**：C ABI 现在接了 32 条（录音 5 条、`providers.*` 4 条、界面缺口 11 条都是后续分片补的），
    ArkTS 已同步。每加一条 C ABI 方法，只需在 `DiaryCore.ets` 加一个方法（检查器会抓漏），
    再在 `Models.ets` 里给返回/参数类型；不用动 C++。
 7. **`native_unavailable` 这个宿主码**：要不要换成 `invalid_state`（复用核心码）？

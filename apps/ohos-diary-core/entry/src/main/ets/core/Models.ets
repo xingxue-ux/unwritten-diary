@@ -656,3 +656,36 @@ export interface ProviderTestReport {
   /** 能力 → `ok` / `failed` 的逐项结论（JSON 对象，键是能力名）。 */
   results: Object;
 }
+
+/**
+ * 完整设置对象（契约 4.4 `settings.get / update`）。
+ *
+ * 字段名与核心 serde 输出一致（snake_case）；整理设置的开关与计划时间就是这里的
+ * `auto_organize_enabled` / `auto_organize_time`——**与 `organizeSettings()` 是同一份
+ * 真值**（核心 `settings` 表的同一行），不是两套存储。
+ */
+export interface Settings {
+  /** IANA 时区名。新库首次是 `UTC`；平台层应在首次启动时用设备时区 update 一次。 */
+  diary_time_zone: string;
+  /** 整行设置的乐观锁版本。 */
+  revision: number;
+  /** RFC 3339（UTC）。 */
+  updated_at: string;
+  /** 自动整理开关。**默认 false**：没有显式开启，核心不会自动调用任何服务。 */
+  auto_organize_enabled: boolean;
+  /** 计划触发时间 `HH:mm`，不是完成承诺。 */
+  auto_organize_time: string;
+  /** 新建日记默认使用的风格 id（没有则为 null）。 */
+  default_style_id: string | null;
+}
+
+/**
+ * `settings.update` 的参数。
+ *
+ * `settings.revision` / `updated_at` 是只读结论：核心忽略它们，冲突保护只认
+ * `expected_revision`。
+ */
+export interface UpdateSettingsParams {
+  settings: Settings;
+  expected_revision: number;
+}
