@@ -31,6 +31,16 @@ impl CaptureState {
     }
 }
 
+/// SQL 谓词：只保留**不在回收站**的记录（`alias` 是查询里的表别名，如 `Some("c")`）。
+///
+/// 「回收站」这个状态字符串只从 [`CaptureState::Trashed`] 取，不再把
+/// `state != 'trashed'` 抄到每条 SQL 里；以后改状态名或加别的「不算数」状态时，
+/// 只有这一处要动。返回 `String` 是因为调用方要把它拼进各自的查询，不能参数化表名。
+pub(crate) fn capture_not_trashed(alias: Option<&str>) -> String {
+    let prefix = alias.map(|alias| format!("{alias}.")).unwrap_or_default();
+    format!("{prefix}state != '{}'", CaptureState::Trashed.wire())
+}
+
 /// 原始内容的作者，契约第 2.2 节。AI 生成的正文不写成 user。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -1726,7 +1726,7 @@ impl Core {
     ///
     /// 候选与当前只在这里区分（契约的 `DiaryVersion` 没有状态字段）。空日报 `not_found`。
     pub fn get_diary_day(&self, day_key: &str) -> Result<DiaryDay> {
-        diary::get_day(self, day_key)
+        diary::get_day(&self.conn, day_key)
     }
 
     /// 分页读某一天的日记版本，契约第 4.3 节 `diary.listVersions`。最新在前。

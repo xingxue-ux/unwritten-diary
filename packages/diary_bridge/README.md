@@ -63,7 +63,7 @@ Windows 侧构建要显式带 `--target`，否则产物会写进与 WSL 共用�
 ```bash
 cargo build --release                        # 仓库根目录
 cd packages/diary_bridge
-dart pub get && dart test                    # 全套（当前 41 项），跑完整读写链路
+dart pub get && dart test                    # 全套（当前 54 项），跑完整读写链路
 ```
 
 `DIARY_BRIDGE_LIB` 可指定别的产物路径（例如 Windows 上的 `.dll`）。

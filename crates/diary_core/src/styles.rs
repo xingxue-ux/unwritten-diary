@@ -35,6 +35,22 @@ pub(crate) const DEFAULT_STYLE_ID: &str = "sty_default";
 /// 默认风格的展示名。
 pub(crate) const DEFAULT_STYLE_LABEL: &str = "默认风格";
 
+/// 单个风格自由文本字段的字符上限（`label` 与六个偏好字段；示例/禁用表达按**每条**算）。
+///
+/// 风格文本会原样进 system 消息，且不像材料那样受 `DIRECT_INPUT_CHAR_LIMIT` 约束。
+/// 没有上限时，调用方可以用一个几万字的 `tone` 把每次生成的实际输入撑大，既绕过
+/// 材料预算，也让本地小模型直接超上下文。500 字足够写清一条偏好。
+pub(crate) const STYLE_FIELD_CHAR_LIMIT: usize = 500;
+
+/// 一条风格所有自由文本的**合计**上限（含示例与禁用表达）。
+///
+/// 单字段各有 500 字上限还不够：七个字段 + 两组列表叠起来仍可能到几千字。2,000 字
+/// 是「所有偏好都写满」也到不了的数量级，同时把 system 消息的增量钉在一个可解释的界内。
+pub(crate) const STYLE_TOTAL_CHAR_LIMIT: usize = 2_000;
+
+/// 示例 / 禁用表达各自最多条数（每条仍受 `STYLE_FIELD_CHAR_LIMIT` 约束）。
+pub(crate) const STYLE_LIST_ITEM_LIMIT: usize = 20;
+
 /// 一条风格版本：当前 profile + 它的版本行标识。
 ///
 /// `profile` 里没有 `snapshot_id`（契约没有这个字段，不发明）；生成路径需要的是
@@ -187,6 +203,8 @@ pub(crate) fn save(
         });
     }
 
+    validate_style_text(profile)?;
+
     let existing = current_version(&core.conn, &id)?;
     if let Some(expected) = expected_revision {
         let actual = existing
@@ -248,6 +266,63 @@ pub(crate) fn save(
         examples: profile.examples.clone(),
         banned_expressions: profile.banned_expressions.clone(),
     })
+}
+
+/// 校验风格自由文本的长度。**超限报 `invalid_argument`、一个字节都不落库**。
+///
+/// 只做长度与条数，不解释、不改写用户文字：这是资源边界，不是内容审查。
+fn validate_style_text(profile: &StyleProfile) -> Result<()> {
+    let too_long = |field: &str, chars: usize| CoreError::InvalidArgument {
+        reason: format!(
+            "风格字段 {field} 最多 {STYLE_FIELD_CHAR_LIMIT} 个字符，实际 {chars}"
+        ),
+    };
+    let mut total = 0_usize;
+    let check = |field: &str, value: &str, total: &mut usize| -> Result<()> {
+        let chars = value.trim().chars().count();
+        if chars > STYLE_FIELD_CHAR_LIMIT {
+            return Err(too_long(field, chars));
+        }
+        *total += chars;
+        Ok(())
+    };
+
+    check("label", &profile.label, &mut total)?;
+    for (field, value) in [
+        ("lengthPreference", profile.length_preference.as_deref()),
+        ("person", profile.person.as_deref()),
+        ("tone", profile.tone.as_deref()),
+        ("emotionalTemperature", profile.emotional_temperature.as_deref()),
+        ("rhetoricLevel", profile.rhetoric_level.as_deref()),
+    ] {
+        if let Some(value) = value {
+            check(field, value, &mut total)?;
+        }
+    }
+    for (field, values) in [
+        ("examples", &profile.examples),
+        ("bannedExpressions", &profile.banned_expressions),
+    ] {
+        if values.len() > STYLE_LIST_ITEM_LIMIT {
+            return Err(CoreError::InvalidArgument {
+                reason: format!(
+                    "风格字段 {field} 最多 {STYLE_LIST_ITEM_LIMIT} 条，实际 {} 条",
+                    values.len()
+                ),
+            });
+        }
+        for (index, value) in values.iter().enumerate() {
+            check(&format!("{field}[{index}]"), value, &mut total)?;
+        }
+    }
+    if total > STYLE_TOTAL_CHAR_LIMIT {
+        return Err(CoreError::InvalidArgument {
+            reason: format!(
+                "一条风格的所有自由文本合计最多 {STYLE_TOTAL_CHAR_LIMIT} 个字符，实际 {total} 个"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// 空串按「没有这个偏好」处理：界面清空输入框与「没填」是同一件事。

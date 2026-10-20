@@ -40,8 +40,8 @@ use rusqlite::{params, Connection};
 /// v15 老库打开它时 `current < 17` 成立、`current < 16` 也成立，但迁移里没有 v16
 /// 那一段，`trashed_from_state` 就永远不会被加；等回收站线合进来，那个库已经是
 /// 17，`current < 16` 不再成立，这一列再也补不上。所以 v16 与 v17 两段都要在：
-/// 两段的守卫都是**结构判定**（`column_exists` / `table_exists`），幂等、与起始
-/// 版本无关；先合入的一方生效，后合入的一方在合并时删掉重复块。
+/// v16 的守卫是**纯结构判定**（只看列在不在），v17 是「版本号 + 表/索引结构」；
+/// 两段都幂等；先合入的一方生效，后合入的一方在合并时删掉重复块。
 pub const SCHEMA_VERSION: i64 = 17;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
@@ -168,13 +168,15 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 口径如实判断该不该自动排一条。
     }
     // v16：回收站线的加列。**本支不实现回收站功能，但必须带上这段 DDL**：
-    // 否则一个 v15 老库直接升到 17 时会永远跳过这一列（`current < 16` 之后不再成立，
-    // 而 #155 的守卫也补不上一个已经是 17 的库）。与 #155 的内容逐字一致，先合入的
-    // 一方生效，后合入的一方合并时删掉重复块。
+    // 否则一个 v15 老库直接升到 17 时会永远跳过这一列（版本一旦写成 17，`current
+    // < 16` 不再成立，而 #155 的版本守卫也补不上一个已经是 17 的库）。与 #155 的
+    // 内容逐字一致，先合入的一方生效，后合入的一方合并时删掉重复块。
     //
-    // 守卫是「版本号 + 结构」：`current < 16 && 列不在`。列已在就跳过——重复 open、
-    // 或从 v16 库升上来都不会重复 ALTER。
-    if current < 16 && !column_exists(&tx, "captures", "trashed_from_state")? {
+    // 守卫是**纯结构判定**：只看列在不在，不看版本号。`current < 16 && 列不在`
+    // 会漏掉「自称 16、实际缺列」的库：这次 open 把版本写成 17 并返回成功，列仍缺，
+    // 要等下一次 open 才补。列在就跳过——重复 open、或从 v16 库升上来都不会重复
+    // ALTER；v1 老库也会在这里提前拿到这条可空列，纯加性、不碰已有数据。
+    if !column_exists(&tx, "captures", "trashed_from_state")? {
         tx.execute_batch(V16)?;
     }
     // v17：风格版本表（#114）。
@@ -191,8 +193,11 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
             .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+    // `OR IGNORE`：库被文件级复制/回退过时，`schema_migrations` 里可能已经有一行
+    // 更高版本（`user_version` 却更低）。PK 冲突不该让整个开库失败；这一行只是
+    // 「本次打开落到的最终版本」的记录，不是迁移条件的来源（见 m5 文档）。
     tx.execute(
-        "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
         params![SCHEMA_VERSION, crate::support::to_iso(crate::support::now())],
     )?;
     tx.commit()?;
@@ -257,21 +262,28 @@ fn ensure_v15_caliber_index(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V15_CALIBER_INDEX)
 }
 
-/// v16 / v17 的结构兜底：在「版本号已经是最新」的分支里，列或表被手工删掉、
-/// 或库是只写过 v17 的中间构建时，下次 open 仍能补回来。
+/// v16 / v17 的结构兜底：在「版本号已经是最新」的分支里，列、表或
+/// `idx_styles_current` 被手工删掉、或补建失败时，下次 open 仍能补回来。
 ///
-/// 与迁移里的两段守卫是同一组结构判定；结构都在时只做两次轻量查询，不写库。
+/// **表和索引分开判**：`table_exists("styles")` 为真不能证明
+/// `idx_styles_current` 在——索引被删或补建失败时，部分唯一索引「一条风格只有一个
+/// 当前版本」就不再由库保证，`query_row` 会静默取任意一条。这与 v15 的
+/// `ensure_v15_caliber_index` 是同一个理由（`user_version` 是版本号，不是结构证明）。
+///
+/// 与迁移里的两段守卫是同一组结构判定；结构都在时只做三次轻量查询，不写库。
 fn ensure_v16_v17_structure(conn: &mut Connection) -> rusqlite::Result<()> {
     let missing_trash_column = !column_exists(conn, "captures", "trashed_from_state")?;
     let missing_styles = !table_exists(conn, "styles")?;
-    if !missing_trash_column && !missing_styles {
+    let missing_current_index = !index_exists(conn, "idx_styles_current")?;
+    if !missing_trash_column && !missing_styles && !missing_current_index {
         return Ok(());
     }
     let tx = conn.transaction()?;
     if missing_trash_column {
         tx.execute_batch(V16)?;
     }
-    if missing_styles {
+    if missing_styles || missing_current_index {
+        // V17 的两条 DDL 都是 IF NOT EXISTS：表在、索引不在时只补索引。
         tx.execute_batch(V17)?;
         crate::styles::seed_default_style(&tx, crate::support::now())
             .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;

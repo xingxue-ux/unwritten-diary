@@ -213,6 +213,67 @@ fn styles_crud_round_trip_and_optimistic_lock() {
 }
 
 #[test]
+fn style_free_text_has_a_length_limit_and_rejects_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+
+    // 单字段超限：500 字上限，501 字必须 invalid_argument。
+    let mut long_field = style("sty_long", "长度上限", "克制");
+    long_field.tone = Some("字".repeat(501));
+    let error = core.save_style(&long_field, None).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    assert!(error.to_string().contains("tone"), "错误要指出超限字段：{error}");
+    assert_eq!(
+        core.get_style("sty_long").unwrap_err().code(),
+        ErrorCode::NotFound,
+        "被拒绝的保存不能留下当前版本行"
+    );
+
+    // 每项都不超 500，但合计超 2,000：四个 500 字字段 + label 已经 2,001。
+    let mut long_total = style("sty_long_total", "合计上限", "克制");
+    long_total.label = "标".to_owned();
+    long_total.length_preference = Some("篇".repeat(500));
+    long_total.person = Some("人".repeat(500));
+    long_total.tone = Some("气".repeat(500));
+    long_total.emotional_temperature = Some("温".repeat(500));
+    long_total.rhetoric_level = None;
+    long_total.examples.clear();
+    long_total.banned_expressions.clear();
+    let error = core.save_style(&long_total, None).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    assert!(
+        error.to_string().contains("合计最多"),
+        "合计超限要报总上限：{error}"
+    );
+
+    // 边界：单字段正好 500、合计正好 2000 可以保存（上限是「最多」，不是「小于」）。
+    let mut at_limit = style("sty_limit_ok", "边", "克制");
+    at_limit.length_preference = Some("篇".repeat(500));
+    at_limit.person = Some("人".repeat(500));
+    at_limit.tone = Some("气".repeat(500));
+    at_limit.emotional_temperature = Some("温".repeat(498));
+    at_limit.rhetoric_level = None;
+    at_limit.examples.clear();
+    at_limit.banned_expressions.clear();
+    // label 1 + 500*3 + 498 = 1,999；再把修辞补 1 就到 2,000。
+    at_limit.rhetoric_level = Some("辞".to_owned());
+    let saved = core.save_style(&at_limit, None).unwrap();
+    assert_eq!(saved.revision, 1);
+
+    // 示例条数也有上限：21 条即使每条很短也拒绝。
+    let mut many_examples = style("sty_many", "条数上限", "克制");
+    many_examples.length_preference = None;
+    many_examples.person = None;
+    many_examples.emotional_temperature = None;
+    many_examples.rhetoric_level = None;
+    many_examples.banned_expressions.clear();
+    many_examples.examples = (0..21).map(|index| format!("示例 {index}")).collect();
+    let error = core.save_style(&many_examples, None).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    assert!(error.to_string().contains("examples"));
+}
+
+#[test]
 fn generation_freezes_the_style_version_and_keeps_it_after_style_updates() {
     let dir = tempfile::tempdir().unwrap();
     let (mut core, transport) = core_with_script(dir.path(), vec![chat_ok("模型写的正文。")]);
@@ -392,6 +453,37 @@ fn export_never_overwrites_and_never_includes_trashed_days() {
 }
 
 #[test]
+fn export_accepts_a_non_zero_padded_start_day_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, _) = core_with_script(
+        dir.path(),
+        vec![chat_ok("五号正文。"), chat_ok("十四号正文。"), chat_ok("十五号正文。")],
+    );
+    save_provider(&mut core);
+    capture_on(&mut core, "2026-10-05", "五号的记录。", "op-05");
+    capture_on(&mut core, "2026-10-14", "十四号的记录。", "op-14");
+    capture_on(&mut core, "2026-10-15", "十五号的记录。", "op-15");
+    generate(&mut core, "2026-10-05", "op-gen-05");
+    generate(&mut core, "2026-10-14", "op-gen-14");
+    generate(&mut core, "2026-10-15", "op-gen-15");
+
+    // 非零填充的 `2026-10-5` 能通过日期解析，但字典序上小于 `2026-10-05`。
+    // 如果绑定的是原始字符串，这个范围会静默丢掉 10 月 1–19 日。
+    let ticket = core
+        .create_export(&export_request("2026-10-5", "2026-10-15", "markdown"))
+        .expect("非零填充的起点必须按日期解析后绑定，不能静默排除整个范围");
+    assert_eq!(
+        ticket.day_keys,
+        vec!["2026-10-05", "2026-10-14", "2026-10-15"]
+    );
+    let text = std::fs::read_to_string(&ticket.path).unwrap();
+    assert!(text.contains("## 2026-10-05"));
+    assert!(text.contains("五号正文。"));
+    assert!(text.contains("十四号正文。"));
+    assert!(text.contains("十五号正文。"));
+}
+
+#[test]
 fn export_rejects_bad_arguments_and_paths_outside_the_sandbox() {
     let dir = tempfile::tempdir().unwrap();
     let (mut core, _) = core_with_script(dir.path(), vec![chat_ok("正文。")]);
@@ -435,6 +527,7 @@ fn export_rejects_bad_arguments_and_paths_outside_the_sandbox() {
 fn list_days_matches_capture_counts_excludes_trash_and_paginates() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = new_core(dir.path());
+    capture_on(&mut core, "2026-10-05", "五号一条。", "op-05");
     capture_on(&mut core, "2026-10-14", "十四号一条。", "op-14");
     let trash_me = capture_on(&mut core, "2026-10-15", "十五号会被回收的一条。", "op-15a");
     capture_on(&mut core, "2026-10-15", "十五号保留的一条。", "op-15b");
@@ -453,7 +546,7 @@ fn list_days_matches_capture_counts_excludes_trash_and_paginates() {
             .iter()
             .map(|day| day.day_key.as_str())
             .collect::<Vec<_>>(),
-        vec!["2026-10-16", "2026-10-15", "2026-10-14"],
+        vec!["2026-10-16", "2026-10-15", "2026-10-14", "2026-10-05"],
         "倒序、回收站里的记录不计数"
     );
     assert_eq!(page.days[1].material_counts.captures, 1);
@@ -492,7 +585,11 @@ fn list_days_matches_capture_counts_excludes_trash_and_paginates() {
         .list_days(None, None, second.next_cursor.as_deref(), 1)
         .unwrap();
     assert_eq!(third.days[0].day_key, "2026-10-14");
-    assert_eq!(third.next_cursor, None);
+    let fourth = core
+        .list_days(None, None, third.next_cursor.as_deref(), 1)
+        .unwrap();
+    assert_eq!(fourth.days[0].day_key, "2026-10-05");
+    assert_eq!(fourth.next_cursor, None);
 
     // 闭区间过滤。
     let only_15 = core
@@ -500,6 +597,28 @@ fn list_days_matches_capture_counts_excludes_trash_and_paginates() {
         .unwrap();
     assert_eq!(only_15.days.len(), 1);
     assert_eq!(only_15.days[0].day_key, "2026-10-15");
+
+    // 非零填充的 dayKey：解析成功就要按规范形比较/绑定，不能按原始字符串的
+    // 字典序把范围悄悄缩小（`2026-10-05` < `2026-10-5`）。
+    let padded = core
+        .list_days(Some("2026-10-5"), Some("2026-10-15"), None, 20)
+        .expect("非零填充的 fromDayKey 必须按日期解析");
+    assert_eq!(
+        padded
+            .days
+            .iter()
+            .map(|day| day.day_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["2026-10-15", "2026-10-14", "2026-10-05"],
+        "非零填充的起点不能静默排除 10 月 1–19 日"
+    );
+
+    // 单日范围也用非零填充：解析后两边相等，不是 invalid_argument。
+    let single = core
+        .list_days(Some("2026-10-5"), Some("2026-10-5"), None, 20)
+        .unwrap();
+    assert_eq!(single.days.len(), 1);
+    assert_eq!(single.days[0].day_key, "2026-10-05");
 
     // 坏参数：游标过期码；from > to 是 invalid_argument。
     assert_eq!(

@@ -63,9 +63,12 @@ pub(crate) fn create(core: &mut Core, request: &ExportRequest) -> Result<ExportT
                 .to_owned(),
         });
     }
-    let from = crate::diary::parse_day_key(&request.from_day_key)?;
-    let to = crate::diary::parse_day_key(&request.to_day_key)?;
-    if from > to {
+    // 解析后**按规范形绑定**：chrono 接受 `2026-10-5`，但 SQL 比的是字符串，
+    // 字典序上 `2026-10-05 < 2026-10-5`，直接绑原始输入会把 10 月 1–19 日
+    // 静默排除在范围外。范围比较也用解析后的日期，不用原始字符串。
+    let from_date = crate::diary::parse_day_key(&request.from_day_key)?;
+    let to_date = crate::diary::parse_day_key(&request.to_day_key)?;
+    if from_date > to_date {
         return Err(CoreError::InvalidArgument {
             reason: format!(
                 "导出范围的起点 {} 晚于终点 {}",
@@ -73,39 +76,30 @@ pub(crate) fn create(core: &mut Core, request: &ExportRequest) -> Result<ExportT
             ),
         });
     }
+    let from = from_date.format("%Y-%m-%d").to_string();
+    let to = to_date.format("%Y-%m-%d").to_string();
 
-    let days = collect_days(core, &request.from_day_key, &request.to_day_key)?;
+    let days = collect_days(core, &from, &to)?;
     if days.is_empty() {
         return Err(CoreError::NotFound {
             entity: "可导出的日记",
-            id: format!(
-                "{} 至 {}（范围里没有当前日记正文；草稿与回收站不算）",
-                request.from_day_key, request.to_day_key
-            ),
+            id: format!("{from} 至 {to}（范围里没有当前日记正文；草稿与回收站不算）"),
         });
     }
     let day_count = days.len() as i64;
 
     let created_at = support::now();
-    let content = render(
-        format,
-        &request.from_day_key,
-        &request.to_day_key,
-        &days,
-        created_at,
-    );
+    let content = render(format, &from, &to, &days, created_at);
     let root = export_root(core)?;
-    let stem = if request.from_day_key == request.to_day_key {
-        format!("readable-export-{}", request.from_day_key)
+    let stem = if from == to {
+        format!("readable-export-{from}")
     } else {
-        format!(
-            "readable-export-{}_{}",
-            request.from_day_key, request.to_day_key
-        )
+        format!("readable-export-{from}_{to}")
     };
     let (path, byte_size) = write_new(&root, &stem, extension, content.as_bytes())?;
 
-    let job = match record_completed_job(core, &path) {
+    let path_text = display_path(&path);
+    let job = match record_completed_job(core, &path_text) {
         Ok(job) => job,
         Err(error) => {
             // 任务行没落成，产物不能留下：返回「成功」却没有可查的 job 是在骗人。
@@ -113,7 +107,6 @@ pub(crate) fn create(core: &mut Core, request: &ExportRequest) -> Result<ExportT
             return Err(error);
         }
     };
-    let path_text = path.to_string_lossy().into_owned();
     Ok(ExportTicket {
         job_id: job.id,
         package_ticket: Some(path_text.clone()),
@@ -129,14 +122,16 @@ pub(crate) fn create(core: &mut Core, request: &ExportRequest) -> Result<ExportT
 
 /// 把当前版本与仍在天列表里的日子取出来（**正文 only**）。
 fn collect_days(core: &Core, from: &str, to: &str) -> Result<Vec<ExportDay>> {
-    let mut statement = core.conn.prepare(
+    let sql = format!(
         "SELECT d.day_key, v.body FROM diary_days d \
-         JOIN diary_versions v ON v.id = d.current_version_id \
+         JOIN diary_versions v ON v.id = d.current_version_id AND v.day_key = d.day_key \
          WHERE d.day_key >= ?1 AND d.day_key <= ?2 \
            AND EXISTS (SELECT 1 FROM captures c \
-                       WHERE c.day_key = d.day_key AND c.state != 'trashed') \
+                       WHERE c.day_key = d.day_key AND {}) \
          ORDER BY d.day_key ASC",
-    )?;
+        crate::model::capture_not_trashed(Some("c"))
+    );
+    let mut statement = core.conn.prepare(&sql)?;
     let rows = statement
         .query_map(params![from, to], |row| {
             Ok(ExportDay {
@@ -213,6 +208,26 @@ fn export_root(core: &Core) -> Result<PathBuf> {
     let canonical = std::fs::canonicalize(&normalized)?;
     ensure_sandbox(core, &canonical)?;
     Ok(canonical)
+}
+
+/// 给用户/平台层看的路径。
+///
+/// Windows 的 `std::fs::canonicalize` 返回扩展长度路径（`\\?\C:\...`），
+/// `ExportTicket.path` / `packageTicket` 直接把它交出去，宿主保存层与界面会看到
+/// 一个带前缀的怪路径。文件操作仍用 canonical `PathBuf`，只把展示文本还原成普通形式
+/// （UNC 的 `\\?\UNC\server\share` 还原成 `\\server\share`）。
+fn display_path(path: &Path) -> String {
+    strip_windows_verbatim(&path.to_string_lossy())
+}
+
+fn strip_windows_verbatim(text: &str) -> String {
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return rest.to_owned();
+    }
+    text.to_owned()
 }
 
 fn ensure_sandbox(core: &Core, path: &Path) -> Result<()> {
@@ -312,17 +327,39 @@ fn push_body(out: &mut String, body: &str) {
 }
 
 /// 写一条**已完成**的导出任务记录。`jobs.get` 因此总能读到这次导出的 jobId。
-fn record_completed_job(core: &mut Core, path: &Path) -> Result<crate::model::Job> {
+fn record_completed_job(core: &mut Core, path_text: &str) -> Result<crate::model::Job> {
     let job = NewJob::new(KIND_EXPORT, JobPriority::UserOrganize);
     let tx = core.conn.transaction()?;
     let job = crate::jobs::enqueue_in_tx_with_state(&tx, job, JobState::Succeeded, None)?;
     // 把产物路径记进任务的目标里，排查时不用再猜文件在哪。它是核心生成的绝对路径，
     // 不是调用方输入，不构成「接受任意路径」。
-    let target_ids = serde_json::to_string(&[path.to_string_lossy().into_owned()])?;
+    let target_ids = serde_json::to_string(&[path_text])?;
     tx.execute(
         "UPDATE jobs SET target_ids = ?1 WHERE id = ?2",
         params![target_ids, job.id],
     )?;
     tx.commit()?;
     Ok(job)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_windows_verbatim;
+
+    #[test]
+    fn windows_verbatim_prefix_is_stripped_for_display() {
+        assert_eq!(
+            strip_windows_verbatim(r"\\?\C:\Users\me\library\exports\a.md"),
+            r"C:\Users\me\library\exports\a.md"
+        );
+        assert_eq!(
+            strip_windows_verbatim(r"\\?\UNC\server\share\a.md"),
+            r"\\server\share\a.md"
+        );
+        // 普通 POSIX / Windows 路径原样返回。
+        assert_eq!(
+            strip_windows_verbatim("/data/storage/el2/base/a.md"),
+            "/data/storage/el2/base/a.md"
+        );
+    }
 }
