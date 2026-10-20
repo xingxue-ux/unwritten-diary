@@ -311,7 +311,10 @@ jobs:
       #
       # **不按 paths 过滤**：codegen 解析的是整个 bridge crate 加 `diary_core::model`
       # 可达的类型图，能改变产物的文件不止 `crates/diary_bridge/**`；而过滤漏掉时的
-      # 表现是**静默变绿**，正是这一步要消灭的失败模式。缓存命中时本机实测 +8~15 秒。
+      # 表现是**静默变绿**，正是这一步要消灭的失败模式。
+      #
+      # 实测耗时（CI，PR #169）：缓存命中时本步 1m13s（大头是 `cargo expand` 重新
+      # 编译依赖，本 job 没有 cargo 缓存），缓存未命中再加约 3 分钟装两个二进制。
       - name: 缓存 codegen 可执行文件
         id: frb-codegen
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
