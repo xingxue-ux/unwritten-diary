@@ -50,6 +50,13 @@ if [[ "${actual_version}" != "${EXPECTED_VERSION}" ]]; then
 fi
 
 echo "== flutter_rust_bridge_codegen ${actual_version}：重新生成 =="
+# codegen 要读宏展开后的源码；缺 cargo-expand 时它**自己装一个**（首次约 2 分钟）。
+# 只打印版本便于对齐环境，不强求一致：展开结果由 rustc + 宏决定，与它的版本无关。
+if command -v cargo-expand >/dev/null 2>&1; then
+  echo "== cargo-expand $(cargo expand --version 2>/dev/null | awk '{print $2}') =="
+else
+  echo "== 没装 cargo-expand：codegen 会自动装一个（首次约 2 分钟）=="
+fi
 flutter_rust_bridge_codegen generate
 
 # `--exit-code --stat`：有差异时退出码为 1，并**先把统计打出来**——一眼能看出

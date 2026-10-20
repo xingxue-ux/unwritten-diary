@@ -27,6 +27,11 @@ env:
   # 以及 tools/check_codegen_freshness.sh 保持一致。版本不一致时 Rust 侧启动会直接
   # 拒绝加载（刻意的），所以 codegen 也钉死在这一个版本上。
   FRB_CODEGEN_VERSION: "2.13.0"
+  # codegen 要读宏展开后的源码，缺 `cargo expand` 时它会**自己 `cargo install` 一个**
+  # （第一次实测 +1m50s，而且每次新 runner 都要重来）。所以这里也钉版本并一起缓存。
+  # cargo-expand 的展开结果只由 rustc + 宏决定，版本升降不影响语义，钉住只是为了让
+  # CI 不随上游发版漂移。
+  CARGO_EXPAND_VERSION: "1.0.127"
   DART_VERSION: "3.12.2"
   # 与 DART_VERSION 对应的 Flutter 版本（3.44.6 自带 Dart 3.12.2）。
   FLUTTER_VERSION: "3.44.6"
@@ -311,11 +316,15 @@ jobs:
         id: frb-codegen
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ~/.cargo/bin/flutter_rust_bridge_codegen
-          key: frb-codegen-${{ runner.os }}-${{ runner.arch }}-${{ env.FRB_CODEGEN_VERSION }}
+          path: |
+            ~/.cargo/bin/flutter_rust_bridge_codegen
+            ~/.cargo/bin/cargo-expand
+          key: frb-codegen-${{ runner.os }}-${{ runner.arch }}-${{ env.FRB_CODEGEN_VERSION }}-exp${{ env.CARGO_EXPAND_VERSION }}
       - name: 安装 codegen（缓存未命中时）
         if: steps.frb-codegen.outputs.cache-hit != 'true'
-        run: cargo install flutter_rust_bridge_codegen --version "$FRB_CODEGEN_VERSION" --locked
+        run: |
+          cargo install flutter_rust_bridge_codegen --version "$FRB_CODEGEN_VERSION" --locked
+          cargo install cargo-expand --version "$CARGO_EXPAND_VERSION" --locked
       - name: codegen 是否同步
         run: bash tools/check_codegen_freshness.sh
       - name: 静态分析
