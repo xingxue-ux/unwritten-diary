@@ -209,7 +209,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `backups.create` | `Core::create_backup`（同步入口；目标路径必须是沙箱内，已存在则拒绝覆盖） | `BackupReport` |
 | `backups.inspect` | `Core::inspect_backup`（同步入口；逐条目重算哈希，问题进 `issues`、不抛错） | `BackupInspection` |
 | `backups.restore` | `Core::restore_backup`（同步入口；只恢复到新库，来源/目标都必须沙箱内） | `RestoreReport` |
-| `core.events` | `Core::events_since`（按序号轮询持久事件，见 §6.1.2） | `{events,next_sequence,truncated}` |
+| `core.events` | `Core::events_page`（按序号轮询持久事件，一页一次 SQL `LIMIT`，见 §6.1.2） | `{events,next_sequence,truncated}` |
 
 `search.start` 的 `request` 里只有 `query` 必填，`mode`（默认 `keyword`；`semantic` 是
 语义那一路）、`filters`（全字段可选）、`page_size`（默认 20，与 `bridge_diary_api.dart`
@@ -272,9 +272,18 @@ C ABI 没有回调/推送面，所以 `core.events` 不装成 Stream，而是把
   显式给 `0` 才是从头补。要「先拿游标再等新事件」就省略它。
 - **`next_sequence`** 是下一次调用的 `from_sequence`：有事件时是本页最后一条的序号，
   没事件时是本次的起点；**调用方必须原样回传**，不要自己 +1。
-- **`limit`** 默认 200、上限 1000；超出部分不返回并标 `truncated: true`（继续按
-  `next_sequence` 拉，直到 `truncated:false`）。桥面先读一页再截断——单次响应有上界，
-  但**首次从 0 补历史**在超大库上仍会先读一遍事件表（未做 SQL 分页，见 §11）。
+- **`limit`** 默认 200、上限 1000。**有界读在核心**：`Core::events_page` 的 SQL 是
+  `… WHERE sequence > ?1 ORDER BY sequence LIMIT ?2`，只多读一条用来回答 `truncated`
+  （`truncated:true` 就继续按 `next_sequence` 拉，直到 `false`）。桥面不再「先读全部
+  再截断」——`from_sequence: 0` 在十万条事件的库上也只有一页进内存。
+- **积压上限与保留策略**：`domain_events` 只保留最近 `EVENT_BACKLOG_LIMIT = 10000` 条。
+  清理发生在**每次写入的同一个事务**里（删掉窗口外的行），所以表不会无限长大；事件是
+  通知流不是账本，重放从当前快照开始。
+- **游标超前**（大于当前最大序号）：**夹到当前最大序号**，不报错、不返回未来序号。
+  这是真实场景——调用方存了游标、库被恢复成更旧的备份；夹住之后下一次调用就能收到
+  新事件，不会永久跳过。
+- **游标早于保留窗口**（中间的事件已被清理）：返回 `cursor_expired`，调用方按契约
+  第 6 节重读快照。不能假装「没有遗漏」——那会让界面永远缺一段状态。
 - **事件类型**按线上字符串给（`capture.changed`，不是 serde 的 `CaptureChanged`）：
   核心 `EventType` 没有 serde rename，桥面显式投影一次，与契约 `DomainEventType` 对齐。
 
@@ -282,6 +291,11 @@ C ABI 没有回调/推送面，所以 `core.events` 不装成 Stream，而是把
 
 `backups.*` 是契约那三行的**同步版本**（任务化 #70 不在本块）：返回真实报告，不是 `jobId`。
 
+- **票据不是路径**：契约的 `targetTicket` / `packageTicket` 是 `PlatformHost` 的限域
+  票据，宿主必须先解析成沙箱内路径再传 `target_path` / `package_path`。C ABI 把这两个
+  票据字段**当错误处理**（`invalid_argument`，消息点名「票据不是文件路径」），不再把它们
+  当路径别名——否则桌面端会按票据字符串真的建文件，OHOS 上则被沙箱判定拒绝并给出误导
+  性的错误。`targetPath` / `packagePath` 这类**路径**别名仍然接受。
 - `backups.create`：`target_path`（包文件完整路径，父目录会建）；已存在拒绝覆盖；
   `include_assets:false` 明确 `invalid_argument`（核心只做完整备份）。
 - `backups.inspect`：`package_path`；逐条目哈希/大小/路径安全/版本兼容，坏在哪进
@@ -291,7 +305,8 @@ C ABI 没有回调/推送面，所以 `core.events` 不装成 Stream，而是把
   `options`。`restore_as_new_library:false` 明确 `invalid_argument`（绝不覆盖当前库）；
   `include_indexes` 只做形状兼容（核心恢复的是快照整体，本来就有索引/向量）。
 - **沙箱路径**：OHOS 上 `target_path` / `package_path` / `target_dir` 必须是应用数据目录
-  （`/data/storage/el2/…`、`/data/storage/el1/base|database|cache/…`、`/data/app/el2/…`），
+  （`/data/storage/el2/…`、`/data/storage/el1/base|database|cache/…`、`/data/app/el2/…`、
+  `/data/app/el1/base/…`——与 `OHOS_APP_DATA_PREFIXES` 的六条前缀逐条对应），
   且不能含 `..`；否则 `invalid_argument`。复用 `asrEngineLib` 的同一个前缀判定
   （`is_ohos_app_data_path`），**方向相反**：原生库必须在 HAP 安装目录（沙箱 `.so` 不能
   dlopen），备份包必须在应用数据目录（安装目录只读）。其它平台不限制。
@@ -355,7 +370,12 @@ diary_call(h, json)
 
 ## 9 测试
 
-### 9.1 八条用例（`crates/diary_capi/src/tests.rs`，CI 可跑、不联网）
+### 9.1 FFI 边界与生命周期用例（8 条；`crates/diary_capi/src/tests.rs`，CI 可跑、不联网）
+
+本批新增 2 条用例（`locate available:true`、`backups.inspect` 的损坏包 `issues`），
+其余在既有用例里补断言（`previousRevision` / `locate` 的错误路径、`core.events` 的超前
+游标、capabilities 与 `WIRED_METHODS` 逐项相等、票据字段拒绝）；当前共 **24 条**。下表
+只列最初那 8 条 FFI 边界/生命周期用例。
 
 | 用例 | 覆盖 |
 |---|---|

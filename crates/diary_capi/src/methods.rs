@@ -44,7 +44,7 @@
 //! | `backups.create` | `Core::create_backup`（目标路径必须是沙箱内） | `BackupReport` |
 //! | `backups.inspect` | `Core::inspect_backup`（来源路径必须是沙箱内） | `BackupInspection` |
 //! | `backups.restore` | `Core::restore_backup`（来源与目标都必须是沙箱内） | `RestoreReport` |
-//! | `core.events` | `Core::events_since`（按序号轮询，见下） | `{events,next_sequence,truncated}` |
+//! | `core.events` | `Core::events_page`（按序号轮询，一页一次 LIMIT） | `{events,next_sequence,truncated}` |
 //!
 //! `core.events` **不是**推送流：C ABI 只有请求/响应，所以它把核心持久事件表当游标读。
 //! 核心在**每次写事务里**就落了 `domain_events`（不是订阅后才产生），因此这一层不需要
@@ -159,10 +159,10 @@ const DEFAULT_PAGE_SIZE: usize = 20;
 
 /// `core.events` 一页的默认条数与硬上限。
 ///
-/// 与分页方法不同，这里**不把上限交给核心夹**：核心的 `events_since` 没有 limit，
-/// 桥面必须在读完一页后按自己的上限截断并如实报 `truncated`。默认 200 够界面一次
-/// 补完常见的积压；1000 是「单次响应别把整事件表拖进来」的防御线。要补更多就按
-/// 返回的 `next_sequence` 继续调。
+/// 上限由**核心**在 SQL 里执行（`Core::events_page` 的 `LIMIT limit+1`）：它只多读
+/// 一条用来如实回答 `truncated`，不会先把整张事件表读进内存。桥面只做参数校验与
+/// 投影。默认 200 够界面一次补完常见的积压；1000 是单次响应「别拖太久」的防御线。
+/// 要补更多就按返回的 `next_sequence` 继续调。
 const DEFAULT_EVENTS_LIMIT: usize = 200;
 const MAX_EVENTS_LIMIT: usize = 1000;
 
@@ -445,20 +445,41 @@ pub(crate) fn dispatch(
         "backups.create" => {
             let input: CreateBackupParams = parse(params)?;
             ensure_full_backup(&input)?;
-            validate_sandbox_path("backups.create.target_path", &input.target_path)?;
-            to_value(core.create_backup(&input.target_path)?)
+            let target_path = path_param(
+                "target_path",
+                input.target_path,
+                "targetTicket",
+                input.target_ticket,
+            )?;
+            validate_sandbox_path("backups.create.target_path", &target_path)?;
+            to_value(core.create_backup(&target_path)?)
         }
         "backups.inspect" => {
             let input: InspectBackupParams = parse(params)?;
-            validate_sandbox_path("backups.inspect.package_path", &input.package_path)?;
-            to_value(core.inspect_backup(&input.package_path)?)
+            let package_path = path_param(
+                "package_path",
+                input.package_path,
+                "packageTicket",
+                input.package_ticket,
+            )?;
+            validate_sandbox_path("backups.inspect.package_path", &package_path)?;
+            to_value(core.inspect_backup(&package_path)?)
         }
         "backups.restore" => {
             let input: RestoreBackupParams = parse(params)?;
             ensure_restore_to_new_library(&input)?;
-            validate_sandbox_path("backups.restore.package_path", &input.package_path)?;
-            validate_sandbox_path("backups.restore.target_dir", &input.target_dir)?;
-            to_value(core.restore_backup(&input.package_path, &input.target_dir)?)
+            let package_path = path_param(
+                "package_path",
+                input.package_path,
+                "packageTicket",
+                input.package_ticket,
+            )?;
+            let target_dir = input.target_dir.ok_or_else(|| {
+                CallError::invalid_argument("C ABI：backups.restore 缺少 `target_dir`")
+            })?;
+            validate_sandbox_path("backups.restore.package_path", &package_path)?;
+            validate_sandbox_path("backups.restore.target_dir", &target_dir)?;
+            to_value(core.restore_backup(&package_path, &target_dir)?)
         }
         // ------------------------------------------------------------ 事件
         // 请求/响应形态的「按序号轮询」：核心在写事务里持久化事件，桥面不退化成推送。
@@ -564,9 +585,13 @@ fn to_value<T: serde::Serialize>(value: T) -> Result<Value, CallError> {
 /// `core.events` 的一页。
 ///
 /// `next_sequence` 是下一次调用的 `from_sequence`：有事件时是本页最后一条的序号，
-/// 没事件时是本次的起点（给了 `from_sequence` 就原样回，省得调用方自己记）。
-/// `truncated` 为 true 表示「本页之后还有」，必须继续按 `next_sequence` 拉，不能把
-/// 一页当成全部。
+/// 没事件时是本次的起点（**已由核心夹到当前最大序号**，游标超前时不会原样返回一个
+/// 未来的序号）。`truncated` 为 true 表示「本页之后还有」，必须继续按 `next_sequence`
+/// 拉，不能把一页当成全部。
+///
+/// 有界读在**核心**（`Core::events_page` 的 SQL `LIMIT limit+1`）：桥面不再「先读全部
+/// 再截断」。事件表的积压上限与保留策略也在核心（`EVENT_BACKLOG_LIMIT`）；游标早于
+/// 保留窗口时核心报 `cursor_expired`，这里原样透传，调用方按契约第 6 节重读快照。
 fn events_page(core: &Core, input: &EventsParams) -> Result<Value, CallError> {
     if let Some(from) = input.from_sequence {
         if from < 0 {
@@ -588,17 +613,13 @@ fn events_page(core: &Core, input: &EventsParams) -> Result<Value, CallError> {
         Some(from) => from,
         None => core.last_event_sequence()?,
     };
-    let mut events = core.events_since(from)?;
-    let truncated = events.len() > limit;
-    if truncated {
-        events.truncate(limit);
-    }
-    let next_sequence = events.last().map(|event| event.sequence).unwrap_or(from);
+    let page = core.events_page(from, limit)?;
     // 事件类型必须按**线上字符串**（`capture.changed`）给，不能把 `EventType` 的
     // serde 默认变体名（`CaptureChanged`）漏出去：契约 `DomainEventType` 与
     // `EventType::wire()` 是同一套写法。核心的这个枚举没有 serde rename，桥面在这里
     // 显式投影一次（只改枚举的写法，不改任何字段/语义）。
-    let events: Vec<Value> = events
+    let events: Vec<Value> = page
+        .events
         .iter()
         .map(|event| {
             json!({
@@ -613,8 +634,8 @@ fn events_page(core: &Core, input: &EventsParams) -> Result<Value, CallError> {
         .collect();
     Ok(json!({
         "events": events,
-        "next_sequence": next_sequence,
-        "truncated": truncated,
+        "next_sequence": page.next_sequence,
+        "truncated": page.truncated,
     }))
 }
 
@@ -658,6 +679,28 @@ fn validate_sandbox_path(field: &str, path: &str) -> Result<(), CallError> {
     validate_sandbox_path_with(field, path, cfg!(target_env = "ohos"))
 }
 
+/// 把「路径字段 + 同名票据字段」解析成一个路径：**票据一律拒绝**。
+///
+/// 契约里 `targetTicket` / `packageTicket` 是 `PlatformHost` 的**限域票据**——宿主拿到
+/// 它、解析成自己能访问的真实路径，再交给核心。C ABI 在票据层**之下**，只认路径：
+/// 把票据字符串当路径用，桌面端会按它建一个奇怪的文件、OHOS 上会被沙箱前缀拒绝，
+/// 两种错误都指不到「你在错误的层传了票据」。所以这里显式报错，并把该做的事写进
+/// 消息（先解析成沙箱内路径，再传 `target_path` / `package_path`）。
+fn path_param(
+    field: &str,
+    path: Option<String>,
+    ticket_field: &str,
+    ticket: Option<String>,
+) -> Result<String, CallError> {
+    if ticket.is_some() {
+        return Err(CallError::invalid_argument(format!(
+            "C ABI：`{ticket_field}` 是 PlatformHost 的限域票据，不是文件路径；请先在宿主侧\
+             把它解析成沙箱内路径，再传 `{field}`"
+        )));
+    }
+    path.ok_or_else(|| CallError::invalid_argument(format!("C ABI：缺少 `{field}`")))
+}
+
 /// [`validate_sandbox_path`] 的可测内核：`enforce` 由调用方给，宿主单测能同时覆盖两半。
 pub(crate) fn validate_sandbox_path_with(
     field: &str,
@@ -670,7 +713,8 @@ pub(crate) fn validate_sandbox_path_with(
     if !is_inside_ohos_sandbox(path) {
         return Err(CallError::invalid_argument(format!(
             "C ABI：{field} 必须是应用沙箱内的路径（OHOS 只允许 \
-             /data/storage/el2/… 或 /data/storage/el1/base|database|cache/…），收到 {path}"
+             /data/storage/el2|el1/base|database|cache/… 与 /data/app/el2|el1/base/…），\
+             收到 {path}"
         )));
     }
     Ok(())
@@ -1112,28 +1156,36 @@ struct TestProviderParams {
 /// `backups.create`：目标路径 + 是否含原件。
 ///
 /// 契约的 Dart 形状是 `BackupRequest { targetTicket, includeAssets }`；C ABI 在票据层
-/// 之下，收到的是**已经解析成沙箱路径**的 `target_path`。`targetTicket` / `targetPath`
-/// 作为别名一并接受，宿主不必为一个字段名分叉。`include_assets` 默认 true；false 会被
-/// 明确拒绝（核心只做完整备份，见 [`ensure_full_backup`]）。
+/// 之下，只收**已经解析成沙箱路径**的 `target_path` / `targetPath`。
+///
+/// `targetTicket` / `target_ticket` **刻意不是** `target_path` 的别名：票据是
+/// `PlatformHost` 的限域句柄，不是文件路径。当路径用会在桌面端按票据字符串真的建文件，
+/// 在 OHOS 上则被沙箱判定拒绝、错误还指向「路径不在沙箱内」——两种都误导人。收到票据
+/// 字段时由 [`path_param`] 显式报错，说清它该在哪一层解析。
+///
+/// `include_assets` 默认 true；false 会被明确拒绝（核心只做完整备份，见
+/// [`ensure_full_backup`]）。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CreateBackupParams {
-    #[serde(alias = "targetPath", alias = "target_ticket", alias = "targetTicket")]
-    target_path: String,
+    #[serde(alias = "targetPath")]
+    target_path: Option<String>,
     #[serde(default = "default_true", alias = "includeAssets")]
     include_assets: bool,
+    #[serde(alias = "targetTicket")]
+    target_ticket: Option<String>,
 }
 
 /// `backups.inspect`：包路径（同样在票据层之下，必须是沙箱内）。
+///
+/// `packageTicket` 与 `targetTicket` 同一条规则：票据不是路径，见 [`path_param`]。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InspectBackupParams {
-    #[serde(
-        alias = "packagePath",
-        alias = "package_ticket",
-        alias = "packageTicket"
-    )]
-    package_path: String,
+    #[serde(alias = "packagePath")]
+    package_path: Option<String>,
+    #[serde(alias = "packageTicket")]
+    package_ticket: Option<String>,
 }
 
 /// `backups.restore`：包路径 + 恢复目标目录 + 契约的 `RestoreOptions`。
@@ -1144,16 +1196,14 @@ struct InspectBackupParams {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RestoreBackupParams {
-    #[serde(
-        alias = "packagePath",
-        alias = "package_ticket",
-        alias = "packageTicket"
-    )]
-    package_path: String,
+    #[serde(alias = "packagePath")]
+    package_path: Option<String>,
     #[serde(alias = "targetDir")]
-    target_dir: String,
+    target_dir: Option<String>,
     #[serde(default)]
     options: RestoreOptionsParams,
+    #[serde(alias = "packageTicket")]
+    package_ticket: Option<String>,
 }
 
 /// `RestoreOptions` 的 JSON 形态：默认「恢复到新库、不动当前库」。

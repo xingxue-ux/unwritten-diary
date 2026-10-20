@@ -115,6 +115,11 @@ fn library_key(path: &Path) -> Result<PathBuf, BridgeError> {
 /// 队列里、如实计入摘要的 `dueBacklog`，下一轮接着跑——不会丢。
 const RUN_DUE_MAX_JOBS: usize = 64;
 
+/// `events_since` 每次从核心读多少条：只影响**单次 SQL** 的中间列表，不改变返回形状。
+///
+/// 取 1000 与 C ABI 的 `MAX_EVENTS_LIMIT` 同量级：一次查询的峰值内存由它兜住。
+const EVENTS_PAGE: usize = 1000;
+
 impl BridgeSession {
     /// 打开（或创建）资料库。
     pub fn open(library_path: String) -> Result<BridgeSession, BridgeError> {
@@ -576,9 +581,29 @@ impl BridgeSession {
     }
 
     /// 从某个序号之后读取持久业务事件。
+    ///
+    /// 核心按**分页**读（`Core::events_page`，SQL 带 `LIMIT`）；这一层为了保持 Dart
+    /// 面「一次拿全」的语义循环取页，但每次查询只取 `EVENTS_PAGE` 条，不会把整张
+    /// 事件表一次性 materialize 进 SQLite → Rust 的中间列表。真正的有界读取在
+    /// **C ABI** 那一路（`core.events` 直接透传 `limit`/`truncated`）；这里仍是
+    /// 「全部事件」的返回形状，调用方自己管好游标。
     pub fn events_since(&self, from_sequence: i64) -> Result<Vec<DomainEvent>, BridgeError> {
         let core = self.lock()?;
-        Ok(core.events_since(from_sequence)?)
+        let mut events = Vec::new();
+        let mut cursor = from_sequence;
+        loop {
+            let page = core.events_page(cursor, EVENTS_PAGE)?;
+            if page.events.is_empty() {
+                break;
+            }
+            cursor = page.next_sequence;
+            let done = !page.truncated;
+            events.extend(page.events);
+            if done {
+                break;
+            }
+        }
+        Ok(events)
     }
 
     // ------------------------------------------------------------ 服务配置与主动回应（B4a）
