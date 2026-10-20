@@ -23,6 +23,10 @@ env:
   # 与 Cargo.toml 里的 rust-version 下限一致：CI 必须验最老的受支持版本，
   # 用更新的 stable 会掩盖 MSRV 问题。
   RUST_VERSION: "1.94.1"
+  # 与 Cargo.toml 的 `flutter_rust_bridge = "=2.13.0"`、packages/diary_bridge/pubspec.yaml
+  # 以及 tools/check_codegen_freshness.sh 保持一致。版本不一致时 Rust 侧启动会直接
+  # 拒绝加载（刻意的），所以 codegen 也钉死在这一个版本上。
+  FRB_CODEGEN_VERSION: "2.13.0"
   DART_VERSION: "3.12.2"
   # 与 DART_VERSION 对应的 Flutter 版本（3.44.6 自带 Dart 3.12.2）。
   FLUTTER_VERSION: "3.44.6"
@@ -295,6 +299,25 @@ jobs:
       - name: 安装依赖
         working-directory: packages/diary_bridge
         run: dart pub get
+      # 生成物与源码必须同源（#148）。改了 `crates/diary_bridge/src/api.rs` 或
+      # `crates/diary_core/src/model.rs`、却忘了重跑 codegen 时，`cargo build` 与
+      # `dart test` **都还是绿的**：#143 就这么漂了 2 行注释、#153 又漂了一次。
+      # 这一步跑真正的 codegen，再要求生成目录逐字节不变——不靠人记 §10.6。
+      #
+      # **不按 paths 过滤**：codegen 解析的是整个 bridge crate 加 `diary_core::model`
+      # 可达的类型图，能改变产物的文件不止 `crates/diary_bridge/**`；而过滤漏掉时的
+      # 表现是**静默变绿**，正是这一步要消灭的失败模式。缓存命中时本机实测 +8~15 秒。
+      - name: 缓存 codegen 可执行文件
+        id: frb-codegen
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cargo/bin/flutter_rust_bridge_codegen
+          key: frb-codegen-${{ runner.os }}-${{ runner.arch }}-${{ env.FRB_CODEGEN_VERSION }}
+      - name: 安装 codegen（缓存未命中时）
+        if: steps.frb-codegen.outputs.cache-hit != 'true'
+        run: cargo install flutter_rust_bridge_codegen --version "$FRB_CODEGEN_VERSION" --locked
+      - name: codegen 是否同步
+        run: bash tools/check_codegen_freshness.sh
       - name: 静态分析
         working-directory: packages/diary_bridge
         run: dart analyze --fatal-infos
