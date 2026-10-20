@@ -18,7 +18,7 @@ export 'src/values.dart';
 const String kContractVersion = 'v1';
 
 /// 与 [kContractVersion] 对应的 apiVersion 字面量。
-const String kApiVersion = '1.0';
+const String kApiVersion = '1.1';
 
 /// 支持的 apiVersion 范围，供插件清单与兼容性检查使用。
 const String kSupportedApiRange = '>=1.0.0 <2.0.0';
