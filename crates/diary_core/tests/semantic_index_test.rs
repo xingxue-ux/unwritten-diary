@@ -18,8 +18,8 @@ use std::sync::Arc;
 use chrono::{DateTime, TimeZone, Utc};
 use diary_core::{
     Core, CreateDraftInput, EmbedOptions, Embedder, Embedding, EmbeddingConfig, ImportManifest,
-    ImportOrigin, ImportRequest, JobState, MatchedBy, SearchFilters, SearchHit, SearchMode, SearchPhase,
-    SearchRequest, SearchSnapshot, SourceKind, TokenTruncation, VectorStorage,
+    ImportOrigin, ImportRequest, JobState, MatchedBy, SearchFilters, SearchHit, SearchMode,
+    SearchPhase, SearchRequest, SearchSnapshot, SourceKind, TokenTruncation, VectorStorage,
 };
 use rusqlite::params;
 use sha2::{Digest, Sha256};
@@ -51,7 +51,11 @@ struct StubEmbedder {
 }
 
 impl StubEmbedder {
-    fn new(model_version: &str, counters: &Arc<Counters>, rules: Vec<(&'static str, Vec<f32>)>) -> Self {
+    fn new(
+        model_version: &str,
+        counters: &Arc<Counters>,
+        rules: Vec<(&'static str, Vec<f32>)>,
+    ) -> Self {
         Self::with_dims(model_version, 512, counters, rules)
     }
 
@@ -141,8 +145,20 @@ fn unit_in(dims: usize, index: usize) -> Vec<f32> {
     vector
 }
 
+/// 与 `unit(0)` 的余弦为 `cosine` 的 512 维单位向量（#135 的补位测试要精确控制先后）。
+fn at_cosine(cosine: f32) -> Vec<f32> {
+    let mut vector = vec![0_f32; 512];
+    vector[0] = cosine;
+    vector[1] = (1.0 - cosine * cosine).sqrt();
+    vector
+}
+
 fn stub(counters: &Arc<Counters>, rules: Vec<(&'static str, Vec<f32>)>) -> Box<dyn Embedder> {
-    Box::new(StubEmbedder::new("stub-embedder@000000000000", counters, rules))
+    Box::new(StubEmbedder::new(
+        "stub-embedder@000000000000",
+        counters,
+        rules,
+    ))
 }
 
 /// 查询侧单独一组规则的 stub：用来构造「关键词只中 A、语义只中 B」这类两路边界。
@@ -177,7 +193,8 @@ fn at(year: i32, month: u32, day: u32) -> DateTime<Utc> {
 
 fn save(core: &mut Core, capture_id: &str, text: &str, operation: &str) {
     let revision = core.get_capture(capture_id).unwrap().revision;
-    core.save_draft(capture_id, text, revision, operation).unwrap();
+    core.save_draft(capture_id, text, revision, operation)
+        .unwrap();
 }
 
 fn write_capture(core: &mut Core, day: DateTime<Utc>, text: &str, operation: &str) -> String {
@@ -253,6 +270,19 @@ fn search_mode(core: &mut Core, query: &str, mode: SearchMode, page_size: i64) -
 /// 混合那一路的完整两步（#69）：`start_search(mode = hybrid)` 先只算关键词
 /// （`keyword_ready`），`upgrade_search_to_hybrid` 再融合（`hybrid_ready`）。
 /// 「要融合后的结果」的用例都走这里，与产品路径一致。
+/// 从第一屏开始一页页翻到底，收齐这个会话里的全部命中（含快速路径的深度截断）。
+fn collect_pages(core: &mut Core, first: SearchSnapshot) -> Vec<SearchHit> {
+    let session_id = first.session_id.clone();
+    let mut hits = first.results;
+    let mut cursor = first.cursor;
+    while let Some(current) = cursor {
+        let snapshot = core.search_next_page(&session_id, Some(&current)).unwrap();
+        hits.extend(snapshot.results);
+        cursor = snapshot.cursor;
+    }
+    hits
+}
+
 fn hybrid_mode(core: &mut Core, query: &str, page_size: i64) -> SearchSnapshot {
     let started = search_mode(core, query, SearchMode::Hybrid, page_size);
     core.upgrade_search_to_hybrid(&started.session_id).unwrap()
@@ -311,7 +341,13 @@ fn without_a_model_keywords_keep_working_and_semantics_says_why() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = new_core(dir.path());
     let a = write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
-    import_and_extract(&mut core, &a, "信.txt", "妈妈后来又写了一封信。\n", "opA-mat");
+    import_and_extract(
+        &mut core,
+        &a,
+        "信.txt",
+        "妈妈后来又写了一封信。\n",
+        "opA-mat",
+    );
 
     // 关键词那一路不受影响。
     let keyword = search_mode(&mut core, "妈妈", SearchMode::Keyword, 20);
@@ -348,8 +384,16 @@ fn without_a_model_keywords_keep_working_and_semantics_says_why() {
     // hybrid（#51/#69）：语义未就绪 → 第一阶段就**退化为关键词**，并且把原因明说出来；
     // 退化不等于没有结果，result 与关键词那一路是同一批。阶段如实停在 keyword_ready。
     let hybrid = search_mode(&mut core, "妈妈", SearchMode::Hybrid, 20);
-    assert_eq!(hybrid.phase, SearchPhase::KeywordReady, "混合的首屏只有一个阶段：关键词就绪");
-    assert_eq!(hybrid.results.len(), 2, "混合退化为关键词之后与关键词同一批结果");
+    assert_eq!(
+        hybrid.phase,
+        SearchPhase::KeywordReady,
+        "混合的首屏只有一个阶段：关键词就绪"
+    );
+    assert_eq!(
+        hybrid.results.len(),
+        2,
+        "混合退化为关键词之后与关键词同一批结果"
+    );
     assert!(
         hybrid
             .warnings
@@ -387,7 +431,10 @@ fn without_a_model_keywords_keep_working_and_semantics_says_why() {
         SearchPhase::KeywordReady,
         "语义拿不出证据时升级绝不能声称 hybrid_ready"
     );
-    assert_eq!(upgraded.results, hybrid.results, "结果仍是关键词那一路，一条不多一条不少");
+    assert_eq!(
+        upgraded.results, hybrid.results,
+        "结果仍是关键词那一路，一条不多一条不少"
+    );
     assert!(
         upgraded
             .warnings
@@ -440,7 +487,12 @@ fn building_without_a_model_errors_honestly_and_changes_nothing() {
     assert_eq!((active, building), (None, None), "失败不该留下半个代次");
 
     // 关键词索引照旧可用；块也能单独重建（两条路互不影响）。
-    assert_eq!(search_mode(&mut core, "妈妈", SearchMode::Keyword, 20).results.len(), 1);
+    assert_eq!(
+        search_mode(&mut core, "妈妈", SearchMode::Keyword, 20)
+            .results
+            .len(),
+        1
+    );
     assert!(core.rebuild_text_chunks(None).unwrap() > 0);
     assert!(core.build_semantic_index(None).is_err(), "仍然没有模型");
     let conn = open(&path);
@@ -492,7 +544,11 @@ fn building_opens_a_generation_and_reuses_unchanged_chunks() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!((active, building), (Some(1), None), "切换之后 building 要置空");
+    assert_eq!(
+        (active, building),
+        (Some(1), None),
+        "切换之后 building 要置空"
+    );
     assert_eq!(
         count(&conn, "SELECT COUNT(*) FROM chunk_vectors", "chunk_vectors"),
         2
@@ -545,8 +601,13 @@ fn building_opens_a_generation_and_reuses_unchanged_chunks() {
         .map(|capture| capture.id)
         .unwrap();
     let revision = core.get_capture(&capture_id).unwrap().revision;
-    core.save_draft(&capture_id, "第二版：同事约我周末去爬山。", revision, "opA-2")
-        .unwrap();
+    core.save_draft(
+        &capture_id,
+        "第二版：同事约我周末去爬山。",
+        revision,
+        "opA-2",
+    )
+    .unwrap();
     let calls_before = counters.documents.load(Ordering::SeqCst);
     let third = core.build_semantic_index(None).unwrap();
     assert_eq!(third.generation, 3);
@@ -618,9 +679,11 @@ fn an_interrupted_generation_resumes_without_activating_half_a_build() {
     {
         let conn = open(&path);
         let chunk_id: String = conn
-            .query_row("SELECT chunk_id FROM text_chunks ORDER BY day_key LIMIT 1", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT chunk_id FROM text_chunks ORDER BY day_key LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         conn.execute_batch(&format!(
             "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, storage, \
@@ -732,7 +795,10 @@ fn switching_models_mid_build_discards_the_half_built_generation() {
     assert_eq!(report.generation, 2, "代次号继续用，但内容按 B 从头来");
     assert_eq!(report.reused_chunks, 0, "A 的向量口径不一致，一条都不复用");
     assert_eq!(report.embedded_chunks, 2, "两块都按 B 重算");
-    assert_eq!(report.resumed_chunks, 0, "A 的半成品被丢弃，一点都没「续上」");
+    assert_eq!(
+        report.resumed_chunks, 0,
+        "A 的半成品被丢弃，一点都没「续上」"
+    );
 
     let conn = open(&path);
     let (active, building): (Option<i64>, Option<i64>) = conn
@@ -857,9 +923,15 @@ fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
 
     let report = core.build_semantic_index(None).unwrap();
     assert_eq!(report.generation, 2);
-    assert_eq!(report.reused_chunks, 2, "废弃半成品后，两块都能从上一代 int8 复用");
+    assert_eq!(
+        report.reused_chunks, 2,
+        "废弃半成品后，两块都能从上一代 int8 复用"
+    );
     assert_eq!(report.embedded_chunks, 0, "没有一块需要重算");
-    assert_eq!(report.resumed_chunks, 0, "storage 格式不一致的那一块不算「续上」");
+    assert_eq!(
+        report.resumed_chunks, 0,
+        "storage 格式不一致的那一块不算「续上」"
+    );
 
     let conn = open(&path);
     assert_eq!(
@@ -872,14 +944,20 @@ fn a_half_built_generation_with_a_foreign_storage_format_is_discarded() {
         "生效代次里不能留下别的存储格式"
     );
     assert_eq!(
-        count(&conn, "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2", "chunk_vectors"),
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2",
+            "chunk_vectors"
+        ),
         2
     );
     drop(conn);
     // 半成品若真被留下，语义检索会读到 f32 那一行——能正常返回（纯语义是 kNN，
     // 会把两块都列出来）就说明整代都是当前格式 int8。
     assert_eq!(
-        search_mode(&mut core, "妈妈", SearchMode::Semantic, 10).results.len(),
+        search_mode(&mut core, "妈妈", SearchMode::Semantic, 10)
+            .results
+            .len(),
         2
     );
 }
@@ -935,7 +1013,10 @@ fn a_mixed_active_generation_is_reported_honestly() {
     // 重建按当前模型整代重算，混合代次自愈。
     let report = core.build_semantic_index(None).unwrap();
     assert_eq!(report.generation, 2);
-    assert_eq!(report.reused_chunks, 1, "口径一致的那一块复用，口径不一致的重算");
+    assert_eq!(
+        report.reused_chunks, 1,
+        "口径一致的那一块复用，口径不一致的重算"
+    );
     assert_eq!(report.embedded_chunks, 1);
     let conn = open(&path);
     assert_eq!(
@@ -1299,7 +1380,10 @@ fn a_dims_mismatch_is_blocked_before_any_cosine() {
         let conn = open(&path);
         conn.execute(
             "UPDATE chunk_vectors SET dims = 384, vector = ?1 WHERE chunk_id = ?2",
-            params![VectorStorage::Int8.encode(&unit_in(384, 0)).unwrap(), chunk_id],
+            params![
+                VectorStorage::Int8.encode(&unit_in(384, 0)).unwrap(),
+                chunk_id
+            ],
         )
         .unwrap();
     }
@@ -1371,7 +1455,10 @@ fn semantic_hits_are_per_piece_and_snippets_come_from_that_pieces_span() {
     let path = dir.path().join("library.sqlite");
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
-    core.set_embedder(stub(&counters, vec![("失眠", unit(0)), ("睡不着", unit(0))]));
+    core.set_embedder(stub(
+        &counters,
+        vec![("失眠", unit(0)), ("睡不着", unit(0))],
+    ));
 
     // 同一天两篇短来源：按 B3c-1 的打包规则会合进**一块**（两个 span）。
     let a = write_capture(&mut core, at(2026, 9, 20), "", "opA");
@@ -1400,7 +1487,11 @@ fn semantic_hits_are_per_piece_and_snippets_come_from_that_pieces_span() {
     assert_eq!(multi, 1, "前提：第一天的那一块真的含两篇");
 
     let snapshot = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
-    assert_eq!(snapshot.results.len(), 3, "两篇来源 + 一条记录文字，各成一条");
+    assert_eq!(
+        snapshot.results.len(),
+        3,
+        "两篇来源 + 一条记录文字，各成一条"
+    );
     assert_eq!(snapshot.phase, diary_core::SearchPhase::Done);
     assert_eq!(snapshot.index_coverage, diary_core::Coverage::Complete);
 
@@ -1420,9 +1511,16 @@ fn semantic_hits_are_per_piece_and_snippets_come_from_that_pieces_span() {
         !sleep.snippet.as_deref().unwrap().contains("快递"),
         "不能把整块拼接文本给用户看"
     );
-    assert_eq!(sleep.title.as_deref(), Some("睡眠.txt"), "标题取来源修订的原件名");
+    assert_eq!(
+        sleep.title.as_deref(),
+        Some("睡眠.txt"),
+        "标题取来源修订的原件名"
+    );
     let locator = sleep.locator.as_ref().expect("来源篇要有定位");
-    assert_eq!(locator.source_revision_id, sleep.revision_id.clone().unwrap());
+    assert_eq!(
+        locator.source_revision_id,
+        sleep.revision_id.clone().unwrap()
+    );
 
     // 同块的第二篇：它也拿到这一块的相似度（契约：合块的相似度对各篇共享），
     // 但摘录是它自己那一段。
@@ -1475,10 +1573,7 @@ fn multiple_chunks_of_one_piece_fold_into_a_single_hit() {
     let counters = Arc::new(Counters::default());
     // 两条规则：全部段落都含「★」（用来验证折叠），只有中段含「失眠」
     // （用来验证「取得分最高的块当证据」）。
-    core.set_embedder(stub(
-        &counters,
-        vec![("失眠", unit(0)), ("★", unit(3))],
-    ));
+    core.set_embedder(stub(&counters, vec![("失眠", unit(0)), ("★", unit(3))]));
 
     // 一篇超过上限的长来源：篇内按段尾切，切成多块。
     let text = long_piece_with_insomnia();
@@ -1555,8 +1650,13 @@ fn equal_score_evidence_is_the_same_across_libraries() {
 
         let text = long_piece_with_insomnia();
         let capture_id = write_capture(&mut core, at(2026, 9, 20), "", "op");
-        let source_id =
-            import_and_extract(&mut core, &capture_id, "长文.txt", &text, &format!("mat{round}"));
+        let source_id = import_and_extract(
+            &mut core,
+            &capture_id,
+            "长文.txt",
+            &text,
+            &format!("mat{round}"),
+        );
         let built = core.build_semantic_index(None).unwrap();
         assert_eq!(
             built.total_chunks, 2,
@@ -1611,8 +1711,14 @@ fn equal_score_evidence_is_the_same_across_libraries() {
 
         evidence.push((
             first_hit.snippet.clone(),
-            first_hit.locator.as_ref().and_then(|locator| locator.text_start),
-            first_hit.locator.as_ref().and_then(|locator| locator.text_end),
+            first_hit
+                .locator
+                .as_ref()
+                .and_then(|locator| locator.text_start),
+            first_hit
+                .locator
+                .as_ref()
+                .and_then(|locator| locator.text_end),
         ));
     }
 
@@ -1666,7 +1772,11 @@ fn semantic_sessions_page_expire_and_cancel_like_keyword_ones() {
     // 快照能原样再给一次当前页。
     let snapshot = core.search_snapshot(&first.session_id).unwrap();
     assert_eq!(
-        snapshot.results.iter().map(|hit| hit.hit_id.clone()).collect::<Vec<_>>(),
+        snapshot
+            .results
+            .iter()
+            .map(|hit| hit.hit_id.clone())
+            .collect::<Vec<_>>(),
         first_ids
     );
 
@@ -1682,7 +1792,9 @@ fn semantic_sessions_page_expire_and_cancel_like_keyword_ones() {
     let mut seen = first_ids.clone();
     let mut current = first;
     while let Some(cursor) = current.cursor.clone() {
-        current = core.search_next_page(&current.session_id, Some(&cursor)).unwrap();
+        current = core
+            .search_next_page(&current.session_id, Some(&cursor))
+            .unwrap();
         seen.extend(current.results.iter().map(|hit| hit.hit_id.clone()));
     }
     assert_eq!(seen.len(), 5, "5 篇各一条，不重不漏");
@@ -1706,7 +1818,9 @@ fn semantic_sessions_page_expire_and_cancel_like_keyword_ones() {
     let cancelled = core.cancel_search(&session.session_id).unwrap();
     assert_eq!(cancelled.phase, diary_core::SearchPhase::Cancelled);
     assert_eq!(cancelled.results.len(), 2, "已返回的结果仍可读");
-    let error = core.search_next_page(&session.session_id, None).unwrap_err();
+    let error = core
+        .search_next_page(&session.session_id, None)
+        .unwrap_err();
     assert_eq!(error.code(), diary_core::ErrorCode::InvalidState);
     let _ = path;
 }
@@ -1804,8 +1918,11 @@ fn semantic_search_honours_the_same_filters() {
 
     // 回收站：默认不看，开关打开才看。
     let conn = open(&dir.path().join("library.sqlite"));
-    conn.execute("UPDATE captures SET state = 'trashed' WHERE id = ?1", params![old])
-        .unwrap();
+    conn.execute(
+        "UPDATE captures SET state = 'trashed' WHERE id = ?1",
+        params![old],
+    )
+    .unwrap();
     let without_trashed = core
         .start_search(
             SearchRequest {
@@ -1864,10 +1981,7 @@ fn a_vector_of_the_wrong_length_is_rejected() {
     write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
 
     let error = core.build_semantic_index(None).unwrap_err();
-    assert!(
-        error.to_string().contains("512"),
-        "要说清维度不符：{error}"
-    );
+    assert!(error.to_string().contains("512"), "要说清维度不符：{error}");
     let conn = open(&path);
     assert_eq!(
         count(&conn, "SELECT COUNT(*) FROM chunk_vectors", "chunk_vectors"),
@@ -1897,16 +2011,30 @@ fn keyword_search_is_untouched_by_building_semantics() {
     let counters = Arc::new(Counters::default());
     core.set_embedder(stub(&counters, vec![]));
     let a = write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
-    import_and_extract(&mut core, &a, "信.txt", "妈妈后来又写了一封信。\n", "opA-mat");
+    import_and_extract(
+        &mut core,
+        &a,
+        "信.txt",
+        "妈妈后来又写了一封信。\n",
+        "opA-mat",
+    );
 
     let before = search_mode(&mut core, "妈妈", SearchMode::Keyword, 20);
-    let before_ids: Vec<String> = before.results.iter().map(|hit| hit.hit_id.clone()).collect();
+    let before_ids: Vec<String> = before
+        .results
+        .iter()
+        .map(|hit| hit.hit_id.clone())
+        .collect();
     assert_eq!(before_ids.len(), 2);
 
     core.build_semantic_index(None).unwrap();
     let after = search_mode(&mut core, "妈妈", SearchMode::Keyword, 20);
     assert_eq!(
-        after.results.iter().map(|hit| hit.hit_id.clone()).collect::<Vec<_>>(),
+        after
+            .results
+            .iter()
+            .map(|hit| hit.hit_id.clone())
+            .collect::<Vec<_>>(),
         before_ids,
         "关键词命中一行都不该因为建语义索引而变"
     );
@@ -1917,7 +2045,11 @@ fn keyword_search_is_untouched_by_building_semantics() {
     core.build_semantic_index(None).unwrap();
     let again = search_mode(&mut core, "妈妈", SearchMode::Keyword, 20);
     assert_eq!(
-        again.results.iter().map(|hit| hit.hit_id.clone()).collect::<Vec<_>>(),
+        again
+            .results
+            .iter()
+            .map(|hit| hit.hit_id.clone())
+            .collect::<Vec<_>>(),
         before_ids
     );
 }
@@ -1957,7 +2089,9 @@ fn a_truncated_chunk_is_counted_in_the_build_report() {
         }
 
         fn embed_query(&self, text: &str) -> diary_core::Result<Embedding> {
-            Ok(Embedding::untruncated(diary_core::text_hash_vector(text, 512)))
+            Ok(Embedding::untruncated(diary_core::text_hash_vector(
+                text, 512,
+            )))
         }
     }
 
@@ -2069,7 +2203,9 @@ fn a_truncated_query_is_reported_in_the_search_warnings() {
         }
 
         fn embed_document(&self, text: &str) -> diary_core::Result<Embedding> {
-            Ok(Embedding::untruncated(diary_core::text_hash_vector(text, 512)))
+            Ok(Embedding::untruncated(diary_core::text_hash_vector(
+                text, 512,
+            )))
         }
 
         fn embed_query(&self, text: &str) -> diary_core::Result<Embedding> {
@@ -2133,7 +2269,13 @@ fn semantic_index_with_the_real_model() {
         "opA-mat",
     );
     let b = write_capture(&mut core, at(2026, 9, 21), "", "opB");
-    import_and_extract(&mut core, &b, "聚餐.txt", "晚上和同事去吃了火锅，聊得很开心。\n", "opB-mat");
+    import_and_extract(
+        &mut core,
+        &b,
+        "聚餐.txt",
+        "晚上和同事去吃了火锅，聊得很开心。\n",
+        "opB-mat",
+    );
     let c = write_capture(&mut core, at(2026, 9, 22), "今天把合同签了。", "opC");
 
     let report = core.build_semantic_index(None).unwrap();
@@ -2149,7 +2291,8 @@ fn semantic_index_with_the_real_model() {
 
     let snapshot = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
     assert_eq!(
-        snapshot.results[0].group_id, source_a,
+        snapshot.results[0].group_id,
+        source_a,
         "语义应当把「凌晨两点还醒着」排在最前：{:?}",
         snapshot
             .results
@@ -2157,7 +2300,10 @@ fn semantic_index_with_the_real_model() {
             .map(|hit| (&hit.group_id, &hit.snippet))
             .collect::<Vec<_>>()
     );
-    assert_eq!(snapshot.results[0].matched_by, vec![diary_core::MatchedBy::Semantic]);
+    assert_eq!(
+        snapshot.results[0].matched_by,
+        vec![diary_core::MatchedBy::Semantic]
+    );
     assert!(
         snapshot.results[0]
             .snippet
@@ -2439,7 +2585,13 @@ fn hybrid_upgrade_keeps_the_keyword_snapshot_when_every_semantic_candidate_is_fi
         "matA",
     );
     let b_capture = write_capture(&mut core, at(2026, 9, 1), "", "opB");
-    let b = import_and_extract(&mut core, &b_capture, "B.txt", "开源节流以后再说。\n", "matB");
+    let b = import_and_extract(
+        &mut core,
+        &b_capture,
+        "B.txt",
+        "开源节流以后再说。\n",
+        "matB",
+    );
     core.build_semantic_index(None).unwrap();
 
     let started = search_mode(&mut core, "开源节流", SearchMode::Hybrid, 20);
@@ -2569,7 +2721,10 @@ fn hybrid_tie_break_is_the_same_across_libraries() {
             snapshot.warnings
         );
         // A/B 与 C 同分（都是 `1/(k+1)`），但 A/B 在更近的一天（9/20）→ 排在 C 前。
-        assert_eq!(snapshot.results[2].group_id, c, "C 在另一天，同分时排在后面");
+        assert_eq!(
+            snapshot.results[2].group_id, c,
+            "C 在另一天，同分时排在后面"
+        );
         // A/B 的顺序按**正文哈希**记下来（篇标识是每库不同的 UUID，跨库比它没有意义）。
         let ab_order: Vec<String> = snapshot.results[..2]
             .iter()
@@ -2640,7 +2795,11 @@ fn hybrid_sessions_page_and_snapshot_like_keyword_ones() {
     const REVISION: i64 = 42;
     let first = core.start_search(request(2), REVISION).unwrap();
     assert_eq!(first.results.len(), 2);
-    assert_eq!(first.phase, SearchPhase::KeywordReady, "还没升级，阶段如实停在 keyword_ready");
+    assert_eq!(
+        first.phase,
+        SearchPhase::KeywordReady,
+        "还没升级，阶段如实停在 keyword_ready"
+    );
     assert_eq!(first.query_revision, REVISION);
     let keyword_cursor = first.cursor.clone().expect("还有下一页");
     let keyword_second = core
@@ -2661,7 +2820,10 @@ fn hybrid_sessions_page_and_snapshot_like_keyword_ones() {
     // —— 升级：从头给融合结果，阶段变成 hybrid_ready，仍是同一个会话 ——
     let upgraded = core.upgrade_search_to_hybrid(&first.session_id).unwrap();
     assert_eq!(upgraded.phase, SearchPhase::HybridReady);
-    assert_eq!(upgraded.session_id, first.session_id, "升级是同一会话，不新造一个");
+    assert_eq!(
+        upgraded.session_id, first.session_id,
+        "升级是同一会话，不新造一个"
+    );
     assert_eq!(upgraded.query_revision, REVISION, "升级沿用同一个查询修订");
     assert_eq!(upgraded.results.len(), 2);
     let upgrade_cursor = upgraded.cursor.clone().expect("还有下一页");
@@ -3141,7 +3303,11 @@ fn retired_revision_is_not_returned_by_semantic_search_before_rebuild() {
             .unwrap_or_default()
             .contains("旧说法")),
         "重建之后任何命中都不该是旧正文：{:?}",
-        after.results.iter().map(|h| h.snippet.clone()).collect::<Vec<_>>()
+        after
+            .results
+            .iter()
+            .map(|h| h.snippet.clone())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -3215,8 +3381,7 @@ fn opening_a_mismatched_library_queues_one_deduplicated_semantic_rebuild() {
     drop(core);
 
     let configured = configured_model(dir.path());
-    let first =
-        Core::open_with_embedding_config_for_test(&path, Some(configured.clone())).unwrap();
+    let first = Core::open_with_embedding_config_for_test(&path, Some(configured.clone())).unwrap();
     assert_eq!(
         semantic_job_count(&path),
         1,
@@ -3229,8 +3394,7 @@ fn opening_a_mismatched_library_queues_one_deduplicated_semantic_rebuild() {
     drop(first);
 
     // 连开第二次：业务键命中，仍然只有 1 条（不能因为 open 两次排 N 条）。
-    let second =
-        Core::open_with_embedding_config_for_test(&path, Some(configured)).unwrap();
+    let second = Core::open_with_embedding_config_for_test(&path, Some(configured)).unwrap();
     assert_eq!(
         semantic_job_count(&path),
         1,
@@ -3261,11 +3425,9 @@ fn reopening_a_library_with_another_model_dimension_reports_not_ready() {
     core.build_semantic_index(None).unwrap();
     drop(core);
 
-    let reopened = Core::open_with_embedding_config_for_test(
-        &path,
-        Some(configured_model(dir.path())),
-    )
-    .unwrap();
+    let reopened =
+        Core::open_with_embedding_config_for_test(&path, Some(configured_model(dir.path())))
+            .unwrap();
     let status = reopened.index_status(None).unwrap();
     assert_eq!(status.embedded_chunks, status.total_chunks, "覆盖是完整的");
     assert_eq!(
@@ -3324,7 +3486,10 @@ fn a_loaded_embedder_with_another_model_version_reports_not_ready() {
         .iter()
         .find(|reason| reason.contains("模型"))
         .unwrap_or_else(|| panic!("reasons 要写明模型版本不一致：{:?}", status.reasons));
-    assert!(reason.contains(OLD_VERSION) && reason.contains(NEW_VERSION), "{reason}");
+    assert!(
+        reason.contains(OLD_VERSION) && reason.contains(NEW_VERSION),
+        "{reason}"
+    );
     assert!(reason.contains("需要重建"), "{reason}");
 }
 
@@ -3371,7 +3536,8 @@ fn an_unconfigured_library_never_auto_queues_and_a_cancelled_job_does_not_come_b
         "没配模型的库不自动排队：那是长期噪声，不是在等资源"
     );
     assert_eq!(
-        core.job_status().unwrap().waiting_configuration, 0,
+        core.job_status().unwrap().waiting_configuration,
+        0,
         "自动触发不该造出等配置的任务"
     );
     // 状态仍如实说「需要重建」：没有自动入口 ≠ 状态闭嘴。
@@ -3479,8 +3645,7 @@ fn a_failed_rebuild_with_leftover_building_generation_gets_one_more_auto_attempt
              WHERE kind = 'semantic_index' AND state NOT IN ('succeeded','failed','cancelled');",
         )
         .unwrap();
-    let _third =
-        Core::open_with_embedding_config_for_test(&path, Some(configured)).unwrap();
+    let _third = Core::open_with_embedding_config_for_test(&path, Some(configured)).unwrap();
     assert_eq!(
         semantic_job_count(&path),
         2,
@@ -3514,9 +3679,12 @@ fn the_auto_attempt_limit_is_shared_across_open_and_ready_discovery_points() {
 
     let configured = configured_model(dir.path());
     // 发现点 1：Configured open。模型没加载，版本未知（U）。
-    let first =
-        Core::open_with_embedding_config_for_test(&path, Some(configured.clone())).unwrap();
-    assert_eq!(semantic_job_count(&path), 1, "Configured open 首次自动排一条");
+    let first = Core::open_with_embedding_config_for_test(&path, Some(configured.clone())).unwrap();
+    assert_eq!(
+        semantic_job_count(&path),
+        1,
+        "Configured open 首次自动排一条"
+    );
     drop(first);
     fail_all_semantic_jobs(&path);
 
@@ -3564,12 +3732,7 @@ fn the_auto_attempt_limit_survives_a_combined_storage_and_model_mismatch() {
     drop(core);
 
     let ready_embedder = || -> Box<dyn Embedder> {
-        Box::new(StubEmbedder::with_dims(
-            NEW_VERSION,
-            512,
-            &counters,
-            vec![],
-        ))
+        Box::new(StubEmbedder::with_dims(NEW_VERSION, 512, &counters, vec![]))
     };
     // Ready open：storage 与版本都不一致 → 第一条（版本位在这里一度也是 true）。
     let ready = Core::open_with_embedder_for_test(&path, ready_embedder()).unwrap();
@@ -3659,12 +3822,7 @@ fn a_loaded_embedder_with_another_model_version_queues_one_auto_rebuild() {
 
     let reopened = Core::open_with_embedder_for_test(
         &path,
-        Box::new(StubEmbedder::with_dims(
-            NEW_VERSION,
-            512,
-            &counters,
-            vec![],
-        )),
+        Box::new(StubEmbedder::with_dims(NEW_VERSION, 512, &counters, vec![])),
     )
     .unwrap();
     assert_eq!(
@@ -3784,7 +3942,8 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert!(
-            plan.join(" | ").contains("COVERING INDEX idx_chunk_vectors_caliber"),
+            plan.join(" | ")
+                .contains("COVERING INDEX idx_chunk_vectors_caliber"),
             "v15 的覆盖索引要真的被用上：{plan:?}"
         );
         let recorded: i64 = conn
@@ -3817,6 +3976,115 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
         )
         .unwrap();
     assert_eq!(marker.as_deref(), Some("1:probe"), "重复 open 不重置标记");
+}
+
+/// 评审 #133 第 1 条（真隐患）：v15 的「列」与「索引」必须各有一个守卫。
+///
+/// 造一个「`auto_rebuild_marker` 已在、`idx_chunk_vectors_caliber` 被手工删掉」的
+/// v15 库——手工删索引、或将来单独补索引的库都长这样。旧实现是
+/// `current < 15 && !column_exists(...)` 一个守卫包住整段：列已在 ⇒ 整段跳过，
+/// 索引永远补不回来。修完后每次 `open` 都做一次 `sqlite_master` 轻量检查，
+/// 索引缺就建（幂等；`current` 是 15 也一样）。
+#[test]
+fn a_v15_library_with_a_dropped_caliber_index_recreates_it_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    drop(core);
+
+    {
+        let conn = open(&path);
+        // 前提：库已经是 v15 且列在，只把索引删掉。
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 15, "前提：库已经是 v15");
+        let column_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('index_meta') \
+                 WHERE name = 'auto_rebuild_marker'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(column_count, 1, "前提：v15 的列已经在");
+        conn.execute_batch("DROP INDEX idx_chunk_vectors_caliber;")
+            .unwrap();
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' \
+                 AND name = 'idx_chunk_vectors_caliber'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 0, "前提：索引已被删掉");
+    }
+
+    // 旧实现：`migrate` 在 `current == SCHEMA_VERSION` 时直接返回，索引仍然缺。
+    let opened = Core::open(&path).unwrap();
+    assert_eq!(opened.schema_version().unwrap(), 15);
+
+    let conn = open(&path);
+    // 1) `PRAGMA index_list` 真的能查到这条索引。
+    let indexes: Vec<String> = conn
+        .prepare("PRAGMA index_list(chunk_vectors)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        indexes.iter().any(|name| name == "idx_chunk_vectors_caliber"),
+        "open 要把缺失的覆盖索引补回来：{indexes:?}"
+    );
+    // 2) 补回来的索引不是摆设：整代口径核对真的用它。
+    let plan: Vec<String> = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT DISTINCT model_version, dims, storage \
+             FROM chunk_vectors WHERE generation = 1",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        plan.join(" | ")
+            .contains("COVERING INDEX idx_chunk_vectors_caliber"),
+        "补回来的覆盖索引要被查询计划用上：{plan:?}"
+    );
+}
+
+/// 评审 #133 第 2 条：`index_bytes` 是**白名单求和**，v15 的覆盖索引必须列进去。
+///
+/// 不去断言 SQL 文本（改个空格就红），让数字自己说话：建好向量后记一次；把覆盖
+/// 索引删掉再记一次——白名单没包含它时两次相等（这条测试会红），包含时差值就是
+/// 索引占的页。
+#[test]
+fn index_bytes_counts_the_v15_caliber_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![]));
+    write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
+    write_capture(&mut core, at(2026, 9, 21), "路边的桂花开了。", "opB");
+    core.build_semantic_index(None).unwrap();
+
+    let with_index = core.index_status(None).unwrap().index_bytes;
+    assert!(with_index > 0, "前提：索引占用读得到");
+
+    // 原始连接删索引。白名单没列 `idx_chunk_vectors_caliber` 时，这个数不会变小。
+    open(&path)
+        .execute_batch("DROP INDEX idx_chunk_vectors_caliber;")
+        .unwrap();
+    let without_index = core.index_status(None).unwrap().index_bytes;
+    assert!(
+        without_index < with_index,
+        "index_bytes 必须包含覆盖索引的页：有索引 {with_index}，删掉后 {without_index}"
+    );
 }
 
 /// 统计库里 `semantic_index` 任务数（自动排队回归用）。
@@ -3891,7 +4159,10 @@ fn switching_the_storage_format_forces_a_full_recompute() {
         snapshot.results
     );
     assert!(
-        snapshot.warnings.iter().any(|warning| warning.contains("口径")),
+        snapshot
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("口径")),
         "要说清是口径不一致（而不是「没有相近内容」）：{:?}",
         snapshot.warnings
     );
@@ -3903,7 +4174,10 @@ fn switching_the_storage_format_forces_a_full_recompute() {
         rebuilt.reused_chunks, 0,
         "f32 向量一条都不能复用进 int8 代次（复用就等于混编码）"
     );
-    assert_eq!(rebuilt.embedded_chunks, rebuilt.total_chunks, "两块都按 int8 重算");
+    assert_eq!(
+        rebuilt.embedded_chunks, rebuilt.total_chunks,
+        "两块都按 int8 重算"
+    );
 
     let conn = open(&path);
     let storages: Vec<String> = conn
@@ -3913,7 +4187,11 @@ fn switching_the_storage_format_forces_a_full_recompute() {
         .unwrap()
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
-    assert_eq!(storages, vec!["int8".to_owned()], "生效代次里只能有一种编码");
+    assert_eq!(
+        storages,
+        vec!["int8".to_owned()],
+        "生效代次里只能有一种编码"
+    );
     let bad_lengths: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM chunk_vectors WHERE generation = 2 \
@@ -3929,7 +4207,10 @@ fn switching_the_storage_format_forces_a_full_recompute() {
     let snapshot = search_mode(&mut core, "妈妈", SearchMode::Semantic, 10);
     assert_eq!(snapshot.results.len(), 2, "纯语义是 kNN，两块都会被列出来");
     assert!(
-        snapshot.warnings.iter().all(|warning| !warning.contains("口径")),
+        snapshot
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("口径")),
         "重建后没有口径问题：{:?}",
         snapshot.warnings
     );
@@ -3978,7 +4259,10 @@ fn a_new_library_builds_int8_vectors_by_default() {
     let snapshot = search_mode(&mut core, "妈妈", SearchMode::Semantic, 10);
     assert_eq!(snapshot.results.len(), 1, "int8 默认路径检索照常");
     assert!(
-        snapshot.warnings.iter().all(|warning| !warning.contains("口径")),
+        snapshot
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("口径")),
         "没有口径问题：{:?}",
         snapshot.warnings
     );
@@ -4028,18 +4312,18 @@ fn streaming_scan_matches_the_load_all_reference() {
     }
 }
 
-/// 快速路径的**回退红线**：top-K 里有被回收的块时，不能只交回「剩下的几条」——
-/// 那可能漏掉排在它后面的有效候选。这里两篇同分、其一被回收，断言流式路径（快速
-/// 路径发现过滤掉一条 ⇒ 整条回退到精确 SQL）与全量参考路径给出同一批结果。
+/// 快速路径的**完整性红线**之一：窗口覆盖整代时，剩下的有效块就是**全部**答案，
+/// 不必因为「有效块不足 4096」而回退。这里两篇同分、其一被回收，整代只有两块，
+/// 断言流式路径留在快速路径、且与全量参考逐位一致。
+///
+/// 另两条红线见 `fast_scan_backfills_and_keeps_the_first_page_exact_when_a_top_candidate_is_filtered_out`
+/// 与 `fast_scan_falls_back_when_the_backfill_window_is_not_enough`。
 #[test]
-fn fast_scan_falls_back_when_a_top_candidate_is_filtered_out() {
+fn fast_scan_returns_the_complete_answer_when_the_window_covers_the_generation() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = new_core(dir.path());
     let counters = Arc::new(Counters::default());
-    core.set_embedder(stub(
-        &counters,
-        vec![("妈妈", unit(0)), ("桂花", unit(0))],
-    ));
+    core.set_embedder(stub(&counters, vec![("妈妈", unit(0)), ("桂花", unit(0))]));
     let trashed = write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
     let kept = write_capture(&mut core, at(2026, 9, 21), "桂花开了。", "opB");
     core.build_semantic_index(None).unwrap();
@@ -4079,9 +4363,725 @@ fn fast_scan_falls_back_when_a_top_candidate_is_filtered_out() {
         let ids: Vec<&str> = streaming.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(ids, expected, "过滤口径必须与精确路径一致");
     }
+
+    // 「整代都在窗口里」不是回退的理由：这条查询仍然走快速路径。
+    diary_core::set_query_profiling(true);
+    let _ = core
+        .semantic_ranking("妈妈", &SearchFilters::default())
+        .unwrap();
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(
+        profile.fast_path,
+        "窗口覆盖整代时剩下的有效块就是全部答案，不该回退"
+    );
 }
 
-/// int8 检索的结果与 f32 **同一批篇、同一顺序**（量化误差没有改变这一组用例的排序）。
+/// **`semantic_ranking` 请求的是「全部结果」**：快速路径把深度之外的块截掉时，
+/// 返回条数 < 请求条数，必须整条回退精确 SQL，结果与全量参考**逐条全等**。
+///
+/// 这是 #135 复审指出的缺口：旧测试只比「快速路径的前 4 条」、并把
+/// `streaming=4 / exhaustive=5` 写进断言，等于把截断当成正确。这里两篇都参与比较，
+/// 且断言 `fast_path == false`——要全部结果时就不许拿深度截断冒充完整答案。
+#[test]
+fn semantic_ranking_falls_back_when_depth_would_truncate_the_requested_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![
+            ("妈妈", unit(0)),
+            ("垃圾", unit(0)),
+            ("候选0", at_cosine(0.90)),
+            ("候选1", at_cosine(0.85)),
+            ("候选2", at_cosine(0.80)),
+            ("候选3", at_cosine(0.75)),
+            ("候选4", at_cosine(0.70)),
+        ],
+    ));
+    let trashed = write_capture(&mut core, at(2026, 9, 20), "垃圾 无关", "opTrash");
+    let mut kept = Vec::new();
+    for (index, day) in (21..=25).enumerate() {
+        kept.push(write_capture(
+            &mut core,
+            at(2026, 9, day),
+            &format!("候选{index} 的一段文字"),
+            &format!("opKeep{index}"),
+        ));
+    }
+    core.build_semantic_index(None).unwrap();
+
+    let conn = open(&dir.path().join("library.sqlite"));
+    conn.execute(
+        "UPDATE captures SET state = 'trashed' WHERE id = ?1",
+        params![trashed],
+    )
+    .unwrap();
+    drop(conn);
+
+    core.set_semantic_scan_depth_for_test(4);
+    diary_core::set_query_profiling(true);
+    let streaming = core
+        .semantic_ranking("妈妈", &SearchFilters::default())
+        .unwrap();
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(
+        !profile.fast_path,
+        "要全部结果时，深度截断必须回退精确 SQL，不能只交前 4 条"
+    );
+
+    let exhaustive = core
+        .semantic_ranking_load_all_for_test("妈妈", &SearchFilters::default())
+        .unwrap();
+    assert_eq!(
+        streaming.len(),
+        5,
+        "5 个有效候选一条都不能少：{streaming:?}"
+    );
+    assert_eq!(exhaustive.len(), 5);
+    for (left, right) in streaming.iter().zip(&exhaustive) {
+        assert_eq!(left.0, right.0, "篇标识与顺序必须逐条一致");
+        assert_eq!(left.1.to_bits(), right.1.to_bits(), "分数必须逐位一致");
+    }
+    let ids: Vec<&str> = streaming.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        kept.iter().map(String::as_str).collect::<Vec<_>>(),
+        "被过滤的垃圾块必须排除，5 个有效候选按分数全量返回"
+    );
+}
+
+/// #135 的**首屏一致性**：产品路径按 `page_size` 请求结果。top-K 里有一条被回收时，
+/// 用补位窗口补上；只要折叠后的返回条数够这一屏，快速路径就留在原地，且**首屏与
+/// 翻页结果都是精确路径的同一批**。
+///
+/// 把扫描深度压到 4（补位窗口 = 1），造 1 个回收 + 5 个有效候选：top-4 是
+/// 「垃圾 + 候选0..2」，补位后拿回候选3。精确路径有 5 条，第 5 条在深度之外——
+/// 这是 #90 已写明的结果深度上限，不是这次过滤造成的（把深度调到 5，快速路径
+/// 就会把 5 条全部交出来）。
+#[test]
+fn fast_scan_backfills_and_keeps_the_first_page_exact_when_a_top_candidate_is_filtered_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![
+            ("妈妈", unit(0)),
+            ("垃圾", unit(0)),
+            ("候选0", at_cosine(0.90)),
+            ("候选1", at_cosine(0.85)),
+            ("候选2", at_cosine(0.80)),
+            ("候选3", at_cosine(0.75)),
+            ("候选4", at_cosine(0.70)),
+        ],
+    ));
+    let trashed = write_capture(&mut core, at(2026, 9, 20), "垃圾 无关", "opTrash");
+    let mut kept = Vec::new();
+    for (index, day) in (21..=25).enumerate() {
+        kept.push(write_capture(
+            &mut core,
+            at(2026, 9, day),
+            &format!("候选{index} 的一段文字"),
+            &format!("opKeep{index}"),
+        ));
+    }
+    core.build_semantic_index(None).unwrap();
+
+    let conn = open(&dir.path().join("library.sqlite"));
+    conn.execute(
+        "UPDATE captures SET state = 'trashed' WHERE id = ?1",
+        params![trashed],
+    )
+    .unwrap();
+    drop(conn);
+
+    let exhaustive = core
+        .semantic_ranking_load_all_for_test("妈妈", &SearchFilters::default())
+        .unwrap();
+    assert_eq!(exhaustive.len(), 5, "精确路径有 5 个有效候选");
+
+    // 深度 4、补位窗口 1：top-4 是「垃圾 + 候选0..2」，补位后拿回候选3。
+    core.set_semantic_scan_depth_for_test(4);
+    diary_core::set_query_profiling(true);
+    let first_page = search_mode(&mut core, "妈妈", SearchMode::Semantic, 2);
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(
+        profile.fast_path,
+        "首屏只要 2 条，补位窗口够用时必须留在快速路径"
+    );
+    let first_page_ids: Vec<String> = first_page
+        .results
+        .iter()
+        .map(|hit| hit.group_id.clone())
+        .collect();
+    assert_eq!(
+        first_page_ids,
+        exhaustive[..2]
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        "首屏两条必须是精确路径的前两条"
+    );
+    let all_pages = collect_pages(&mut core, first_page);
+    assert_eq!(all_pages.len(), 4, "深度上限是 4 块：{all_pages:?}");
+    for (hit, (group, _)) in all_pages.iter().zip(&exhaustive[..4]) {
+        assert_eq!(
+            &hit.group_id, group,
+            "补位后的篇标识与顺序必须与精确路径一致"
+        );
+    }
+    let ids: Vec<&str> = all_pages.iter().map(|hit| hit.group_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        kept[..4].iter().map(String::as_str).collect::<Vec<_>>(),
+        "被过滤的是垃圾块，补上来的必须是第 5 名候选"
+    );
+
+    // 深度 5：快速路径把 5 条全交出来，与精确路径逐条一致——证明第 5 条是深度截断，
+    // 不是补位/过滤漏掉的。
+    core.set_semantic_scan_depth_for_test(5);
+    diary_core::set_query_profiling(true);
+    let first_page = search_mode(&mut core, "妈妈", SearchMode::Semantic, 2);
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(profile.fast_path, "深度够时仍应留在快速路径");
+    let all_pages = collect_pages(&mut core, first_page);
+    assert_eq!(all_pages.len(), exhaustive.len(), "深度 5 时一条都不该少");
+    for (hit, (group, _)) in all_pages.iter().zip(&exhaustive) {
+        assert_eq!(&hit.group_id, group, "深度 5 时与精确路径逐条一致");
+    }
+}
+
+/// 与回收站同一个补位逻辑，但注入的是**过期块（非回收站）**：`capture` 仍是 active，
+/// 只是 `chunk_spans.source_revision_id` 不是来源的当前修订。首屏只要 2 条时，
+/// 补位窗口把第 5 名有效块补进来，快速路径留在原地，首屏与翻页都是精确路径的同一批。
+#[test]
+fn fast_scan_backfills_when_a_stale_chunk_is_filtered_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![
+            ("妈妈", unit(0)),
+            ("过期", at_cosine(0.95)),
+            ("候选0", at_cosine(0.90)),
+            ("候选1", at_cosine(0.85)),
+            ("候选2", at_cosine(0.80)),
+            ("候选3", at_cosine(0.75)),
+            ("候选4", at_cosine(0.70)),
+        ],
+    ));
+    let stale = write_capture(&mut core, at(2026, 9, 20), "过期 无关", "opStale");
+    let mut kept = Vec::new();
+    for (index, day) in (21..=25).enumerate() {
+        kept.push(write_capture(
+            &mut core,
+            at(2026, 9, day),
+            &format!("候选{index} 的一段文字"),
+            &format!("opKeep{index}"),
+        ));
+    }
+    core.build_semantic_index(None).unwrap();
+
+    let conn = open(&dir.path().join("library.sqlite"));
+    let stale_chunk: String = conn
+        .query_row(
+            "SELECT chunk_id FROM chunk_spans WHERE capture_id = ?1",
+            params![stale],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "INSERT INTO source_items (source_id, capture_id, kind, position, current_revision_id) \
+         VALUES ('src_stale', ?1, 'text', 0, 'rev_new')",
+        params![stale],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE chunk_spans SET source_id = 'src_stale', source_revision_id = 'rev_old' \
+         WHERE chunk_id = ?1",
+        params![stale_chunk],
+    )
+    .unwrap();
+    drop(conn);
+
+    let exhaustive = core
+        .semantic_ranking_load_all_for_test("妈妈", &SearchFilters::default())
+        .unwrap();
+    assert_eq!(exhaustive.len(), 5, "过期块不参与结果，精确路径有 5 条");
+
+    core.set_semantic_scan_depth_for_test(4);
+    diary_core::set_query_profiling(true);
+    let first_page = search_mode(&mut core, "妈妈", SearchMode::Semantic, 2);
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(
+        profile.fast_path,
+        "过期块由补位窗口补上，首屏只要 2 条时不该整条回退"
+    );
+    let all_pages = collect_pages(&mut core, first_page);
+    let ids: Vec<&str> = all_pages.iter().map(|hit| hit.group_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        kept[..4].iter().map(String::as_str).collect::<Vec<_>>(),
+        "补位后前 4 条与精确路径一致，过期块被排除"
+    );
+    assert!(!ids.contains(&stale.as_str()), "过期块不能出现在结果里");
+}
+
+/// #135 的**回退上界**：补位窗口不够时必须整条回退，而不是继续无限补。
+///
+/// 深度 4、窗口 1；top-5 里有 2 个被过滤（一个回收、一个旧修订），只剩 3 个有效块。
+/// 这时无法证明窗口之外没有更该出现的候选 ⇒ 走精确 SQL；结果仍与全量参考一致。
+#[test]
+fn fast_scan_falls_back_when_the_backfill_window_is_not_enough() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![
+            ("妈妈", unit(0)),
+            ("垃圾", unit(0)),
+            ("过期", at_cosine(0.95)),
+            ("候选0", at_cosine(0.90)),
+            ("候选1", at_cosine(0.85)),
+            ("候选2", at_cosine(0.80)),
+            ("候选3", at_cosine(0.75)),
+        ],
+    ));
+    let trashed = write_capture(&mut core, at(2026, 9, 20), "垃圾 无关", "opTrash");
+    let stale = write_capture(&mut core, at(2026, 9, 21), "过期 无关", "opStale");
+    let kept = [
+        write_capture(&mut core, at(2026, 9, 22), "候选0 的一段文字", "opKeep0"),
+        write_capture(&mut core, at(2026, 9, 23), "候选1 的一段文字", "opKeep1"),
+        write_capture(&mut core, at(2026, 9, 24), "候选2 的一段文字", "opKeep2"),
+        write_capture(&mut core, at(2026, 9, 25), "候选3 的一段文字", "opKeep3"),
+    ];
+    core.build_semantic_index(None).unwrap();
+
+    let conn = open(&dir.path().join("library.sqlite"));
+    conn.execute(
+        "UPDATE captures SET state = 'trashed' WHERE id = ?1",
+        params![trashed],
+    )
+    .unwrap();
+    let stale_chunk: String = conn
+        .query_row(
+            "SELECT chunk_id FROM chunk_spans WHERE capture_id = ?1",
+            params![stale],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "INSERT INTO source_items (source_id, capture_id, kind, position, current_revision_id) \
+         VALUES ('src_stale', ?1, 'text', 0, 'rev_new')",
+        params![stale],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE chunk_spans SET source_id = 'src_stale', source_revision_id = 'rev_old' \
+         WHERE chunk_id = ?1",
+        params![stale_chunk],
+    )
+    .unwrap();
+    drop(conn);
+
+    // 深度 4、补位窗口 1：top-5 = 垃圾 + 过期 + 候选0..2，有效块只有 3 个 < 4。
+    core.set_semantic_scan_depth_for_test(4);
+    diary_core::set_query_profiling(true);
+    let streaming = core
+        .semantic_ranking("妈妈", &SearchFilters::default())
+        .unwrap();
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(
+        !profile.fast_path,
+        "补位窗口不够时必须整条回退精确 SQL，不能拿剩下的 3 条当完整答案"
+    );
+
+    let exhaustive = core
+        .semantic_ranking_load_all_for_test("妈妈", &SearchFilters::default())
+        .unwrap();
+    assert_eq!(streaming.len(), kept.len(), "回退后与精确路径候选数一致");
+    for (left, right) in streaming.iter().zip(&exhaustive) {
+        assert_eq!(left.0, right.0, "篇标识与顺序必须一致");
+        assert_eq!(left.1.to_bits(), right.1.to_bits(), "分数必须逐位一致");
+    }
+    let ids: Vec<&str> = streaming.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        kept.iter().map(String::as_str).collect::<Vec<_>>(),
+        "回收与旧修订都必须被排除"
+    );
+}
+
+/// 一篇会被切成两块的长正文：第一块含「妈妈」（最高分），第二块含「候选1」。
+/// 用来钉住「深度按块计、结果按篇折叠」的差分。
+fn long_piece_with_two_ranked_blocks() -> String {
+    let mut text = String::new();
+    for index in 0..24 {
+        match index {
+            0 => text.push_str("妈妈打电话来，问我最近睡得好不好。\n"),
+            16 => text.push_str("候选1 这一段说的是周末去公园散步。\n"),
+            _ => text.push_str(&format!(
+                "第{index}段：今天天气不错，路上人很多，顺便买了点水果回家。\n"
+            )),
+        }
+    }
+    text
+}
+
+#[test]
+fn fast_scan_folds_within_depth_and_keeps_the_first_page_exact() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![
+            ("妈妈", unit(0)),
+            ("候选1", at_cosine(0.85)),
+            ("候选2", at_cosine(0.80)),
+            ("候选3", at_cosine(0.75)),
+            ("候选4", at_cosine(0.70)),
+        ],
+    ));
+    // A 一篇两块，占掉深度里的两个名额；B/C/D 各一块。
+    let a = write_capture(
+        &mut core,
+        at(2026, 9, 20),
+        &long_piece_with_two_ranked_blocks(),
+        "opA",
+    );
+    let b = write_capture(&mut core, at(2026, 9, 21), "候选2 的一段文字", "opB");
+    let c = write_capture(&mut core, at(2026, 9, 22), "候选3 的一段文字", "opC");
+    let d = write_capture(&mut core, at(2026, 9, 23), "候选4 的一段文字", "opD");
+    let built = core.build_semantic_index(None).unwrap();
+    assert_eq!(built.total_chunks, 5, "前提：A 两块、B/C/D 各一块");
+
+    // 前提：A 的第一块含「妈妈」、第二块含「候选1」，两块分数不同。
+    let conn = open(&dir.path().join("library.sqlite"));
+    let a_blocks: Vec<String> = conn
+        .prepare(
+            "SELECT t.text FROM text_chunks t JOIN chunk_spans s ON s.chunk_id = t.chunk_id              WHERE s.capture_id = ?1 GROUP BY t.chunk_id ORDER BY MIN(s.start_char)",
+        )
+        .unwrap()
+        .query_map(params![a], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    drop(conn);
+    assert_eq!(a_blocks.len(), 2, "前提：长正文切成两块");
+    assert!(a_blocks[0].contains("妈妈") && !a_blocks[0].contains("候选1"));
+    assert!(a_blocks[1].contains("候选1") && !a_blocks[1].contains("妈妈"));
+
+    let exhaustive = core
+        .semantic_ranking_load_all_for_test("妈妈", &SearchFilters::default())
+        .unwrap();
+    let ids: Vec<&str> = exhaustive.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, vec![a.as_str(), b.as_str(), c.as_str(), d.as_str()]);
+    assert_eq!(exhaustive[0].1.to_bits(), 1.0_f32.to_bits(), "A1 是 1.0");
+    assert!(
+        (exhaustive[1].1 - 0.80).abs() < 0.01,
+        "A2 折叠后不单独成条；B 的分数应在 0.80 附近（int8 量化）：{exhaustive:?}"
+    );
+
+    // 深度 4 按**块**算：A1、A2、B、C 进深度，折叠后只剩 A/B/C 三条。
+    core.set_semantic_scan_depth_for_test(4);
+    diary_core::set_query_profiling(true);
+    let first_page = search_mode(&mut core, "妈妈", SearchMode::Semantic, 2);
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(profile.fast_path, "首屏 2 条够，快速路径不该回退");
+    let first_page_ids: Vec<String> = first_page
+        .results
+        .iter()
+        .map(|hit| hit.group_id.clone())
+        .collect();
+    assert_eq!(
+        first_page_ids,
+        vec![a.clone(), b.clone()],
+        "首屏两条必须是精确路径的前两条"
+    );
+    let all_pages = collect_pages(&mut core, first_page);
+    let page_ids: Vec<&str> = all_pages.iter().map(|hit| hit.group_id.as_str()).collect();
+    assert_eq!(
+        page_ids,
+        vec![a.as_str(), b.as_str(), c.as_str()],
+        "深度里的 4 块折叠成 3 条（A 的两块只算一篇）"
+    );
+
+    // 首屏要 5 条时，折叠后只有 3 条、深度之外还有 D ⇒ 回退精确 SQL 补满这一屏。
+    diary_core::set_query_profiling(true);
+    let first_page = search_mode(&mut core, "妈妈", SearchMode::Semantic, 5);
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(
+        !profile.fast_path,
+        "折叠后不足一屏、窗口/深度之外还有块时必须回退"
+    );
+    let page_ids: Vec<&str> = first_page
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert_eq!(
+        page_ids,
+        vec![a.as_str(), b.as_str(), c.as_str(), d.as_str()],
+        "回退后精确路径把 D 补进首屏"
+    );
+
+    // 深度 5：整代都在深度里，A/B/C/D 四篇全在，快速路径不必回退。
+    core.set_semantic_scan_depth_for_test(5);
+    diary_core::set_query_profiling(true);
+    let first_page = search_mode(&mut core, "妈妈", SearchMode::Semantic, 5);
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(profile.fast_path, "整代都在深度里时应留在快速路径");
+    let page_ids: Vec<&str> = first_page
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert_eq!(
+        page_ids,
+        vec![a.as_str(), b.as_str(), c.as_str(), d.as_str()]
+    );
+}
+
+/// **同分边界**：第 depth 名与第 depth+1 名同分时，深度截断按扫描序（分数降序、
+/// rowid 升序）留谁；已保留结果仍按完整七道全序排序，所以**首屏不受影响**。
+///
+/// 这里让被截掉的那一块（rowid 更大）落在更旧的一天，精确路径的全序也把它排最后：
+/// 快速路径保留的 4 条应当与精确路径前 4 条逐条一致。首屏要 5 条时，折叠后只有
+/// 4 条、深度外还有同分块 ⇒ 回退精确 SQL，5 条全交出来。
+#[test]
+fn fast_scan_resolves_a_score_tie_at_the_depth_cut_by_scan_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(
+        &counters,
+        vec![
+            ("妈妈", unit(0)),
+            ("候选0", at_cosine(0.85)),
+            ("候选1", at_cosine(0.80)),
+            ("候选2", at_cosine(0.75)),
+        ],
+    ));
+    // 创建顺序就是 rowid 顺序：D 比 E 先建，E 的 rowid 更大、日期更旧。
+    let a = write_capture(&mut core, at(2026, 9, 25), "妈妈 的一段文字", "opA");
+    let b = write_capture(&mut core, at(2026, 9, 24), "候选0 的一段文字", "opB");
+    let c = write_capture(&mut core, at(2026, 9, 23), "候选1 的一段文字", "opC");
+    let d = write_capture(&mut core, at(2026, 9, 21), "候选2 的一段文字", "opD");
+    let e = write_capture(&mut core, at(2026, 9, 20), "候选2 的一段文字", "opE");
+    core.build_semantic_index(None).unwrap();
+
+    let exhaustive = core
+        .semantic_ranking_load_all_for_test("妈妈", &SearchFilters::default())
+        .unwrap();
+    let ids: Vec<&str> = exhaustive.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![a.as_str(), b.as_str(), c.as_str(), d.as_str(), e.as_str()],
+        "前提：D/E 同分，D 日期更新，排在 E 前"
+    );
+    assert_eq!(
+        exhaustive[3].1.to_bits(),
+        exhaustive[4].1.to_bits(),
+        "前提：第 4/5 名必须逐位同分"
+    );
+
+    core.set_semantic_scan_depth_for_test(4);
+    diary_core::set_query_profiling(true);
+    let first_page = search_mode(&mut core, "妈妈", SearchMode::Semantic, 2);
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(profile.fast_path, "首屏只要 2 条时不该为边界同分回退");
+    let first_page_ids: Vec<String> = first_page
+        .results
+        .iter()
+        .map(|hit| hit.group_id.clone())
+        .collect();
+    assert_eq!(
+        first_page_ids,
+        vec![a.clone(), b.clone()],
+        "边界同分不影响首屏"
+    );
+    // 深度截断留的是扫描序更靠前的那一块（同分看 rowid）。它未必是精确路径前 4 条里
+    // 的那一块：同分边界上「留谁」由扫描序决定，这是深度上限本身的边界，不是首屏。
+    let conn = open(&dir.path().join("library.sqlite"));
+    let rowid_of = |capture: &str| -> i64 {
+        conn.query_row(
+            "SELECT v.rowid FROM chunk_vectors v JOIN chunk_spans s ON s.chunk_id = v.chunk_id \
+             WHERE s.capture_id = ?1",
+            params![capture],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    let (d_rowid, e_rowid) = (rowid_of(&d), rowid_of(&e));
+    drop(conn);
+    let dropped_tie = if d_rowid > e_rowid {
+        d.clone()
+    } else {
+        e.clone()
+    };
+    let expected: Vec<&str> = exhaustive
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .filter(|id| *id != dropped_tie)
+        .collect();
+    let all_pages = collect_pages(&mut core, first_page);
+    let kept_ids: Vec<&str> = all_pages.iter().map(|hit| hit.group_id.as_str()).collect();
+    assert_eq!(
+        kept_ids, expected,
+        "扫描序留下的 4 块 = 精确路径去掉 rowid 更大的那块同分块"
+    );
+
+    // 首屏要 5 条：折叠后只有 4 条、深度外还有同分块 ⇒ 回退精确 SQL。
+    diary_core::set_query_profiling(true);
+    let first_page = search_mode(&mut core, "妈妈", SearchMode::Semantic, 5);
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(
+        !profile.fast_path,
+        "同分块被深度截掉、首屏又不够时，必须回退而不是猜"
+    );
+    let page_ids: Vec<&str> = first_page
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert_eq!(
+        page_ids,
+        vec![a.as_str(), b.as_str(), c.as_str(), d.as_str(), e.as_str()],
+        "回退后同分的 E 也按完整全序排在最后"
+    );
+}
+
+/// 直接写一代 f32 向量（每块一篇），分数由 `scores` 精确控制；用来造超过默认
+/// 深度（4096 块）的库，不必真的跑 4097 次嵌入。
+fn insert_synthetic_f32_vectors(path: &Path, scores: &[f32]) {
+    let conn = open(path);
+    conn.execute("UPDATE index_meta SET active_generation = 1", [])
+        .unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
+    {
+        let mut capture = tx
+            .prepare(
+                "INSERT INTO captures (id, revision, state, occurred_at, created_at, updated_at, \
+                 time_zone, utc_offset_minutes, day_key, draft_text) \
+                 VALUES (?1, 0, 'active', '2026-09-20T00:00:00.000Z', \
+                         '2026-09-20T00:00:00.000Z', '2026-09-20T00:00:00.000Z', \
+                         'Asia/Shanghai', 480, '2026-09-20', '')",
+            )
+            .unwrap();
+        let mut chunk = tx
+            .prepare(
+                "INSERT INTO text_chunks (chunk_id, ordinal, text, kind, coverage, day_key, \
+                 chunker_version, created_at) \
+                 VALUES (?1, 0, ?2, 'text', 'complete', '2026-09-20', \
+                         'chunker-1-packday-line400-overlap48', '2026-09-20T00:00:00.000Z')",
+            )
+            .unwrap();
+        let mut span = tx
+            .prepare(
+                "INSERT INTO chunk_spans (chunk_id, ordinal, capture_id, source_id, \
+                 source_revision_id, start_char, end_char, kind, coverage) \
+                 VALUES (?1, 0, ?2, ?2, '', 0, 2, 'text', 'complete')",
+            )
+            .unwrap();
+        let mut vector = tx
+            .prepare(
+                "INSERT INTO chunk_vectors (chunk_id, generation, model_version, dims, storage, \
+                 vector, created_at) \
+                 VALUES (?1, 1, 'stub-embedder@000000000000', 512, 'f32', ?2, \
+                         '2026-09-20T00:00:00.000Z')",
+            )
+            .unwrap();
+        for (index, score) in scores.iter().enumerate() {
+            let capture_id = format!("cap_synth_{index:05}");
+            let chunk_id = format!("chunk_synth_{index:05}");
+            capture.execute(params![capture_id]).unwrap();
+            chunk
+                .execute(params![chunk_id, format!("块{index}")])
+                .unwrap();
+            span.execute(params![chunk_id, capture_id]).unwrap();
+            vector
+                .execute(params![
+                    chunk_id,
+                    VectorStorage::F32.encode(&at_cosine(*score)).unwrap()
+                ])
+                .unwrap();
+        }
+    }
+    tx.commit().unwrap();
+}
+
+/// **默认深度（4096 块）的高密度差分**：造 4097 块、分数互不相同，快速路径应返回
+/// 精确路径的前 4096 条（逐条一致），第 4097 条是深度上限之外的截断；首屏仍然与
+/// 精确路径相同。
+#[test]
+fn fast_scan_at_the_default_depth_returns_the_exact_prefix() {
+    const DEPTH: usize = 4_096;
+    const BLOCKS: usize = DEPTH + 1;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![("妈妈", unit(0))]));
+    // 显式用 f32：int8 量化会把 0.0001 级的相邻分数压成同分，测不到「互不相同」。
+    core.set_vector_storage_for_test(VectorStorage::F32);
+    let scores: Vec<f32> = (0..BLOCKS)
+        .map(|index| 0.99 - index as f32 * 0.0001)
+        .collect();
+    insert_synthetic_f32_vectors(&path, &scores);
+
+    let exact = core
+        .semantic_ranking_load_all_for_test("妈妈", &SearchFilters::default())
+        .unwrap();
+    assert_eq!(exact.len(), BLOCKS, "精确路径 4097 条");
+
+    diary_core::set_query_profiling(true);
+    let first_page = search_mode(&mut core, "妈妈", SearchMode::Semantic, 100);
+    let profile = diary_core::take_query_profile().unwrap();
+    diary_core::set_query_profiling(false);
+    assert!(
+        profile.fast_path,
+        "首屏只要 100 条，4097 块的高密度库也应走快速路径"
+    );
+    let first_ids: Vec<String> = first_page
+        .results
+        .iter()
+        .map(|hit| hit.group_id.clone())
+        .collect();
+    assert_eq!(
+        first_ids,
+        exact[..100]
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        "首屏 100 条必须逐条一致"
+    );
+    let all = collect_pages(&mut core, first_page);
+    assert_eq!(all.len(), DEPTH, "深度上限是 4096 块：{}", all.len());
+    let ids: Vec<&str> = all.iter().map(|hit| hit.group_id.as_str()).collect();
+    let expected: Vec<&str> = exact[..DEPTH].iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, expected, "快速路径必须是精确路径的前 4096 条");
+    assert!(
+        !ids.contains(&exact[DEPTH].0.as_str()),
+        "第 4097 条属于深度外截断，不能出现在结果里"
+    );
+}
+
+/// int8 检索的结果与 f32 **同一批篇、同一顺序**（量化误差没有改变这一组用例的排序）。/// int8 检索的结果与 f32 **同一批篇、同一顺序**（量化误差没有改变这一组用例的排序）。
 ///
 /// 这不是「所有语料上召回不变」的证明——那件事由探针的 36 条质量集与 2000 块语料
 /// 量（`large-bench recall-quality` / `recall-large`）。这里只钉住结构性行为：

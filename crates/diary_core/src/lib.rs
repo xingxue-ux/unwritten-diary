@@ -104,7 +104,7 @@ pub use model::{
     DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion, DiaryVersionOrigin,
     DiaryVersionPage, DomainEvent, DraftSaveResult, EventType, ExtractedContent, ExtractedSegment,
     GenerationInfo, ImportManifest, ImportOrigin, ImportState, ImportStatus, ImportTicket,
-    IndexStatus, Job, JobErrorSummary, JobPriority, JobProgress, JobRunSummary, JobState,
+    IndexStatus, Job, JobErrorSummary, JobPage, JobPriority, JobProgress, JobRunSummary, JobState,
     JobStatus, LocatorType, MatchedBy, MaterialCounts, NativeRecordingStatus, NewJob,
     OrganizePendingDay, OrganizePlanSummary, OrganizeQuota, OrganizeRunInfo, OrganizeSettings,
     OrganizeSkippedDay, OrganizeStatus, OrganizeTemplate, OrganizeTemplateParam, ProcessingStatus,
@@ -1062,6 +1062,20 @@ impl Core {
         jobs::list(self, states, limit)
     }
 
+    /// 分页读取任务，契约 `jobs.list` 的逐条翻页用。
+    ///
+    /// 排序与 `list_jobs` 相同（`priority DESC, created_at, id`），但游标是**键集**：
+    /// 把上一页最后一条的位置带回去，下一批从它之后取，不是偏移。翻页期间入队的新任务
+    /// 不会让后面的页漏项或重项。`cursor` 对调用方不透明，原样回传上一页的 `next_cursor`。
+    pub fn list_jobs_page(
+        &self,
+        states: Option<&[JobState]>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<JobPage> {
+        jobs::list_page(self, states, cursor, limit)
+    }
+
     /// 按状态精确计数。**不要用 `list_jobs` 的长度当计数**：它为分页把
     /// limit 夹在 200 以内，任务多的时候会少报。
     pub fn count_jobs(&self, states: Option<&[JobState]>) -> Result<i64> {
@@ -1316,6 +1330,9 @@ impl Core {
     /// 产品路径不读它（`SearchHit` 上没有 score 字段）；它给质量集量测讨论
     /// 「语义会不会对没有答案的查询乱报」「要不要设分数阈值」用，与 `search.start`
     /// 的语义路共用同一段候选与折叠逻辑。
+    ///
+    /// **它请求的是全部结果**：快速路径的深度截断无法证明完整时会整条回退精确 SQL，
+    /// 所以这里不会出现「只返回前 4096 块、还声称与精确路径一致」的缺口（#135 复审）。
     pub fn semantic_ranking(
         &mut self,
         query: &str,

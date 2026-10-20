@@ -128,6 +128,16 @@ pub struct CapturePage {
     pub next_cursor: Option<String>,
 }
 
+/// 任务分页结果。cursor 对调用方不透明。
+///
+/// 与 [`CapturePage`] 同一个形状（列表 + 不透明游标），给任务中心逐条翻页用：
+/// 只有 `jobs.status` 的计数、没有逐条列表时，`attentionKey` 与 `progress` 都没处读。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobPage {
+    pub jobs: Vec<Job>,
+    pub next_cursor: Option<String>,
+}
+
 /// 持久业务事件类型，契约第 6 节的完整清单。
 ///
 /// 现在实际会发的是 capture.changed、asset.changed 与 job.changed；

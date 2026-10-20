@@ -15,7 +15,7 @@
 | # | 结论 | 强度 |
 |---|---|---|
 | 1 | C ABI **不在 main 里**（PR #117 未合）⇒ 本分支从 `origin/main` = `e4e3c0a` 起步，**merge** 了 `origin/feat/B8a-core-c-abi`（`29a076e`），没有改写 C ABI 的任何一行 | 实测（`git log --oneline`） |
-| 2 | 模块形状是**三层**：`libdiary_capi.so`（Rust，6 个 C 符号）→ `libdiary_napi.so`（C++，7 个 JS 函数）→ `DiaryCore.ets`（9 条契约方法；#108 ⑦ 录音又补了 5 条，现为 14 条）；JSON **一进一出**，中间不拆不拼 | 实测（能编 + 静态核对） |
+| 2 | 模块形状是**三层**：`libdiary_capi.so`（Rust，6 个 C 符号）→ `libdiary_napi.so`（C++，7 个 JS 函数）→ `DiaryCore.ets`（30 条契约方法）；JSON **一进一出**，中间不拆不拼 | 实测（能编 + 静态核对） |
 | 3 | NAPI 层**只在「调用没能发生」时抛 JS 异常**（`ERR_DIARY_LIB/ARGS/HANDLE/OPEN/CALL`）；业务错误仍返回 `ok:false` 信封，由 ArkTS 侧统一转成 `DiaryError` 异常 | 实测（代码 + 契约核对） / 真机已验（临时身份） |
 | 4 | **错误码一个没新增**：21 个核心码原样透传；唯一的宿主码 `native_unavailable` 表示「调用没能发生」，不进核心码表 | 实测（`tools/check_arkts_capi_contract.py`） |
 | 5 | 交叉编译 + shim 编译过：`libdiary_capi.so` 11,369,880 B（`NEEDED` 只有 `libc.so`）、`libdiary_napi.so` 46,824 B（`NEEDED` = `libace_napi.z.so` / `libc++_shared.so` / `libc.so`）、6 个 C 符号全在 | 实测（见 §8.1） |
@@ -163,7 +163,7 @@ corrupted_backup, incompatible_backup
 > 口径提醒：C ABI 文档 §5.1 成文时写的是「核心那 14 个码」，而
 > `crates/diary_core/src/error.rs` 的 `ErrorCode::wire()` 现在是 **21 个**
 >（后来加了 Provider / 备份相关的码）。本文与 `DiaryError.ets` 以**代码**为准，
-> 检查器直接读 `error.rs` 核对。
+> 检查器直接读 `error.rs` 核对（2026-10-19 已把 C ABI 文档 §5.1 改成 21）。
 
 ### 4.4 为什么 `open` 抛而 `call` 不抛
 
@@ -201,7 +201,7 @@ corrupted_backup, incompatible_backup
   多出来的字段运行时仍在）；
 - `search` 的 `params` 是 `{ request, query_revision }`（C ABI 的形状），
   不是扁平的 `{ query }`——因为 `query_revision` 是检索会话的一部分；
-- 方法子集只有 9 条（#108 ⑦ 之后 14 条）：`capabilities` 里没列出来的就是还没接，不会假装支持。
+- 方法子集 30 条：`capabilities` 里没列出来的就是还没接，不会假装支持。
 
 ## 6 库放置与打包
 
@@ -492,9 +492,14 @@ $ python3 tools/check_arkts_capi_contract.py
 11. **release 构建 / 混淆**：只打了 debug、没开混淆；release 下的 ArkTS 优化未验；
 12. **升级 / 回滚**：`data_schema_version` 与旧库的兼容没验；
 13. **hilog 输出本身**：`Smoke.ets` 的日志代码完整，但一行都没在设备上出现过；
-14. **C++ 侧 OOM 没兜底**：shim 里的 `std::string` / 容器分配失败是 `std::bad_alloc`，
-    会以 C++ 异常穿透 NAPI 边界（进程中止）。这是 OOM 级的不可恢复错误，没有兜底；
-    核心自己的 panic 仍然由 `diary_capi` 的 `catch_unwind` 拦住（C ABI 文档 §8）。
+14. ~~**C++ 侧 OOM 没兜底**~~ → **#133 已修**：shim 的 8 个入口都经 `Guarded()`
+    （`std::bad_alloc` / 其它 C++ 异常 → 既有 `ERR_DIARY_CALL`），`CoreText` /
+    `PendingHandle` RAII 归还 C 字符串与句柄。**验证只在 host harness（stub NAPI +
+    注入 `bad_alloc`）上做，真机 OOM 未注入**；harness 已入库在
+    [`apps/ohos-diary-core/tests/napi_host/`](../../apps/ohos-diary-core/tests/napi_host/harness.cpp)
+    （`run.sh`，随 `check.yml` 的 docs job 在 Linux 上跑），并断言 `open()` 在
+    `Handles().Add` 之后抛异常时句柄表被 `Take` 干净（`openHandleCount() == 0`）。
+    核心自己的 panic 仍由 `diary_capi` 的 `catch_unwind` 拦住（C ABI 文档 §8）。
 
 ## 10 需要拍板的地方
 
@@ -516,8 +521,9 @@ $ python3 tools/check_arkts_capi_contract.py
    JSON / hilog 里都要特殊处理。
 5. **`stringFree` 要不要暴露**：现在不暴露（内部复制+释放，§3.3）。暴露它只会多一类
    「重复释放」的错误，没有收益。
-6. **方法子集**：C ABI 原先只接了 9 条；#108 ⑦ 补了 5 条录音方法，ArkTS 已同步到 14 条。每加一条 C ABI 方法，
-   只需在 `DiaryCore.ets` 加一个方法（检查器会抓漏），不用动 C++。
+6. **方法子集**：C ABI 现在接了 30 条（录音 5 条、`providers.*` 4 条、界面缺口 11 条都是后续分片补的），
+   ArkTS 已同步。每加一条 C ABI 方法，只需在 `DiaryCore.ets` 加一个方法（检查器会抓漏），
+   再在 `Models.ets` 里给返回/参数类型；不用动 C++。
 7. **`native_unavailable` 这个宿主码**：要不要换成 `invalid_state`（复用核心码）？
    我倾向保留：它能一眼区分「打包坏了」与「业务状态不对」，且不进核心码表。
 8. **OHOS 构建进不进 CI**：本机命令已经跑通（约 2–3 分钟首次、增量 ~15 秒），但 CI 要有
@@ -532,4 +538,4 @@ $ python3 tools/check_arkts_capi_contract.py
 3. 补大库/权限拒绝/磁盘满的设备侧用例（`open` 错误码已修，`revision_conflict`/损坏库已验）；
 4. 性能：库加载、JSON 往返、检索首屏——**2026-10-18 已测出中位数**（见工程 README 性能表）；
 5. 方法面继续接（`captures.list` / `jobs.list` / `indexes.status` …），ArkTS 侧同步加；
-6. 决定 HAR 化与 CI；补 C++ OOM 兜底（`bad_alloc`）。
+6. ~~补 C++ OOM 兜底（`bad_alloc`）~~ **#133 已修（host 注入验证）**；剩下决定 HAR 化与 CI。

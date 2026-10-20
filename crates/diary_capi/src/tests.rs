@@ -154,6 +154,73 @@ fn seed_committed_capture(handle: *mut Handle, text: &str) -> (String, String) {
     (capture_id, source_id)
 }
 
+/// 建一条已提交并抽取过的记录（可指定 `occurred_at`），返回 `capture_id`。
+///
+/// 与 [`seed_committed_capture`] 的区别：幂等键由调用方给，所以同一个库上可以建多条
+/// （「看今天」/历史列表/搜索翻页都需要多条）。
+fn seed_capture_at(
+    handle: *mut Handle,
+    operation_id: &str,
+    occurred_at: &str,
+    text: &str,
+) -> String {
+    let capture = expect_ok(&call(
+        handle,
+        "captures.createDraft",
+        json!({
+            "occurred_at": occurred_at,
+            "time_zone": "Asia/Shanghai",
+            "utc_offset_minutes": 480,
+            "operation_id": operation_id,
+        }),
+    ));
+    let capture_id = capture["id"].as_str().unwrap().to_owned();
+
+    expect_ok(&call(
+        handle,
+        "captures.saveDraft",
+        json!({
+            "capture_id": capture_id,
+            "text": text,
+            "expected_revision": 1,
+            "operation_id": format!("{operation_id}-save"),
+        }),
+    ));
+    let committed = expect_ok(&call(
+        handle,
+        "captures.commit",
+        json!({
+            "capture_id": capture_id,
+            "expected_revision": 2,
+            "operation_id": format!("{operation_id}-commit"),
+        }),
+    ));
+    let source_id = committed["original_text_revision"]["source_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    expect_ok(&call(
+        handle,
+        "sources.extract",
+        json!({"source_ref": source_id}),
+    ));
+    capture_id
+}
+
+/// 用核心自己的入口排一条任务（测试脚手架）。
+///
+/// 为什么不用 C ABI 排：要测的是 `jobs.list/get/retry/...` 的**读取与人工动作**，
+/// 而「没有执行者」的任务只能从核心入队。读/写仍全部走 C ABI，不绕过桥面。
+fn enqueue_for_test(handle: *mut Handle, kind: &str, target_ids: &[&str]) -> String {
+    let core = debug_core(handle).expect("句柄必须在登记表里");
+    let mut core = core.lock().unwrap();
+    let mut job = diary_core::NewJob::new(kind, diary_core::JobPriority::BackgroundExtract);
+    if !target_ids.is_empty() {
+        job = job.targeting(target_ids.iter().map(|id| (*id).to_owned()).collect());
+    }
+    core.enqueue_job(job).expect("入队应当成功").id
+}
+
 // ---------------------------------------------------------------- 测试
 
 /// 版本戳与 last-error 的生老病死。
@@ -1222,6 +1289,635 @@ fn providers_crud_contract_shapes_and_validation() {
         "invalid_state",
     );
     assert!(message.contains("随包") || message.contains("内建"), "{message}");
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 第 1 组：`captures.get` / `captures.list`——「看今天」、历史列表、条目详情的
+/// 数据源，游标必须是**真游标**（第二页接得上、不重不漏）。
+#[test]
+fn captures_get_and_list_use_real_cursor_pagination() {
+    let (dir, _path, handle) = open_temp("captures-read");
+
+    // 三条：两条在 10-17（上海），一条在 10-16。
+    let older = seed_capture_at(handle, "op-capi-list-a", "2026-10-16T09:30:00Z", "前天的记录");
+    let morning = seed_capture_at(handle, "op-capi-list-b", "2026-10-17T09:30:00Z", "今天上午");
+    let evening = seed_capture_at(handle, "op-capi-list-c", "2026-10-17T14:00:00Z", "今天晚上");
+
+    // 详情：草稿/已提交都读得到，带 processing_summary 与 revision。
+    let detail = expect_ok(&call(
+        handle,
+        "captures.get",
+        json!({"capture_id": evening.clone()}),
+    ));
+    assert_eq!(detail["id"], json!(evening));
+    assert_eq!(detail["state"], json!("committed"));
+    assert_eq!(detail["day_key"], json!("2026-10-17"));
+    assert!(detail["revision"].as_i64().unwrap() >= 2);
+    assert!(detail["processing_summary"].is_object(), "{detail}");
+    // 契约风格的 camelCase 别名也接受。
+    let via_alias = expect_ok(&call(
+        handle,
+        "captures.get",
+        json!({"captureId": morning.clone()}),
+    ));
+    assert_eq!(via_alias["id"], json!(morning));
+
+    // 第一页：occurred_at DESC，两条 + 一个真游标。
+    let first = expect_ok(&call(handle, "captures.list", json!({"limit": 2})));
+    let page = first["captures"].as_array().unwrap();
+    assert_eq!(page.len(), 2, "{first}");
+    assert_eq!(page[0]["id"], json!(evening));
+    assert_eq!(page[1]["id"], json!(morning));
+    let cursor = first["next_cursor"]
+        .as_str()
+        .expect("还有一条，必须给 next_cursor")
+        .to_owned();
+
+    // 第二页：游标原样回传，接上第三条且没有重复。
+    let second = expect_ok(&call(
+        handle,
+        "captures.list",
+        json!({"limit": 2, "cursor": cursor}),
+    ));
+    let page = second["captures"].as_array().unwrap();
+    assert_eq!(page.len(), 1, "{second}");
+    assert_eq!(page[0]["id"], json!(older));
+    assert_eq!(second["next_cursor"], json!(null));
+
+    // 按天过滤（「看今天」），camelCase 别名。
+    let today = expect_ok(&call(
+        handle,
+        "captures.list",
+        json!({"dayKey": "2026-10-17", "limit": 10}),
+    ));
+    let ids: Vec<&str> = today["captures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|capture| capture["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![evening.as_str(), morning.as_str()], "{today}");
+
+    // 参数全省略 = 默认页（历史列表第一页）。
+    let all = expect_ok(&call(handle, "captures.list", Value::Null));
+    assert_eq!(all["captures"].as_array().unwrap().len(), 3);
+
+    // 错误码：不存在是 not_found，参数不合法是 invalid_argument；
+    // 游标格式不对沿用核心既有口径（CorruptedData → invalid_state，不新增码）。
+    expect_error(
+        &call(handle, "captures.get", json!({"capture_id": "cap_missing"})),
+        "not_found",
+    );
+    expect_error(&call(handle, "captures.get", json!({})), "invalid_argument");
+    expect_error(
+        &call(handle, "captures.list", json!({"daykey": "2026-10-17"})),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(handle, "captures.list", json!({"limit": -1})),
+        "invalid_argument",
+    );
+    let message = expect_error(
+        &call(handle, "captures.list", json!({"cursor": "not-a-cursor"})),
+        "invalid_state",
+    );
+    assert!(message.contains("游标"), "{message}");
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 第 2 组：`indexes.status`——语义就绪 / reasons / model_version 原样可读。
+#[test]
+fn indexes_status_exposes_semantic_readiness_and_scope() {
+    let (dir, _path, handle) = open_temp("index-status");
+
+    let status = expect_ok(&call(handle, "indexes.status", Value::Null));
+    assert!(status["coverage"].is_string(), "{status}");
+    assert!(status["keyword_index_ready"].is_boolean(), "{status}");
+    assert!(status["semantic_index_ready"].is_boolean(), "{status}");
+    assert!(status["tokenizer_version"].is_string(), "{status}");
+    assert!(
+        status["model_version"].is_null() || status["model_version"].is_string(),
+        "{status}"
+    );
+    assert!(
+        status["chunker_version"].is_null() || status["chunker_version"].is_string(),
+        "{status}"
+    );
+    assert!(status["reasons"].is_array(), "{status}");
+    for field in [
+        "total_chunks",
+        "embedded_chunks",
+        "indexed_segments",
+        "total_segments",
+        "pending_segments",
+        "stale_segments",
+        "indexed_captures",
+        "total_captures",
+        "failed_sources",
+        "indexed_chars",
+        "index_rows",
+        "index_terms",
+        "index_bytes",
+    ] {
+        assert!(status[field].is_i64(), "{field} 应当是整数：{status}");
+    }
+
+    // 空范围 = 「什么都不看」（与省略 = 整库刻意不同）。
+    for params in [json!({"source_scope": []}), json!({"sourceScope": []})] {
+        let empty = expect_ok(&call(handle, "indexes.status", params));
+        for field in [
+            "total_chunks",
+            "embedded_chunks",
+            "total_segments",
+            "indexed_segments",
+        ] {
+            assert_eq!(empty[field], json!(0), "{field}：{empty}");
+        }
+    }
+
+    // 参数层：拼错的字段要报错，不能静默当成整库。
+    let message = expect_error(
+        &call(handle, "indexes.status", json!({"scope": "all"})),
+        "invalid_argument",
+    );
+    assert!(message.contains("参数不合法"), "{message}");
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 第 3 组：`jobs.list` / `jobs.get`——逐条任务（`attention_key` / `progress` 在里面），
+/// 游标是真游标（第二页接得上、不重不漏）。
+#[test]
+fn jobs_list_and_get_use_real_cursor_pagination() {
+    let (dir, _path, handle) = open_temp("jobs-read");
+
+    // `operation_id` 进快照哈希，所以三条不同 op 的整库重建是三条独立任务。
+    let mut expected = Vec::new();
+    for index in 0..3 {
+        let job = expect_ok(&call(
+            handle,
+            "indexes.rebuild",
+            json!({
+                "scope": "all",
+                "reason": "capi jobs list",
+                "operation_id": format!("op-capi-jobs-{index}"),
+            }),
+        ));
+        expected.push(job["id"].as_str().unwrap().to_owned());
+    }
+
+    let first = expect_ok(&call(handle, "jobs.list", json!({"limit": 2})));
+    let jobs = first["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 2, "{first}");
+    // 每条都是完整的 `Job`：任务中心要的 `attention_key` / `progress` 在形状里。
+    for job in jobs {
+        assert!(job.get("state").is_some(), "{job}");
+        assert!(job.get("attention_key").is_some(), "{job}");
+        assert!(job.get("progress").is_some(), "{job}");
+        assert_eq!(job["kind"], json!("index"));
+    }
+    let cursor = first["next_cursor"]
+        .as_str()
+        .expect("还有一条，必须给 next_cursor")
+        .to_owned();
+
+    let second = expect_ok(&call(
+        handle,
+        "jobs.list",
+        json!({"limit": 2, "cursor": cursor}),
+    ));
+    let second_jobs = second["jobs"].as_array().unwrap();
+    assert_eq!(second_jobs.len(), 1, "{second}");
+    assert_eq!(second["next_cursor"], json!(null));
+
+    // 两页合起来正好是三条，不重不漏。
+    let mut seen: Vec<String> = jobs
+        .iter()
+        .chain(second_jobs.iter())
+        .map(|job| job["id"].as_str().unwrap().to_owned())
+        .collect();
+    seen.sort();
+    expected.sort();
+    assert_eq!(seen, expected);
+
+    // 状态筛选：全部 queued；没有 succeeded。
+    let queued = expect_ok(&call(
+        handle,
+        "jobs.list",
+        json!({"states": ["queued"], "limit": 10}),
+    ));
+    assert_eq!(queued["jobs"].as_array().unwrap().len(), 3, "{queued}");
+    let succeeded = expect_ok(&call(
+        handle,
+        "jobs.list",
+        json!({"states": ["succeeded"], "limit": 10}),
+    ));
+    assert_eq!(succeeded["jobs"].as_array().unwrap().len(), 0, "{succeeded}");
+
+    // 详情：id + 完整形状；camelCase 别名也接受。
+    let detail = expect_ok(&call(
+        handle,
+        "jobs.get",
+        json!({"job_id": expected[0].clone()}),
+    ));
+    assert_eq!(detail["id"], json!(expected[0]));
+    assert_eq!(detail["state"], json!("queued"));
+    assert_eq!(detail["progress"], json!(null));
+    assert_eq!(detail["attention_key"], json!(null));
+    let via_alias = expect_ok(&call(
+        handle,
+        "jobs.get",
+        json!({"id": expected[1].clone()}),
+    ));
+    assert_eq!(via_alias["id"], json!(expected[1]));
+
+    // 错误码与参数校验。
+    expect_error(
+        &call(handle, "jobs.get", json!({"job_id": "job_missing"})),
+        "not_found",
+    );
+    expect_error(&call(handle, "jobs.get", json!({})), "invalid_argument");
+    expect_error(
+        &call(handle, "jobs.list", json!({"state": ["queued"]})),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(handle, "jobs.list", json!({"states": ["not_a_state"]})),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(handle, "jobs.list", json!({"cursor": "not-a-cursor"})),
+        "invalid_state",
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 第 4 组：`jobs.retry` / `jobs.cancel` / `jobs.acknowledgeAttention`。
+///
+/// 用一条**没有执行者**的任务制造 `failed`（核心的真实终态，带 `attention_key`），
+/// 之后的读取与人工动作全部走 C ABI。
+#[test]
+fn jobs_retry_cancel_and_acknowledge_attention() {
+    let (dir, _path, handle) = open_temp("jobs-actions");
+    let job_id = enqueue_for_test(handle, "capi_no_handler", &[]);
+
+    // 跑一轮：没有执行者 → failed + no_handler + requires_user_action。
+    let summary = expect_ok(&call(
+        handle,
+        "jobs.runDue",
+        json!({"budget_ms": 30_000, "trigger": "manual"}),
+    ));
+    assert_eq!(summary["processed"], json!(1), "{summary}");
+    assert_eq!(summary["failed"], json!(1), "{summary}");
+
+    let failed = expect_ok(&call(handle, "jobs.get", json!({"job_id": job_id.clone()})));
+    assert_eq!(failed["state"], json!("failed"), "{failed}");
+    assert_eq!(failed["error_code"], json!("no_handler"));
+    assert_eq!(failed["requires_user_action"], json!(true));
+    let attention = failed["attention_key"]
+        .as_str()
+        .expect("需要用户处理的任务必须带 attention_key")
+        .to_owned();
+    assert!(attention.contains("capi_no_handler"), "{attention}");
+
+    // acknowledgeAttention：返回值是 null；同一个 key 重复调用幂等。
+    assert_eq!(
+        expect_ok(&call(
+            handle,
+            "jobs.acknowledgeAttention",
+            json!({"attentionKey": attention}),
+        )),
+        json!(null)
+    );
+    assert_eq!(
+        expect_ok(&call(
+            handle,
+            "jobs.acknowledgeAttention",
+            json!({"attention_key": attention}),
+        )),
+        json!(null)
+    );
+    {
+        let core = debug_core(handle).unwrap();
+        let core = core.lock().unwrap();
+        assert!(core.is_attention_acknowledged(&attention).unwrap());
+    }
+
+    // 不带 operationId 的人工重试：清零重跑。
+    let retried = expect_ok(&call(handle, "jobs.retry", json!({"job_id": job_id.clone()})));
+    assert_eq!(retried["state"], json!("queued"), "{retried}");
+    assert_eq!(retried["attempt_count"], json!(0));
+    assert_eq!(retried["error_code"], json!(null));
+
+    // 再跑一轮又失败（同一条任务、同一个 attention_key）。
+    let summary = expect_ok(&call(
+        handle,
+        "jobs.runDue",
+        json!({"budget_ms": 30_000, "trigger": "manual"}),
+    ));
+    assert_eq!(summary["processed"], json!(1), "{summary}");
+    assert_eq!(summary["failed"], json!(1), "{summary}");
+
+    // 带 operationId 的幂等重试：重放返回第一次的结果。
+    let retried = expect_ok(&call(
+        handle,
+        "jobs.retry",
+        json!({"job_id": job_id.clone(), "operation_id": "op-capi-retry"}),
+    ));
+    assert_eq!(retried["state"], json!("queued"), "{retried}");
+    let replay = expect_ok(&call(
+        handle,
+        "jobs.retry",
+        json!({"id": job_id.clone(), "operationId": "op-capi-retry"}),
+    ));
+    assert_eq!(replay["updated_at"], retried["updated_at"], "{replay}");
+    // 已 queued（不是 failed）再重试 → invalid_state。
+    let message = expect_error(
+        &call(
+            handle,
+            "jobs.retry",
+            json!({"job_id": job_id.clone(), "operation_id": "op-capi-retry-2"}),
+        ),
+        "invalid_state",
+    );
+    assert!(message.contains("已放弃"), "{message}");
+
+    // 取消：带 operationId，可幂等重放。
+    let cancelled = expect_ok(&call(
+        handle,
+        "jobs.cancel",
+        json!({"job_id": job_id.clone(), "operation_id": "op-capi-cancel"}),
+    ));
+    assert_eq!(cancelled["state"], json!("cancelled"), "{cancelled}");
+    let replay = expect_ok(&call(
+        handle,
+        "jobs.cancel",
+        json!({"id": job_id.clone(), "operationId": "op-capi-cancel"}),
+    ));
+    assert_eq!(replay["updated_at"], cancelled["updated_at"], "{replay}");
+    // 终态（cancelled）再取消 → invalid_state（不是 not_found）。
+    expect_error(
+        &call(
+            handle,
+            "jobs.cancel",
+            json!({"job_id": job_id.clone(), "operation_id": "op-capi-cancel-2"}),
+        ),
+        "invalid_state",
+    );
+
+    // 错误码与参数校验。
+    expect_error(
+        &call(handle, "jobs.retry", json!({"job_id": "job_missing"})),
+        "not_found",
+    );
+    expect_error(
+        &call(
+            handle,
+            "jobs.cancel",
+            json!({"job_id": "job_missing", "operation_id": "op"}),
+        ),
+        "not_found",
+    );
+    expect_error(
+        &call(handle, "jobs.cancel", json!({"job_id": job_id.clone()})),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(handle, "jobs.acknowledgeAttention", json!({})),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(
+            handle,
+            "jobs.retry",
+            json!({"job_id": job_id, "operation_id": "op", "extra": 1}),
+        ),
+        "invalid_argument",
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 第 5 组：`search.nextPage` / `search.upgrade` / `search.cancel`。
+///
+/// 翻页走真游标；`hybrid` 的第二阶段在没有语义证据时如实停在 `keyword_ready`
+/// （不假装融合）；取消之后会话还在、状态是 `cancelled`。
+#[test]
+fn search_pagination_upgrade_and_cancel() {
+    let (dir, _path, handle) = open_temp("search-pages");
+    for index in 0..3 {
+        seed_capture_at(
+            handle,
+            &format!("op-capi-search-{index}"),
+            &format!("2026-10-17T0{}:00:00Z", index + 1),
+            "今天在鸿蒙上验证检索：鹅掌楸、翻页与融合。",
+        );
+    }
+
+    let first = expect_ok(&call(
+        handle,
+        "search.start",
+        json!({
+            "request": {"query": "鹅掌楸", "mode": "keyword", "page_size": 2},
+            "query_revision": 1,
+        }),
+    ));
+    assert_eq!(first["results"].as_array().unwrap().len(), 2, "{first}");
+    let session_id = first["session_id"].as_str().unwrap().to_owned();
+    let first_cursor = first["cursor"]
+        .as_str()
+        .expect("还有下一页，必须给 cursor")
+        .to_owned();
+
+    // 先显式传游标翻一页，再省略游标（核心用会话自己记着的下一页）翻完。
+    let second = expect_ok(&call(
+        handle,
+        "search.nextPage",
+        json!({"session_id": session_id, "cursor": first_cursor}),
+    ));
+    assert_eq!(second["session_id"], json!(session_id), "{second}");
+    let mut pages = vec![first.clone(), second.clone()];
+    let mut cursor = second["cursor"].as_str().map(str::to_owned);
+    while cursor.is_some() {
+        let page = expect_ok(&call(
+            handle,
+            "search.nextPage",
+            json!({"session_id": session_id}),
+        ));
+        cursor = page["cursor"].as_str().map(str::to_owned);
+        pages.push(page);
+        assert!(pages.len() < 20, "翻页没有终点：{pages:?}");
+    }
+    assert!(pages.len() >= 2, "至少要有两页：{pages:?}");
+
+    // 所有页合起来没有重复命中；每一页都是完整快照（不是增量）。
+    let mut hit_ids: Vec<String> = Vec::new();
+    for page in &pages {
+        for hit in page["results"].as_array().unwrap() {
+            hit_ids.push(hit["hit_id"].as_str().unwrap().to_owned());
+        }
+    }
+    let total = hit_ids.len();
+    hit_ids.sort();
+    hit_ids.dedup();
+    assert_eq!(hit_ids.len(), total, "跨页出现了重复命中");
+    assert!(total >= 3, "{pages:?}");
+
+    // 游标错误：格式不对 / 不属于这个会话 → cursor_expired；会话不存在 → search_expired。
+    expect_error(
+        &call(
+            handle,
+            "search.nextPage",
+            json!({"session_id": session_id, "cursor": "garbage"}),
+        ),
+        "cursor_expired",
+    );
+    expect_error(
+        &call(
+            handle,
+            "search.nextPage",
+            json!({"session_id": "search_missing"}),
+        ),
+        "search_expired",
+    );
+    // 非 hybrid 会话不能升级。
+    expect_error(
+        &call(handle, "search.upgrade", json!({"session_id": session_id})),
+        "invalid_state",
+    );
+
+    // hybrid 的两阶段：start 只给关键词阶段；upgrade 在没有语义证据时如实停在
+    // keyword_ready 并给 warnings（有模型/索引时才会是 hybrid_ready）。
+    let hybrid = expect_ok(&call(
+        handle,
+        "search.start",
+        json!({
+            "request": {"query": "鹅掌楸", "mode": "hybrid", "page_size": 2},
+            "query_revision": 1,
+        }),
+    ));
+    assert_eq!(hybrid["phase"], json!("keyword_ready"), "{hybrid}");
+    let hybrid_session = hybrid["session_id"].as_str().unwrap().to_owned();
+    let upgraded = expect_ok(&call(
+        handle,
+        "search.upgrade",
+        json!({"session_id": hybrid_session}),
+    ));
+    assert_eq!(upgraded["session_id"], json!(hybrid_session), "{upgraded}");
+    let phase = upgraded["phase"].as_str().unwrap();
+    assert!(
+        phase == "keyword_ready" || phase == "hybrid_ready",
+        "升级后的阶段不合契约：{upgraded}"
+    );
+    if phase == "keyword_ready" {
+        assert!(
+            !upgraded["warnings"].as_array().unwrap().is_empty(),
+            "没融合就必须在 warnings 里说明：{upgraded}"
+        );
+    }
+    let replay = expect_ok(&call(
+        handle,
+        "search.upgrade",
+        json!({"session_id": hybrid_session}),
+    ));
+    assert_eq!(replay["phase"], upgraded["phase"], "升级必须幂等：{replay}");
+
+    // 取消：返回 cancelled 快照；再取消幂等；取消后翻页 → invalid_state。
+    let cancelled = expect_ok(&call(
+        handle,
+        "search.cancel",
+        json!({"session_id": hybrid_session}),
+    ));
+    assert_eq!(cancelled["phase"], json!("cancelled"), "{cancelled}");
+    assert_eq!(cancelled["cursor"], json!(null));
+    let again = expect_ok(&call(
+        handle,
+        "search.cancel",
+        json!({"session_id": hybrid_session}),
+    ));
+    assert_eq!(again["phase"], json!("cancelled"), "{again}");
+    expect_error(
+        &call(
+            handle,
+            "search.nextPage",
+            json!({"session_id": hybrid_session}),
+        ),
+        "invalid_state",
+    );
+    expect_error(
+        &call(handle, "search.cancel", json!({"session_id": "search_missing"})),
+        "search_expired",
+    );
+
+    // 参数校验。
+    expect_error(
+        &call(handle, "search.nextPage", json!({})),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(
+            handle,
+            "search.nextPage",
+            json!({"session_id": hybrid_session, "extra": 1}),
+        ),
+        "invalid_argument",
+    );
+    expect_error(&call(handle, "search.upgrade", json!(null)), "invalid_argument");
+    expect_error(
+        &call(
+            handle,
+            "search.cancel",
+            json!({"session_id": hybrid_session, "cursor": "x"}),
+        ),
+        "invalid_argument",
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 能力清单必须随接线增长：`core.info.capabilities == WIRED_METHODS`，30 条、无重复。
+#[test]
+fn capabilities_include_every_wired_method() {
+    let (dir, _path, handle) = open_temp("capabilities");
+    let info = expect_ok(&call(handle, "core.info", Value::Null));
+    assert_eq!(info["api_version"], json!("1.0"), "加方法不升 apiVersion");
+
+    let capabilities: Vec<&str> = info["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|name| name.as_str().unwrap())
+        .collect();
+    assert_eq!(capabilities.len(), 30, "{capabilities:?}");
+    let mut unique = capabilities.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), capabilities.len(), "能力清单有重复");
+
+    for name in [
+        "captures.list",
+        "captures.get",
+        "indexes.status",
+        "jobs.list",
+        "jobs.get",
+        "jobs.retry",
+        "jobs.cancel",
+        "jobs.acknowledgeAttention",
+        "search.nextPage",
+        "search.upgrade",
+        "search.cancel",
+    ] {
+        assert!(capabilities.contains(&name), "能力清单缺 {name}");
+    }
 
     assert_eq!(diary_close(handle), 0);
     std::fs::remove_dir_all(dir).unwrap();

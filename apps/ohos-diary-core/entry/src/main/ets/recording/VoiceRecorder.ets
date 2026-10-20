@@ -326,52 +326,80 @@ export class VoiceRecorder {
     this.phase = 'stopping';
     this.stopRequestedMs = nowUptimeMs();
 
-    // 1. 停采集器。`stop()` 失败不该阻止后续收尾（可能本来就没跑起来）。
-    await this.stopCapturer();
+    // **整个收尾都在这层 try 里**：`writer.finish()`（封闭尾段）与 `reportState()`
+    // 都在原来的 try/finally 之外；它们一抛错，phase 就停在 `stopping`，而屏幕常亮
+    // 与长时任务只会在 finalize 的 finally / 无片段分支里释放 ⇒ 永远不释放。
+    // 现在无论哪一步抛错都先走 finally；异常本身照常往上抛（不吞）。
+    // 用 `primaryError` 记下「已经有异常在飞」，避免 finally 里的释放失败
+    // 覆盖掉真正的原因（finally 抛错会替换原异常）。
+    let primaryError: Object | null = null;
+    try {
+      // 1. 停采集器。`stop()` 失败不该阻止后续收尾（可能本来就没跑起来）。
+      await this.stopCapturer();
 
-    // 2. 封闭最后一段；没有 PCM 的尾巴直接删掉，不登记空片段。
-    //    只有登记**成功**才把它算进 persistedMs；失败就保持旧值，并写进 message，
-    //    让核心的 `error_message` 与恢复日志都能看见「最后一段没登记」。
-    let tailMessage = '';
-    if (this.writer !== null) {
-      const file = this.writer.finish();
-      this.writer = null;
-      if (file.pcmBytes > 0) {
-        try {
-          this.register(file);
-        } catch (e) {
-          tailMessage = `最后一段（序号 ${file.index}，${file.durationMs} ms）登记失败：${describeError(e as Object)}`;
-          hilog.error(DOMAIN, TAG, '%{public}s SEG tail register failed %{public}s',
-            MARK, tailMessage);
-        }
-      } else {
-        hilog.info(DOMAIN, TAG, '%{public}s SEG drop index=%{public}d reason=empty bytes=%{public}d',
-          MARK, file.index, file.byteSize);
-        try {
-          fs_unlink(file.path);
-        } catch (e) {
-          // 删不掉也不影响核心：没有登记就不会进最终化。
+      // 2. 封闭最后一段；没有 PCM 的尾巴直接删掉，不登记空片段。
+      //    只有登记**成功**才把它算进 persistedMs；失败就保持旧值，并写进 message，
+      //    让核心的 `error_message` 与恢复日志都能看见「最后一段没登记」。
+      let tailMessage = '';
+      if (this.writer !== null) {
+        const file = this.writer.finish();
+        this.writer = null;
+        if (file.pcmBytes > 0) {
+          try {
+            this.register(file);
+          } catch (e) {
+            tailMessage = `最后一段（序号 ${file.index}，${file.durationMs} ms）登记失败：${describeError(e as Object)}`;
+            hilog.error(DOMAIN, TAG, '%{public}s SEG tail register failed %{public}s',
+              MARK, tailMessage);
+          }
+        } else {
+          hilog.info(DOMAIN, TAG, '%{public}s SEG drop index=%{public}d reason=empty bytes=%{public}d',
+            MARK, file.index, file.byteSize);
+          try {
+            fs_unlink(file.path);
+          } catch (e) {
+            // 删不掉也不影响核心：没有登记就不会进最终化。
+          }
         }
       }
-    }
 
-    // 3. 先上报 stopping（核心不虚构麦克风状态），再最终化。
-    //    第二个参数**只用 persistedMs**：尾段登记失败时它还是旧值，绝不虚报「已持久化」。
-    this.reportState('stopping', this.receivedMs(), this.persistedMs(), tailMessage);
-    hilog.info(DOMAIN, TAG, '%{public}s STOP_PROGRESS receivedMs=%{public}d persistedMs=%{public}d unregisteredTailMs=%{public}d equal=%{public}s',
-      MARK, this.receivedMs(), this.persistedMs(), this.unregisteredTailMs(),
-      this.receivedMs() === this.persistedMs() ? 'true' : 'false');
+      // 3. 先上报 stopping（核心不虚构麦克风状态），再最终化。
+      //    第二个参数**只用 persistedMs**：尾段登记失败时它还是旧值，绝不虚报「已持久化」。
+      this.reportState('stopping', this.receivedMs(), this.persistedMs(), tailMessage);
+      hilog.info(DOMAIN, TAG, '%{public}s STOP_PROGRESS receivedMs=%{public}d persistedMs=%{public}d unregisteredTailMs=%{public}d equal=%{public}s',
+        MARK, this.receivedMs(), this.persistedMs(), this.unregisteredTailMs(),
+        this.receivedMs() === this.persistedMs() ? 'true' : 'false');
 
-    if (this.lastRegistered < 0) {
-      await this.releaseHold();
-      throw new DiaryError('invalid_state', '没有可用的已封闭片段，核心会拒绝最终化（先检查麦克风权限/采集回调）');
-    }
+      if (this.lastRegistered < 0) {
+        // 外层 finally 会释放 hold；这里不重复调，异常照常抛给调用方。
+        throw new DiaryError('invalid_state', '没有可用的已封闭片段，核心会拒绝最终化（先检查麦克风权限/采集回调）');
+      }
 
-    try {
-      const effectiveReason = this.interrupted ? `${reason}_interrupted` : reason;
-      if (this.interrupted) {
-        hilog.warn(DOMAIN, TAG, '%{public}s STOP interrupted=true endReason=%{public}s',
-          MARK, effectiveReason);
+      try {
+        const effectiveReason = this.interrupted ? `${reason}_interrupted` : reason;
+        if (this.interrupted) {
+          hilog.warn(DOMAIN, TAG, '%{public}s STOP interrupted=true endReason=%{public}s',
+            MARK, effectiveReason);
+        }
+        const result = this.core.finalizeRecording({
+          recording_id: ticket.recording_id,
+          last_segment_index: this.lastRegistered,
+          end_reason: effectiveReason,
+        });
+        this.phase = result.state;
+        hilog.info(DOMAIN, TAG, '%{public}s FINALIZE %{public}s',
+          MARK, JSON.stringify(result));
+        hilog.info(DOMAIN, TAG, '%{public}s STOP recording=%{public}s segments=%{public}d receivedMs=%{public}d persistedMs=%{public}d audioMs=%{public}d stopLatencyMs=%{public}d',
+          MARK, ticket.recording_id, result.segment_count, this.receivedMs(),
+          this.persistedMs(), result.logical_duration_ms,
+          nowUptimeMs() - this.stopRequestedMs);
+        return result;
+      } catch (e) {
+        this.phase = 'error';
+        this.errorText = describeError(e as Object);
+        hilog.error(DOMAIN, TAG, '%{public}s FINALIZE failed %{public}s',
+          MARK, this.errorText);
+        throw DiaryError.fromThrown(e as Object);
       }
       const result = this.core.finalizeRecording({
         recording_id: ticket.recording_id,
@@ -390,14 +418,24 @@ export class VoiceRecorder {
       this.commitFinalizedCapture(result);
       return result;
     } catch (e) {
-      this.phase = 'error';
-      this.errorText = describeError(e as Object);
-      hilog.error(DOMAIN, TAG, '%{public}s FINALIZE failed %{public}s',
-        MARK, this.errorText);
-      throw DiaryError.fromThrown(e as Object);
+      primaryError = e as Object;
+      // ArkTS 只允许 throw Error 类型；保留原异常（DiaryError 等），
+      // 极端的非 Error 抛出值统一包成 Error，至少不丢消息。
+      throw e instanceof Error ? e : new Error(describeError(e as Object));
     } finally {
-      // 无论成功/失败，都要把「保持屏幕常亮」和长时任务收掉。
-      await this.releaseHold();
+      // 无条件释放「保持屏幕常亮」与长时任务。`releaseHold()` 自身幂等。
+      // 已经有异常时：先释放，释放再失败只记日志，别覆盖真正的故障；
+      // 一切正常时：释放失败照常抛给调用方（不能假装已经收掉）。
+      if (primaryError === null) {
+        await this.releaseHold();
+      } else {
+        try {
+          await this.releaseHold();
+        } catch (e) {
+          hilog.warn(DOMAIN, TAG, '%{public}s RELEASE failed while propagating %{public}s: %{public}s',
+            MARK, describeError(primaryError), describeError(e as Object));
+        }
+      }
     }
   }
 

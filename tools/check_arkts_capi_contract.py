@@ -12,7 +12,9 @@
 6. `entry/oh-package.json5` 的 `file:` 依赖指向 types 目录，且那目录里
    `index.d.ts` + `oh-package.json5`（`types` 字段）都在（探针 §24.3 的三件套）；
 7. 设计口径：JS 面**不导出** `stringFree`（C 字符串在 shim 内部复制并释放），
-   `native_unavailable` 不是核心码。
+   `native_unavailable` 不是核心码；
+8. `m6-核心-C-ABI.md` §6.1 标题里写的方法数 == `WIRED_METHODS` 的条数（文档漂移守卫：
+   曾经文档写 14、实际 19，评审只能靠数表格发现）。
 
 退出码 0 表示全部对得上；任何一条不符会逐条打印并返回 1。
 """
@@ -34,6 +36,7 @@ TYPES_PKG = PROJECT / "entry" / "src" / "main" / "cpp" / "types" / "libdiary_nap
 ENTRY_PKG = PROJECT / "entry" / "oh-package.json5"
 DIARY_CORE_ETS = PROJECT / "entry" / "src" / "main" / "ets" / "core" / "DiaryCore.ets"
 DIARY_ERROR_ETS = PROJECT / "entry" / "src" / "main" / "ets" / "core" / "DiaryError.ets"
+CAPI_DOC = ROOT / "docs" / "architecture" / "m6-核心-C-ABI.md"
 
 problems: list[str] = []
 notes: list[str] = []
@@ -123,6 +126,20 @@ def arkts_error_codes() -> list[str]:
     return re.findall(r"'([a-z_]+)'", match.group(1))
 
 
+def documented_method_count() -> int | None:
+    """`m6-核心-C-ABI.md` §6.1 标题里声明的方法数。
+
+    这是防「文档写 14、实际 19」那类漂移的：方法表本身可以逐行增删，但标题里的
+    数字必须与 `WIRED_METHODS` 一致。标题形状由文档自定，这里只认 `已接（N 条`。
+    """
+    text = read(CAPI_DOC)
+    match = re.search(r"### 6\.1 已接（(\d+) 条", text)
+    if not match:
+        problems.append("m6-核心-C-ABI.md：§6.1 标题里找不到「已接（N 条」")
+        return None
+    return int(match.group(1))
+
+
 def check_module_name() -> None:
     shim = read(SHIM)
     match = re.search(r'\.nm_modname = "([\w]+)"', shim)
@@ -164,6 +181,16 @@ def main() -> int:
     methods = wired_methods()
     calls = arkts_calls()
     diff("契约方法（DiaryCore.ets ↔ WIRED_METHODS）", methods, calls)
+
+    documented = documented_method_count()
+    if documented is not None:
+        if documented == len(methods):
+            notes.append(f"C ABI 文档 §6.1 的方法数：{documented} 条（与 WIRED_METHODS 一致）")
+        else:
+            problems.append(
+                f"m6-核心-C-ABI.md §6.1 写的是 {documented} 条，"
+                f"WIRED_METHODS 实际是 {len(methods)} 条"
+            )
 
     codes = core_error_codes()
     arkts_codes = arkts_error_codes()

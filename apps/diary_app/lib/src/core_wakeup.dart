@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:ui' show DartPluginRegistrant;
 
 import 'package:diary_api/diary_api.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
@@ -56,7 +57,7 @@ class CoreWakeupScheduler {
       await _logQuietly({
         'trigger': 'startup',
         'observedAt': DateTime.now().toUtc().toIso8601String(),
-        'error': error.runtimeType.toString(),
+        'error': diagnosticErrorCode(error),
       });
     }
   }
@@ -70,7 +71,7 @@ class CoreWakeupScheduler {
       await _logQuietly({
         'trigger': 'foreground-schedule',
         'observedAt': DateTime.now().toUtc().toIso8601String(),
-        'error': error.runtimeType.toString(),
+        'error': diagnosticErrorCode(error),
       });
     }
   }
@@ -169,7 +170,7 @@ class CoreWakeupScheduler {
         'trigger': 'wake',
         'observedAt': observedAt.toIso8601String(),
         'expectedAt': inputData?['expectedAt'],
-        'error': error.runtimeType.toString(),
+        'error': diagnosticErrorCode(error),
       });
       // Version/capability mismatches cannot heal through WorkManager retry.
       return error is DiaryException &&
@@ -192,4 +193,23 @@ class CoreWakeupScheduler {
 @pragma('vm:entry-point')
 void coreWakeupDispatcher() {
   Workmanager().executeTask(CoreWakeupScheduler._runFromWorker);
+}
+
+/// Stable machine code for the wakeup diagnostics log.
+///
+/// The diagnostics bundle only keeps values from an exact machine-code
+/// whitelist. `error.runtimeType.toString()` produces `DiaryException` /
+/// `PlatformException`, which are Dart type names — never in that whitelist —
+/// so every real failure was logged as `<redacted>` and the bundle could not
+/// answer "which error was it?". Log the wire code instead:
+///
+/// * `DiaryException` -> `code.wire` (contract §7 vocabulary);
+/// * `PlatformException` -> its `code`, which is `ERR_DIARY_*` for the NAPI
+///   layer (unknown plugin codes are still redacted by the exporter);
+/// * anything else -> a fixed literal, never a runtime type name.
+@visibleForTesting
+String diagnosticErrorCode(Object error) {
+  if (error is DiaryException) return error.code.wire;
+  if (error is PlatformException) return error.code;
+  return 'unclassified_error';
 }
