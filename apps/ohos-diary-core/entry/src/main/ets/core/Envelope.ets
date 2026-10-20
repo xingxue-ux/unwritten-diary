@@ -4,8 +4,8 @@
 // 不重排 data（核心 serde 出来的就是最终形状）。
 //
 // 响应：
-//   {"apiVersion":"1.0","data":{…},"ok":true}
-//   {"apiVersion":"1.0","error":{"code":"…","message":"…","retryable":false},"ok":false}
+//   {"apiVersion":"1.1","data":{…},"ok":true}
+//   {"apiVersion":"1.1","error":{"code":"…","message":"…","retryable":false},"ok":false}
 
 import { DiaryError, ErrorBody, NATIVE_UNAVAILABLE } from './DiaryError';
 

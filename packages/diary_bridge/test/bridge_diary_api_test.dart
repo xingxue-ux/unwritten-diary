@@ -51,7 +51,7 @@ void main() {
 
   test('经契约接口完成一条记录（真核心 + 真 SQLite）', () async {
     final opened = await api.open();
-    expect(opened.coreInfo.apiVersion, '1.0');
+    expect(opened.coreInfo.apiVersion, '1.1');
     // 版本号只在这一处维护（见 expected_schema.dart 的说明）。
     expect(opened.coreInfo.dataSchemaVersion, expectedDataSchemaVersion);
     expect(opened.coreInfo.capabilities, contains('captures.commit'));

@@ -234,9 +234,13 @@ pub struct Core {
 ///
 /// 桥接的 `CoreInfo.apiVersion` 与备份清单里的 `apiVersion` 都用这一个常量：
 /// 两处各写一份字面量的话，升版本时必然漏掉一处。口径是「主次版本」：
-/// 新增可选字段或加性方法不改它，删方法或改既有语义才升主版本（见契约第 1.2 节
-/// 与 `docs/architecture/m5-备份与恢复.md` 的兼容口径）。
-pub const API_VERSION: &str = "1.0";
+/// 新增**可选**字段或加性方法不改它；新增**必填**字段、删方法或改既有语义才动它
+/// （见契约第 1.3 节与 `docs/architecture/m5-备份与恢复.md` 的兼容口径）。
+///
+/// 1.0 → 1.1：`SearchHit.captureId` 是必填字段。旧客户端忽略它是安全的，但
+/// **新客户端 + 旧核心**读不到这个键（ArkTS 拿到 `undefined`），必须靠 `apiVersion`
+/// 才分辨得出来——所以版本要动，不能只写「加性字段，调用方不受影响」。
+pub const API_VERSION: &str = "1.1";
 
 /// 一行的原始形态：先取出来，再按业务语义解析，避免把解析错误塞进 SQL 层。
 type RawCapture = (String, i64, String, String, String, String, String, i64, String, String);

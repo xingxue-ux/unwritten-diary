@@ -152,7 +152,7 @@ export class DiaryCore {
 
   // ---------------------------------------------------------------- 静态诊断
 
-  /** 核心 C ABI 的版本戳（`diary_capi_version()`），例如 `diary_capi/0.1.0 apiVersion=1.0`。 */
+  /** 核心 C ABI 的版本戳（`diary_capi_version()`），例如 `diary_capi/0.1.0 apiVersion=1.1`。 */
   static version(): string {
     try {
       return diaryNapi.version();

@@ -74,7 +74,7 @@ libdiary_capi.so      Rust：diary_open / diary_call / diary_close / diary_versi
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
-| `version()` | `() => string` | `diary_capi_version()` 原文，如 `diary_capi/0.1.0 apiVersion=1.0` |
+| `version()` | `() => string` | `diary_capi_version()` 原文，如 `diary_capi/0.1.0 apiVersion=1.1` |
 | `open(path)` | `(string) => number` | 打开/创建资料库，返回**句柄 id**；失败抛 `ERR_DIARY_OPEN` |
 | `close(handle)` | `(number) => void` | 关闭；未知/已关闭抛 `ERR_DIARY_HANDLE` |
 | `call(handle, json)` | `(number, string) => string` | 返回**信封 JSON 原文**；业务错误不抛 |

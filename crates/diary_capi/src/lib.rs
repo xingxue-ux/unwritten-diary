@@ -28,8 +28,8 @@
 //! 响应是版本化信封（**成功与失败都带 `apiVersion`**）：
 //!
 //! ```json
-//! {"apiVersion":"1.0","data":{…},"ok":true}
-//! {"apiVersion":"1.0","error":{"code":"invalid_argument","message":"…","retryable":false},"ok":false}
+//! {"apiVersion":"1.1","data":{…},"ok":true}
+//! {"apiVersion":"1.1","error":{"code":"invalid_argument","message":"…","retryable":false},"ok":false}
 //! ```
 //!
 //! - `apiVersion` 就是核心的 `diary_core::API_VERSION`（契约第 1.2 节的口径），桥面不自造版本号；
