@@ -260,7 +260,7 @@ PR #117 的 C ABI 只接了 9 条方法，**没有 `recordings.*`**；这一片�
   与参数错误用例（本机受重线约束**没有跑 `cargo test`**，只做了 `cargo check --all-targets`；
   真机上的录音链路本身就是这 5 条方法的端到端实测）。
 
-`DiaryCore.ets` 同步补了 5 个类型化方法（14 条契约方法），
+`DiaryCore.ets` 同步补了 5 个类型化方法（当时 14 条契约方法；#143 之后 30 条），
 `python3 tools/check_arkts_capi_contract.py` 通过。
 
 ## 6 恢复（进程被杀之后）
