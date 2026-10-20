@@ -98,16 +98,21 @@ export function newOperationId(prefix: string): string {
   return `${prefix}-${Date.now()}-${random}`;
 }
 
-/** 记录状态 → 文案。`draft` 在界面上一律说「未提交」。 */
+/**
+ * 记录状态 → 徽标文案（契约 §4.2 的 `state.*` 槽位）。
+ *
+ * `draft` 的徽标是「**草稿**」——「未提交」只能作为副标题/解释，不能替代徽标；
+ * `trashed` 是「**已移入回收站**」，不是「已删除」（它是可逆状态，写「已删除」会诱发误清理）。
+ */
 export function captureStateLabel(state: string): string {
   if (state === 'draft') {
-    return '未提交';
+    return '草稿';
   }
   if (state === 'committed') {
     return '已提交';
   }
   if (state === 'trashed') {
-    return '已删除';
+    return '已移入回收站';
   }
   return state;
 }
@@ -239,6 +244,31 @@ export function coverageLabel(coverage: string): string {
     return '不可用';
   }
   return coverage;
+}
+
+/** 日记版本的来源 → 文案（`DiaryVersion.origin` 的线上字符串）。 */
+export function diaryOriginLabel(origin: string): string {
+  if (origin === 'generated') {
+    return '整理生成';
+  }
+  if (origin === 'user_edit') {
+    return '手写编辑';
+  }
+  if (origin === 'merge') {
+    return '合并';
+  }
+  return origin;
+}
+
+/** 日记版本来源的语气（只影响徽标文字颜色）。 */
+export function diaryOriginTone(origin: string): string {
+  if (origin === 'user_edit') {
+    return 'ok';
+  }
+  if (origin === 'merge') {
+    return 'active';
+  }
+  return 'muted';
 }
 
 /** 检索命中的来源类型 → 文案。 */

@@ -27,6 +27,11 @@ import {
   CommitParams,
   CommitResult,
   CreateDraftParams,
+  DiaryDay,
+  DiaryDayParams,
+  DiaryVersion,
+  DiaryVersionPage,
+  DiaryVersionParams,
   DraftSaveResult,
   ExtractedContent,
   ExtractParams,
@@ -40,7 +45,9 @@ import {
   JobStatus,
   LibraryInfo,
   ListCapturesParams,
+  ListDiaryVersionsParams,
   ListJobsParams,
+  MergeDiaryParams,
   NativeRecordingStatusParams,
   PrepareRecordingParams,
   ProviderConfig,
@@ -56,6 +63,7 @@ import {
   RegisterSegmentParams,
   RetryJobParams,
   RunDueParams,
+  SaveDiaryEditParams,
   SaveDraftParams,
   SaveProviderParams,
   SearchNextPageParams,
@@ -63,6 +71,7 @@ import {
   SearchSessionParams,
   SearchSnapshot,
   SegmentReceipt,
+  SetDiaryCurrentParams,
   TestProviderParams,
 } from './Models';
 
@@ -171,7 +180,7 @@ export class DiaryCore {
     return diaryNapi.openHandleCount();
   }
 
-  // ---------------------------------------------------------------- 契约方法（30 条）
+  // ---------------------------------------------------------------- 契约方法（36 条）
   //
   // 一一对应 `crates/diary_capi/src/methods.rs` 的 `WIRED_METHODS`。方法名与方法体里的
   // 字符串必须一致；`tools/check_arkts_capi_contract.py` 会核对。
@@ -394,6 +403,68 @@ export class DiaryCore {
   /** `providers.remove`：只删配置行，不删任何日记/派生内容（核心返回 `null`）。 */
   removeProvider(params: ProviderIdParams): void {
     this.rawCall('providers.remove', params);
+  }
+
+  // ---------------------------------------------------------------- 日记（契约 4.3 / 2.5）
+  //
+  // 「日记」一级入口的数据源。这一组只透传核心的 `DiaryDay` / `DiaryVersion`：
+  // 哪一版是当前、哪些是候选看 `DiaryDay`；版本本身没有状态字段。
+  //
+  // 空的一天核心报 `not_found`（这一天既没有材料也没有版本）——那是**空态**，
+  // 界面显示「还没有成篇日记」，不要把它当读取失败。
+
+  /**
+   * `diary.getDay`：某一天的当前/候选与材料覆盖。
+   *
+   * 返回值的 `revision` 是 `saveDiaryEdit` / `setDiaryCurrent` / `mergeDiary` 的
+   * `expected_revision`（原样回传，不猜）。
+   */
+  getDiaryDay(params: DiaryDayParams): DiaryDay {
+    return this.invokeData('diary.getDay', params) as DiaryDay;
+  }
+
+  /**
+   * `diary.listVersions`：分页读某一天的版本，最新在前。
+   *
+   * `cursor` 原样回传上一页的 `next_cursor`（不透明）；没有版本时是空页，不是错误。
+   */
+  listDiaryVersions(params: ListDiaryVersionsParams): DiaryVersionPage {
+    return this.invokeData('diary.listVersions', params) as DiaryVersionPage;
+  }
+
+  /** `diary.getVersion`：读一条完整版本（含正文、生成信息与来源关联）。 */
+  getDiaryVersion(params: DiaryVersionParams): DiaryVersion {
+    return this.invokeData('diary.getVersion', params) as DiaryVersion;
+  }
+
+  /**
+   * `diary.saveEdit`：人工编辑写成**新版本**（基版一个字节都不动），新版本成为当前。
+   *
+   * `expected_revision` 不符报 `revision_conflict`，核心零改动；空正文报
+   * `invalid_argument`。同一条 `operation_id` 重放返回原版本。
+   */
+  saveDiaryEdit(params: SaveDiaryEditParams): DiaryVersion {
+    return this.invokeData('diary.saveEdit', params) as DiaryVersion;
+  }
+
+  /**
+   * `diary.setCurrent`：在一天的版本之间指定当前版本（例如退回上一版）。
+   *
+   * 旧当前版变候选、不删除；切到已经是当前的版本是无操作。`expected_revision`
+   * 不符报 `revision_conflict`。
+   */
+  setDiaryCurrent(params: SetDiaryCurrentParams): DiaryDay {
+    return this.invokeData('diary.setCurrent', params) as DiaryDay;
+  }
+
+  /**
+   * `diary.merge`：把两版（或多版）合成一条新的 `merge` 版本。
+   *
+   * `body` 是**用户确认后的正文**：核心不替用户合并、不调模型（`modelCalls = 0`）。
+   * 参与合并的版本全部保留，随时可取回。
+   */
+  mergeDiary(params: MergeDiaryParams): DiaryVersion {
+    return this.invokeData('diary.merge', params) as DiaryVersion;
   }
 
   // ---------------------------------------------------------------- 逃生口

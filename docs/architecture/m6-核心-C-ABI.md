@@ -168,7 +168,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 ## 6 方法映射表
 
-### 6.1 已接（30 条，`core.info.capabilities` 就是这份清单）
+### 6.1 已接（36 条，`core.info.capabilities` 就是这份清单）
 
 | 契约方法 | 核心调用 | `data` |
 |---|---|---|
@@ -202,19 +202,42 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `providers.list` | `Core::list_providers` | `Provider[]` |
 | `providers.test` | `Core::test_provider` | `ProviderTestReport` |
 | `providers.remove` | `Core::remove_provider` | `null` |
+| `diary.getDay` | `Core::get_diary_day` | `DiaryDay` |
+| `diary.listVersions` | `Core::list_diary_versions`（不透明游标，最新在前） | `DiaryVersionPage` |
+| `diary.getVersion` | `Core::get_diary_version` | `DiaryVersion` |
+| `diary.saveEdit` | `Core::save_diary_edit`（写新版本，基版不动） | `DiaryVersion` |
+| `diary.setCurrent` | `Core::set_diary_current` | `DiaryDay` |
+| `diary.merge` | `Core::merge_diary_versions`（不调模型，`modelCalls = 0`） | `DiaryVersion` |
 
 `search.start` 的 `request` 里只有 `query` 必填，`mode`（默认 `keyword`；`semantic` 是
 语义那一路）、`filters`（全字段可选）、`page_size`（默认 20，与 `bridge_diary_api.dart`
 同口径）都可省。
 
+**六条 `diary.*` 为什么在这里**：「日记」是契约 §2.2 的一级入口，而在它们之前 C ABI
+**没有任何 `diary.*`**——鸿蒙的日记页无数据可取。它们只把核心的 `diary` 模块转接出来：
+
+- `diary.getDay` 的 `day_key` 必填（`YYYY-MM-DD`，核心校验）；**空的一天是 `not_found`**
+  （这一天既没有材料也没有版本），这是界面的空态，不是「读取失败」；
+- 候选/当前只在 `DiaryDay` 里表达（`current_version_id` / `candidate_version_ids`）；
+  `DiaryVersion` 本身没有状态字段；
+- 三条写路径的 `expected_revision` 取自 `DiaryDay.revision`（持久单调；换当前版本也推进），
+  不是版本数；冲突闸门、幂等、版本链、合并审计全在核心，桥面不复制规则；
+- `diary.setCurrent` 没有 `operationId`（契约这一行本来就没有）：它不产生任何东西，
+  按目标状态幂等。
+
+还在缺口里的两条：**`diary.listDays`**（核心没有按天枚举的入口）与 **`diary.generate`**
+（核心有 `generate_diary`，但它要排 AI 任务，属于生成那一片）。鸿蒙日记页因此不显示
+「生成/整理」按钮，只如实说明缺口；列表的日期来自最近的材料与最近 30 天。
+
 ### 6.1.1 分页方法：游标是**真游标**，不是「传了就报错」
 
-三条分页方法都把核心的**不透明游标**原样透传，没有把「只接第一页」当成已接：
+四条分页方法都把核心的**不透明游标**原样透传，没有把「只接第一页」当成已接：
 
 | 方法 | 参数 | `data` | 游标语义 |
 |---|---|---|---|
 | `captures.list` | `day_key?` / `cursor?` / `limit?`（默认 20，核心夹 1–100） | `CapturePage` | 键集 `(occurred_at DESC, id DESC)`；`next_cursor` 原样回传 |
 | `jobs.list` | `states?` / `cursor?` / `limit?`（默认 20，核心夹 1–200） | `JobPage` | 键集 `(priority DESC, created_at, id)`；`next_cursor` 原样回传 |
+| `diary.listVersions` | `day_key` / `cursor?` / `limit?`（默认 20，核心夹 1–100） | `DiaryVersionPage` | 键集 `(created_at DESC, id DESC)`；最新在前；`next_cursor` 原样回传 |
 | `search.nextPage` | `session_id` / `cursor?` | `SearchSnapshot` | 会话内偏移 + 结果代次；省略 `cursor` = 继续用会话记着的下一页 |
 
 `jobs.list` 的游标是这一片给核心加的 `Core::list_jobs_page`：原有 `list_jobs(states, limit)`
@@ -258,8 +281,9 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 restore/previewPurge/purge`、`sources.extractedContent/previousRevision/reviseText/locate`、
 `imports.*`、`assets.open/release`、`search.snapshot`、`jobs.nextWakeup`、
 `core.events/snapshot/close/setRuntimeState`、`backups.*`（桥上已有同步入口，映射过来即可）、
-`diary.*` / `styles.*` / `responses.*` / `settings.*` / `plugins.*` / `exports.*`（核心大多
-还没有对应实现）。`providers.*` 四条已接（见上表）。
+`diary.listDays` / `diary.generate`（核心有 `generate_diary`，但它要排 AI 任务）、
+`styles.*` / `responses.*` / `settings.*` / `plugins.*` / `exports.*`（核心大多
+还没有对应实现）。`providers.*` 四条与 `diary.*` 六条已接（见上表）。
 
 未接入的方法一律 `invalid_argument` + 已接入清单，**不静默成功、不假装支持**。
 
@@ -298,7 +322,10 @@ diary_call(h, json)
 
 ## 9 测试
 
-### 9.1 八条用例（`crates/diary_capi/src/tests.rs`，CI 可跑、不联网）
+### 9.1 用例（`crates/diary_capi/src/tests.rs`，CI 可跑、不联网）
+
+> 下面列的是每条用例覆盖的面；`cargo test -p diary_capi` 现在跑 **19 条**（分页、日记、
+> 备份/事件等分片陆续加上的）。
 
 | 用例 | 覆盖 |
 |---|---|
@@ -310,6 +337,7 @@ diary_call(h, json)
 | `returned_strings_are_freed_by_diary_string_free` | 成功与失败路径的字符串都能释放干净（活字符串计数回原处）、`free(NULL)` no-op |
 | `core_panic_becomes_an_error_and_the_handle_survives` | panic 注入（`__test.panic`，**只在测试构建里存在**）→ `ok:false`、进程不中止、句柄之后仍可用 |
 | `two_threads_can_share_one_handle` | 两个线程并发调同一句柄（读检索 + 读状态 + 并发写一次）→ 不崩、结果正确（revision 1 → 2、`durable=true`） |
+| `diary_day_and_versions_are_wired` | `diary.getDay` 有材料的一天 / camelCase 别名 / 空的一天是 `not_found`；`diary.listVersions` 空页 + 坏游标 `invalid_state`；写路径（`saveEdit` / `setCurrent` / `merge`）的参数校验与 `not_found` 透传，且**没有改动任何一天** |
 
 > `__test.panic` 用 `#[cfg(test)]` 挂在 `dispatch` 的一个分支上：**发布产物里没有这个入口**，
 > 不是「留了一个能崩的开关」。
@@ -447,8 +475,8 @@ cargo +1.94.1 build -p diary_capi --release --target aarch64-unknown-linux-ohos
    `DiaryCore` 薄封装 + 参考工程，本机能编、HAP 能打；真机仍未验**；
 4. **鸿蒙真机验证**：只验到「能交叉编过」。`dlopen` 能不能拿到符号、沙箱里能不能建库、
    SQLite 能不能落盘——**全部未验证**（探针验过的是探针自己那份薄 ABI，不是这一份）；
-5. **方法子集**：只接了 30 条（§6.1；录音 5 条、`providers.*` 4 条、界面缺口 11 条都是后续
-   分片补的），其余仍是扩展点；
+5. **方法子集**：只接了 36 条（§6.1；录音 5 条、`providers.*` 4 条、界面缺口 11 条、
+   `diary.*` 6 条都是后续分片补的），其余仍是扩展点；
 6. **性能**：没测吞吐、没测 JSON 序列化占比、没测大库（十万条记录）下的表现；
 7. **并发压力**：跨线程用例是 15 次循环的**正确性**验证，不是压测（没有 P50/P99）；
 8. **错误 message 的语言**：桥面判定的是中文，`serde_json` 的解析错误是英文

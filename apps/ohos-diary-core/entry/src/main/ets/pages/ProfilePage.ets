@@ -1,4 +1,10 @@
-// 设置：模型状态、语义索引状态 + 一键重建、转写配置入口、诊断信息。
+// 我的（契约 §2.5）：个人空间与设置分组——**不是**一张诊断表，也不是一级「设置」tab。
+//
+// 分组（与 Windows 的 `_profilePage` 同构）：
+// - 创作与整理：模型服务（语义/转写状态）、任务中心（二级页）、风格偏好/整理时机（未接）；
+// - 资料与应用：插件 / 备份与恢复 / 阅读导出 / 存储与回收站 / 封面与加载动画（未接的
+//   全部如实标注，不摆按了没反应的假按钮）；
+// - 设备与诊断：语义索引、队列概览、诊断与能力清单（鸿蒙保留这一组）。
 //
 // 状态如实（不拿「模型加载过」冒充「索引就绪」）：
 // - `runtime_config.semantic.state` 只表示模型/配置的状态；
@@ -6,6 +12,7 @@
 // - `reasons[]` 是核心写的中文整句，**原样展示**，不改写成自己的文案；
 // - 配置只在 `Core::open` 时读一次；当前没有写 `core-config.json` 的 C ABI，
 //   所以「去配置」只能如实说是缺口（不伪造一个保存按钮）。
+// - 隐私承诺用契约 `privacy.local_only` 的原句，不改写。
 
 import { common } from '@kit.AbilityKit';
 import { DiaryCore } from '../core/DiaryCore';
@@ -26,14 +33,13 @@ import { AppState } from '../ui/AppState';
 import {
   databasePath,
   formatBytes,
-  formatDateTime,
   jobStateLabel,
   newOperationId,
 } from '../ui/AppRuntime';
 import { ErrorBanner, InfoRow, LoadingRow, PageTitle, SectionTitle, StatePill } from '../ui/Common';
 
 @Component
-export struct SettingsPage {
+export struct ProfilePage {
   pathStack: NavPathStack = new NavPathStack();
   @State info: LibraryInfo | null = null;
   @State indexStatus: IndexStatus | null = null;
@@ -383,6 +389,17 @@ export struct SettingsPage {
     }
   }
 
+  /** 任务中心入口的一行摘要（不做状态判断，只是把 `jobs.status` 的数字摆出来）。 */
+  private taskSummary(): string {
+    if (this.jobStatus === null) {
+      return '还没有读到队列计数';
+    }
+    const needsAttention: number =
+      this.jobStatus.waiting_configuration + this.jobStatus.failed;
+    return `${this.jobStatus.queued} 排队 · ${this.jobStatus.running} 运行 · ` +
+      `${needsAttention} 需要处理`;
+  }
+
   @Builder
   section(title: string) {
     SectionTitle({ text: title })
@@ -393,7 +410,10 @@ export struct SettingsPage {
       Column({ space: 10 }) {
         Row({ space: 8 }) {
           Column() {
-            PageTitle({ title: '设置', subtitle: '模型、索引与诊断；状态如实展示' })
+            PageTitle({
+              title: '我的',
+              subtitle: '本地资料边界、创作与整理偏好、设备与诊断',
+            })
           }
           .layoutWeight(1)
           .alignItems(HorizontalAlign.Start)
@@ -423,9 +443,33 @@ export struct SettingsPage {
           })
         }
 
-        // ---------------------------------------------------------- 模型状态
+        // ---------------------------------------------------------- 本地资料边界
         Column({ space: 4 }) {
-          this.section('模型状态（core.info.runtime_config）')
+          this.section('本地资料边界')
+          Text('日记默认只保存在这台设备上；只有你主动配置的模型服务会收到交给它处理的材料。')
+            .fontSize(14)
+            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .width('100%')
+          InfoRow({
+            label: '最近记录',
+            value: this.info === null ? '—' : `${(this.info as LibraryInfo).capture_count} 条`,
+          })
+          Text('不登录、不自动同步；备份/导出只写到用户选择的位置（当前鸿蒙构建还没有备份/导出入口）。')
+            .fontSize(12)
+            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .width('100%')
+        }
+        .width('100%')
+        .padding(14)
+        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
+        .borderRadius(14)
+        .alignItems(HorizontalAlign.Start)
+
+        // ---------------------------------------------------------- 创作与整理
+        SectionTitle({ text: '创作与整理' })
+
+        Column({ space: 4 }) {
+          this.section('模型服务（转写 / 语义）')
           Row({ space: 8 }) {
             Text('语义')
               .fontSize(13)
@@ -475,6 +519,25 @@ export struct SettingsPage {
               .fontColor($r('sys.color.ohos_id_color_warning'))
               .width('100%')
           }
+          // 任务中心是**二级页**：一级 tab 里没有「任务」（契约 §0.2）。
+          InfoRow({ label: '任务中心', value: this.taskSummary() })
+          Row({ space: 8 }) {
+            Button('打开任务中心')
+              .fontSize(13)
+              .height(34)
+              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
+              .fontColor($r('sys.color.ohos_id_color_text_primary'))
+              .onClick(() => {
+                this.pathStack.pushPathByName('jobs', '');
+              })
+            Blank()
+          }
+          .width('100%')
+          InfoRow({ label: '风格偏好', value: '未接：styles.* 还没有 C ABI，本页不提供假入口' })
+          InfoRow({
+            label: '整理时机',
+            value: '未接：整理设置（settings.update）还没有 C ABI，不能在这里排自动整理',
+          })
         }
         .width('100%')
         .padding(14)
@@ -482,7 +545,31 @@ export struct SettingsPage {
         .borderRadius(14)
         .alignItems(HorizontalAlign.Start)
 
-        // ---------------------------------------------------------- 语义索引
+        // ---------------------------------------------------------- 资料与应用
+        SectionTitle({ text: '资料与应用' })
+
+        Column({ space: 4 }) {
+          this.section('资料与应用（未接的能力如实标注）')
+          InfoRow({ label: '插件', value: '未接：plugins.* 还没有 C ABI' })
+          InfoRow({ label: '备份与恢复', value: '未接：backups.* 还没有 C API 入口' })
+          InfoRow({ label: '阅读导出', value: '未接：exports.* 还没有 C ABI' })
+          InfoRow({ label: '存储与回收站', value: '未接：captures.trash / restore / purge 还没有接' })
+          InfoRow({ label: '封面与加载动画', value: '未做：非语义页，契约不要求逐字对齐' })
+          Text('这五项在鸿蒙上**没有可用入口**：C ABI 与核心都还不完整，所以这里只写「未接」，' +
+            '不放按了没反应的按钮。')
+            .fontSize(12)
+            .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            .width('100%')
+        }
+        .width('100%')
+        .padding(14)
+        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
+        .borderRadius(14)
+        .alignItems(HorizontalAlign.Start)
+
+        // ---------------------------------------------------------- 设备与诊断
+        SectionTitle({ text: '设备与诊断' })
+
         Column({ space: 4 }) {
           this.section('语义索引（indexes.status）')
           if (this.indexError.code.length > 0) {
@@ -571,49 +658,6 @@ export struct SettingsPage {
               } })
             }
           }
-        }
-        .width('100%')
-        .padding(14)
-        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-        .borderRadius(14)
-        .alignItems(HorizontalAlign.Start)
-
-        // ---------------------------------------------------------- 任务概览
-        Column({ space: 4 }) {
-          this.section('任务（jobs.status）')
-          if (this.jobStatus === null) {
-            Text('还没有读到队列计数。')
-              .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
-              .width('100%')
-          } else {
-            InfoRow({
-              label: '处理中',
-              value: `${this.jobStatus.queued} 排队 / ${this.jobStatus.running} 运行`,
-            })
-            InfoRow({
-              label: '等待',
-              value: `${this.jobStatus.retry_wait} 自动重试 / ${this.jobStatus.waiting_dependency} 等前置`,
-            })
-            InfoRow({
-              label: '需要处理',
-              value: `${this.jobStatus.waiting_configuration} 等配置 / ${this.jobStatus.failed} 失败`,
-            })
-            InfoRow({ label: '完成', value: `${this.jobStatus.succeeded} 成功 / ${this.jobStatus.cancelled} 取消` })
-            InfoRow({ label: '到期积压', value: `${this.jobStatus.due_backlog}` })
-            InfoRow({
-              label: '下次唤醒',
-              value: this.jobStatus.next_wakeup === null ? '—' : formatDateTime(this.jobStatus.next_wakeup),
-            })
-          }
-          Button('打开任务中心')
-            .fontSize(13)
-            .height(34)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
-            .onClick(() => {
-              this.pathStack.pushPathByName('jobs', '');
-            })
         }
         .width('100%')
         .padding(14)

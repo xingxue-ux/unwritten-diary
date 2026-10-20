@@ -1,4 +1,7 @@
-// 今日：按天列出 captures（`captures.list`，游标分页）。
+// 片段（契约 §2.4）：原始材料的时间线——保存下来的文字、录音、文件，**不是日记正文**。
+//
+// 从一个旧的「今日」页拆出来的：按天列出 captures（`captures.list`，游标分页），
+// 列表语义属于「片段」；录音与文字新建入口在「记录」tab，成篇正文在「日记」。
 //
 // 状态口径（重要）：
 // - **不用 `Capture.processing_summary`**：核心当前恒为全 0（issue #146），
@@ -46,7 +49,7 @@ function sourceKindOf(extracted: ExtractedContent | null): string {
 }
 
 @Component
-export struct TodayPage {
+export struct SnippetsPage {
   pathStack: NavPathStack = new NavPathStack();
   @State rows: CaptureRow[] = [];
   @State loading: boolean = true;
@@ -371,18 +374,16 @@ export struct TodayPage {
     Column({ space: 10 }) {
       Row({ space: 8 }) {
         Column() {
-          PageTitle({ title: '今日', subtitle: `${dayLabelAtOffset(this.dayOffset)} · 按天列出记录` })
+          PageTitle({
+            title: '片段',
+            subtitle: `${dayLabelAtOffset(this.dayOffset)} · 留下的片段（原始记录与转写状态）`,
+          })
         }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
-        Button('录音')
-          .fontSize(15)
-          .height(38)
-          .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-          .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
-          .onClick(() => {
-            this.pathStack.pushPathByName('recording', '');
-          })
+        Text('原始材料')
+          .fontSize(12)
+          .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 12 })
@@ -439,15 +440,15 @@ export struct TodayPage {
         List({ space: 10 }) {
           if (this.loading) {
             ListItem() {
-              LoadingRow({ text: '正在读取这一天的记录…' })
+              LoadingRow({ text: '正在读取这一天的片段…' })
             }
           } else if (this.rows.length === 0) {
             ListItem() {
               EmptyState({
                 icon: '—',
-                title: this.dayOffset === 0 ? '今天还没有记录' : '这一天没有记录',
+                title: this.dayOffset === 0 ? '今天还没有片段' : '这一天没有片段',
                 hint: this.dayOffset === 0
-                  ? '点右上角「录音」说一条，或者去「搜索」找历史内容。'
+                  ? '去「记录」写一条或录一段，原始材料会按天出现在这里。'
                   : '可以点「后一天」回到今天。',
               })
             }
@@ -456,10 +457,15 @@ export struct TodayPage {
               ListItem() {
                 this.captureCard(row)
               }
-            }, (row: CaptureRow) => row.capture.id)
+              // key 里必须带 `state` / `revision` / 转写状态：ArkUI 的 ForEach 在 key 不变时
+              // 复用旧节点，只用 `capture.id` 时「草稿 → 已提交」、转写完成这类推进不会
+              // 重新渲染（#150 真机抓到）。
+            }, (row: CaptureRow) => `${row.capture.id}-${row.capture.state}-${row.capture.revision}-` +
+              `${row.extracted === null ? 'none' : row.extracted.status}-` +
+              `${row.extracted === null ? '' : row.extracted.coverage}`)
             if (this.loadingMore) {
               ListItem() {
-                LoadingRow({ text: '加载更早的记录…' })
+                LoadingRow({ text: '加载更早的片段…' })
               }
             } else if (!this.hasMore) {
               ListItem() {

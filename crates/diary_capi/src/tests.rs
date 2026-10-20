@@ -6,7 +6,8 @@
 //! - FFI 安全：空指针 / 野指针 / 非法 UTF-8 / 非法 JSON / 未知方法 / 参数拼错 / 关闭后再用；
 //! - panic 注入：`__test.panic` 只能变成 `ok:false`，进程不中止，句柄之后仍可用；
 //! - 生命周期：同一路径共享核心、最后一个句柄关闭后核心真的析构、字符串计数不漏；
-//! - 跨线程：两个线程并发调同一个句柄。
+//! - 跨线程：两个线程并发调同一个句柄；
+//! - 日记：`diary.getDay` / `listVersions` 的读到与空态、写路径的参数/核心错误透传。
 
 use std::ffi::{CStr, CString};
 use std::path::{Path, PathBuf};
@@ -1389,6 +1390,230 @@ fn captures_get_and_list_use_real_cursor_pagination() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// 第 3 组：`diary.*`——「日记」一级入口的数据源（契约 §2.2 / §4.3）。
+///
+/// 成功路径覆盖读的三条（`getDay` / `listVersions` / `getVersion` 的缺省语义）：
+/// 有材料、还没有成篇版本的一天；以及「空的一天是 `not_found`，不是空对象」。
+///
+/// 写路径（`saveEdit` / `setCurrent` / `merge`）在这里只能验错误面：**C ABI 没有
+/// 创建首版的入口**（`diary.generate` 未接，它要排 AI 任务），所以没有合法的
+/// `base_version_id` 可给。这些用例断言的是参数校验与核心错误码**原样透传**，
+/// 不伪造一个「成功」的版本；`saveEdit`/`merge` 的成功路径由核心自己的测试覆盖
+/// （`diary.rs` 的 `#[cfg(test)]`），桥面只多做一次 JSON 解析 + 转发。
+///
+/// 另：`setCurrent` 与 `saveEdit`/`merge` 的 `expected_revision` 都是
+/// `DiaryDay.revision`（持久单调），不是版本数——这里也用这个值构造请求。
+#[test]
+fn diary_day_and_versions_are_wired() {
+    let (dir, _path, handle) = open_temp("diary");
+
+    // 10-17（上海）有一条已提交的材料；10-18 什么都没有。
+    let capture_id = seed_capture_at(
+        handle,
+        "op-capi-diary",
+        "2026-10-17T09:30:00Z",
+        "这一天的材料：鹅掌楸与日记",
+    );
+
+    // getDay：有材料的一天必须读得到；当前版本为空、revision 0、材料计数是事实。
+    let day = expect_ok(&call(
+        handle,
+        "diary.getDay",
+        json!({"day_key": "2026-10-17"}),
+    ));
+    assert_eq!(day["day_key"], json!("2026-10-17"));
+    assert_eq!(day["time_zone"], json!("Asia/Shanghai"));
+    assert_eq!(day["current_version_id"], json!(null));
+    assert_eq!(day["candidate_version_ids"], json!([]));
+    assert_eq!(day["revision"], json!(0), "还没有推进过的一天是 0");
+    assert_eq!(day["material_counts"]["captures"], json!(1));
+    assert_eq!(day["material_counts"]["processed"], json!(1));
+    assert_eq!(day["material_counts"]["pending"], json!(0));
+    assert_eq!(day["material_counts"]["failed"], json!(0));
+    assert!(day["coverage"].is_string(), "{day}");
+    assert!(day["updated_at"].is_string(), "{day}");
+
+    // 契约风格的 camelCase 别名也接受。
+    let via_alias = expect_ok(&call(
+        handle,
+        "diary.getDay",
+        json!({"dayKey": "2026-10-17"}),
+    ));
+    assert_eq!(via_alias["day_key"], json!("2026-10-17"));
+
+    // listVersions：没有版本时是**空页**，不是 not_found——空态与错误必须分开。
+    let page = expect_ok(&call(
+        handle,
+        "diary.listVersions",
+        json!({"dayKey": "2026-10-17"}),
+    ));
+    assert_eq!(page["versions"], json!([]));
+    assert_eq!(page["next_cursor"], json!(null));
+
+    // 没有材料、也没有版本的一天：核心如实报 not_found（界面据此显示空态）。
+    let message = expect_error(
+        &call(handle, "diary.getDay", json!({"day_key": "2026-10-18"})),
+        "not_found",
+    );
+    assert!(message.contains("既没有材料也没有版本"), "{message}");
+
+    // 「今天有材料、但没有成篇日记」不是错误：getDay 照样给 DiaryDay。
+    // （上面 10-17 那条已经证明；这里只确认材料数不是由版本推出来的。）
+
+    // ---------------------------------------------------------------- 参数错误
+    // day_key 形状不对、缺字段、拼错字段：都是 invalid_argument（核心/桥面各管一层）。
+    let message = expect_error(
+        &call(handle, "diary.getDay", json!({"day_key": "2026/10/17"})),
+        "invalid_argument",
+    );
+    assert!(message.contains("YYYY-MM-DD"), "{message}");
+    expect_error(&call(handle, "diary.getDay", json!({})), "invalid_argument");
+    expect_error(
+        &call(
+            handle,
+            "diary.getDay",
+            json!({"day_key": "2026-10-17", "dayKey": "2026-10-17"}),
+        ),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(handle, "diary.listVersions", json!({"limit": 20})),
+        "invalid_argument",
+    );
+    // 游标是核心的不透明 token：格式不对沿用核心既有口径（not_found 之外只报
+    // `invalid_state`，不新增码，见 `bad_input…` 与 `captures.list` 的同一条断言）。
+    let message = expect_error(
+        &call(
+            handle,
+            "diary.listVersions",
+            json!({"day_key": "2026-10-17", "cursor": "not-a-cursor"}),
+        ),
+        "invalid_state",
+    );
+    assert!(message.contains("游标"), "{message}");
+    expect_error(
+        &call(handle, "diary.getVersion", json!({})),
+        "invalid_argument",
+    );
+
+    // ---------------------------------------------------------------- 写路径的错误面
+    // 版本不存在：not_found（不是 invalid_argument——请求本身合法，是数据没有）。
+    expect_error(
+        &call(handle, "diary.getVersion", json!({"version_id": "v_missing"})),
+        "not_found",
+    );
+    expect_error(
+        &call(
+            handle,
+            "diary.saveEdit",
+            json!({
+                "base_version_id": "v_missing",
+                "body": "改一版",
+                "expected_revision": 0,
+                "operation_id": "op-capi-diary-edit",
+            }),
+        ),
+        "not_found",
+    );
+    // 空正文不是一次编辑：invalid_argument（核心消息点名正文）。
+    let message = expect_error(
+        &call(
+            handle,
+            "diary.saveEdit",
+            json!({
+                "base_version_id": "v_missing",
+                "body": "   ",
+                "expected_revision": 0,
+                "operation_id": "op-capi-diary-edit",
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(message.contains("空"), "{message}");
+    // 缺 operationId / expectedRevision：参数不合法，核心一次都没被调到。
+    expect_error(
+        &call(
+            handle,
+            "diary.saveEdit",
+            json!({"base_version_id": "v_missing", "body": "改一版", "expected_revision": 0}),
+        ),
+        "invalid_argument",
+    );
+
+    expect_error(
+        &call(
+            handle,
+            "diary.setCurrent",
+            json!({
+                "day_key": "2026-10-17",
+                "version_id": "v_missing",
+                "expected_revision": 0,
+            }),
+        ),
+        "not_found",
+    );
+    expect_error(
+        &call(
+            handle,
+            "diary.setCurrent",
+            json!({"day_key": "2026-10-17", "version_id": "v_missing"}),
+        ),
+        "invalid_argument",
+    );
+
+    expect_error(
+        &call(
+            handle,
+            "diary.merge",
+            json!({
+                "base_version_id": "v_missing",
+                "candidate_version_ids": ["v_two"],
+                "body": "合并后的正文",
+                "expected_revision": 0,
+                "operation_id": "op-capi-diary-merge",
+            }),
+        ),
+        "not_found",
+    );
+    // 候选为空：不是「合并」，是调用方的错（核心明确拒绝，桥面不替它补默认值）。
+    let message = expect_error(
+        &call(
+            handle,
+            "diary.merge",
+            json!({
+                "base_version_id": "v_missing",
+                "candidate_version_ids": [],
+                "body": "合并后的正文",
+                "expected_revision": 0,
+                "operation_id": "op-capi-diary-merge",
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(message.contains("候选"), "{message}");
+
+    // 写路径没有改动任何一天：10-17 仍然没有版本。
+    let day = expect_ok(&call(
+        handle,
+        "diary.getDay",
+        json!({"day_key": "2026-10-17"}),
+    ));
+    assert_eq!(day["current_version_id"], json!(null));
+    assert_eq!(day["revision"], json!(0));
+    assert_eq!(day["candidate_version_ids"], json!([]));
+
+    // 记录本身没有被日记读写弄坏。
+    let capture = expect_ok(&call(
+        handle,
+        "captures.get",
+        json!({"capture_id": capture_id}),
+    ));
+    assert_eq!(capture["state"], json!("committed"));
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// 第 2 组：`indexes.status`——语义就绪 / reasons / model_version 原样可读。
 #[test]
 fn indexes_status_exposes_semantic_readiness_and_scope() {
@@ -1897,7 +2122,7 @@ fn capabilities_include_every_wired_method() {
         .iter()
         .map(|name| name.as_str().unwrap())
         .collect();
-    assert_eq!(capabilities.len(), 30, "{capabilities:?}");
+    assert_eq!(capabilities.len(), 36, "{capabilities:?}");
     let mut unique = capabilities.clone();
     unique.sort_unstable();
     unique.dedup();
@@ -1915,6 +2140,12 @@ fn capabilities_include_every_wired_method() {
         "search.nextPage",
         "search.upgrade",
         "search.cancel",
+        "diary.getDay",
+        "diary.listVersions",
+        "diary.getVersion",
+        "diary.saveEdit",
+        "diary.setCurrent",
+        "diary.merge",
     ] {
         assert!(capabilities.contains(&name), "能力清单缺 {name}");
     }
