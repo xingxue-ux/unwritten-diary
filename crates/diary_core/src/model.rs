@@ -1224,7 +1224,15 @@ pub struct SearchHit {
     /// 稳定标识：直接用片段 ID。同一份内容在不同页里出现时是同一个值。
     pub hit_id: String,
     /// 同一来源的命中归到一组，避免一份长材料占满结果。
+    ///
+    /// **不是**「这一条属于哪篇记录」：片段命中时它是 `source_id`，记录文字命中时
+    /// 才是 `capture_id`。要跳到记录详情页请用 [`SearchHit::capture_id`]。
     pub group_id: String,
+    /// 这一条命中属于哪篇记录（`captures.id`）。
+    ///
+    /// **与 `group_id` 不是一回事**：`group_id` 只是折叠/归组用的键，片段命中时
+    /// 是 `source_id`；`capture_id` 才是「这一条属于哪篇记录」，两种命中都一定有。
+    pub capture_id: String,
     pub source_kind: SourceKind,
     pub matched_by: Vec<MatchedBy>,
     pub coverage: Coverage,

@@ -273,8 +273,9 @@ fn first_generation_becomes_current_and_later_ones_are_candidates() {
 
     // 事件：版本创建与当前变化都发了。
     let types: Vec<String> = core
-        .events_since(0)
+        .events_page(0, 1000)
         .unwrap()
+        .events
         .into_iter()
         .map(|event| event.event_type.wire().to_owned())
         .collect();

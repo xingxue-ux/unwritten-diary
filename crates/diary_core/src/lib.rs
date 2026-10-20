@@ -234,9 +234,36 @@ pub struct Core {
 ///
 /// 桥接的 `CoreInfo.apiVersion` 与备份清单里的 `apiVersion` 都用这一个常量：
 /// 两处各写一份字面量的话，升版本时必然漏掉一处。口径是「主次版本」：
-/// 新增可选字段或加性方法不改它，删方法或改既有语义才升主版本（见契约第 1.2 节
-/// 与 `docs/architecture/m5-备份与恢复.md` 的兼容口径）。
-pub const API_VERSION: &str = "1.0";
+/// 新增**可选**字段或加性方法不改它；新增**必填**字段、删方法或改既有语义才动它
+/// （见契约第 1.3 节与 `docs/architecture/m5-备份与恢复.md` 的兼容口径）。
+///
+/// 1.0 → 1.1：`SearchHit.captureId` 是必填字段。旧客户端忽略它是安全的，但
+/// **新客户端 + 旧核心**读不到这个键（ArkTS 拿到 `undefined`），必须靠 `apiVersion`
+/// 才分辨得出来——所以版本要动，不能只写「加性字段，调用方不受影响」。
+pub const API_VERSION: &str = "1.1";
+
+/// 事件表保留的最近条数（**积压上限**）。
+///
+/// 事件是给界面补状态的**通知流**，不是审计账本：重放从「当前快照」开始，比这更老的
+/// 事件没有消费者（契约第 6 节：游标过期返回 `cursor_expired`，前端重读快照）。
+/// 一万条足够覆盖「应用好几周没打开」的积压，而事件表因此不会无限长大——每次写入在
+/// **同一个事务**里删掉窗口之外的行，不留「写了一半」的中间态。
+pub const EVENT_BACKLOG_LIMIT: i64 = 10_000;
+
+/// 一页持久业务事件：`core.events` 的读取单位。
+///
+/// 核心一次只读一页（SQL `LIMIT`），调用方按 `next_sequence` 继续拉；`truncated`
+/// 说明本页之后还有。**不要把 `truncated == true` 的一页当成全部**。
+#[derive(Debug, Clone)]
+pub struct EventPage {
+    /// 本页事件，按 `sequence` 升序；最多 `limit` 条。
+    pub events: Vec<DomainEvent>,
+    /// 下一次调用要原样回传的游标。**已经夹到当前最大序号**：调用方的游标超前时，
+    /// 这里给的是真实的末尾，而不是一个永远不会到来的未来序号。
+    pub next_sequence: i64,
+    /// 本页之后还有事件（用 `limit + 1` 探测）。
+    pub truncated: bool,
+}
 
 /// 一行的原始形态：先取出来，再按业务语义解析，避免把解析错误塞进 SQL 层。
 type RawCapture = (String, i64, String, String, String, String, String, i64, String, String);
@@ -1508,14 +1535,51 @@ impl Core {
         assets::reap_expired_leases(self)
     }
 
-    /// 从序号之后读取事件，契约第 6 节。
-    pub fn events_since(&self, from_sequence: i64) -> Result<Vec<DomainEvent>> {
+    /// 从序号之后读取**一页**事件，契约第 6 节。
+    ///
+    /// - `limit` 是硬上限：SQL 带 `LIMIT`，不会先把整张事件表读进内存再截断；
+    ///   多读一条（`limit + 1`）只用来如实回答 `truncated`；
+    /// - `from_sequence` **超前**（大于当前最大序号）时**夹到当前最大序号**：不报错，
+    ///   也不返回未来游标。游标超前是真实场景（调用方存了游标、库被恢复成更旧的备份），
+    ///   夹住之后下一次调用就能收到新事件，而不是永久跳过；
+    /// - 游标早于**保留窗口**（见 [`EVENT_BACKLOG_LIMIT`]）时返回 `cursor_expired`：
+    ///   中间的事件已经被清理，假装「没有遗漏」会让界面永远缺一段状态；
+    /// - `limit == 0` 返回空页（不读表）。
+    pub fn events_page(&self, from_sequence: i64, limit: usize) -> Result<EventPage> {
+        if from_sequence < 0 {
+            return Err(CoreError::InvalidArgument {
+                reason: format!("事件游标不能为负数：{from_sequence}"),
+            });
+        }
+        let max = self.last_event_sequence()?;
+        let from = from_sequence.min(max);
+        if let Some(oldest) = self.oldest_event_sequence()? {
+            // `from` 是「已经读到的最后一条」，缺口是 `(from, oldest)`；正好接上
+            // （`from + 1 == oldest`）不算遗漏。
+            if from.saturating_add(1) < oldest {
+                return Err(CoreError::CursorExpired {
+                    reason: format!(
+                        "事件游标 {from_sequence} 早于保留窗口（最早保留 {oldest}，只保留最近 \
+                         {EVENT_BACKLOG_LIMIT} 条）；请先重新读快照，再从那之后补事件"
+                    ),
+                });
+            }
+        }
+        if limit == 0 {
+            return Ok(EventPage {
+                events: Vec::new(),
+                next_sequence: from,
+                truncated: false,
+            });
+        }
+        // LIMIT 的入参用 i64；`usize::MAX` 这种极端值饱和到 i64::MAX，不会溢出。
+        let probe = limit.saturating_add(1).min(i64::MAX as usize) as i64;
         let mut stmt = self.conn.prepare(
             "SELECT sequence, event_id, type, entity_id, revision, emitted_at \
-             FROM domain_events WHERE sequence > ?1 ORDER BY sequence",
+             FROM domain_events WHERE sequence > ?1 ORDER BY sequence LIMIT ?2",
         )?;
         let rows = stmt
-            .query_map(params![from_sequence], |row| {
+            .query_map(params![from, probe], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -1527,8 +1591,11 @@ impl Core {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        let mut events = Vec::with_capacity(rows.len());
-        for (sequence, event_id, event_type, entity_id, revision, emitted_at) in rows {
+        let truncated = rows.len() > limit;
+        let mut events = Vec::with_capacity(rows.len().min(limit));
+        for (sequence, event_id, event_type, entity_id, revision, emitted_at) in
+            rows.into_iter().take(limit)
+        {
             events.push(DomainEvent {
                 event_id,
                 sequence,
@@ -1542,7 +1609,21 @@ impl Core {
                 emitted_at: support::parse_iso(&emitted_at)?,
             });
         }
-        Ok(events)
+        let next_sequence = events.last().map(|event| event.sequence).unwrap_or(from);
+        Ok(EventPage {
+            events,
+            next_sequence,
+            truncated,
+        })
+    }
+
+    /// 事件表里最小的序号；一条事件都没有时是 `None`。
+    fn oldest_event_sequence(&self) -> Result<Option<i64>> {
+        Ok(self.conn.query_row(
+            "SELECT MIN(sequence) FROM domain_events",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     // ------------------------------------------------------------ 远端服务（B4a）
@@ -2067,6 +2148,14 @@ fn insert_event(
             revision,
             support::to_iso(support::now())
         ],
+    )?;
+    // **保留策略**：只留最近 `EVENT_BACKLOG_LIMIT` 条（见常量说明）。放在写入的同一个
+    // 事务里，读侧就不会看到「刚好在删一半」的中间态；`sequence` 是主键，这条 DELETE
+    // 走索引区间，正常情况下删 0 行（`MAX(sequence) - 上限` 通常小于最小序号）。
+    tx.execute(
+        "DELETE FROM domain_events WHERE sequence <= \
+         (SELECT COALESCE(MAX(sequence), 0) FROM domain_events) - ?1",
+        params![EVENT_BACKLOG_LIMIT],
     )?;
     Ok(())
 }

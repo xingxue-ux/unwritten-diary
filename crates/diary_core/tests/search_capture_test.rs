@@ -160,6 +160,14 @@ fn draft_text_is_searchable_as_a_text_hit() {
     );
     assert_eq!(hit.group_id, capture_id, "一条记录自成一个组");
     assert_eq!(
+        hit.capture_id, capture_id,
+        "记录文字命中的 capture_id 就是这篇记录"
+    );
+    assert_eq!(
+        hit.capture_id, hit.group_id,
+        "记录文字命中天然自成一组，group_id 与 capture_id 在这里相同"
+    );
+    assert_eq!(
         hit.day_key.as_deref(),
         Some("2026-09-20"),
         "命中要带这条记录的日期"
@@ -354,8 +362,30 @@ fn capture_text_and_segment_hits_are_distinct_and_fragment_comes_first() {
     );
     assert_eq!(segment.source_id.as_deref(), Some(source_id.as_str()));
     assert_eq!(segment.source_kind, SourceKind::File);
+    // 这一条钉住契约缺口：片段的 group_id 是 source_id（折叠键），capture_id 才是
+    // 「这一条属于哪篇记录」——两者必须不同，界面拿 group_id 跳详情页会跳错。
+    assert_eq!(
+        segment.group_id, source_id,
+        "片段命中的 group_id 是 source_id（同一来源的命中归组用）"
+    );
+    assert_eq!(
+        segment.capture_id, capture_id,
+        "片段命中的 capture_id 必须是它所属记录，而不是 source_id"
+    );
+    assert_ne!(
+        segment.capture_id, segment.group_id,
+        "片段命中上 capture_id 与 group_id 不是一回事，不能混用"
+    );
     assert_eq!(capture.locator, None);
     assert_eq!(capture.hit_id, format!("cap_{capture_id}"));
+    assert_eq!(
+        capture.capture_id, capture_id,
+        "记录文字命中的 capture_id 是这篇记录"
+    );
+    assert_eq!(
+        capture.capture_id, capture.group_id,
+        "记录文字命中两者相同"
+    );
 
     assert_ne!(segment.hit_id, capture.hit_id, "两条命中的 id 必须不同");
     assert_ne!(segment.group_id, capture.group_id, "两条命中不属于同一组");

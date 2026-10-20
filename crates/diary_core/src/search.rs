@@ -982,6 +982,9 @@ pub(crate) struct PageRow {
     pub day_key: Option<String>,
     pub kind: String,
     pub source_id: String,
+    /// 这条片段所属的记录（`source_items.capture_id`），**不是** `source_id`。
+    /// 前端跳记录详情页要的是它。
+    pub capture_id: String,
     pub source_revision_id: String,
     pub coverage: Coverage,
     pub asset_name: Option<String>,
@@ -1132,7 +1135,8 @@ pub(crate) fn load_page(core: &Core, refs: &[DocRef]) -> Result<Vec<PageRow>> {
         "SELECT d.doc_id, s.id, s.text, c.day_key, src.kind, ec.source_id, s.source_revision_id, \
                 ec.coverage, a.original_name, \
                 s.locator_type, s.text_start, s.text_end, s.start_ms, s.end_ms, s.page_number, \
-                s.block_id, s.rect_left, s.rect_top, s.rect_right, s.rect_bottom, s.asset_id \
+                s.block_id, s.rect_left, s.rect_top, s.rect_right, s.rect_bottom, s.asset_id, \
+                src.capture_id \
          FROM search_docs d \
          JOIN extracted_segments s ON s.id = d.segment_id \
          JOIN extracted_contents ec ON ec.id = s.content_id \
@@ -1169,6 +1173,9 @@ pub(crate) fn load_page(core: &Core, refs: &[DocRef]) -> Result<Vec<PageRow>> {
                 day_key: row.get(3)?,
                 kind: row.get(4)?,
                 source_id: row.get(5)?,
+                // 新列加在 SELECT 末尾（21），不动 0..=20 的既有下标：这些下标是按
+                // 位置取的，插在中间会把 locator / coverage 全部读错。
+                capture_id: row.get(21)?,
                 source_revision_id: row.get(6)?,
                 coverage: Coverage::from_wire(&coverage).unwrap_or(Coverage::Unavailable),
                 asset_name: row.get(8)?,
