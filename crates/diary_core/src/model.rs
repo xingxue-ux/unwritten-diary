@@ -485,6 +485,16 @@ pub struct RecordingSession {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordingFinalizeResult {
     pub recording_id: String,
+    /// 这条录音挂到的记录。
+    ///
+    /// 正常停止时平台层本来就知道 capture id；恢复路径（`recover` 后按已封闭序号
+    /// `finalize`）只知道 recording id，必须靠这里拿回 capture 才能提交。
+    pub capture_id: String,
+    /// `finalize` 完成后记录的**权威** revision（等于这次递增后的值）。
+    ///
+    /// `captures.commit` 需要 `expected_revision`，而这个值客户端**不该猜**：
+    /// 猜小了会撞乐观锁，猜大了会把「记录已经被别处改过」掩盖过去。
+    pub capture_revision: i64,
     pub asset_id: String,
     pub state: RecordingState,
     pub segment_count: i64,

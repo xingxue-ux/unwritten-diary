@@ -754,6 +754,12 @@ fn recordings_flow_prepare_register_finalize_and_recover() {
         }),
     ));
     assert_eq!(finalized["recording_id"], json!(recording_id));
+    assert_eq!(finalized["capture_id"], json!(capture_id));
+    assert_eq!(
+        finalized["capture_revision"],
+        json!(2),
+        "new field: finalize must expose the authoritative capture revision"
+    );
     assert_eq!(finalized["asset_id"], json!(asset_id));
     assert_eq!(finalized["state"], json!("saved"));
     assert_eq!(finalized["segment_count"], json!(2));
@@ -767,6 +773,19 @@ fn recordings_flow_prepare_register_finalize_and_recover() {
     assert_eq!(&blob_bytes[0..4], b"RIFF");
     assert_eq!(&blob_bytes[8..12], b"WAVE");
     assert_eq!(blob_bytes.len(), logical_bytes);
+
+    // 平台层用 finalize 返回的 revision 提交，记录才离开 draft。
+    let committed = expect_ok(&call(
+        handle,
+        "captures.commit",
+        json!({
+            "capture_id": finalized["capture_id"],
+            "expected_revision": finalized["capture_revision"],
+            "operation_id": "op-capi-rec-commit",
+        }),
+    ));
+    assert_eq!(committed["capture"]["state"], json!("committed"));
+    assert_eq!(committed["capture"]["revision"], json!(3));
 
     // 最终化之后不能再上报状态（核心会拒绝，桥面不吞掉）。
     let closed_session = expect_error(
