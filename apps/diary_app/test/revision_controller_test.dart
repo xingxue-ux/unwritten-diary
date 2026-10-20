@@ -5,6 +5,7 @@ import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:unwritten_diary/src/revision_controller.dart';
 import 'package:unwritten_diary/src/revision_diff.dart';
+import 'package:unwritten_diary/src/ui_strings.dart';
 
 class RevisionApi extends MockDiaryApi {
   String current = '旧正文';
@@ -89,6 +90,11 @@ class RevisionApi extends MockDiaryApi {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
+    await uiStrings.load();
+  });
+
   test(
     'saving uses the revision opened by the user and preserves the prior text',
     () async {

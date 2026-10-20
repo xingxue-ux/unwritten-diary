@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'ai_diary_controller.dart';
 import 'core_wakeup.dart';
 import 'sketch_ui.dart';
+import 'ui_strings.dart';
 
 class AiDiaryPanel extends StatefulWidget {
   const AiDiaryPanel({
@@ -98,7 +99,7 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
           .toSet();
       return destinations.isEmpty
           ? '已启用服务中有无法展示地址的服务。请先到「模型服务」核对数据去向，再决定是否整理。'
-          : '整理时核心会从已启用服务中选择执行者；当天材料可能发送到 ${destinations.join('、')}。请先确认这些服务的隐私规则与额度。';
+          : '${uiStrings.t('privacy.ai_egress')}\n当前已启用服务：${destinations.join('、')}。';
     }
     final host = Uri.tryParse(provider.endpoint ?? '')?.host;
     final destination = host == null || host.isEmpty ? provider.label : host;
@@ -342,15 +343,15 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
 
   String _jobDescription(Job job) {
     final phase = switch (job.state) {
-      JobState.queued => '已排队，等待处理',
-      JobState.running => '正在处理',
-      JobState.succeeded => '处理完成',
-      JobState.retryWait => '暂时失败，稍后自动重试',
-      JobState.waitingConfiguration => '等待模型服务配置',
-      JobState.waitingDependency => '等待材料处理完成',
-      JobState.waitingNetwork => '等待网络恢复',
-      JobState.failed => '处理失败，可检查原因后重试',
-      JobState.cancelled => '已取消，原始材料仍在',
+      JobState.queued => uiStrings.t('job.queued'),
+      JobState.running => uiStrings.t('job.running'),
+      JobState.succeeded => uiStrings.t('job.succeeded'),
+      JobState.retryWait => uiStrings.t('job.retry_wait'),
+      JobState.waitingConfiguration => uiStrings.t('job.waiting_configuration'),
+      JobState.waitingDependency => uiStrings.t('job.waiting_dependency'),
+      JobState.waitingNetwork => uiStrings.t('job.waiting_network'),
+      JobState.failed => uiStrings.t('job.failed'),
+      JobState.cancelled => uiStrings.t('job.cancelled'),
     };
     final reason = job.errorCode == null
         ? ''
