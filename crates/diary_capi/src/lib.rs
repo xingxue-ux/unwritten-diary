@@ -35,7 +35,7 @@
 //! - `apiVersion` 就是核心的 `diary_core::API_VERSION`（契约第 1.2 节的口径），桥面不自造版本号；
 //! - `data` 是核心模型的 serde JSON **原样**（字段名 snake_case，与 `diary_bridge` 镜像出去
 //!   的是同一份类型），桥面不做二次翻译；
-//! - `error.code` 只可能是契约第 7 节 / `diary_core::ErrorCode` 里的 14 个码之一。
+//! - `error.code` 只可能是契约第 7 节 / `diary_core::ErrorCode` 里的 21 个码之一。
 //!   **桥面没有新增错误码**：空指针、非法 JSON、未知方法落到 `invalid_argument`，句柄已关闭、
 //!   核心 panic 落到 `invalid_state`；这些「不是核心业务错误」的 message 一律以 `C ABI：`
 //!   开头，便于监控区分；
