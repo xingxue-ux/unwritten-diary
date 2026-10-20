@@ -246,7 +246,12 @@ void main() {
             .having(
               (error) => error.message,
               'message',
-              contains('backups.create'),
+              contains('plugins.invoke'),
+            )
+            .having(
+              (error) => error.message,
+              'message',
+              isNot(contains('backups.create')),
             )
             .having(
               (error) => error.message,
@@ -273,7 +278,9 @@ void main() {
       'indexes.status',
       'indexes.rebuild',
       'jobs.acknowledgeAttention',
+      'backups.create',
       'backups.inspect',
+      'backups.restore',
     ]) {
       expect(capabilities, contains(capability), reason: capability);
     }
@@ -282,8 +289,6 @@ void main() {
       'captures.trash',
       'settings.get',
       'plugins.invoke',
-      'backups.create',
-      'backups.restore',
     ]) {
       expect(capabilities, isNot(contains(capability)), reason: capability);
     }

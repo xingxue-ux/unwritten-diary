@@ -50,6 +50,14 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// `backups.create` 列进能力清单（能力是窄化过的，见 `wired_capabilities`）。
   Future<BackupReport> createBackup({required String targetPath});
 
+  /// 创建备份 + 写一条 `succeeded` 的 `backup` 任务记录，契约 `backups.create` 的
+  /// `jobId` 入口。
+  ///
+  /// **同步完成**：jobId 指向已经完成的记录，不是排队任务。返回的 `Job.targetIds`
+  /// 是备份包路径，`get_job` 读得到。目标已存在/源库有原件不可用等错误与
+  /// `create_backup` 一致，且失败时不留包、不留假任务。
+  Future<Job> createBackupJob({required String targetPath});
+
   /// 创建草稿，契约第 4.1 节 `captures.createDraft`。
   Future<Capture> createDraft({
     DateTime? occurredAt,
@@ -330,6 +338,16 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 版本高于本核心 ⇒ `incompatible_backup`。返回的 `library_path` 直接交给
   /// `BridgeSession.open` 就能打开恢复出来的库。
   Future<RestoreReport> restoreBackup({
+    required String packagePath,
+    required String targetDir,
+  });
+
+  /// 恢复到新库 + 写一条 `succeeded` 的 `restore` 任务记录，契约 `backups.restore`
+  /// 的 `jobId` 入口。
+  ///
+  /// **同步完成**；`Job.targetIds = [libraryPath, rootDir]`，调用方据此打开新库。
+  /// 目标非空/损坏包/版本不兼容会在写任务行之前拒绝，当前库零改动。
+  Future<Job> restoreBackupJob({
     required String packagePath,
     required String targetDir,
   });

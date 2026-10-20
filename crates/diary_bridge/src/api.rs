@@ -308,6 +308,31 @@ impl BridgeSession {
         Ok(core.restore_backup(&package_path, &target_dir)?)
     }
 
+    /// 创建备份 + 写一条 `succeeded` 的 `backup` 任务记录，契约 `backups.create` 的
+    /// `jobId` 入口。
+    ///
+    /// **同步完成**：jobId 指向已经完成的记录，不是排队任务。返回的 `Job.targetIds`
+    /// 是备份包路径，`get_job` 读得到。目标已存在/源库有原件不可用等错误与
+    /// `create_backup` 一致，且失败时不留包、不留假任务。
+    pub fn create_backup_job(&self, target_path: String) -> Result<Job, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.create_backup_job(&target_path)?)
+    }
+
+    /// 恢复到新库 + 写一条 `succeeded` 的 `restore` 任务记录，契约 `backups.restore`
+    /// 的 `jobId` 入口。
+    ///
+    /// **同步完成**；`Job.targetIds = [libraryPath, rootDir]`，调用方据此打开新库。
+    /// 目标非空/损坏包/版本不兼容会在写任务行之前拒绝，当前库零改动。
+    pub fn restore_backup_job(
+        &self,
+        package_path: String,
+        target_dir: String,
+    ) -> Result<Job, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.restore_backup_job(&package_path, &target_dir)?)
+    }
+
     pub fn cancel_import(&self, import_id: String) -> Result<(), BridgeError> {
         let mut core = self.lock()?;
         Ok(core.cancel_import(&import_id)?)

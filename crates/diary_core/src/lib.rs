@@ -1912,6 +1912,26 @@ impl Core {
         backup::create(self, std::path::Path::new(target_path))
     }
 
+    /// 创建备份包，并在成功之后写一条 **`succeeded`** 的 `backup` 任务记录。
+    ///
+    /// **同步完成**：返回的 `Job.id` 指向已经完成的记录，不是排队任务；大库上调用会
+    /// 占住线程，调用方应显示「正在备份」而不是进度轮询。任务记录的 `targetIds` 是
+    /// 备份包路径，`get_job(jobId)` 读得到。
+    ///
+    /// 与 [`Self::create_backup`] 同一套安全保证：目标已存在报 `invalid_argument`
+    /// （绝不覆盖旧备份）、失败时目标路径不留文件。任务记录写入失败时把刚生成的包删掉
+    /// ——不能返回一个「有备份、没 jobId」的成功。
+    pub fn create_backup_job(&mut self, target_path: &str) -> Result<Job> {
+        let report = backup::create(self, std::path::Path::new(target_path))?;
+        match backup::record_completed_job(self, backup::KIND_BACKUP, vec![report.package_path]) {
+            Ok(job) => Ok(job),
+            Err(error) => {
+                let _ = std::fs::remove_file(target_path);
+                Err(error)
+            }
+        }
+    }
+
     /// 检查备份包（契约 `backups.inspect` 的**同步**入口）。
     ///
     /// 逐条目重算哈希、比大小、比条目集合，并检查路径安全与版本兼容。坏在哪就
@@ -1949,6 +1969,30 @@ impl Core {
             self,
             std::path::Path::new(package_path),
             std::path::Path::new(target_dir),
+        )
+    }
+
+    /// 恢复到**新的空目录**，并在成功之后写一条 **`succeeded`** 的 `restore` 任务记录。
+    ///
+    /// **同步完成**：`jobId` 指向已经完成的记录，不是排队任务。`targetIds` 是
+    /// `[恢复出来的 libraryPath, rootDir]`，调用方拿 `get_job(jobId)` 就能找到新库；
+    /// 要不要切过去由前端决定。
+    ///
+    /// 安全保证与 [`Self::restore_backup`] 完全一致：目标必须是新的空目录、不能是
+    /// 当前资料库，失败不留半成品，当前库一字不改。目标非空/损坏包/越界路径/版本
+    /// 不兼容都在写任务行之前拒绝，**不会留下一个 succeeded 的假任务**。
+    pub fn restore_backup_job(&mut self, package_path: &str, target_dir: &str) -> Result<Job> {
+        let report = backup::restore(
+            self,
+            std::path::Path::new(package_path),
+            std::path::Path::new(target_dir),
+        )?;
+        // 任务行写失败时不回滚恢复出来的库：那是用户数据，不能为了记一条任务删掉。
+        // 错误如实返回；调用方拿不到 jobId 时知道这一步没有完成。
+        backup::record_completed_job(
+            self,
+            backup::KIND_RESTORE,
+            vec![report.library_path, report.root_dir],
         )
     }
 

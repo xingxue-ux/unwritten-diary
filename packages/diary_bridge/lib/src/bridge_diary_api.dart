@@ -20,6 +20,12 @@ import '../diary_bridge.dart' as bridge;
 /// `generateDiary` / `listVersions` / `getVersion` / `saveDiaryEdit` /
 /// `setCurrentVersion` / `mergeDiary` / 插件管理与 `inspectBackup`。
 ///
+/// **备份的同步任务取舍**：`backups.create` / `backups.restore` 的核心入口是同步的，
+/// 适配层在同步完成之后写一条 `succeeded` 的 `backup` / `restore` 任务记录，返回的
+/// `jobId` 指向这条**已经完成**的记录，不是排队任务。任务的 `targetIds` 记真实产物
+/// 路径（备份包 / 恢复出来的库），`getJob` 读得到。代码注释、README 与 m5 文档都写明
+/// 这一点，避免调用方把 `jobId` 当成进度句柄。
+///
 /// **仍没接的**（都会走 [noSuchMethod] 并在异常消息里点名）：
 /// - 回收站五条（`moveDay` / `trashCapture` / `restoreCapture` / `previewPurge` /
 ///   `purgeCapture`）：核心实现还在 PR #155，main 上没有对应入口；
@@ -27,9 +33,8 @@ import '../diary_bridge.dart' as bridge;
 ///   `createExport`）：核心实现还在 PR #159；
 /// - `setRuntimeState`：核心没有资源调度入口，不造一个只记不做的假实现；
 /// - `getSettings` / `updateSettings`：由设置那条线负责，本分支不碰；
-/// - `createBackup` / `restoreBackup` / `invokePlugin`：契约是**票据式**（返回
-///   `jobId`），核心目前只有同步入口；`restoreBackup` 的参数里还没有目标目录。
-///   这四条（含 `backups.inspect` 以外的三条）不接，不做假 jobId。
+/// - `invokePlugin`：契约是票据式（返回 `jobId`），核心 `run_plugin` 同步返回完整
+///   结果且没有结果读取入口；硬套 jobId 会造出「有 id 没结果」的假票据，保持不接。
 ///
 /// 设计取舍：
 /// - **不另造 DTO**：桥接的字段名已经和契约对得上，这里只做映射与改名，
@@ -133,7 +138,9 @@ class BridgeDiaryApi implements api.DiaryApi {
     'indexes.status',
     'indexes.rebuild',
     'indexes.rebuildSemantic',
+    'backups.create',
     'backups.inspect',
+    'backups.restore',
     'plugins.inspectPackage',
     'plugins.install',
     'plugins.enable',
@@ -1233,10 +1240,6 @@ class BridgeDiaryApi implements api.DiaryApi {
   /// 契约的 `packageTicket` 在这里就是用户选中的包路径（平台票据层未接入前由
   /// 调用方给出，与 `inspectPluginPackage` 同一个口径）。核心**不抛错**报坏包：
   /// 哈希、路径、版本问题都进 `issues`，界面先展示再决定要不要恢复。
-  ///
-  /// `backups.create` / `backups.restore` 没有接：契约给它们的是 `jobId`，而核心
-  /// 目前只有**同步**入口（任务化见 #70），且 `restoreBackup` 的契约参数里没有
-  /// 目标目录（核心要求一个「新的空目录」）。能力清单里只列真正接得上的这一条。
   @override
   Future<api.BackupInspection> inspectBackup(String packageTicket) async {
     final inspection = await _translate(
@@ -1251,6 +1254,117 @@ class BridgeDiaryApi implements api.DiaryApi {
       assetCount: inspection.assetCount.toInt(),
       issues: inspection.issues,
     );
+  }
+
+  /// 创建完整备份，契约 `backups.create`。
+  ///
+  /// **同步完成 + 已完成任务记录**：核心生成并自校验备份包之后，写一条
+  /// `state = succeeded` 的 `backup` 任务记录；返回的 `jobId` 指向这条**已经完成**
+  /// 的记录，不是排队任务。`getJob(jobId).targetIds` 是备份包路径（单个）。
+  /// 大库上这个调用会占住线程，界面应显示「正在备份」而不是进度轮询。
+  ///
+  /// `targetTicket` 在平台票据层接入前就是包文件的完整路径（与 `inspectBackup`
+  /// 同一口径）。`includeAssets = false` 明确拒绝：完整备份必须含原件，否则产出的
+  /// 包不能恢复资料库。
+  @override
+  Future<api.JobTicket> createBackup(api.BackupRequest request) async {
+    if (request.targetTicket.trim().isEmpty) {
+      throw const api.DiaryException(
+        code: api.DiaryErrorCode.invalidArgument,
+        message: '备份目标不能为空。',
+      );
+    }
+    if (!request.includeAssets) {
+      throw const api.DiaryException(
+        code: api.DiaryErrorCode.invalidArgument,
+        message: '完整备份必须包含原件；includeAssets = false 会产出不可恢复的包，已拒绝。',
+      );
+    }
+    final job = await _translate(
+      () => _open.createBackupJob(targetPath: request.targetTicket),
+    );
+    return _completedJobTicket(job, 'backups.create');
+  }
+
+  /// 恢复备份，契约 `backups.restore`。
+  ///
+  /// **同步完成 + 已完成任务记录**：恢复成功后写一条 `state = succeeded` 的
+  /// `restore` 任务记录，`jobId` 指向已完成记录，不是排队任务。`getJob(jobId)`
+  /// 的 `targetIds` 是 `[恢复出来的 libraryPath, rootDir]`，调用方据此打开新库。
+  ///
+  /// 契约的这个方法没有目标目录参数（平台票据层也未接），所以默认恢复到当前库
+  /// 同级的 `<库名>-restored-<微秒>`；**目标必须是新目录/空目录**，非空会被核心
+  /// 拒绝（`invalid_state`），当前库一字不改。
+  ///
+  /// `options.restoreAsNewLibrary = false` 明确拒绝：核心只恢复到新库，绝不覆盖
+  /// 当前库。`includeIndexes` 不改变核心的整库快照：false 不会剔除索引表，true 也
+  /// 不会额外重建；索引始终可以在恢复后重建。
+  @override
+  Future<api.JobTicket> restoreBackup({
+    required String packageTicket,
+    api.RestoreOptions options = const api.RestoreOptions(),
+  }) {
+    return restoreBackupTo(
+      packageTicket: packageTicket,
+      targetDirectory: _defaultRestoreDirectory(),
+      options: options,
+    );
+  }
+
+  /// 恢复到指定目录（平台层/测试入口，**不是契约方法**）。
+  ///
+  /// `targetDirectory` 必须是新目录或空目录，且不能是当前资料库目录；否则核心在
+  /// 写任何东西之前报 `invalid_state`。恢复成功后 `getJob(jobId).targetIds` 是
+  /// `[libraryPath, rootDir]`。
+  Future<api.JobTicket> restoreBackupTo({
+    required String packageTicket,
+    required String targetDirectory,
+    api.RestoreOptions options = const api.RestoreOptions(),
+  }) async {
+    if (!options.restoreAsNewLibrary) {
+      throw const api.DiaryException(
+        code: api.DiaryErrorCode.invalidArgument,
+        message: '核心只恢复到新资料库，绝不覆盖当前库；restoreAsNewLibrary = false 已拒绝。',
+      );
+    }
+    final job = await _translate(
+      () => _open.restoreBackupJob(
+        packagePath: packageTicket,
+        targetDir: targetDirectory,
+      ),
+    );
+    return _completedJobTicket(job, 'backups.restore');
+  }
+
+  /// 同步完成的任务记录必须真的是 `succeeded`；不是就如实报错，不把排队/失败任务
+  /// 当票据发出去。
+  api.JobTicket _completedJobTicket(bridge.Job job, String operation) {
+    if (job.state != bridge.JobState.succeeded) {
+      throw api.DiaryException(
+        code: api.DiaryErrorCode.invalidState,
+        message: '$operation 没有落成 succeeded 任务（实际 ${job.state.name}）；请重试或查看任务面板。',
+      );
+    }
+    return api.JobTicket(jobId: job.id);
+  }
+
+  /// 契约没有目标目录参数：默认恢复到当前库同级的 `<库名>-restored-<微秒>`。
+  ///
+  /// 不用 `dart:io`：适配层还要能在 web 目标上分析/编译；这里只做字符串路径处理，
+  /// 目录是否存在交给核心校验（非空/已存在会被拒绝，绝不覆盖）。
+  String _defaultRestoreDirectory() {
+    final separator = libraryPath.contains('\\') ? '\\' : '/';
+    final cut = libraryPath.lastIndexOf(separator);
+    final directory = cut >= 0 ? libraryPath.substring(0, cut) : '.';
+    final fileName = cut >= 0 ? libraryPath.substring(cut + 1) : libraryPath;
+    final stem = fileName.endsWith('.sqlite')
+        ? fileName.substring(0, fileName.length - '.sqlite'.length)
+        : fileName;
+    final prefix = directory.endsWith(separator)
+        ? directory
+        : '$directory$separator';
+    final stamp = DateTime.now().toUtc().microsecondsSinceEpoch;
+    return '${prefix}$stem-restored-$stamp';
   }
 
   /// 没接的方法一律明确报错——照 `diary_mock` 的做法，避免悄悄返回空数据。

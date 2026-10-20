@@ -330,13 +330,15 @@ void main() {
     expect(snapshot.coreInfo.capabilities, contains('indexes.status'));
     expect(snapshot.coreInfo.capabilities, contains('indexes.rebuild'));
     expect(snapshot.coreInfo.capabilities, contains('indexes.rebuildSemantic'));
+    // 备份三条都接上了：create/restore 返回 succeeded 记录的 jobId。
+    expect(snapshot.coreInfo.capabilities, contains('backups.create'));
+    expect(snapshot.coreInfo.capabilities, contains('backups.inspect'));
+    expect(snapshot.coreInfo.capabilities, contains('backups.restore'));
     // 仍然没接的（原因见 `noSuchMethod` 与适配层文档）：不列进能力清单。
     for (final capability in [
       'settings.get',
       'settings.update',
       'plugins.invoke',
-      'backups.create',
-      'backups.restore',
       'captures.trash',
       'core.setRuntimeState',
     ]) {

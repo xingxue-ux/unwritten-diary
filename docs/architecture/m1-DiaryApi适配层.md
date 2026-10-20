@@ -4,7 +4,7 @@
 
 把桥接的 `BridgeSession` 适配成契约的 `DiaryApi`，让前端（F0，已合入）能经**契约接口**跑真核心。代码在 `packages/diary_bridge/lib/src/bridge_diary_api.dart`。桥接本身见 [M1 · 桥接接线](m1-桥接接线.md)。
 
-> **2026-10-20 覆盖率更新（60/76）**：在记录路径之外，这一轮又接上了事件流、来源定位、资产租约、索引状态/重建、任务确认提醒、备份包检查等（详见文末「覆盖率扩展」）。下面「只接记录路径」「3 项测试」等段落是 2026-10-09 首版的现场记录，保留作为历史；当前口径以文末与 `packages/diary_bridge/README.md` 为准。
+> **2026-10-20 覆盖率更新（62/76）**：在记录路径之外，这一轮又接上了事件流、来源定位、资产租约、索引状态/重建、任务确认提醒、备份包检查等（详见文末「覆盖率扩展」）。下面「只接记录路径」「3 项测试」等段落是 2026-10-09 首版的现场记录，保留作为历史；当前口径以文末与 `packages/diary_bridge/README.md` 为准。
 
 ## 这一片解决了什么
 
@@ -59,7 +59,7 @@ cd packages/diary_bridge && dart test
 
 ## 覆盖率扩展（2026-10-20，`feat/1019-dart-bridge-coverage`）
 
-契约 `DiaryApi` 现有 **76** 个方法（不是早期文档里的 17 个能力项）；适配层从本轮起点 **51** 条接到 **60 条**，新增 **9** 条。`test/bridge_diary_coverage_test.dart`（10 项，只经 `DiaryApi`）覆盖其中 8 条的端到端路径；`core.close` 由该文件的 `tearDownAll` 与每次重开前的释放路径走到。
+契约 `DiaryApi` 现有 **76** 个方法（不是早期文档里的 17 个能力项）；适配层从本轮起点 **51** 条接到 **62 条**，新增 **11** 条。`test/bridge_diary_coverage_test.dart`（10 项，只经 `DiaryApi`）覆盖其中 8 条的端到端路径，`core.close` 由该文件的 `tearDownAll` 与每次重开前的释放路径走到；`test/bridge_diary_backup_api_test.dart`（3 项）覆盖备份创建/恢复。
 
 | 契约方法 | 实现路径 | 验证 |
 |---|---|---|
@@ -71,8 +71,14 @@ cd packages/diary_bridge && dart test
 | `indexes.rebuild` | 桥接已有；返回真实 `JobTicket`，任务可 `getJob` | 排 `all` 任务 → `getJob` 读到 `index`；同 operationId 幂等 |
 | `jobs.acknowledgeAttention` | 桥接新增；核心写确认表 | 调用两次不抛错（幂等） |
 | `backups.inspect` | 桥接已有同步入口；`packageTicket` 暂按包路径映射（平台票据层未接） | 真核心生成备份 → 检查 schema/hash/字节数，`issues` 为空 |
+| `backups.create` | 桥接新增 `create_backup_job`：同步建包 → 写 `succeeded` 的 `backup` 任务行 → 返回 `jobId`；`targetIds = [包路径]`。适配层拒绝 `includeAssets = false` | 真核心建包 → `getJob` 读到 `succeeded` / `backup` / 包路径 → 包可 inspect；已存在目标不覆盖；包内无密钥（core 测试逐条目解压） |
+| `backups.restore` | 桥接新增 `restore_backup_job`：同步恢复到新库 → 写 `succeeded` 的 `restore` 任务行 → 返回 `jobId`；`targetIds = [libraryPath, rootDir]`。适配层默认恢复到当前库同级 `<库名>-restored-<微秒>`，`restoreBackupTo` 给平台/测试注入目标 | 恢复成功 → 新库可开、记录/正文在 → 现库 libraryId/记录数/正文不变；非空目标、坏包、`restoreAsNewLibrary = false` 拒绝且不写假任务、现库哈希不变 |
 
-**仍没接的 16 条**（`noSuchMethod` 会实时列出；「核心」「桥接」两列是本次盘点实测）：
+**同步完成的 `jobId`（不是排队任务）**：`backups.create` / `backups.restore` 的核心入口是同步的，没有队列执行器。这里的做法与 `exports.create` 的先例一致——同步做完之后写一条 `state = succeeded` 的任务记录，返回的 `jobId` 指向这条**已经完成**的记录；`getJob` 立刻读得到，`targetIds` 是真实产物路径。这样契约返回形状不用改，也没有引入一个空壳执行器。未来做真正的异步备份时，替换的是实现，不是契约。**大库上这两个调用会占住线程**，界面应显示「正在备份/恢复」，不要拿 `jobId` 做进度轮询。
+
+`backups.create` 的 `includeAssets = false` 明确拒绝：核心只做完整备份，不含原件就不是可恢复的备份。`backups.restore` 的 `includeIndexes` 不改变核心的整库快照——`false` 不会剔除索引表，`true` 也不会额外重建；索引始终可以在恢复后重建。目标目录必须不存在或为空，非空/坏包/版本不兼容都在写任务行之前拒绝。
+
+**仍没接的 14 条**（`noSuchMethod` 会实时列出；「核心」「桥接」两列是本次盘点实测）：
 
 | 契约方法 | 核心 | 桥接 | 结论 |
 |---|---|---|---|
@@ -90,9 +96,7 @@ cd packages/diary_bridge && dart test
 | `settings.get` | 部分（只有 `OrganizeSettings`） | 无 | v18 设置线在做；本分支刻意不碰 |
 | `settings.update` | 部分（只有 `OrganizeSettings`） | 无 | 同上 |
 | `plugins.invoke` | 有（`run_plugin` 同步返回完整结果） | 有（`run_plugin`） | 契约返回 `jobId`，核心没有可读的插件任务结果；需契约/任务化另立项，不做假 jobId |
-| `backups.create` | 有（同步入口） | 有（`create_backup`） | 契约返回 `jobId`，核心没有备份任务；需契约/任务化另立项 |
-| `backups.restore` | 有（同步，要求目标目录） | 有（`restore_backup`） | 契约返回 `jobId` 且参数里没有目标目录；需契约/任务化另立项。破坏性保证在 `test/bridge_backup_test.dart` 钉住：目标非空拒绝、坏包拒绝且目标不留半成品、现库哈希前后一致、恢复到新库不改现库 |
 
-**能力清单**：适配层只报 `_wiredMethods` 与桥接 `wired_capabilities` 的交集；这 16 条都不在里面。
+**能力清单**：适配层只报 `_wiredMethods` 与桥接 `wired_capabilities` 的交集；这 14 条都不在里面。
 
-**验证层级**：本机 Linux（WSL2 x86_64、Rust 1.94.1）真 cdylib + 真 SQLite；`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`dart analyze --fatal-infos`、`dart test`（63 项）都实跑。Windows/Android 真机未跑。
+**验证层级**：本机 Linux（WSL2 x86_64、Rust 1.94.1）真 cdylib + 真 SQLite；`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`dart analyze --fatal-infos`、`dart test`（66 项）都实跑。Windows/Android 真机未跑。
