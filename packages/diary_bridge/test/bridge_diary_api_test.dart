@@ -487,6 +487,34 @@ void main() {
       ),
     );
   });
+
+  test('天列表入口经契约接口可用', () async {
+    await api.open();
+
+    // 提交一条今天的记录，天列表里就要有今天；计数只断言「至少这一条」，
+    // 因为同一个库里别的测试也建过今天的记录。
+    final draft = await api.createDraft(operationId: 'adapter-days-draft');
+    final written = await api.saveDraft(
+      id: draft.id,
+      text: '天列表适配层用的记录。',
+      expectedRevision: draft.revision,
+      operationId: 'adapter-days-save',
+    );
+    await api.commit(
+      id: draft.id,
+      expectedRevision: written.revision,
+      operationId: 'adapter-days-commit',
+    );
+    final days = await api.listDays(pageSize: 20);
+    expect(days.days.map((day) => day.dayKey), contains(draft.dayKey));
+    expect(
+      days.days
+          .firstWhere((day) => day.dayKey == draft.dayKey)
+          .materialCounts
+          .captures,
+      greaterThanOrEqualTo(1),
+    );
+  });
 }
 
 String _defaultLibraryPath() {

@@ -104,7 +104,7 @@ pub use provider::transport::{
 pub use model::{
     AiResponse, Asset, AssetLease, AssetStorageState, AuthorType, BackupCounts, BackupInspection,
     BackupReport, Capture, CapturePage, CaptureState, CommitResult, Coverage, DiaryDay,
-    DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion, DiaryVersionOrigin,
+    DiaryDayPage, DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion, DiaryVersionOrigin,
     DiaryVersionPage, DomainEvent, DraftSaveResult, EventType, ExportRequest, ExportTicket,
     ExtractedContent, ExtractedSegment, GenerationInfo, ImportManifest, ImportOrigin, ImportState,
     ImportStatus, ImportTicket,
@@ -1726,7 +1726,7 @@ impl Core {
     ///
     /// 候选与当前只在这里区分（契约的 `DiaryVersion` 没有状态字段）。空日报 `not_found`。
     pub fn get_diary_day(&self, day_key: &str) -> Result<DiaryDay> {
-        diary::get_day(self, day_key)
+        diary::get_day(&self.conn, day_key)
     }
 
     /// 分页读某一天的日记版本，契约第 4.3 节 `diary.listVersions`。最新在前。
@@ -1850,6 +1850,21 @@ impl Core {
     /// 恒为 `false`——这不是备份，不能用于恢复资料库。
     pub fn create_export(&mut self, request: &ExportRequest) -> Result<ExportTicket> {
         export::create(self, request)
+    }
+
+    // ------------------------------------------------------------- 日记天列表
+
+    /// `diary.listDays`：有哪些天、每天多少条材料（回收站不算），按 dayKey 倒序。
+    ///
+    /// 游标是不透明字符串，翻页原样回传；坏游标报 `cursor_expired`。
+    pub fn list_days(
+        &self,
+        from_day_key: Option<&str>,
+        to_day_key: Option<&str>,
+        cursor: Option<&str>,
+        page_size: usize,
+    ) -> Result<model::DiaryDayPage> {
+        diary::list_days(self, from_day_key, to_day_key, cursor, page_size)
     }
 
     // ------------------------------------------------------------ 整理与自动化（B4e）

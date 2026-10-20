@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use chrono::{DateTime, Utc};
 use diary_core::{
     AiResponse, BackupInspection, BackupReport, Capture, CapturePage, CommitResult, Core,
-    CoreError, DiaryDay, DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion,
+    CoreError, DiaryDay, DiaryDayPage, DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion,
     DiaryVersionPage, DomainEvent, DraftSaveResult, ExportRequest, ExportTicket, ExtractedContent,
     ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job, JobRunSummary,
     JobState, JobStatus, NativeRecordingStatus, OrganizeSettings, OrganizeStatus, OrganizeTemplate,
@@ -793,6 +793,25 @@ impl BridgeSession {
         Ok(core.create_export(&request)?)
     }
 
+    // ------------------------------------------------------------ 天列表
+
+    /// 有哪些天、每天多少条材料（回收站不算），按 dayKey 倒序。
+    pub fn list_days(
+        &self,
+        from_day_key: Option<String>,
+        to_day_key: Option<String>,
+        cursor: Option<String>,
+        page_size: u32,
+    ) -> Result<DiaryDayPage, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.list_days(
+            from_day_key.as_deref(),
+            to_day_key.as_deref(),
+            cursor.as_deref(),
+            page_size as usize,
+        )?)
+    }
+
     // ------------------------------------------------------------ 整理与自动化（B4e）
 
     /// 全部可用的整理模板（现在只有三个核心内置的；声明式插件模板见 #88）。
@@ -1007,6 +1026,7 @@ fn wired_capabilities() -> Vec<String> {
         "diary.saveEdit",
         "diary.setCurrent",
         "diary.merge",
+        "diary.listDays",
         // #114 风格管理：三种方法都走真实存储；生成时的风格快照已是版本行。
         "styles.list",
         "styles.get",

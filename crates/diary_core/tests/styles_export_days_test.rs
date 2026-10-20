@@ -1,9 +1,9 @@
-//! #114 风格 / #113 阅读导出的集成测试。
+//! #114 风格 / #113 阅读导出 / `diary.listDays` 的集成测试。
 //!
 //! 全部走真实核心路径（开库、迁移、写表、生成、落盘），不 mock 存储层：
 //! - 风格：CRUD 往返、乐观锁、历史版本不可变、生成时 `styleSnapshotId` 指对版本；
-//! - 导出：Markdown / 纯文本、正文逐段一致、回收站不出现、重名不覆盖、沙箱外拒绝、
-//!   非零填充 dayKey 按日期解析后绑定。
+//! - 导出：Markdown / 纯文本、正文逐段一致、回收站不出现、重名不覆盖、沙箱外拒绝；
+//! - 天列表：与 `captures` 分组计数一致、回收站不算、倒序、游标分页。
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -519,4 +519,118 @@ fn export_rejects_bad_arguments_and_paths_outside_the_sandbox() {
         .unwrap_err();
     assert_eq!(error.code(), ErrorCode::PermissionDenied);
     assert!(!dir.path().join("exports").exists(), "拒绝时不能先建目录");
+}
+
+// ------------------------------------------------------------------ 天列表
+
+#[test]
+fn list_days_matches_capture_counts_excludes_trash_and_paginates() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    capture_on(&mut core, "2026-10-05", "五号一条。", "op-05");
+    capture_on(&mut core, "2026-10-14", "十四号一条。", "op-14");
+    let trash_me = capture_on(&mut core, "2026-10-15", "十五号会被回收的一条。", "op-15a");
+    capture_on(&mut core, "2026-10-15", "十五号保留的一条。", "op-15b");
+    capture_on(&mut core, "2026-10-16", "十六号一条。", "op-16");
+    Connection::open(dir.path().join("library.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE captures SET state = 'trashed' WHERE id = ?1",
+            rusqlite::params![trash_me],
+        )
+        .unwrap();
+
+    let page = core.list_days(None, None, None, 20).unwrap();
+    assert_eq!(
+        page.days
+            .iter()
+            .map(|day| day.day_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["2026-10-16", "2026-10-15", "2026-10-14", "2026-10-05"],
+        "倒序、回收站里的记录不计数"
+    );
+    assert_eq!(page.days[1].material_counts.captures, 1);
+    assert_eq!(page.days[0].material_counts.captures, 1);
+    assert_eq!(page.next_cursor, None);
+
+    // 与 captures 表按 day 分组的计数逐天一致。
+    let conn = Connection::open(dir.path().join("library.sqlite")).unwrap();
+    let sql_counts: Vec<(String, i64)> = {
+        let mut statement = conn
+            .prepare(
+                "SELECT day_key, COUNT(*) FROM captures WHERE state != 'trashed' \
+                 GROUP BY day_key ORDER BY day_key DESC",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(sql_counts.len(), page.days.len());
+    for (day, (key, count)) in page.days.iter().zip(sql_counts) {
+        assert_eq!(day.day_key, key);
+        assert_eq!(day.material_counts.captures, count);
+    }
+
+    // 分页：pageSize = 1，游标原样回传能翻完，最后没有 nextCursor。
+    let first = core.list_days(None, None, None, 1).unwrap();
+    assert_eq!(first.days.len(), 1);
+    assert_eq!(first.days[0].day_key, "2026-10-16");
+    let cursor = first.next_cursor.expect("还有下一页");
+    let second = core.list_days(None, None, Some(&cursor), 1).unwrap();
+    assert_eq!(second.days[0].day_key, "2026-10-15");
+    let third = core
+        .list_days(None, None, second.next_cursor.as_deref(), 1)
+        .unwrap();
+    assert_eq!(third.days[0].day_key, "2026-10-14");
+    let fourth = core
+        .list_days(None, None, third.next_cursor.as_deref(), 1)
+        .unwrap();
+    assert_eq!(fourth.days[0].day_key, "2026-10-05");
+    assert_eq!(fourth.next_cursor, None);
+
+    // 闭区间过滤。
+    let only_15 = core
+        .list_days(Some("2026-10-15"), Some("2026-10-15"), None, 20)
+        .unwrap();
+    assert_eq!(only_15.days.len(), 1);
+    assert_eq!(only_15.days[0].day_key, "2026-10-15");
+
+    // 非零填充的 dayKey：解析成功就要按规范形比较/绑定，不能按原始字符串的
+    // 字典序把范围悄悄缩小（`2026-10-05` < `2026-10-5`）。
+    let padded = core
+        .list_days(Some("2026-10-5"), Some("2026-10-15"), None, 20)
+        .expect("非零填充的 fromDayKey 必须按日期解析");
+    assert_eq!(
+        padded
+            .days
+            .iter()
+            .map(|day| day.day_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["2026-10-15", "2026-10-14", "2026-10-05"],
+        "非零填充的起点不能静默排除 10 月 1–19 日"
+    );
+
+    // 单日范围也用非零填充：解析后两边相等，不是 invalid_argument。
+    let single = core
+        .list_days(Some("2026-10-5"), Some("2026-10-5"), None, 20)
+        .unwrap();
+    assert_eq!(single.days.len(), 1);
+    assert_eq!(single.days[0].day_key, "2026-10-05");
+
+    // 坏参数：游标过期码；from > to 是 invalid_argument。
+    assert_eq!(
+        core.list_days(None, None, Some("not-a-cursor"), 20)
+            .unwrap_err()
+            .code(),
+        ErrorCode::CursorExpired
+    );
+    assert_eq!(
+        core.list_days(Some("2026-10-16"), Some("2026-10-14"), None, 20)
+            .unwrap_err()
+            .code(),
+        ErrorCode::InvalidArgument
+    );
 }

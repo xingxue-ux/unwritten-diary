@@ -16,7 +16,7 @@ import '../diary_bridge.dart' as bridge;
 /// `testProvider` / `requestResponse` / `getResponse`，以及
 /// **语义索引重建**（`rebuildSemanticIndex`，契约 `indexes.rebuildSemantic`：设置页
 /// 要在换过模型之后触发「重建语义索引」，所以这一条必须真的能调），
-/// **日记生成与版本**：`getDay` / `generateDiary` / `listVersions` /
+/// **日记生成与版本**：`getDay` / `listDays` / `generateDiary` / `listVersions` /
 /// `getVersion` / `saveDiaryEdit` / `setCurrentVersion` / `mergeDiary`。
 /// **风格（#114）**：`listStyles` / `getStyle` / `saveStyle`。
 /// **阅读导出（#113）**：`createExport`（核心同步生成文件，`jobId` 指向已完成记录；
@@ -109,6 +109,7 @@ class BridgeDiaryApi implements api.DiaryApi {
     'diary.saveEdit',
     'diary.setCurrent',
     'diary.merge',
+    'diary.listDays',
     'styles.list',
     'styles.get',
     'styles.save',
@@ -679,6 +680,30 @@ class BridgeDiaryApi implements api.DiaryApi {
       ),
     );
     return _diaryVersion(version);
+  }
+
+  // ------------------------------------------------------------ 天列表（#113 前置）
+
+  @override
+  Future<api.DiaryDayPage> listDays({
+    String? fromDayKey,
+    String? toDayKey,
+    String? cursor,
+    int pageSize = 20,
+  }) async {
+    final session = _open;
+    final page = await _translate(
+      () => session.listDays(
+        fromDayKey: fromDayKey,
+        toDayKey: toDayKey,
+        cursor: cursor,
+        pageSize: pageSize,
+      ),
+    );
+    return api.DiaryDayPage(
+      days: page.days.map(_diaryDay).toList(growable: false),
+      nextCursor: page.nextCursor,
+    );
   }
 
   // ------------------------------------------------------------ 风格（#114）
