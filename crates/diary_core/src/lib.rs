@@ -579,9 +579,10 @@ impl Core {
             day_key: support::day_key(occurred_at, input.utc_offset_minutes),
             ordered_source_ids: Vec::new(),
             draft_text: String::new(),
-            // 刚创建的记录还没有来源，所以四个数字确实都是 0。这是 `ProcessingSummary`
-            // 唯一合法的全 0；有来源的记录一律由 `processing::summary` 按库里的真实
-            // 状态算（见 `capture_from_raw` 与 `processing` 模块文档）。
+            // 刚创建的记录还没有来源，所以四个数字确实都是 0。**没有来源**的记录
+            // （刚建的草稿、空白提交）都可以是全 0；有来源的记录一律由
+            // `processing::summary` 按库里的真实状态算（见 `capture_from_raw` 与
+            // `processing` 模块文档）。
             processing_summary: ProcessingSummary::default(),
         };
 
@@ -642,7 +643,7 @@ impl Core {
             return Ok(serde_json::from_str(&json)?);
         }
 
-        let capture = load_capture(&self.conn, capture_id)?;
+        let capture = load_capture_raw(&self.conn, capture_id)?;
         ensure_revision(&capture, expected_revision)?;
         if capture.state != CaptureState::Draft {
             return Err(CoreError::InvalidState {
@@ -701,6 +702,10 @@ impl Core {
     ///
     /// 任务书 3.2 节要求「核心提交数据与对应的待处理任务/出站事件记录应在同一数据库
     /// 事务中完成」，否则会出现「资料已保存，索引任务却永远丢了」。
+    ///
+    /// 返回的 `Capture.processing_summary` 是**提交那一刻**的快照（来源与任务都在同一
+    /// 事务里刚写好之后算的，回执里存的也是它）；之后的 `get_capture` / `list_captures`
+    /// 读的是当下的值。写路径本身只算这一次，不在开头再算一遍。
     pub fn commit_with_jobs(
         &mut self,
         capture_id: &str,
@@ -729,7 +734,7 @@ impl Core {
             return Ok(serde_json::from_str(&json)?);
         }
 
-        let capture = load_capture(&self.conn, capture_id)?;
+        let capture = load_capture_raw(&self.conn, capture_id)?;
         ensure_revision(&capture, expected_revision)?;
         if capture.state != CaptureState::Draft {
             return Err(CoreError::InvalidState {
@@ -796,7 +801,8 @@ impl Core {
         }
 
         // 提交之后这条记录才第一次有来源，摘要必须在**同一个事务里**按刚写进去的
-        // 来源与任务算：回执里存的也是这个值，幂等重放不会返回一份全 0 的旧快照。
+        // 来源与任务算（这是「提交那一刻」的语义，不是实时值）：回执里存的也是这个
+        // 值，幂等重放不会返回一份全 0 的旧快照。整个 commit 只算这一次。
         committed.processing_summary = processing::summary(&tx, &committed.id)?;
 
         let result = CommitResult {
@@ -839,7 +845,7 @@ impl Core {
         }
 
         let (capture_id, parent_revision_id) = load_source_item(&self.conn, source_id)?;
-        let capture = load_capture(&self.conn, &capture_id)?;
+        let capture = load_capture_raw(&self.conn, &capture_id)?;
         // 乐观锁以记录的 revision 为准：记录是聚合根，一次修订同时推进它。
         ensure_revision(&capture, expected_revision)?;
         if capture.state == CaptureState::Draft {
@@ -2130,7 +2136,15 @@ fn load_revision_text(conn: &Connection, revision_id: &str) -> Result<Option<Str
     Ok(text.flatten())
 }
 
-fn load_capture(conn: &Connection, capture_id: &str) -> Result<Capture> {
+/// 读记录本身，**不算** `processing_summary`（写路径用；写路径不替摘要付费）。
+///
+/// 写路径（`save_draft` / `commit` / `revise_text` / 导入与录音的 prepare/finalize）
+/// 只关心 revision、state、draft_text 这些字段；在那里跑四桶聚合纯属浪费——尤其
+/// `save_draft` 是高频调用。只有 `get_capture` / `list_captures` 需要摘要。
+///
+/// 返回的 `Capture.processing_summary` 是默认值，**不得直接交给调用方**；对外读取
+/// 必须走 `load_capture`（或列表路径的 `processing::summaries`）。
+fn load_capture_raw(conn: &Connection, capture_id: &str) -> Result<Capture> {
     let sql = format!("SELECT {CAPTURE_COLUMNS} FROM captures WHERE id = ?1");
     let raw: Option<RawCapture> = conn
         .query_row(&sql, params![capture_id], |row| {
@@ -2150,15 +2164,19 @@ fn load_capture(conn: &Connection, capture_id: &str) -> Result<Capture> {
         .optional()?;
 
     match raw {
-        Some(row) => {
-            let summary = processing::summary(conn, capture_id)?;
-            capture_from_raw(conn, row, summary)
-        }
+        Some(row) => capture_from_raw(conn, row, ProcessingSummary::default()),
         None => Err(CoreError::NotFound {
             entity: "记录",
             id: capture_id.to_owned(),
         }),
     }
+}
+
+/// 对外读取一条记录：记录本身 + **此刻**的四桶摘要。
+fn load_capture(conn: &Connection, capture_id: &str) -> Result<Capture> {
+    let mut capture = load_capture_raw(conn, capture_id)?;
+    capture.processing_summary = processing::summary(conn, capture_id)?;
+    Ok(capture)
 }
 
 fn capture_from_raw(

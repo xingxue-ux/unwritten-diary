@@ -24,16 +24,21 @@
 //! - `searchable`：当前修订已经有**当前关键词索引**的来源数：
 //!   - 有原件的来源：`extracted_contents`（当前修订）→ `extracted_segments` →
 //!     `search_docs` 至少一行；
-//!   - 文字来源：同一条记录的文字已在 `search_capture_docs` 里（提交时创建的正文
-//!     来源走的就是这一路，没有提取这一环）。
+//!   - 文字来源（`source_items.kind = 'text'`）：同一条记录的文字已在
+//!     `search_capture_docs` 里，且那一行的 `tokenizer_version` 是当前分词器版本
+//!     （提交时创建的正文来源走的就是这一路，没有提取这一环）。**口径与
+//!     `index_status.keyword_index_ready` 一致**：旧分词器版本的文档行不算可检索。
 //!   只认当前修订：旧修订留在索引里的行不算（`index_status` 同样把它们排除）。
 //! - `needs_attention`：指向这条记录的**任务**里 `requires_user_action = 1` 且
 //!   `attention_key` 未被 `attention_acks` 确认的条数。`attention_key` 为空的任务
-//!   无法确认，会一直算到被重试 / 取消——不替它编一个 key。
+//!   （`fail()` 额度耗尽与崩溃恢复的 `interrupted`）无法确认，只能**重试或取消**：
+//!   取消会把 `requires_user_action` / `attention_key` 清掉，是「不再处理」的出口；
+//!   摘要不替它编一个 key，也不把 `cancelled` 算进来。
 //!
 //! `searchable` 与 `processing` 可以同时为非零（例如已经有旧索引、又在重建）。
 //! 四个数字不是互斥分区；但**有来源就一定至少落进 unprocessed / processing /
-//! searchable 之一**：这就是「只有空记录才全 0」的保证。
+//! searchable 之一**：这就是「没有来源的记录才全 0」的保证——刚建的草稿，以及
+//! **没有任何材料**的空白提交，都没有来源。
 //!
 //! # 目标 id 的语义（不假设）
 //!
@@ -72,7 +77,8 @@ use crate::error::Result;
 use crate::model::ProcessingSummary;
 
 /// 一次算出多条记录的摘要。返回的 map 只含有来源的记录：没有来源的记录（刚建的
-/// 草稿）没有行，调用方用 `ProcessingSummary::default()`——那是全 0 唯一合法的场景。
+/// 草稿、没有任何材料的空白提交）没有行，调用方用 `ProcessingSummary::default()`
+/// ——全 0 只对没有来源的记录合法。
 pub(crate) fn summaries(
     conn: &Connection,
     capture_ids: &[String],
@@ -100,7 +106,7 @@ pub(crate) fn summaries(
     Ok(rows.into_iter().collect())
 }
 
-/// 一条记录的摘要。没有来源时返回全 0（唯一合法的全 0）。
+/// 一条记录的摘要。没有来源时返回全 0（刚建草稿 / 空白提交都合法）。
 pub(crate) fn summary(conn: &Connection, capture_id: &str) -> Result<ProcessingSummary> {
     let id = capture_id.to_owned();
     Ok(summaries(conn, std::slice::from_ref(&id))?
@@ -118,26 +124,33 @@ fn u32_count(value: i64) -> u32 {
 ///
 /// CTE 的分工：
 /// - `src`：这一页记录的全部来源（也是「有来源」的集合）；
-/// - `indexed`：当前修订真的有关键词索引行的来源；
+/// - `indexed`：当前修订真的有关键词索引行的来源（文字来源还要求 `kind = 'text'`
+///   与当前分词器版本）；
 /// - `live_jobs` / `attention_jobs`：两道任务集合，分别用部分索引
-///   `idx_jobs_live` / `idx_jobs_attention` 扫，不扫历史终态任务；
+///   `idx_jobs_live` / `idx_jobs_attention` 扫，不扫历史终态任务；`attention_jobs`
+///   明确排除 `cancelled`（旧数据里可能还留着取消前的标志位）；
 /// - `live_source_hits`：活任务 → 来源（只用于 `unprocessed` 的「没人在处理」判断）；
 /// - `live_job_captures` / `attention_job_captures`：任务 → 记录（数任务条数）；
-/// - `source_counts` / `processing_counts` / `attention_counts`：三路 GROUP BY，
-///   最后按 capture 拼起来。
+/// - `covered`：已经有索引或有活任务的来源（`indexed ∪ live_source_hits`）；
+/// - `rollup`：每个来源 / 每条任务贡献一行，最后按 capture 透视成四列。这里刻意
+///   不用「几个聚合 CTE 再 JOIN」：SQLite 会为 JOIN 的物化 CTE 每次执行建
+///   `AUTOMATIC` 索引，建索引本身要扫一遍那些行；`UNION ALL` 的每一支只扫自己。
 ///
 /// 映射用 `CROSS JOIN` 固定「先扫少数活任务、再点查目标」的顺序；写成普通 JOIN 时
 /// SQLite 可能反过来先整表扫 `source_revisions`（EXPLAIN 实测过），在大库上就是
-/// 一次全表扫描。
+/// 一次全表扫描。三条 `sr.asset_id = target` 分支靠 `idx_source_revisions_asset`
+/// 点查——没有它时 SQLite 会临时建 `AUTOMATIC` 索引，那本身就要扫一遍
+/// `source_revisions`，与「不扫」相反。
 fn summary_sql(id_count: usize) -> String {
     let placeholders = std::iter::repeat_n("?", id_count)
         .collect::<Vec<_>>()
         .join(", ");
+    let tokenizer_version = crate::search::TOKENIZER_VERSION;
     format!(
         r#"
 WITH
 src AS (
-    SELECT si.capture_id, si.source_id, si.current_revision_id
+    SELECT si.capture_id, si.source_id, si.current_revision_id, si.kind
     FROM source_items si
     WHERE si.capture_id IN ({placeholders})
 ),
@@ -156,7 +169,9 @@ indexed AS (
         FROM source_revisions sr
         JOIN search_capture_docs scd ON scd.capture_id = s.capture_id
         WHERE sr.revision_id = s.current_revision_id
+          AND s.kind = 'text'
           AND sr.text IS NOT NULL
+          AND scd.tokenizer_version = '{tokenizer_version}'
     )
 ),
 live_jobs AS (
@@ -215,6 +230,7 @@ attention_jobs AS (
     JOIN json_each(CASE WHEN json_valid(j.target_ids) AND json_type(j.target_ids) = 'array'
                         THEN j.target_ids ELSE '[]' END) AS t
     WHERE j.requires_user_action = 1
+      AND j.state NOT IN ('succeeded', 'cancelled')
       AND (
           j.attention_key IS NULL
           OR NOT EXISTS (SELECT 1 FROM attention_acks a WHERE a.attention_key = j.attention_key)
@@ -245,39 +261,40 @@ attention_job_captures AS (
     CROSS JOIN json_each(CASE WHEN json_valid(r.capture_ids) AND json_type(r.capture_ids) = 'array'
                               THEN r.capture_ids ELSE '[]' END) AS ca
 ),
-source_counts AS (
-    SELECT
-        s.capture_id,
-        SUM(CASE WHEN ix.source_id IS NULL AND lh.source_id IS NULL THEN 1 ELSE 0 END) AS unprocessed,
-        SUM(CASE WHEN ix.source_id IS NOT NULL THEN 1 ELSE 0 END) AS searchable
-    FROM src s
-    LEFT JOIN indexed ix
-           ON ix.capture_id = s.capture_id AND ix.source_id = s.source_id
-    LEFT JOIN live_source_hits lh
-           ON lh.capture_id = s.capture_id AND lh.source_id = s.source_id
-    GROUP BY s.capture_id
+covered AS (
+    SELECT capture_id, source_id FROM indexed
+    UNION
+    SELECT capture_id, source_id FROM live_source_hits
 ),
-processing_counts AS (
-    SELECT ljc.capture_id, COUNT(DISTINCT ljc.job_id) AS processing
-    FROM live_job_captures ljc
-    WHERE ljc.capture_id IN (SELECT capture_id FROM src)
-    GROUP BY ljc.capture_id
-),
-attention_counts AS (
-    SELECT ajc.capture_id, COUNT(DISTINCT ajc.job_id) AS needs_attention
-    FROM attention_job_captures ajc
-    WHERE ajc.capture_id IN (SELECT capture_id FROM src)
-    GROUP BY ajc.capture_id
+rollup AS (
+    -- 每个来源 / 每条任务各贡献一行，最后按 capture `GROUP BY` 透视。
+    -- 为什么不用「三个聚合 CTE 再 JOIN」：SQLite 会对 JOIN 的物化 CTE **每次执行**
+    -- 建 AUTOMATIC 覆盖索引（EXPLAIN 实测），建索引本身要扫一遍那些行——这正是
+    -- 复审 #158 第 2 条抓到的形状。UNION ALL 的每一支只扫一遍自己的 CTE，不产生
+    -- 自动索引。
+    SELECT capture_id, 1 AS source_total, 0 AS covered_source,
+           0 AS searchable, 0 AS processing, 0 AS needs_attention
+    FROM src
+    UNION ALL
+    SELECT capture_id, 0, 1, 0, 0, 0 FROM covered
+    UNION ALL
+    SELECT capture_id, 0, 0, 1, 0, 0 FROM indexed
+    UNION ALL
+    SELECT capture_id, 0, 0, 0, 1, 0 FROM live_job_captures
+    WHERE capture_id IN (SELECT capture_id FROM src)
+    UNION ALL
+    SELECT capture_id, 0, 0, 0, 0, 1 FROM attention_job_captures
+    WHERE capture_id IN (SELECT capture_id FROM src)
 )
 SELECT
-    sc.capture_id,
-    sc.unprocessed,
-    COALESCE(pc.processing, 0),
-    sc.searchable,
-    COALESCE(ac.needs_attention, 0)
-FROM source_counts sc
-LEFT JOIN processing_counts pc ON pc.capture_id = sc.capture_id
-LEFT JOIN attention_counts ac ON ac.capture_id = sc.capture_id
+    capture_id,
+    SUM(source_total) - SUM(covered_source) AS unprocessed,
+    SUM(processing) AS processing,
+    SUM(searchable) AS searchable,
+    SUM(needs_attention) AS needs_attention
+FROM rollup
+WHERE capture_id IN (SELECT capture_id FROM src)
+GROUP BY capture_id
 "#
     )
 }
@@ -286,11 +303,8 @@ LEFT JOIN attention_counts ac ON ac.capture_id = sc.capture_id
 mod tests {
     use super::*;
 
-    /// `#146` 的性能回归：聚合只扫两条**部分索引**，不能退化成全表扫
-    /// `jobs` / `source_revisions`。真实列表路径（100 条记录）走的是同一条 SQL，
-    /// 这里用一条记录把计划钉住。
-    #[test]
-    fn query_plan_uses_the_partial_indexes() {
+    /// 一个最小的库：一条已提交的文字记录、一个文字来源、当前修订。
+    fn seeded_connection() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::schema::migrate(&mut conn).unwrap();
         conn.execute_batch(
@@ -305,6 +319,15 @@ mod tests {
             INSERT INTO source_revisions
                 (revision_id, source_id, parent_revision_id, text, asset_id, author_type, occurred_at)
             VALUES ('rev_a', 'src_a', NULL, 'body', NULL, 'user', '2026-01-01T00:00:00Z');
+            "#,
+        )
+        .unwrap();
+        conn
+    }
+
+    fn seed_jobs(conn: &Connection) {
+        conn.execute_batch(
+            r#"
             INSERT INTO jobs
                 (id, kind, state, priority, target_ids, attempt_count, max_attempts,
                  requires_user_action, created_at, updated_at)
@@ -319,18 +342,44 @@ mod tests {
             "#,
         )
         .unwrap();
+    }
 
-        let sql = format!("EXPLAIN QUERY PLAN {}", summary_sql(1));
+    fn query_plan(conn: &Connection, capture_ids: &[String]) -> Vec<String> {
+        let sql = format!("EXPLAIN QUERY PLAN {}", summary_sql(capture_ids.len()));
         let mut statement = conn.prepare(&sql).unwrap();
-        let plan: Vec<String> = statement
-            .query_map(["cap_a"], |row| row.get::<_, String>(3))
+        statement
+            .query_map(rusqlite::params_from_iter(capture_ids.iter()), |row| {
+                row.get::<_, String>(3)
+            })
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        for line in &plan {
-            println!("PLAN {line}");
-        }
+            .unwrap()
+    }
 
+    /// 计划里不许出现任何 `AUTOMATIC` 索引（每次执行临时建索引 = 扫表），也不许
+    /// 出现 `SCAN j` / `SCAN sr` / `SCAN si` 这种**表**扫描。注意查询用了别名
+    /// `j/sr/si`，所以断言必须按别名来；`SCAN j USING INDEX idx_jobs_live` 是扫
+    /// **部分索引**，是期望的形状，不能一并禁掉。
+    fn assert_plan_is_index_only(plan: &[String]) {
+        for line in plan {
+            println!("PLAN {line}");
+            let line = line.trim_start();
+            assert!(
+                !line.contains("AUTOMATIC"),
+                "不能临时建 AUTOMATIC 索引（建索引要扫表）：{line}"
+            );
+            if let Some(rest) = line.strip_prefix("SCAN ") {
+                let alias = rest.split_whitespace().next().unwrap_or("");
+                assert!(!matches!(alias, "sr" | "si"), "不能全表扫 {alias}：{line}");
+                if alias == "j" {
+                    assert!(
+                        line.contains("USING INDEX idx_jobs_live")
+                            || line.contains("USING INDEX idx_jobs_attention"),
+                        "jobs 只能扫两条部分索引，不能扫整张表：{line}"
+                    );
+                }
+            }
+        }
         assert!(
             plan.iter().any(|line| line.contains("idx_jobs_live")),
             "活任务必须走 idx_jobs_live，不能扫整张 jobs"
@@ -339,16 +388,115 @@ mod tests {
             plan.iter().any(|line| line.contains("idx_jobs_attention")),
             "待处理任务必须走 idx_jobs_attention"
         );
-        for line in &plan {
-            assert!(!line.starts_with("SCAN jobs"), "不能全表扫 jobs：{line}");
-            assert!(
-                !line.starts_with("SCAN source_revisions"),
-                "不能全表扫 source_revisions：{line}"
-            );
-            assert!(
-                !line.starts_with("SCAN source_items"),
-                "不能全表扫 source_items：{line}"
-            );
-        }
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("idx_source_revisions_asset")),
+            "资产 → 来源必须走持久索引 idx_source_revisions_asset，不能建 AUTOMATIC 索引"
+        );
+    }
+
+    /// `#146` 的性能回归：单条记录（`get_capture` 路径）的计划。
+    #[test]
+    fn query_plan_uses_the_partial_indexes() {
+        let conn = seeded_connection();
+        seed_jobs(&conn);
+        assert_plan_is_index_only(&query_plan(&conn, &["cap_a".to_owned()]));
+    }
+
+    /// 列表路径一次绑定**整页 + 1**（100 条记录 + 游标探测）个 id。101 个占位符
+    /// 时计划不能退化成扫表，也不能退化成 AUTOMATIC 索引——这是复审 #158 第 2 条
+    /// 要求的真实列表形状。
+    #[test]
+    fn query_plan_for_a_full_page_stays_index_only() {
+        let conn = seeded_connection();
+        seed_jobs(&conn);
+        let ids: Vec<String> = (0..101).map(|index| format!("cap_{index:03}")).collect();
+        assert_eq!(ids.len(), 101);
+        assert_plan_is_index_only(&query_plan(&conn, &ids));
+    }
+
+    /// 文字来源的 `searchable` 只看**当前分词器版本**的 `search_capture_docs` 行，
+    /// 且只对 `kind = 'text'` 的来源成立（与 `index_status.keyword_index_ready` 同口径）。
+    #[test]
+    fn text_source_is_searchable_only_with_current_tokenizer_and_text_kind() {
+        let conn = seeded_connection();
+        let id = "cap_a".to_owned();
+        let lookup = |conn: &Connection| {
+            summaries(conn, std::slice::from_ref(&id))
+                .unwrap()
+                .remove(&id)
+                .unwrap()
+        };
+
+        let missing = lookup(&conn);
+        assert_eq!(missing.unprocessed, 1);
+        assert_eq!(missing.searchable, 0);
+
+        conn.execute(
+            "INSERT INTO search_capture_docs (capture_id, text_length, tokenizer_version) \
+             VALUES ('cap_a', 4, 'old-tokenizer')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            lookup(&conn).searchable,
+            0,
+            "旧分词器版本的文档行不算当前关键词索引"
+        );
+
+        conn.execute(
+            "UPDATE search_capture_docs SET tokenizer_version = ?1 WHERE capture_id = 'cap_a'",
+            rusqlite::params![crate::search::TOKENIZER_VERSION],
+        )
+        .unwrap();
+        let current = lookup(&conn);
+        assert_eq!(current.searchable, 1);
+        assert_eq!(current.unprocessed, 0);
+
+        conn.execute(
+            "UPDATE source_items SET kind = 'file' WHERE source_id = 'src_a'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            lookup(&conn).searchable,
+            0,
+            "只有 kind = 'text' 的来源才走 search_capture_docs 这一路"
+        );
+    }
+
+    /// 旧数据里可能留下「已取消但 `requires_user_action` 还是 1」的行（#158 之前
+    /// 的 `cancel` 不清标志）。`attention_jobs` 必须按状态排除它们，不能靠调用方
+    /// 一定把标志清干净。
+    #[test]
+    fn cancelled_jobs_never_count_as_attention() {
+        let conn = seeded_connection();
+        conn.execute(
+            "INSERT INTO jobs (id, kind, state, priority, target_ids, attempt_count, \
+             max_attempts, requires_user_action, attention_key, created_at, updated_at) \
+             VALUES ('job_cancelled', 'future_kind', 'cancelled', 10, '[\"src_a\"]', 0, 5, 1, \
+                     NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO jobs (id, kind, state, priority, target_ids, attempt_count, \
+             max_attempts, requires_user_action, attention_key, created_at, updated_at) \
+             VALUES ('job_succeeded', 'future_kind', 'succeeded', 10, '[\"src_a\"]', 0, 5, 1, \
+                     'job-terminal:future_kind:done', '2026-01-01T00:00:00Z', \
+                     '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        let summary = summaries(&conn, &["cap_a".to_owned()])
+            .unwrap()
+            .remove("cap_a")
+            .unwrap();
+        assert_eq!(
+            summary.needs_attention, 0,
+            "cancelled / succeeded 不算待处理"
+        );
+        assert_eq!(summary.processing, 0, "两者都是终态，不是活任务");
     }
 }

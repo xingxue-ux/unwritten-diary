@@ -31,7 +31,7 @@ pub(crate) fn prepare(
     operation_id: &str,
 ) -> Result<RecordingTicket> {
     let root = core.root_dir()?.to_path_buf();
-    let _ = crate::load_capture(&core.conn, capture_id)?;
+    let _ = crate::load_capture_raw(&core.conn, capture_id)?;
 
     let fingerprint = support::fingerprint(&["recordings.prepare", capture_id]);
     if let Some(json) = core.receipt("recordings.prepare", &fingerprint, operation_id)? {
@@ -358,7 +358,7 @@ pub(crate) fn finalize(
         params![revision_id, source_id, session.asset_id, support::to_iso(now)],
     )?;
 
-    let capture = crate::load_capture(&tx, &session.capture_id)?;
+    let capture = crate::load_capture_raw(&tx, &session.capture_id)?;
     let new_revision = capture.revision + 1;
     tx.execute(
         "UPDATE captures SET revision = ?1, updated_at = ?2 WHERE id = ?3",

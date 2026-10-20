@@ -225,29 +225,37 @@ fn ensure_v15_caliber_index(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V15_CALIBER_INDEX)
 }
 
-/// #146 的摘要聚合要用的两条**部分索引**（不新开 schema 版本）。
+/// #146 的摘要聚合要用的**查询索引**（不新开 schema 版本）。
 ///
-/// 为什么不进版本迁移：这只是查询加速，没有任何数据/结构语义；而 v16（回收站）与
-/// v17（styles）各有分支在抬号，这一片不占版本号。写法与
-/// `ensure_v15_caliber_index` 相同：每次 open 只多两次 `sqlite_master` 查询，
-/// 缺才建，`IF NOT EXISTS` 只是兜底。
+/// 为什么不进版本迁移：这只是查询加速，没有任何数据/结构语义；而 v16（回收站）、
+/// v17（styles）等分支各自在抬号，这一片不占版本号——三条索引都是加性的，与
+/// 任何更高的 main schema 版本都不冲突。写法与 `ensure_v15_caliber_index` 相同：
+/// 每次 open 只多三次 `sqlite_master` 查询，缺才建，`IF NOT EXISTS` 只是兜底。
 ///
 /// - `idx_jobs_live`：`Capture.processing_summary` 只关心**活着**的任务
 ///   （`state NOT IN ('succeeded','failed','cancelled')`），不扫历史终态；
-/// - `idx_jobs_attention`：`needs_attention` 只扫 `requires_user_action = 1` 的任务。
+/// - `idx_jobs_attention`：`needs_attention` 只扫 `requires_user_action = 1` 的任务；
+/// - `idx_source_revisions_asset`：任务 → 资产 → 来源那三条映射按 `asset_id` 点查。
+///   没有它时 SQLite 每次执行都会临时建 `AUTOMATIC` 索引，而建索引本身要扫一遍
+///   `source_revisions`——与「聚合不扫 source_revisions」的承诺相反。
 ///
-/// 两条索引都让 `processing.rs` 的聚合从「扫整张 jobs」变成「扫少数活任务」。
-/// `EXPLAIN QUERY PLAN` 在 `processing_summary_test` 里钉住（必须出现 `USING INDEX
-/// idx_jobs_live` / `idx_jobs_attention`）。
+/// 三条索引都让 `processing.rs` 的聚合从「扫整张表」变成「点查 / 扫少数活任务」。
+/// `EXPLAIN QUERY PLAN` 在 `processing.rs` 的 `#[cfg(test)]` 单测里钉住（不是
+/// `processing_summary_test`）。
 const PROCESSING_SUMMARY_INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_jobs_live
     ON jobs(state) WHERE state NOT IN ('succeeded', 'failed', 'cancelled');
 CREATE INDEX IF NOT EXISTS idx_jobs_attention
     ON jobs(attention_key) WHERE requires_user_action = 1;
+CREATE INDEX IF NOT EXISTS idx_source_revisions_asset
+    ON source_revisions(asset_id);
 "#;
 
 fn ensure_processing_summary_indexes(conn: &Connection) -> rusqlite::Result<()> {
-    if index_exists(conn, "idx_jobs_live")? && index_exists(conn, "idx_jobs_attention")? {
+    if index_exists(conn, "idx_jobs_live")?
+        && index_exists(conn, "idx_jobs_attention")?
+        && index_exists(conn, "idx_source_revisions_asset")?
+    {
         return Ok(());
     }
     conn.execute_batch(PROCESSING_SUMMARY_INDEXES)
