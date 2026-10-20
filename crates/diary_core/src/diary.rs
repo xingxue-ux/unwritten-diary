@@ -2394,20 +2394,26 @@ pub(crate) fn list_days(
          LIMIT ?4",
         crate::model::capture_not_trashed(None)
     );
-    let mut statement = core.conn.prepare(&keys_sql)?;
-    let keys = statement
-        .query_map(
-            params![from, to, cursor_day.as_deref(), (limit + 1) as i64],
-            |row| row.get::<_, String>(0),
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // 键列表与逐天详情必须在**同一个读事务**里：分页键与本页详情来自同一快照。
+    // 否则「查键」与「开事务」之间另一连接把当天最后一条记录挪走（回收站 / 清理），
+    // 分页键里还留着这一天，`get_day` 却已经报 not_found，**整页失败**（#168 复审）。
+    let tx = core.conn.unchecked_transaction()?;
+    let keys = {
+        let mut statement = tx.prepare(&keys_sql)?;
+        let rows = statement
+            .query_map(
+                params![from, to, cursor_day.as_deref(), (limit + 1) as i64],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
 
     let has_more = keys.len() > limit;
     let mut days = Vec::with_capacity(limit.min(keys.len()));
     // 一次读事务把本页所有天的 `getDay` 放进同一个快照：既避免「翻到一半库被写、
     // 各天看到的不是同一时刻」，也把 N 天的多组查询收在一个事务里。逐天查询的次数
     // 仍是 O(N)（`getDay` 的口径与单天入口完全一致，不另写一套批量聚合）。
-    let tx = core.conn.unchecked_transaction()?;
     for key in keys.iter().take(limit) {
         days.push(get_day(&tx, key)?);
     }

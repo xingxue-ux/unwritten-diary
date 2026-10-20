@@ -634,3 +634,92 @@ fn list_days_matches_capture_counts_excludes_trash_and_paginates() {
         ErrorCode::InvalidArgument
     );
 }
+
+/// #168 复审的回归：**键列表与逐天详情必须来自同一个读事务（同一快照）**。
+///
+/// 双连接并发：读连接在 `list_days` 里先查 `day_key` 列表，再逐天 `get_day`；写连接
+/// 在这两步之间把某天最后一条材料挪进回收站。本分支还没有 `trash_capture` 入口
+/// （回收站是 #155 那条线），所以这里按上面那条测试的同一口径，用一个真库连接
+/// `UPDATE captures SET state = 'trashed'`。
+///
+/// 未修版本里两步分属两个快照：写连接的提交只要落在中间，键列表里仍留着这一天，
+/// 而 `get_day` 会报 `not_found`（这一天既没有材料也没有版本）——**整页失败**，
+/// 也就是「键有、详情没」。修好之后键与详情同快照：这一天要么带着那 1 条材料出现，
+/// 要么整天空缺，绝不会出现「在键列表里、详情却是空的」。
+#[test]
+fn list_days_keys_and_details_come_from_one_snapshot_under_concurrent_trash() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    // 目标天：只有一条材料、没有 `diary_days` 行、也没有版本——材料被挪走的那一瞬间，
+    // 这一天在 `get_day` 眼里正好是「既没有材料也没有版本」，也就是 not_found 的条件。
+    let only = capture_on(&mut core, "2026-10-19", "十九号唯一一条。", "op-19");
+    // 搭出上下文天：让这一页不止一天，翻页键也不止一个。
+    capture_on(&mut core, "2026-10-18", "十八号一条。", "op-18");
+    capture_on(&mut core, "2026-10-17", "十七号一条。", "op-17");
+
+    let path = dir.path().join("library.sqlite");
+    let writer = std::thread::spawn({
+        let path = path.clone();
+        move || {
+            let conn = Connection::open(&path).unwrap();
+            // 读连接在 WAL 下不挡写，写字这边只可能自己撞上检查点；给足等待时间，
+            // 别让测试因为 `database is locked` 而假红。
+            conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+            let original: String = conn
+                .query_row(
+                    "SELECT state FROM captures WHERE id = ?1",
+                    rusqlite::params![only],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut flips = 0_u32;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            // 一进一出各一次提交：任何一次提交落在「查键之后、取详情之前」的窗口里，
+            // 未修版本都会把这一天带进键列表、又在取详情时找不到。
+            while std::time::Instant::now() < deadline {
+                for state in ["trashed", original.as_str()] {
+                    conn.execute(
+                        "UPDATE captures SET state = ?1 WHERE id = ?2",
+                        rusqlite::params![state, only],
+                    )
+                    .unwrap();
+                    flips += 1;
+                }
+            }
+            flips
+        }
+    });
+
+    let mut reads = 0_u32;
+    let mut saw_target = 0_u32;
+    while !writer.is_finished() {
+        let page = core
+            .list_days(None, None, None, 50)
+            .expect("并发写不该让整页失败：键列表与逐天详情必须来自同一快照");
+        for day in &page.days {
+            let counts = &day.material_counts;
+            assert!(
+                counts.captures + counts.processed + counts.pending + counts.failed >= 1,
+                "{} 出现在键列表里，详情却是空的（键有、详情没）",
+                day.day_key
+            );
+            if day.day_key == "2026-10-19" {
+                saw_target += 1;
+                assert_eq!(
+                    counts.captures, 1,
+                    "这一页的键与详情必须来自同一快照：这一天只有那一条材料"
+                );
+            }
+        }
+        reads += 1;
+    }
+    let flips = writer.join().unwrap();
+    assert!(
+        reads > 0 && flips > 0,
+        "读写两侧都要真的跑起来（reads={reads}, flips={flips}）"
+    );
+    assert!(
+        saw_target > 0,
+        "目标天至少要带着详情出现过一次，这条测试才不是空转"
+    );
+}
