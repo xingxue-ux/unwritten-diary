@@ -229,7 +229,7 @@ python3 plugins/tools/check_package.py plugins/examples/export-diary-markdown
 
 ## 9. Schema 13 → 14 迁移
 
-`schema.rs` 的 `SCHEMA_VERSION` 现在是 **15**：本节记录的是插件引入时的 v13 → 14；v15 是 #128 复审的加性改动（`index_meta.auto_rebuild_marker` + 整代口径覆盖索引），见 [`m2-向量索引与换代.md`](m2-向量索引与换代.md) 与 `schema::V15`。插件引入的 `V13` 迁移是：
+`schema.rs` 的 `SCHEMA_VERSION` 现在是 **17**：本节记录的是插件引入时的 v13 → 14；v15 是 #128 复审的加性改动（`index_meta.auto_rebuild_marker` + 整代口径覆盖索引），v16 是回收站线的 `captures.trashed_from_state` 加列（本构建保留 DDL，避免 v15 直升 17 缺列），v17 是 `styles` 风格版本表。见 [`m2-向量索引与换代.md`](m2-向量索引与换代.md) 与 `schema::V15` / `schema::V17`。插件引入的 `V13` 迁移是：
 
 ```sql
 CREATE TABLE IF NOT EXISTS plugin_installations (...);
@@ -245,10 +245,12 @@ CREATE TABLE IF NOT EXISTS plugin_grants (...);
 
 ## 10. 与 #113 / #114 的接缝
 
-当前 main 的 #113（可阅读导出）与 #114（风格系统）只有 **Dart 契约/界面**，Rust 核心
-没有 `exports.create` 与 `styles.*` 的存储实现。本片没有另造一套：
+#114（风格系统）的 **Rust 核心已经落地**（schema v17 的 `styles` 表；风格快照指向
+不可变版本行）；#113（可阅读导出）的 `exports.create` 仍没有核心实现。插件这一片
+仍然没有另造一套：
 
-- 风格模板的输入 DTO 与契约 `StyleProfile` 字段一一对应；
+- 风格模板的输入 DTO 与契约 `StyleProfile` 字段一一对应，且现在就是 `styles` 表的落库
+  对象（核心类型统一为 `StyleProfile`；`PluginStyleProfile` 只是旧名别名）；
 - 导出模板/代码插件的格式字符串（`markdown` / `plain_text`）与 dayKey 闭区间语义对齐
   `ExportRequest`；
 - 导出产物是同步返回的 `PluginRunResult.output` + `PluginArtifact`，可由 #113 的控制器
@@ -266,8 +268,8 @@ CREATE TABLE IF NOT EXISTS plugin_grants (...);
    本机只实际跑了 Linux；两端真机安装未验证。
 3. **插件直接联网**：没有 socket/WASI；只能走已配置且用户授权的 Provider。
 4. **完整自定义页面、原生动态库、无限制脚本**：按任务书后置，未实现。
-5. **`styles.*` / `exports.create` 的核心存储与任务化**：#114/#113 的 Rust 后端仍未
-   落地；本片只提供插件侧模板/导出接缝。
+5. **`exports.create` 的核心存储与任务化**：#113 的 Rust 后端仍未落地；#114 的
+   `styles.*` 已落地；本片只提供插件侧模板/导出接缝。
 6. **子进程隔离**：使用 wasmi + `catch_unwind`；进程级 abort（宿主 OOM 等）不可恢复。
 7. **插件市场里的自动更新**：升级是用户显式安装；没有后台自动更新。
 8. **多插件并发**：调用是同步的，没有并行调度；插件任务化（崩溃恢复、取消正在跑的

@@ -1012,7 +1012,7 @@ fn generation_arguments_are_checked_before_anything_is_queued() {
     assert_eq!(error.code(), ErrorCode::InvalidArgument);
     assert!(error.to_string().contains("没有任何材料"));
 
-    // 点名一个还不存在的风格：not_found（styles.* 还没实现，不静默用缺省糊弄）。
+    // 点名一个还不存在的风格：not_found（不静默用默认风格糊弄）。
     capture_with_text(&mut core, "今天的记录。", "op-a");
     let error = core
         .generate_diary("2026-10-16", Some("sty_x"), DiaryGenerationReason::Manual, "op-2")

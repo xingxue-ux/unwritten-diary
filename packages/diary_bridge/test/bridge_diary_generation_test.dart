@@ -155,7 +155,7 @@ void main() {
         ),
       ),
     );
-    // 点名一个还不存在的风格：not_found（styles.* 还没实现）。
+    // 点名一个还不存在的风格：not_found（不静默用默认风格糊弄）。
     await expectLater(
       api.generateDiary(
         dayKey: '2026-10-16',

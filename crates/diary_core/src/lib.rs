@@ -69,6 +69,7 @@ mod search;
 mod search_session;
 mod semantic;
 mod semantic_index_job;
+mod styles;
 mod support;
 
 pub use assets::ImportRequest;
@@ -102,22 +103,25 @@ pub use model::{
     AiResponse, Asset, AssetLease, AssetStorageState, AuthorType, BackupCounts, BackupInspection,
     BackupReport, Capture, CapturePage, CaptureState, CommitResult, Coverage, DiaryDay,
     DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion, DiaryVersionOrigin,
-    DiaryVersionPage, DomainEvent, DraftSaveResult, EventType, ExtractedContent, ExtractedSegment,
-    GenerationInfo, ImportManifest, ImportOrigin, ImportState, ImportStatus, ImportTicket,
-    IndexStatus, Job, JobErrorSummary, JobPage, JobPriority, JobProgress, JobRunSummary, JobState,
+    DiaryVersionPage, DomainEvent, DraftSaveResult, EventType, ExtractedContent, ExtractedSegment, GenerationInfo, ImportManifest, ImportOrigin, ImportState,
+    ImportStatus, ImportTicket, IndexStatus, Job, JobErrorSummary, JobPage, JobPriority, JobProgress, JobRunSummary, JobState,
     JobStatus, LocatorType, MatchedBy, MaterialCounts, NativeRecordingStatus, NewJob,
     OrganizePendingDay, OrganizePlanSummary, OrganizeQuota, OrganizeRunInfo, OrganizeSettings,
     OrganizeSkippedDay, OrganizeStatus, OrganizeTemplate, OrganizeTemplateParam, ProcessingStatus,
     ProcessingSummary, PluginArtifact, PluginDerivedContent, PluginEntryKind, PluginInspection,
     PluginInstallation, PluginInvocation, PluginManifest, PluginPermission, PluginProviderFailure,
-    PluginRunResult, PluginSourceRef, PluginStyleProfile, PluginTemplate, ProvenanceLink, Provider,
-    ProviderCapability, ProviderTestReport, ProviderTestStatus, RecordingFinalizeResult,
-    RecordingRecovery, RecordingSession, RecordingState, RecordingTicket, ResponseTicket,
-    RestoreReport, SearchFilters, SearchHit,
+    PluginRunResult, PluginSourceRef, PluginTemplate, ProvenanceLink, Provider, ProviderCapability,
+    ProviderTestReport, ProviderTestStatus, RecordingFinalizeResult, RecordingRecovery,
+    RecordingSession, RecordingState, RecordingTicket, ResponseTicket, RestoreReport, SearchFilters,
+    SearchHit, StyleProfile,
     SearchMode, SearchPhase, SearchRequest, SearchSnapshot, SegmentManifest, SegmentReceipt,
     SourceItem, SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
 };
 pub use provider::CapabilityGate;
+
+/// 旧类型名，保留给插件侧与既有测试；语义与字段就是契约的 [`StyleProfile`]。
+pub type PluginStyleProfile = StyleProfile;
+
 pub use diary::{
     DEFAULT_STYLE_SNAPSHOT_ID, DIRECT_INPUT_CHAR_LIMIT, MAX_INTERMEDIATE_CALLS,
     MERGE_PROMPT_VERSION, PROMPT_VERSION, SYSTEM_INSTRUCTIONS,
@@ -329,6 +333,10 @@ impl Core {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         schema::migrate(&mut conn)?;
+        // 默认风格的空版本行：迁移里种一次，打开时再幂等补一次（当前行被手工删掉
+        // 的库也能回到「生成总有一个真实快照行可指」的状态）。只需一次 COUNT 查询，
+        // 当前行在就不写。风格表本身缺失属于库损坏，迁移会如实报错，不在这里假装补表。
+        styles::ensure_default_style(&conn, support::now())?;
         if let Some(dir) = &root {
             std::fs::create_dir_all(dir)?;
         }
@@ -1786,6 +1794,38 @@ impl Core {
             expected_revision,
             operation_id,
         )
+    }
+
+    // ------------------------------------------------------------ 风格（#114）
+
+    /// 全部风格的**当前版本**，按展示名、id 固定排序。
+    ///
+    /// 默认风格 `sty_default` 也在列表里（内容全空、`revision = 1`）：它是
+    /// 「没有偏好」的真实配置，不是查不出来的魔法值。**没有删除入口**：删掉一条
+    /// 风格会让引用它的历史日记悬空，那是另一个需要产品决定的操作。
+    pub fn list_styles(&self) -> Result<Vec<StyleProfile>> {
+        styles::list(self)
+    }
+
+    /// 读一条风格的当前版本；不存在报 `not_found`（不静默回退默认风格）。
+    pub fn get_style(&self, style_id: &str) -> Result<StyleProfile> {
+        styles::get(self, style_id)
+    }
+
+    /// 新建/更新风格，契约 `styles.save`。
+    ///
+    /// - **每次保存落一个新版本行**：`revision` 由核心 +1，旧版本保留，历史日记的
+    ///   `styleSnapshotId` 仍指得到当时那一版；
+    /// - `expectedRevision` 有值时做乐观锁：与当前 revision 不符报
+    ///   `revision_conflict`，零改动；省略时按「明确接受覆盖当前版本」处理；
+    /// - `revision` / `updatedAt` 由核心盖章，不接受调用方伪造；
+    /// - 偏好变更**不自动重写历史日记**（契约原话）：生成时才冻结快照。
+    pub fn save_style(
+        &mut self,
+        profile: &StyleProfile,
+        expected_revision: Option<i64>,
+    ) -> Result<StyleProfile> {
+        styles::save(self, profile, expected_revision)
     }
 
     // ------------------------------------------------------------ 整理与自动化（B4e）

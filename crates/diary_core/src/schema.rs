@@ -34,7 +34,15 @@ use rusqlite::{params, Connection};
 /// `input_snapshot_hash` 会让同一个库按口径碎成好几条「活着」的任务，正好破坏
 /// 「至多一条活着的整代重建」。v1–v14 也没有一张键值表可借用；`index_meta` 是
 /// 单行的索引元数据，这一列与它同一个主题，所以升版本、写迁移是诚实的代价。
-pub const SCHEMA_VERSION: i64 = 15;
+///
+/// **16 是回收站线（#155）的加列**：`captures.trashed_from_state`。本构建不实现
+/// 回收站功能，但**必须保留这条 DDL**：如果只为 `styles` 抬到 17 而跳过 16，一个
+/// v15 老库打开它时 `current < 17` 成立、`current < 16` 也成立，但迁移里没有 v16
+/// 那一段，`trashed_from_state` 就永远不会被加；等回收站线合进来，那个库已经是
+/// 17，`current < 16` 不再成立，这一列再也补不上。所以 v16 与 v17 两段都要在：
+/// v16 的守卫是**纯结构判定**（只看列在不在），v17 是「版本号 + 表/索引结构」；
+/// 两段都幂等；先合入的一方生效，后合入的一方在合并时删掉重复块。
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -51,6 +59,10 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // ——`current` 是 15 并不能证明索引在。每次 open 只多一次 `sqlite_master`
         // 查询，缺才建（#133 第 1 条，见 `ensure_v15_caliber_index`）。
         ensure_v15_caliber_index(conn)?;
+        // v16 / v17 同样做结构兜底：一个已经被标成 17、却缺 v16 列或 styles 表的库
+        // （例如先跑过只写 v17 的中间构建）也能在下次 open 收敛，而不是永远缺列。
+        // 两条检查都是结构判定，结构在就什么都不做。
+        ensure_v16_v17_structure(conn)?;
         return Ok(());
     }
 
@@ -155,9 +167,37 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 没有「替用户记一次自动尝试」这种默认：升级后的第一次 `open` 仍会按当时的
         // 口径如实判断该不该自动排一条。
     }
+    // v16：回收站线的加列。**本支不实现回收站功能，但必须带上这段 DDL**：
+    // 否则一个 v15 老库直接升到 17 时会永远跳过这一列（版本一旦写成 17，`current
+    // < 16` 不再成立，而 #155 的版本守卫也补不上一个已经是 17 的库）。与 #155 的
+    // 内容逐字一致，先合入的一方生效，后合入的一方合并时删掉重复块。
+    //
+    // 守卫是**纯结构判定**：只看列在不在，不看版本号。`current < 16 && 列不在`
+    // 会漏掉「自称 16、实际缺列」的库：这次 open 把版本写成 17 并返回成功，列仍缺，
+    // 要等下一次 open 才补。列在就跳过——重复 open、或从 v16 库升上来都不会重复
+    // ALTER；v1 老库也会在这里提前拿到这条可空列，纯加性、不碰已有数据。
+    if !column_exists(&tx, "captures", "trashed_from_state")? {
+        tx.execute_batch(V16)?;
+    }
+    // v17：风格版本表（#114）。
+    //
+    // 守卫是「版本号 + 结构」：`current < 17 || styles 表不在`。只靠版本号，会把
+    // 「版本号已经 17、但表被手工删掉/半建失败」的库漏掉；只靠结构，会在已经是 17
+    // 的库上重复跑 DDL。`CREATE TABLE IF NOT EXISTS` 保证重复执行幂等。
+    //
+    // **无回填**：升级前没有风格配置。只种一行默认风格的空版本（`sty_default`），
+    // 让不点名风格的生成有一个**真实存在的**快照行可指；不在迁移里替用户编偏好。
+    if current < 17 || !table_exists(&tx, "styles")? {
+        tx.execute_batch(V17)?;
+        crate::styles::seed_default_style(&tx, crate::support::now())
+            .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+    // `OR IGNORE`：库被文件级复制/回退过时，`schema_migrations` 里可能已经有一行
+    // 更高版本（`user_version` 却更低）。PK 冲突不该让整个开库失败；这一行只是
+    // 「本次打开落到的最终版本」的记录，不是迁移条件的来源（见 m5 文档）。
     tx.execute(
-        "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
         params![SCHEMA_VERSION, crate::support::to_iso(crate::support::now())],
     )?;
     tx.commit()?;
@@ -220,6 +260,35 @@ fn ensure_v15_caliber_index(conn: &Connection) -> rusqlite::Result<()> {
         return Ok(());
     }
     conn.execute_batch(V15_CALIBER_INDEX)
+}
+
+/// v16 / v17 的结构兜底：在「版本号已经是最新」的分支里，列、表或
+/// `idx_styles_current` 被手工删掉、或补建失败时，下次 open 仍能补回来。
+///
+/// **表和索引分开判**：`table_exists("styles")` 为真不能证明
+/// `idx_styles_current` 在——索引被删或补建失败时，部分唯一索引「一条风格只有一个
+/// 当前版本」就不再由库保证，`query_row` 会静默取任意一条。这与 v15 的
+/// `ensure_v15_caliber_index` 是同一个理由（`user_version` 是版本号，不是结构证明）。
+///
+/// 与迁移里的两段守卫是同一组结构判定；结构都在时只做三次轻量查询，不写库。
+fn ensure_v16_v17_structure(conn: &mut Connection) -> rusqlite::Result<()> {
+    let missing_trash_column = !column_exists(conn, "captures", "trashed_from_state")?;
+    let missing_styles = !table_exists(conn, "styles")?;
+    let missing_current_index = !index_exists(conn, "idx_styles_current")?;
+    if !missing_trash_column && !missing_styles && !missing_current_index {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    if missing_trash_column {
+        tx.execute_batch(V16)?;
+    }
+    if missing_styles || missing_current_index {
+        // V17 的两条 DDL 都是 IF NOT EXISTS：表在、索引不在时只补索引。
+        tx.execute_batch(V17)?;
+        crate::styles::seed_default_style(&tx, crate::support::now())
+            .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
+    }
+    tx.commit()
 }
 
 /// 把已有记录的文字补进 v6 的两张索引表。只在迁移里用一次。
@@ -941,4 +1010,46 @@ const V15_COLUMN: &str = "ALTER TABLE index_meta ADD COLUMN auto_rebuild_marker 
 const V15_CALIBER_INDEX: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_chunk_vectors_caliber
     ON chunk_vectors(generation, model_version, dims, storage);
+"#;
+
+/// v16：回收站线（#155）的加列。本构建不实现回收站功能，但必须保留这段 DDL，
+/// 否则 v15 老库直升 17 时会缺列（见顶部 `SCHEMA_VERSION` 的说明）。
+const V16: &str = "ALTER TABLE captures ADD COLUMN trashed_from_state TEXT;";
+
+/// v17：风格版本表（#114）。
+///
+/// 为什么按 `(id, revision)` 一行一个版本，而不是一条风格一行、保存时原地改：
+/// `diary_versions.style_snapshot_id` 要能回答「这一版当时用的哪一版风格」。覆盖式
+/// 存储会让历史日记在用户下次改风格时**悄悄换掉**它指向的内容——那不是审计，是
+/// 篡改。新版本不可变的代价只是表里多几行（用户改风格的次数有限）。
+///
+/// 列与契约 `StyleProfile` 一一对应：`label` / `updated_at` / `length_preference` /
+/// `person` / `tone` / `emotional_temperature` / `rhetoric_level` / `examples` /
+/// `banned_expressions`。`examples` / `banned_expressions` 存 JSON 数组：它们永远
+/// 整组读写，不需要按元素做 SQL 过滤，单独建表只会多一条 join 与一处不一致的机会。
+///
+/// `snapshot_id` 是版本行的稳定标识（默认风格的第一版就是 `sty_default`，这样既有的
+/// `styleSnapshotId = sty_default` 升级后仍指得到真实记录）。`current = 1` 是当前
+/// 版本标记；部分唯一索引保证一条风格至多一个当前版本。
+///
+/// **没有回填**：只建表；默认风格的空版本行由 `styles::seed_default_style` 种下，
+/// 值只有一个来源（`styles.rs` 的常量），不在 SQL 里再抄一遍。
+const V17: &str = r#"
+CREATE TABLE IF NOT EXISTS styles (
+    snapshot_id           TEXT PRIMARY KEY,
+    id                    TEXT NOT NULL,
+    revision              INTEGER NOT NULL,
+    label                 TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    length_preference     TEXT,
+    person                TEXT,
+    tone                  TEXT,
+    emotional_temperature TEXT,
+    rhetoric_level        TEXT,
+    examples              TEXT NOT NULL DEFAULT '[]',
+    banned_expressions    TEXT NOT NULL DEFAULT '[]',
+    current               INTEGER NOT NULL DEFAULT 0 CHECK (current IN (0, 1)),
+    UNIQUE (id, revision)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_styles_current ON styles(id) WHERE current = 1;
 "#;

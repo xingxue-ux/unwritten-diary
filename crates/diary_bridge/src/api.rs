@@ -23,6 +23,7 @@ use diary_core::{
     ProviderCapability, ProviderTestReport, RecordingFinalizeResult, RecordingRecovery,
     RecordingSession, RecordingTicket, ResponseTicket, RestoreReport, SearchRequest,
     SearchSnapshot, SegmentManifest, SegmentReceipt, SourceLocation, SourceLocator, SourceRevision,
+    StyleProfile,
 };
 use flutter_rust_bridge::frb;
 
@@ -753,6 +754,30 @@ impl BridgeSession {
         )?)
     }
 
+    // ------------------------------------------------------------ 风格（#114）
+
+    /// 全部风格的当前版本；默认风格 `sty_default` 也在列表里。
+    pub fn list_styles(&self) -> Result<Vec<StyleProfile>, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.list_styles()?)
+    }
+
+    /// 读一条风格的当前版本；不存在报 `not_found`。
+    pub fn get_style(&self, style_id: String) -> Result<StyleProfile, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.get_style(&style_id)?)
+    }
+
+    /// 新建/更新风格；带 `expectedRevision` 时是乐观锁（不符报 `revision_conflict`）。
+    pub fn save_style(
+        &self,
+        profile: StyleProfile,
+        expected_revision: Option<i64>,
+    ) -> Result<StyleProfile, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.save_style(&profile, expected_revision)?)
+    }
+
     // ------------------------------------------------------------ 整理与自动化（B4e）
 
     /// 全部可用的整理模板（现在只有三个核心内置的；声明式插件模板见 #88）。
@@ -967,6 +992,10 @@ fn wired_capabilities() -> Vec<String> {
         "diary.saveEdit",
         "diary.setCurrent",
         "diary.merge",
+        // #114 风格管理：三种方法都走真实存储；生成时的风格快照已是版本行。
+        "styles.list",
+        "styles.get",
+        "styles.save",
         "core.events",
         // B7：备份与恢复这一轮是**同步**入口（契约那三行返回 jobId，任务化见 #70）。
         // 名字照契约写，界面看到的仍是 Dart 适配层窄化过的清单。

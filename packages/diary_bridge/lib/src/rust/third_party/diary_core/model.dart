@@ -2475,7 +2475,7 @@ class PluginInvocation {
   final String? toDayKey;
 
   /// 风格模板的输入（#114 的 `StyleProfile` 形状）。
-  final PluginStyleProfile? styleProfile;
+  final StyleProfile? styleProfile;
 
   /// 导出格式：`markdown` / `plain_text`；声明式模板必须与模板的 format 一致。
   final String? format;
@@ -2740,69 +2740,6 @@ class PluginSourceRef {
           sourceId == other.sourceId &&
           sourceRevisionId == other.sourceRevisionId &&
           locatorJson == other.locatorJson;
-}
-
-/// 风格输入：字段与契约 `StyleProfile` 对齐（#114 的现有形状），但**不落库**。
-///
-/// 这一片把渲染好的文本交回调用方；`styles.*` 的存储仍是 #114 的未完成部分，
-/// 不在这里另造一套风格表。
-class PluginStyleProfile {
-  final String id;
-  final String label;
-  final PlatformInt64 revision;
-  final DateTime updatedAt;
-  final String? lengthPreference;
-  final String? person;
-  final String? tone;
-  final String? emotionalTemperature;
-  final String? rhetoricLevel;
-  final List<String> examples;
-  final List<String> bannedExpressions;
-
-  const PluginStyleProfile({
-    required this.id,
-    required this.label,
-    required this.revision,
-    required this.updatedAt,
-    this.lengthPreference,
-    this.person,
-    this.tone,
-    this.emotionalTemperature,
-    this.rhetoricLevel,
-    required this.examples,
-    required this.bannedExpressions,
-  });
-
-  @override
-  int get hashCode =>
-      id.hashCode ^
-      label.hashCode ^
-      revision.hashCode ^
-      updatedAt.hashCode ^
-      lengthPreference.hashCode ^
-      person.hashCode ^
-      tone.hashCode ^
-      emotionalTemperature.hashCode ^
-      rhetoricLevel.hashCode ^
-      examples.hashCode ^
-      bannedExpressions.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is PluginStyleProfile &&
-          runtimeType == other.runtimeType &&
-          id == other.id &&
-          label == other.label &&
-          revision == other.revision &&
-          updatedAt == other.updatedAt &&
-          lengthPreference == other.lengthPreference &&
-          person == other.person &&
-          tone == other.tone &&
-          emotionalTemperature == other.emotionalTemperature &&
-          rhetoricLevel == other.rhetoricLevel &&
-          examples == other.examples &&
-          bannedExpressions == other.bannedExpressions;
 }
 
 /// 声明式插件里的一个模板。纯数据，宿主只做白名单占位符替换。
@@ -3865,6 +3802,76 @@ class SourceRevision {
           assetId == other.assetId &&
           authorType == other.authorType &&
           occurredAt == other.occurredAt;
+}
+
+/// 风格配置：**逐字段对齐契约 `StyleProfile`**（#114），也是 `styles.*` 的落库对象。
+///
+/// 字段名与 Dart 契约一一对应（`lengthPreference` / `emotionalTemperature` /
+/// `rhetoricLevel` / `bannedExpressions`），没有另造一套。
+///
+/// `revision` 是这条风格**当前版本的修订号**：每次 `saveStyle` 落一个新版本就 +1；
+/// 生成时冻结的 `styleSnapshotId` 指向 `styles` 表里某个**不可变版本行**，所以风格
+/// 后来被改过，也不会改变历史日记「当时用的哪一版」。
+///
+/// 这个类型原来叫 `PluginStyleProfile`（插件模板只读它、不落库）。`styles.*` 落地后
+/// 统一用契约名；`diary_core::PluginStyleProfile` 仍作为别名导出，插件侧不用改。
+class StyleProfile {
+  final String id;
+  final String label;
+  final PlatformInt64 revision;
+  final DateTime updatedAt;
+  final String? lengthPreference;
+  final String? person;
+  final String? tone;
+  final String? emotionalTemperature;
+  final String? rhetoricLevel;
+  final List<String> examples;
+  final List<String> bannedExpressions;
+
+  const StyleProfile({
+    required this.id,
+    required this.label,
+    required this.revision,
+    required this.updatedAt,
+    this.lengthPreference,
+    this.person,
+    this.tone,
+    this.emotionalTemperature,
+    this.rhetoricLevel,
+    required this.examples,
+    required this.bannedExpressions,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      label.hashCode ^
+      revision.hashCode ^
+      updatedAt.hashCode ^
+      lengthPreference.hashCode ^
+      person.hashCode ^
+      tone.hashCode ^
+      emotionalTemperature.hashCode ^
+      rhetoricLevel.hashCode ^
+      examples.hashCode ^
+      bannedExpressions.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is StyleProfile &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          label == other.label &&
+          revision == other.revision &&
+          updatedAt == other.updatedAt &&
+          lengthPreference == other.lengthPreference &&
+          person == other.person &&
+          tone == other.tone &&
+          emotionalTemperature == other.emotionalTemperature &&
+          rhetoricLevel == other.rhetoricLevel &&
+          examples == other.examples &&
+          bannedExpressions == other.bannedExpressions;
 }
 
 /// 命中里的高亮区间，**下标相对 `snippet`**，不是相对整段正文。
