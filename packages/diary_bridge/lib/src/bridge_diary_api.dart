@@ -10,24 +10,26 @@ import '../diary_bridge.dart' as bridge;
 
 /// 把桥接的 `BridgeSession` 适配成契约的 [api.DiaryApi]。
 ///
-/// **覆盖记录、检索、远端服务、语义索引与日记生成路径**：`open` / `snapshot` /
-/// `close` / 记录 CRUD / `startSearch` / `nextPage` / `searchSnapshot` /
-/// `cancelSearch` / `listProviders` / `saveProvider` / `removeProvider` /
-/// `testProvider` / `requestResponse` / `getResponse`，以及
-/// **语义索引重建**（`rebuildSemanticIndex`，契约 `indexes.rebuildSemantic`：设置页
-/// 要在换过模型之后触发「重建语义索引」，所以这一条必须真的能调），
-/// **日记生成与版本**：`getDay` / `generateDiary` / `listVersions` / `getVersion` /
-/// `saveDiaryEdit` / `setCurrentVersion` / `mergeDiary`。
-/// **插件管理**：`inspectPluginPackage` / `installPlugin` / `enablePlugin` /
-/// `disablePlugin` / `uninstallPlugin` / `listPlugins`（B6，#88）。`invokePlugin` 仍是
-/// 契约里的**票据式**形状（返回 `jobId`），而核心的 `run_plugin` 是同步返回完整结果的；
-/// 这条任务化接线没做，所以 `plugins.invoke` 不在能力清单里。其余契约方法一律抛
-/// [UnsupportedError]（和 `diary_mock` 的做法一致），并且**不出现在
-/// [api.CoreInfo.capabilities] 里**——能力清单是窄化过的，界面据此决定显示哪些入口。
+/// **覆盖记录、来源与资产、检索、远端服务、索引、任务、日记、插件与备份检查**：
+/// `open` / `snapshot` / `close` / `events` / 记录 CRUD / 导入与录音交接 /
+/// `openAsset` / `releaseAsset` / `locateSource` / `startSearch` / `nextPage` /
+/// `searchSnapshot` / `cancelSearch` / `upgradeSearch` / `listProviders` /
+/// `saveProvider` / `removeProvider` / `testProvider` / `requestResponse` /
+/// `getResponse` / `indexesStatus` / `rebuildIndexes` / `rebuildSemanticIndex` /
+/// 任务读取、取消、重试、到期执行与 `acknowledgeAttention` / `getDay` /
+/// `generateDiary` / `listVersions` / `getVersion` / `saveDiaryEdit` /
+/// `setCurrentVersion` / `mergeDiary` / 插件管理与 `inspectBackup`。
 ///
-/// 关键词那条 `indexes.rebuild`（`rebuildIndexes`）**仍然没接**：现有记录入口照常
-/// 使用，适配层这一层等界面真正要用时再接。两条索引路的能力项因此各自独立——
-/// `indexes.rebuildSemantic` 在能力清单里，`indexes.rebuild` 不在。
+/// **仍没接的**（都会走 [noSuchMethod] 并在异常消息里点名）：
+/// - 回收站五条（`moveDay` / `trashCapture` / `restoreCapture` / `previewPurge` /
+///   `purgeCapture`）：核心实现还在 PR #155，main 上没有对应入口；
+/// - 天列表与风格/导出（`listDays` / `listStyles` / `getStyle` / `saveStyle` /
+///   `createExport`）：核心实现还在 PR #159；
+/// - `setRuntimeState`：核心没有资源调度入口，不造一个只记不做的假实现；
+/// - `getSettings` / `updateSettings`：由设置那条线负责，本分支不碰；
+/// - `createBackup` / `restoreBackup` / `invokePlugin`：契约是**票据式**（返回
+///   `jobId`），核心目前只有同步入口；`restoreBackup` 的参数里还没有目标目录。
+///   这四条（含 `backups.inspect` 以外的三条）不接，不做假 jobId。
 ///
 /// 设计取舍：
 /// - **不另造 DTO**：桥接的字段名已经和契约对得上，这里只做映射与改名，
@@ -42,6 +44,8 @@ class BridgeDiaryApi implements api.DiaryApi {
     required this.libraryPath,
     required this.timeZone,
     required this.utcOffsetMinutes,
+    this.eventPollInterval = const Duration(seconds: 1),
+    this.eventBatchSize = 256,
   });
 
   /// 桥接产物（Windows 的 `.dll`、Android 的 `.so`）路径，用来初始化 frb。
@@ -55,6 +59,20 @@ class BridgeDiaryApi implements api.DiaryApi {
   final String timeZone;
   final int utcOffsetMinutes;
 
+  /// [events] 轮询持久事件表的间隔。
+  ///
+  /// 核心没有推送通道，事件是**持久表**，所以订阅只能是按序号轮询；这个参数
+  /// 只影响延迟，不影响「不漏事件」——每次轮询都从上一次的最大序号继续。
+  /// 测试可以把它调小，产品默认 1 秒。
+  final Duration eventPollInterval;
+
+  /// [events] 每次向核心取多少条事件（1..=1000）。
+  ///
+  /// 订阅一个历史很长的库时，不能把整张事件表一次读进内存：适配层每批最多取
+  /// 这么多条，积压没读完就立刻取下一批，只有读到空批才等 [eventPollInterval]。
+  /// 测试可以调小来逼出分页路径；产品默认 256。
+  final int eventBatchSize;
+
   /// frb 的初始化在一个进程里只能做一次。
   static Future<void>? _rustLibReady;
 
@@ -64,6 +82,8 @@ class BridgeDiaryApi implements api.DiaryApi {
   static const Set<String> _wiredMethods = {
     'core.open',
     'core.snapshot',
+    'core.close',
+    'core.events',
     'captures.createDraft',
     'captures.saveDraft',
     'captures.commit',
@@ -73,6 +93,9 @@ class BridgeDiaryApi implements api.DiaryApi {
     'sources.previousRevision',
     'sources.extractedContent',
     'sources.extract',
+    'sources.locate',
+    'assets.open',
+    'assets.release',
     'search.start',
     'search.nextPage',
     'search.snapshot',
@@ -83,6 +106,7 @@ class BridgeDiaryApi implements api.DiaryApi {
     'jobs.list',
     'jobs.cancel',
     'jobs.retry',
+    'jobs.acknowledgeAttention',
     'imports.prepare',
     'imports.finish',
     'imports.status',
@@ -106,7 +130,10 @@ class BridgeDiaryApi implements api.DiaryApi {
     'diary.saveEdit',
     'diary.setCurrent',
     'diary.merge',
+    'indexes.status',
+    'indexes.rebuild',
     'indexes.rebuildSemantic',
+    'backups.inspect',
     'plugins.inspectPackage',
     'plugins.install',
     'plugins.enable',
@@ -114,6 +141,96 @@ class BridgeDiaryApi implements api.DiaryApi {
     'plugins.uninstall',
     'plugins.list',
   };
+
+  /// 契约 `DiaryApi` 的全部方法名（按能力分组）。
+  ///
+  /// 这张表只用于 [noSuchMethod] 的诚实报错：它能说出「还差哪些」，而不是一句
+  /// 过时的「当前只有记录路径」。契约改动时这里要和
+  /// `packages/diary_api/lib/src/diary_api.dart` 一起改；
+  /// `test/bridge_diary_api_test.dart` 会检查 `_wiredMethods` 是它的子集、且
+  /// `noSuchMethod` 的消息确实列出了差集。
+  static const Set<String> _contractMethods = {
+    'core.open',
+    'core.snapshot',
+    'core.close',
+    'core.setRuntimeState',
+    'core.events',
+    'captures.createDraft',
+    'captures.saveDraft',
+    'captures.commit',
+    'captures.get',
+    'captures.list',
+    'sources.reviseText',
+    'sources.extractedContent',
+    'sources.previousRevision',
+    'sources.extract',
+    'captures.moveDay',
+    'captures.trash',
+    'captures.restore',
+    'captures.previewPurge',
+    'captures.purge',
+    'imports.prepare',
+    'imports.finish',
+    'imports.status',
+    'imports.cancel',
+    'recordings.prepare',
+    'recordings.registerSegment',
+    'recordings.updateState',
+    'recordings.finalize',
+    'recordings.recover',
+    'assets.open',
+    'assets.release',
+    'sources.locate',
+    'diary.getDay',
+    'diary.listDays',
+    'diary.generate',
+    'diary.listVersions',
+    'diary.getVersion',
+    'diary.saveEdit',
+    'diary.setCurrent',
+    'diary.merge',
+    'styles.list',
+    'styles.get',
+    'styles.save',
+    'responses.request',
+    'responses.get',
+    'search.start',
+    'search.upgrade',
+    'search.nextPage',
+    'search.snapshot',
+    'search.cancel',
+    'indexes.status',
+    'indexes.rebuild',
+    'indexes.rebuildSemantic',
+    'jobs.list',
+    'jobs.get',
+    'jobs.retry',
+    'jobs.cancel',
+    'jobs.nextWakeup',
+    'jobs.runDue',
+    'jobs.acknowledgeAttention',
+    'providers.list',
+    'providers.save',
+    'providers.remove',
+    'providers.test',
+    'settings.get',
+    'settings.update',
+    'plugins.inspectPackage',
+    'plugins.install',
+    'plugins.enable',
+    'plugins.disable',
+    'plugins.uninstall',
+    'plugins.list',
+    'plugins.invoke',
+    'backups.create',
+    'backups.inspect',
+    'backups.restore',
+    'exports.create',
+  };
+
+  /// 当前还没实现的契约方法名（`noSuchMethod` 如实报出来，不静默）。
+  static List<String> get _unimplementedMethods =>
+      _contractMethods.difference(_wiredMethods).toList()..sort();
 
   /// 幂等地初始化 frb 运行时。
   static Future<void> ensureRuntime(String coreLibraryPath) {
@@ -164,6 +281,75 @@ class BridgeDiaryApi implements api.DiaryApi {
   Future<void> close() async {
     _session?.dispose();
     _session = null;
+  }
+
+  /// 订阅持久业务事件：按 `sequence` 分页轮询核心的事件表。
+  ///
+  /// 语义与契约第 6 节一致：**先取快照，再从快照的 `lastEventSequence` 续读**；
+  /// 不传 [fromSequence] 时从 0 开始补全部还能读到的事件。核心没有推送通道，
+  /// 所以这里以 [eventPollInterval] 轮询，每次都用上一批的最大序号作为下一次的
+  /// 游标——不会重复发同一条，也不会跳过两批之间的新事件。
+  ///
+  /// **分页**：每批最多 [eventBatchSize] 条；积压还没读完就立刻取下一批，只有
+  /// 读到空批才等下一轮。因此从 0 订阅一个很大的库也不会把整张事件表一次读进内存。
+  ///
+  /// 游标过期：核心目前**不裁剪**事件表，所以「太老」不会发生；能判定的过期有两种：
+  /// **游标指向未来**（例如资料库被换成了另一份、序号回退），以及**首批事件与游标
+  /// 之间有缺口**（事件表被裁剪过）。两种都在流上发 [api.CursorExpiredException]
+  /// 并结束，调用方应重新读快照而不是无限等待。其他桥接错误同样以
+  /// [api.DiaryException] 形式发到流上。
+  @override
+  Stream<api.DomainEvent> events({int? fromSequence}) async* {
+    final session = _open;
+    if (eventBatchSize < 1 || eventBatchSize > 1000) {
+      throw ArgumentError.value(
+        eventBatchSize,
+        'eventBatchSize',
+        '事件批大小必须在 1..=1000（核心同样按这个上限夹取）',
+      );
+    }
+    if (fromSequence != null && fromSequence < 0) {
+      throw const api.DiaryException(
+        code: api.DiaryErrorCode.invalidArgument,
+        message: '事件游标不能是负数。',
+      );
+    }
+    var cursor = fromSequence ?? 0;
+    final info = await _translate(() => session.info());
+    final last = info.lastEventSequence.toInt();
+    if (cursor > last) {
+      throw api.CursorExpiredException(
+        message: '事件游标 $cursor 超过当前最大序号 $last；资料库可能被替换过，请重新读取快照。',
+      );
+    }
+    while (true) {
+      final batch = await _translate(
+        () => session.eventsSincePage(
+          fromSequence: cursor,
+          limit: eventBatchSize,
+        ),
+      );
+      if (batch.isEmpty) {
+        await Future<void>.delayed(eventPollInterval);
+        continue;
+      }
+      final first = batch.first.sequence.toInt();
+      if (first > cursor + 1) {
+        throw api.CursorExpiredException(
+          message:
+              '事件游标 $cursor 与最早可读事件 $first 之间有缺口；事件表可能被裁剪过，请重新读取快照。',
+        );
+      }
+      for (final event in batch) {
+        final sequence = event.sequence.toInt();
+        cursor = sequence;
+        yield _domainEvent(event);
+      }
+      // 这一批是满的，说明可能还有积压：立刻取下一批，不白等一个轮询间隔。
+      if (batch.length < eventBatchSize) {
+        await Future<void>.delayed(eventPollInterval);
+      }
+    }
   }
 
   @override
@@ -289,6 +475,25 @@ class BridgeDiaryApi implements api.DiaryApi {
       _extractedContent(
         await _translate(() => _open.extractSource(sourceRef: sourceRef)),
       );
+
+  @override
+  Future<api.SourceLocation> locateSource({
+    required String ref,
+    required api.SourceLocator locator,
+  }) async {
+    // 契约的 `ref` 就是核心的 `sourceRef`：来源 id 或来源修订 id。
+    final location = await _translate(
+      () =>
+          _open.locateSource(sourceRef: ref, locator: _bridgeLocator(locator)),
+    );
+    return api.SourceLocation(
+      sourceRef: location.sourceRef,
+      locator: _locator(location.locator),
+      available: location.available,
+      assetId: location.assetId,
+      reason: location.reason,
+    );
+  }
 
   @override
   Future<api.SearchSnapshot> startSearch({
@@ -834,6 +1039,28 @@ class BridgeDiaryApi implements api.DiaryApi {
   }
 
   @override
+  Future<api.AssetLease> openAsset({
+    required String assetId,
+    required api.AssetUsage usage,
+  }) async {
+    final lease = await _translate(
+      () => _open.openAsset(assetId: assetId, usage: usage.wire),
+    );
+    return api.AssetLease(
+      leaseId: lease.leaseId,
+      assetId: lease.assetId,
+      usage: api.AssetUsage.fromWire(lease.usage),
+      handle: lease.handle,
+      expiresAt: lease.expiresAt,
+      byteSize: lease.byteSize.toInt(),
+    );
+  }
+
+  @override
+  Future<void> releaseAsset(String leaseId) =>
+      _translate(() => _open.releaseAsset(leaseId: leaseId));
+
+  @override
   Future<api.DueRunSummary> runDueJobs({
     required int budgetMs,
     required String trigger,
@@ -857,7 +1084,55 @@ class BridgeDiaryApi implements api.DiaryApi {
     );
   }
 
+  @override
+  Future<void> acknowledgeAttention(String attentionKey) =>
+      _translate(() => _open.acknowledgeAttention(attentionKey: attentionKey));
+
   // ------------------------------------------------------------ 索引
+
+  /// 关键词索引与语义索引的覆盖状态，契约 `indexes.status`。
+  ///
+  /// 契约的 `pendingCount` / `failedCount` 没有单位字段；核心把「待重建片段数」
+  /// 与「正文解析失败的材料数」分开报，这里就按这两个真实数字映射，不另算一个
+  /// 好看的数。`sourceScope` 为空是整库，空集合是「什么都不看」——与核心口径一致。
+  @override
+  Future<api.IndexStatus> indexesStatus({Set<String>? sourceScope}) async {
+    final status = await _translate(
+      () =>
+          _open.indexStatus(sourceScope: sourceScope?.toList(growable: false)),
+    );
+    return api.IndexStatus(
+      coverage: api.Coverage.values.byName(status.coverage.name),
+      keywordIndexReady: status.keywordIndexReady,
+      semanticIndexReady: status.semanticIndexReady,
+      modelVersion: status.modelVersion,
+      chunkerVersion: status.chunkerVersion,
+      pendingCount: status.pendingSegments.toInt(),
+      failedCount: status.failedSources.toInt(),
+      reasons: status.reasons,
+    );
+  }
+
+  /// 排一条关键词索引重建任务，契约 `indexes.rebuild`。
+  ///
+  /// **只排任务**：真正的重建由 `index` 执行者在 [runDueJobs] 里跑，界面不阻塞。
+  /// `scope` 的编码（`all` / `sources:<id>[,<id>]*`）由核心校验，非法输入按契约
+  /// 报 `invalid_argument` / `not_found`，适配层不改写、不吞错。
+  @override
+  Future<api.JobTicket> rebuildIndexes({
+    required String scope,
+    required String reason,
+    required String operationId,
+  }) async {
+    final job = await _translate(
+      () => _open.rebuildIndexes(
+        scope: scope,
+        reason: reason,
+        operationId: operationId,
+      ),
+    );
+    return api.JobTicket(jobId: job.id);
+  }
 
   /// 排一条**语义索引**重建任务，契约第 4.4 节 `indexes.rebuildSemantic`。
   ///
@@ -951,12 +1226,51 @@ class BridgeDiaryApi implements api.DiaryApi {
     return plugins.map(_plugin).toList(growable: false);
   }
 
-  /// 没接的方法一律明确报错——照 `diary_mock` 的做法，避免悄悄返回空数据。
+  // ------------------------------------------------------------ 备份
+
+  /// 检查备份包，契约 `backups.inspect`。
+  ///
+  /// 契约的 `packageTicket` 在这里就是用户选中的包路径（平台票据层未接入前由
+  /// 调用方给出，与 `inspectPluginPackage` 同一个口径）。核心**不抛错**报坏包：
+  /// 哈希、路径、版本问题都进 `issues`，界面先展示再决定要不要恢复。
+  ///
+  /// `backups.create` / `backups.restore` 没有接：契约给它们的是 `jobId`，而核心
+  /// 目前只有**同步**入口（任务化见 #70），且 `restoreBackup` 的契约参数里没有
+  /// 目标目录（核心要求一个「新的空目录」）。能力清单里只列真正接得上的这一条。
   @override
-  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
-    '${invocation.memberName} 还没有接到适配层（当前只有记录路径）。'
-    '对应的契约方法也 deliberately 不出现在 capabilities 里。',
-  );
+  Future<api.BackupInspection> inspectBackup(String packageTicket) async {
+    final inspection = await _translate(
+      () => _open.inspectBackup(packagePath: packageTicket),
+    );
+    return api.BackupInspection(
+      packageTicket: packageTicket,
+      schemaVersion: inspection.schemaVersion.toInt(),
+      apiVersion: inspection.apiVersion,
+      byteSize: inspection.byteSize.toInt(),
+      createdAt: inspection.createdAt,
+      assetCount: inspection.assetCount.toInt(),
+      issues: inspection.issues,
+    );
+  }
+
+  /// 没接的方法一律明确报错——照 `diary_mock` 的做法，避免悄悄返回空数据。
+  ///
+  /// 消息里带上**仍未实现**的契约方法名，且这份清单从
+  /// [_contractMethods] 与 [_wiredMethods] 实时算出来，不会像旧文案那样过时。
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    final symbol = invocation.memberName.toString();
+    final match = RegExp(r'^Symbol\("(.*)"\)$').firstMatch(symbol);
+    final name = match?.group(1) ?? symbol;
+    final missing = _unimplementedMethods;
+    throw UnsupportedError(
+      'BridgeDiaryApi 还没有实现契约方法 `$name`。'
+      '仍未实现（${missing.length}/${_contractMethods.length}）：'
+      '${missing.join('、')}。'
+      '这些方法不会出现在 capabilities 里；调用方应按能力清单降级，'
+      '不要把它们当成可用入口。',
+    );
+  }
 
   // ------------------------------------------------------------ 映射
 
@@ -1247,6 +1561,40 @@ class BridgeDiaryApi implements api.DiaryApi {
         )
         .toList(growable: false),
   );
+
+  api.DomainEvent _domainEvent(bridge.DomainEvent event) => api.DomainEvent(
+    eventId: event.eventId,
+    sequence: event.sequence.toInt(),
+    type: api.DomainEventType.values.byName(event.eventType.name),
+    entityId: event.entityId,
+    revision: event.revision.toInt(),
+    emittedAt: event.emittedAt,
+  );
+
+  /// 契约定位对象 → 桥接定位对象。字段名不同（`type` / `textRange` 对
+  /// `locatorType` / `textStart`+`textEnd`），语义一一对应。
+  bridge.SourceLocator _bridgeLocator(api.SourceLocator value) =>
+      bridge.SourceLocator(
+        locatorType: bridge.LocatorType.values.byName(value.type.name),
+        sourceRevisionId: value.sourceRevisionId,
+        textStart: value.textRange?.start,
+        textEnd: value.textRange?.end,
+        startMs: value.startMs,
+        endMs: value.endMs,
+        pageNumber: value.pageNumber,
+        blockId: value.blockId,
+        rect: value.rect == null
+            ? null
+            : bridge.F64Array4(
+                Float64List.fromList([
+                  value.rect!.left,
+                  value.rect!.top,
+                  value.rect!.right,
+                  value.rect!.bottom,
+                ]),
+              ),
+        assetId: value.assetId,
+      );
 
   api.SourceLocator _locator(bridge.SourceLocator value) => api.SourceLocator(
     type: api.LocatorType.values.byName(value.locatorType.name),

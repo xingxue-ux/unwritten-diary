@@ -13,6 +13,11 @@ import 'third_party/diary_core/model.dart';
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>>
 abstract class BridgeSession implements RustOpaqueInterface {
+  /// 记录一个需要用户处理的问题已经展示/处理过，契约 `jobs.acknowledgeAttention`。
+  ///
+  /// 只是把确认写进库，不改变任务状态、不删除任何东西；重复确认是幂等的。
+  Future<void> acknowledgeAttention({required String attentionKey});
+
   Future<void> cancelImport({required String importId});
 
   /// User cancellation keeps captured material and version history intact.
@@ -55,6 +60,15 @@ abstract class BridgeSession implements RustOpaqueInterface {
 
   /// 从某个序号之后读取持久业务事件。
   Future<List<DomainEvent>> eventsSince({required PlatformInt64 fromSequence});
+
+  /// 从某个序号之后读取**一批**持久业务事件（最多 `limit` 条）。
+  ///
+  /// 适配层的 `events` 流用它分页轮询：从 0 订阅一个很大的库时也只读一批，
+  /// 不会把整张事件表一次搬进 Dart 堆。`limit` 由核心夹在 1..=1000。
+  Future<List<DomainEvent>> eventsSincePage({
+    required PlatformInt64 fromSequence,
+    required int limit,
+  });
 
   /// 对某个来源（来源 id 或修订 id 都行）跑一次提取。
   Future<ExtractedContent> extractSource({required String sourceRef});
@@ -191,6 +205,16 @@ abstract class BridgeSession implements RustOpaqueInterface {
   static Future<BridgeSession> open({required String libraryPath}) =>
       RustLib.instance.api.crateApiBridgeSessionOpen(libraryPath: libraryPath);
 
+  /// 打开只读资产租约，契约 `assets.open`。
+  ///
+  /// 核心只接受 `preview` / `play` / `export` 三种用途，并校验资产处于 `ready`、
+  /// 文件真的在磁盘上；租约是**限域**的（只有这个句柄，不是任意路径），默认 10 分钟
+  /// 过期。返回的 `handle` 是资料库私有目录里的绝对路径，交给平台层打开/播放。
+  Future<AssetLease> openAsset({
+    required String assetId,
+    required String usage,
+  });
+
   /// 整理设置：开关（**默认关**）、模板与参数、各项上限与计划触发时间。
   ///
   /// 这是「必须由用户显式开启」的落点：新建与升级上来的资料库都是关的，
@@ -281,6 +305,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required PlatformInt64 segmentIndex,
     required SegmentManifest segment,
   });
+
+  /// 释放资产租约，契约 `assets.release`。租约不存在报 `not_found`，重复释放不静默成功。
+  Future<void> releaseAsset({required String leaseId});
 
   /// 移除服务配置，契约 `providers.remove`。**不删除日记**，也不删除已经生成的回应。
   Future<void> removeProvider({required String providerId});

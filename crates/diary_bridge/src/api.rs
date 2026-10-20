@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use chrono::{DateTime, Utc};
 use diary_core::{
-    AiResponse, BackupInspection, BackupReport, Capture, CapturePage, CommitResult, Core,
-    CoreError, DiaryDay, DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion,
+    AiResponse, AssetLease, BackupInspection, BackupReport, Capture, CapturePage, CommitResult,
+    Core, CoreError, DiaryDay, DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion,
     DiaryVersionPage, DomainEvent, DraftSaveResult, ExtractedContent, ImportManifest, ImportOrigin,
     ImportStatus, ImportTicket, IndexStatus, Job, JobRunSummary, JobState, JobStatus,
     NativeRecordingStatus, OrganizeSettings, OrganizeStatus, OrganizeTemplate, PluginInspection,
@@ -416,6 +416,24 @@ impl BridgeSession {
         Ok(core.locate_source(&source_ref, locator)?)
     }
 
+    // ------------------------------------------------------------ 资产租约
+
+    /// 打开只读资产租约，契约 `assets.open`。
+    ///
+    /// 核心只接受 `preview` / `play` / `export` 三种用途，并校验资产处于 `ready`、
+    /// 文件真的在磁盘上；租约是**限域**的（只有这个句柄，不是任意路径），默认 10 分钟
+    /// 过期。返回的 `handle` 是资料库私有目录里的绝对路径，交给平台层打开/播放。
+    pub fn open_asset(&self, asset_id: String, usage: String) -> Result<AssetLease, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.open_asset(&asset_id, &usage)?)
+    }
+
+    /// 释放资产租约，契约 `assets.release`。租约不存在报 `not_found`，重复释放不静默成功。
+    pub fn release_asset(&self, lease_id: String) -> Result<(), BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.release_asset(&lease_id)?)
+    }
+
     // ------------------------------------------------------------ 关键词索引
 
     /// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
@@ -549,6 +567,14 @@ impl BridgeSession {
         Ok(core.job_status()?)
     }
 
+    /// 记录一个需要用户处理的问题已经展示/处理过，契约 `jobs.acknowledgeAttention`。
+    ///
+    /// 只是把确认写进库，不改变任务状态、不删除任何东西；重复确认是幂等的。
+    pub fn acknowledge_attention(&self, attention_key: String) -> Result<(), BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.acknowledge_attention(&attention_key)?)
+    }
+
     /// **跑一轮到期任务**（驱动），返回本轮摘要：跑了几条、成功/失败各几条、其中多少条是
     /// **补做**（本轮领取时排期已过期）、还有多少到期未跑（被预算/条数截住）、有多少在等
     /// 依赖、下一个唤醒时刻，以及本次的唤醒来源。
@@ -579,6 +605,19 @@ impl BridgeSession {
     pub fn events_since(&self, from_sequence: i64) -> Result<Vec<DomainEvent>, BridgeError> {
         let core = self.lock()?;
         Ok(core.events_since(from_sequence)?)
+    }
+
+    /// 从某个序号之后读取**一批**持久业务事件（最多 `limit` 条）。
+    ///
+    /// 适配层的 `events` 流用它分页轮询：从 0 订阅一个很大的库时也只读一批，
+    /// 不会把整张事件表一次搬进 Dart 堆。`limit` 由核心夹在 1..=1000。
+    pub fn events_since_page(
+        &self,
+        from_sequence: i64,
+        limit: u32,
+    ) -> Result<Vec<DomainEvent>, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.events_since_page(from_sequence, limit as usize)?)
     }
 
     // ------------------------------------------------------------ 服务配置与主动回应（B4a）
@@ -939,6 +978,8 @@ fn wired_capabilities() -> Vec<String> {
         "sources.reviseText",
         "sources.previousRevision",
         "sources.locate",
+        "assets.open",
+        "assets.release",
         "indexes.status",
         "indexes.rebuild",
         "indexes.rebuildSemantic",
@@ -954,6 +995,7 @@ fn wired_capabilities() -> Vec<String> {
         "jobs.status",
         "jobs.runDue",
         "jobs.nextWakeup",
+        "jobs.acknowledgeAttention",
         "providers.list",
         "providers.save",
         "providers.remove",

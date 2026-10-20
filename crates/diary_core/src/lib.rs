@@ -1509,13 +1509,35 @@ impl Core {
     }
 
     /// 从序号之后读取事件，契约第 6 节。
+    ///
+    /// 一次给全量，只给「读一整段历史」的调用方用；订阅流请用
+    /// [`Self::events_since_page`]，否则第一次从 0 续读就会把整张事件表读进内存。
     pub fn events_since(&self, from_sequence: i64) -> Result<Vec<DomainEvent>> {
+        self.events_since_limited(from_sequence, None)
+    }
+
+    /// 从序号之后读取**一批**事件（最多 `limit` 条），契约第 6 节轮询用。
+    ///
+    /// `limit` 夹在 `1..=1000`：0 会让调用方误以为「没有事件」，超大值则等于把
+    /// 分页绕回全量。想读完整个历史就带着上一批最后一条的 `sequence` 继续调，
+    /// 不要用一个大 limit 一次拉完。
+    pub fn events_since_page(&self, from_sequence: i64, limit: usize) -> Result<Vec<DomainEvent>> {
+        self.events_since_limited(from_sequence, Some(limit.clamp(1, 1000)))
+    }
+
+    /// `limit = None` 时用 SQLite 的 `LIMIT -1`（不设上限），有值时按条数截断。
+    fn events_since_limited(
+        &self,
+        from_sequence: i64,
+        limit: Option<usize>,
+    ) -> Result<Vec<DomainEvent>> {
+        let limit = limit.map_or(-1_i64, |value| value as i64);
         let mut stmt = self.conn.prepare(
             "SELECT sequence, event_id, type, entity_id, revision, emitted_at \
-             FROM domain_events WHERE sequence > ?1 ORDER BY sequence",
+             FROM domain_events WHERE sequence > ?1 ORDER BY sequence LIMIT ?2",
         )?;
         let rows = stmt
-            .query_map(params![from_sequence], |row| {
+            .query_map(params![from_sequence, limit], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,

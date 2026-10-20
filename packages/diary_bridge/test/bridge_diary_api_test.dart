@@ -326,16 +326,26 @@ void main() {
     final snapshot = await api.snapshot();
     expect(snapshot.coreInfo.capabilities, contains('captures.list'));
     expect(snapshot.coreInfo.capabilities, contains('search.start'));
-    expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.status')));
-    // **语义**重建这一条接了（设置页要在换过模型之后触发「重建语义索引」）：
-    // 核心入口 → 桥接 → 适配层 → 能力项都在。
-    expect(
-      snapshot.coreInfo.capabilities,
-      contains('indexes.rebuildSemantic'),
-    );
-    // **关键词**那条照旧没接：核心与桥接都通了（能力项进了 wired_capabilities），
-    // 但适配层的 `_wiredMethods` 仍然不含它，所以这里必须是「没有」。
-    expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.rebuild')));
+    // 这一轮接上了：核心入口 → 桥接 → 适配层 → 能力项都在。
+    expect(snapshot.coreInfo.capabilities, contains('indexes.status'));
+    expect(snapshot.coreInfo.capabilities, contains('indexes.rebuild'));
+    expect(snapshot.coreInfo.capabilities, contains('indexes.rebuildSemantic'));
+    // 仍然没接的（原因见 `noSuchMethod` 与适配层文档）：不列进能力清单。
+    for (final capability in [
+      'settings.get',
+      'settings.update',
+      'plugins.invoke',
+      'backups.create',
+      'backups.restore',
+      'captures.trash',
+      'core.setRuntimeState',
+    ]) {
+      expect(
+        snapshot.coreInfo.capabilities,
+        isNot(contains(capability)),
+        reason: capability,
+      );
+    }
   });
 
   test('到期任务入口经 DiaryApi 返回真实核心摘要', () async {
