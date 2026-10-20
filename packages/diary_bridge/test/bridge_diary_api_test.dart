@@ -326,10 +326,11 @@ void main() {
     final snapshot = await api.snapshot();
     expect(snapshot.coreInfo.capabilities, contains('captures.list'));
     expect(snapshot.coreInfo.capabilities, contains('search.start'));
-    // 这一轮接上了：核心入口 → 桥接 → 适配层 → 能力项都在。
     expect(snapshot.coreInfo.capabilities, contains('indexes.status'));
     expect(snapshot.coreInfo.capabilities, contains('indexes.rebuild'));
     expect(snapshot.coreInfo.capabilities, contains('indexes.rebuildSemantic'));
+    expect(snapshot.coreInfo.capabilities, contains('jobs.get'));
+    expect(snapshot.coreInfo.capabilities, contains('jobs.list'));
     // 备份契约三条**不宣告**：契约收的是 PlatformHost 的限域票据，而票据解析
     // 尚未实现；本轮只有显式带 AtPath 的路径专用入口（见适配层类注释）。
     // 仍然没接的（原因见 `noSuchMethod` 与适配层文档）：不列进能力清单。
@@ -377,11 +378,24 @@ void main() {
 
   test('语义索引重建经契约接口排得上，重放拿到同一个 jobId', () async {
     await api.open();
+    final before = await api.indexesStatus();
+    expect(before.semanticIndexReady, isFalse);
     final ticket = await api.rebuildSemanticIndex(
       reason: '适配层端到端',
       operationId: 'adapter-semantic-1',
     );
     expect(ticket.jobId, isNotEmpty, reason: '拿到的是真实任务 id，不是编出来的');
+    final queued = await api.getJob(ticket.jobId);
+    expect(queued.kind, 'semantic_index');
+    expect(queued.state.isTerminal, isFalse);
+    final active = await api.listJobs(
+      states: {
+        JobState.queued,
+        JobState.waitingConfiguration,
+        JobState.waitingDependency,
+      },
+    );
+    expect(active.jobs.map((job) => job.id), contains(ticket.jobId));
 
     // 同一个 (reason, operationId)：同一条任务。
     final replay = await api.rebuildSemanticIndex(
