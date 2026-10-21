@@ -216,6 +216,40 @@ fn events_are_emitted_in_order_on_every_write() {
 }
 
 #[test]
+fn events_since_page_is_bounded_and_reads_forward() {
+    let (mut core, id) = core_with_draft();
+    let mut revision = 1;
+    for index in 0..5 {
+        revision = core
+            .save_draft(
+                &id,
+                &format!("分页事件 {index}"),
+                revision,
+                &format!("op-page-{index}"),
+            )
+            .unwrap()
+            .revision;
+    }
+    assert!(revision > 1);
+
+    let all = core.events_page(0, 1000).unwrap().events;
+    assert!(all.len() > 4, "五次保存至少留下五条事件");
+
+    // 每页两条：返回值必须是有界的一批，且从游标之后继续。
+    let first = core.events_since_page(0, 2).unwrap();
+    assert_eq!(first, all[..2].to_vec());
+    let second = core
+        .events_since_page(first.last().unwrap().sequence, 2)
+        .unwrap();
+    assert_eq!(second, all[2..4].to_vec());
+    assert!(second[0].sequence > first[1].sequence);
+
+    // 0 被夹成 1，不会静默返回空；超大值被夹成 1000，不会绕过上限。
+    assert_eq!(core.events_since_page(0, 0).unwrap().len(), 1);
+    assert_eq!(core.events_since_page(0, usize::MAX).unwrap(), all);
+}
+
+#[test]
 fn list_captures_pages_deterministically() {
     let mut core = Core::open_in_memory().unwrap();
     let base = Utc.with_ymd_and_hms(2026, 9, 27, 10, 0, 0).unwrap();
