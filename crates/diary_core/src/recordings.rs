@@ -31,7 +31,9 @@ pub(crate) fn prepare(
     operation_id: &str,
 ) -> Result<RecordingTicket> {
     let root = core.root_dir()?.to_path_buf();
-    let _ = crate::load_capture(&core.conn, capture_id)?;
+    let capture = crate::load_capture_raw(&core.conn, capture_id)?;
+    // 回收站里的记录只读：不在 trash 之后开始一段新录音。
+    crate::ensure_not_trashed(&capture, "开始录音")?;
 
     let fingerprint = support::fingerprint(&["recordings.prepare", capture_id]);
     if let Some(json) = core.receipt("recordings.prepare", &fingerprint, operation_id)? {
@@ -97,6 +99,10 @@ pub(crate) fn register_segment(
             state: "已经最终化".to_owned(),
         });
     }
+    // 记录在回收站里：整条聚合（含录音会话）只读。trash 入口已经拒绝在途录音，
+    // 这里再挡一次，旧库/异常路径也不能把片段继续登记到 trashed 记录上。
+    let capture = crate::load_capture(&core.conn, &session.capture_id)?;
+    crate::ensure_not_trashed(&capture, "继续录音")?;
 
     let fingerprint = support::fingerprint(&[
         "register_segment",
@@ -197,6 +203,9 @@ pub(crate) fn update_state(
             state: "已经最终化".to_owned(),
         });
     }
+    // 记录在回收站里：不再接受原生状态推进（否则会出现「回收站里的录音还在录」）。
+    let capture = crate::load_capture(&core.conn, &session.capture_id)?;
+    crate::ensure_not_trashed(&capture, "更新录音状态")?;
 
     core.conn.execute(
         "UPDATE recording_sessions SET state = ?1, elapsed_ms = ?2, durable_through_ms = ?3, \
@@ -230,6 +239,10 @@ pub(crate) fn finalize(
             state: "已经最终化".to_owned(),
         });
     }
+    // **关键护栏**：finalize 会往记录上挂来源、建资产、推进 revision。记录已经在
+    // 回收站里就拒绝，否则「回收站里的记录」会被一段后续最终化的录音继续写入。
+    let capture = crate::load_capture(&core.conn, &session.capture_id)?;
+    crate::ensure_not_trashed(&capture, "最终化录音")?;
 
     let segments = list_segments(&core.conn, recording_id)?;
     let present: Vec<&SegmentRow> = segments
@@ -358,7 +371,7 @@ pub(crate) fn finalize(
         params![revision_id, source_id, session.asset_id, support::to_iso(now)],
     )?;
 
-    let capture = crate::load_capture(&tx, &session.capture_id)?;
+    let capture = crate::load_capture_raw(&tx, &session.capture_id)?;
     let new_revision = capture.revision + 1;
     tx.execute(
         "UPDATE captures SET revision = ?1, updated_at = ?2 WHERE id = ?3",
@@ -392,6 +405,10 @@ pub(crate) fn finalize(
 
     Ok(RecordingFinalizeResult {
         recording_id: recording_id.to_owned(),
+        capture_id: session.capture_id,
+        // 就是上面那条 UPDATE 写进去的 revision：客户端拿它当 commit 的
+        // expected_revision，不要自己猜。
+        capture_revision: new_revision,
         asset_id: session.asset_id,
         state: final_state,
         segment_count: present.len() as i64,
