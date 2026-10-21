@@ -726,9 +726,20 @@ export struct ProfilePage {
           InfoRow({ label: '插件', value: '未接：plugins.* 还没有 C ABI' })
           InfoRow({ label: '备份与恢复', value: '未接：backups.* 还没有 C API 入口' })
           InfoRow({ label: '阅读导出', value: '未接：exports.* 还没有 C ABI' })
-          InfoRow({ label: '存储与回收站', value: '未接：captures.trash / restore / purge 还没有接' })
+          // 回收站已经接通（`captures.trash / restore / previewPurge / purge` 都在
+          // WIRED_METHODS 里）：整行可点，跳二级页 `recycle`。页面本身是临时功能界面。
+          Column() {
+            InfoRow({
+              label: '存储与回收站',
+              value: '打开：回收站列表、恢复记录、预览永久清理（点这一行进入）',
+            })
+          }
+          .width('100%')
+          .onClick(() => {
+            this.pathStack.pushPathByName('recycle', '');
+          })
           InfoRow({ label: '封面与加载动画', value: '未做：非语义页，契约不要求逐字对齐' })
-          Text('这五项在鸿蒙上**没有可用入口**：C ABI 与核心都还不完整，所以这里只写「未接」，' +
+          Text('其余四项在鸿蒙上**没有可用入口**：C ABI 与核心都还不完整，所以这里只写「未接」，' +
             '不放按了没反应的按钮。')
             .fontSize(12)
             .fontColor($r('sys.color.ohos_id_color_text_tertiary'))

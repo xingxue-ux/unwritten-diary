@@ -49,6 +49,7 @@ import { RecordingPage } from './RecordingPage';
 import { SearchPage } from './SearchPage';
 import { JobsPage } from './JobsPage';
 import { ProfilePage } from './ProfilePage';
+import { RecyclePage } from './RecyclePage';
 import { TranscriptionConfigPage } from './TranscriptionConfigPage';
 
 @Entry
@@ -165,9 +166,8 @@ struct Index {
       }
       .title('任务中心')
     } else if (name === 'recycle') {
-      // 路由骨架：回收站线填充。
       NavDestination() {
-        this.PlaceholderPage('回收站', '占位页：由回收站线填充（路由名 recycle）。')
+        RecyclePage()
       }
       .title('回收站')
     } else if (name === 'styles') {
