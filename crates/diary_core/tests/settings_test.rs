@@ -43,6 +43,16 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
         > 0
 }
 
+fn index_exists(conn: &Connection, name: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+        [name],
+        |row| row.get::<_, i64>(0),
+    )
+    .unwrap()
+        > 0
+}
+
 // ------------------------------------------------------------------ 默认值与同一性
 
 #[test]
@@ -473,4 +483,284 @@ fn a_latest_library_with_missing_structure_heals_on_open() {
             .unwrap(),
         1
     );
+}
+
+/// 复审第 5 条：`ensure_v16_v17_v18_structure` 不能只看 `styles` 表。
+///
+/// `table_exists("styles")` 为真不能证明 `idx_styles_current` 在——索引被手工删掉
+/// （或补建失败）时，「一条风格只有一个当前版本」就不再由库保证，`query_row` 会静默
+/// 取任意一条。版本号是 18 也不代表索引在，所以每次 open 都要独立补。
+#[test]
+fn a_v18_library_missing_the_styles_current_index_gets_it_back_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let _core = open(dir.path());
+        let conn = db(dir.path());
+        assert!(index_exists(&conn, "idx_styles_current"), "前提：索引本来在");
+        conn.execute_batch("DROP INDEX idx_styles_current;").unwrap();
+        assert!(!index_exists(&conn, "idx_styles_current"), "前提：索引已被删");
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION, "版本号仍是 18，但索引缺了");
+    }
+
+    let core = open(dir.path());
+    assert_eq!(core.schema_version().unwrap(), SCHEMA_VERSION);
+    let conn = db(dir.path());
+    assert!(
+        index_exists(&conn, "idx_styles_current"),
+        "结构兜底必须补回 idx_styles_current"
+    );
+
+    // 补回后部分唯一索引重新生效：同一条风格再插一个 current = 1 必须被拒。
+    let duplicate = conn.execute(
+        "INSERT INTO styles (snapshot_id, id, revision, label, updated_at, current) \
+         VALUES ('stv_duplicate', 'sty_default', 99, '第二个当前行', '2026-10-20T00:00:00Z', 1)",
+        [],
+    );
+    assert!(
+        duplicate.is_err(),
+        "idx_styles_current 补回后必须重新约束唯一性"
+    );
+}
+
+/// 复审第 6 条：空 / 非法 settings 的用例（核心这一层是完整对象，没有「部分」形态；
+/// 「部分对象」是 C ABI 的入参形状，见 `crates/diary_capi/src/tests.rs` 的三态用例）。
+///
+/// 这里钉住：非法时区 / 非法计划时间 / 过长的风格 id 都是 `invalid_argument`，
+/// 且**一个字节不改**（值不变、revision 不推进）。
+#[test]
+fn invalid_full_settings_are_rejected_without_touching_a_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = open(dir.path());
+    let before = core.get_settings().unwrap();
+
+    let cases = [
+        ("Asia / Shanghai".to_owned(), before.auto_organize_time.clone(), None),
+        (String::new(), before.auto_organize_time.clone(), None),
+        (before.diary_time_zone.clone(), "25:99".to_owned(), None),
+        (before.diary_time_zone.clone(), "7:5".to_owned(), None),
+        (
+            before.diary_time_zone.clone(),
+            before.auto_organize_time.clone(),
+            Some("s".repeat(129)),
+        ),
+    ];
+    for (time_zone, time, style_id) in cases {
+        let mut candidate = before.clone();
+        candidate.diary_time_zone = time_zone.clone();
+        candidate.auto_organize_time = time.clone();
+        candidate.default_style_id = style_id.clone();
+        let error = core
+            .update_settings(&candidate, before.revision)
+            .expect_err("非法设置必须报错");
+        assert_eq!(
+            error.code(),
+            ErrorCode::InvalidArgument,
+            "时区 {time_zone:?} / 时间 {time:?} / 风格 {style_id:?} 应该是 invalid_argument"
+        );
+        assert_eq!(
+            core.get_settings().unwrap(),
+            before,
+            "非法设置必须零改动"
+        );
+    }
+}
+
+/// 复审第 6 条的建议：删旧表前必须数行数。
+///
+/// 构造一个**异常形状**的 v17 库：`organize_settings` 里那一行的 id 不是 1。
+/// 真实 DDL 的 `CHECK (id = 1)` 会挡住这种行，这里用一个没有 CHECK 的重建表模拟
+/// 「库被改坏 / 中间构建留下的怪形状」——v18 的搬家用 `WHERE id = 1` 会一行都搬
+/// 不过去。此时必须报错回滚，**不能** 补一行默认设置然后把旧表 DROP 掉
+/// （那就是静默丢掉用户的整理设置）。
+#[test]
+fn a_broken_organize_settings_row_aborts_the_v18_migration_instead_of_dropping_it() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let _core = open(dir.path());
+        let conn = db(dir.path());
+        conn.execute_batch(
+            "ALTER TABLE settings RENAME TO organize_settings;
+             ALTER TABLE organize_settings DROP COLUMN diary_time_zone;
+             ALTER TABLE organize_settings DROP COLUMN default_style_id;
+             CREATE TABLE broken_organize_settings (
+                 id                        INTEGER PRIMARY KEY,
+                 enabled                   INTEGER NOT NULL DEFAULT 0,
+                 template_id               TEXT NOT NULL,
+                 template_params           TEXT NOT NULL DEFAULT '{}',
+                 max_materials             INTEGER NOT NULL,
+                 max_chars                 INTEGER NOT NULL,
+                 max_calls_per_run         INTEGER NOT NULL,
+                 max_calls_per_day         INTEGER NOT NULL,
+                 max_failure_rate          REAL NOT NULL,
+                 auto_organize_time        TEXT NOT NULL,
+                 supplement_on_new_materials INTEGER NOT NULL DEFAULT 1,
+                 revision                  INTEGER NOT NULL DEFAULT 1,
+                 updated_at                TEXT NOT NULL
+             );
+             INSERT INTO broken_organize_settings
+                 SELECT 2, enabled, template_id, template_params, max_materials, max_chars,
+                        max_calls_per_run, max_calls_per_day, max_failure_rate,
+                        auto_organize_time, supplement_on_new_materials, revision, updated_at
+                 FROM organize_settings;
+             DROP TABLE organize_settings;
+             ALTER TABLE broken_organize_settings RENAME TO organize_settings;
+             UPDATE schema_migrations SET version = 17;
+             PRAGMA user_version = 17;",
+        )
+        .unwrap();
+        assert!(!table_exists(&conn, "settings"), "前提：v17 没有 settings");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM organize_settings", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 1, "前提：旧表有一行（id = 2，搬不过去）");
+    }
+
+    let error = match Core::open(dir.path().join("library.sqlite")) {
+        Ok(_) => panic!("搬不动旧行时必须报错，不能静默 DROP"),
+        Err(error) => error,
+    };
+    assert!(
+        format!("{error}").contains("搬设置行失败"),
+        "错误要说清是搬行失败：{error}"
+    );
+
+    // 事务回滚：旧表与那一行还在，settings 没建出来，版本停在 17。
+    let conn = db(dir.path());
+    assert!(
+        table_exists(&conn, "organize_settings"),
+        "报错时绝不能把旧表 DROP 掉"
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM organize_settings", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "旧行必须原样保留，下次 open 还能重试"
+    );
+    assert!(!table_exists(&conn, "settings"), "建表也要随事务回滚");
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 17, "版本号不能写成 18");
+}
+
+/// 复审第 6 条：**真 v15 库**（v15 构建真实写出 + 未检查点 WAL）升到 18。
+///
+/// 合成测试是从 v18 库反向改出来的，覆盖不到旧二进制的页布局、真实 WAL 残留与
+/// `schema_migrations` 的历史行。这份样本由 `tools/migration/make_v15_fixture.sh`
+/// 用 v15 构建（`f31ee95`）写出，写完 `abort()` 留下 685 KiB 未检查点 WAL；说明见
+/// `tests/fixtures/v15-library/README.md`。
+#[test]
+fn a_real_v15_library_fixture_with_an_uncheckpointed_wal_migrates_to_v18() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v15-library");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    // 必须连 `-wal` 一起拷：样本的数据还没检查点回主库，只拷 4 KiB 的
+    // `library.sqlite` 会得到一个空库，那样测的就不是真旧库。
+    std::fs::copy(source.join("library.sqlite"), &path).unwrap();
+    std::fs::copy(
+        source.join("library.sqlite-wal"),
+        dir.path().join("library.sqlite-wal"),
+    )
+    .unwrap();
+
+    // 迁移前先证明这是一份真 v15 库：版本 15、两条记录在 WAL 里可读、三样结构都没有。
+    {
+        let conn = Connection::open(&path).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 15);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM captures", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+        let history: Vec<i64> = {
+            let mut statement = conn
+                .prepare("SELECT version FROM schema_migrations ORDER BY version")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(history, vec![15], "旧库的历史行是 v15，不是当前构建补出来的");
+        assert!(!table_exists(&conn, "styles"));
+        assert!(!table_exists(&conn, "settings"));
+        assert!(!column_exists(&conn, "captures", "trashed_from_state"));
+    }
+
+    // 当前构建打开：v15 → 18 的三段（回收站列 + styles + settings）都必须跑。
+    let core = open(dir.path());
+    assert_eq!(core.schema_version().unwrap(), SCHEMA_VERSION);
+    assert_eq!(SCHEMA_VERSION, 18);
+    assert_eq!(core.count_captures().unwrap(), 2, "旧记录一条不能丢");
+
+    let settings = core.get_settings().unwrap();
+    assert_eq!(settings.diary_time_zone, "UTC", "旧库没有设备时区可搬");
+    assert!(!settings.auto_organize_enabled, "迁移种下的默认行是关");
+    assert_eq!(settings.default_style_id, None, "不替用户猜一个默认风格");
+    assert_eq!(settings.revision, 1);
+
+    let conn = db(dir.path());
+    assert!(column_exists(&conn, "captures", "trashed_from_state"), "v16 列");
+    assert!(table_exists(&conn, "styles"), "v17 表");
+    assert!(
+        index_exists(&conn, "idx_styles_current"),
+        "v17 的部分唯一索引"
+    );
+    assert!(table_exists(&conn, "settings"), "v18 表");
+    assert!(
+        !table_exists(&conn, "organize_settings"),
+        "旧表要被吸收掉，不留第二份真值"
+    );
+
+    let texts: Vec<String> = {
+        let mut statement = conn
+            .prepare("SELECT draft_text FROM captures ORDER BY day_key")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(texts.len(), 2);
+    assert!(texts[0].contains("样本一"));
+    assert!(texts[1].contains("样本二"));
+    assert!(texts[1].contains('🙂'), "旧数据里的 emoji 必须原样保留");
+
+    let history: Vec<i64> = {
+        let mut statement = conn
+            .prepare("SELECT version FROM schema_migrations ORDER BY version")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(history, vec![15, 18], "v15 的历史行要保留，18 是这次落到的版本");
+
+    let quick: String = conn
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(quick, "ok");
+    let foreign_keys: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(foreign_keys, 0, "外键检查必须为空");
+
+    // 真正落盘的 `-wal` 被合并/检查点后，库文件仍能独立打开且数据在。
+    drop(conn);
+    let reopened = open(dir.path());
+    assert_eq!(reopened.count_captures().unwrap(), 2);
 }
