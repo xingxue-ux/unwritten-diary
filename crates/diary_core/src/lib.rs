@@ -50,6 +50,8 @@ pub mod plugin;
 /// 公开是为了让测试与 `tools/probe` 能注入回放/记账传输层——这是给测试与量测的
 /// 入口，产品代码只用默认实现（见 `provider::transport`）。
 pub mod provider;
+/// `Capture.processing_summary` 的真实计算（#146）。口径见模块文档。
+mod processing;
 /// AI 质量集的**判定器**（issue #93，B4b-ai-quality）：可判定的特征判定、CER 计算、
 /// 回放式引擎与「调用 B4b 核心方法」的薄适配层。
 ///
@@ -59,6 +61,11 @@ pub mod provider;
 #[cfg(any(test, feature = "ai-quality"))]
 pub mod quality;
 mod recordings;
+/// 回收站：移入 / 恢复 / 改归属日 / 预览与永久清理（B7）。
+///
+/// 产品代码只走 `Core` 上的五个薄封装；模块内部的口径与测试断言见
+/// `crates/diary_core/tests/recycle_test.rs`。
+mod recycle;
 /// 转写链（#91）：本机引擎、分段转写、时间戳对齐与质量集接缝。
 ///
 /// 公开是为了让测试与 `tools/probe` 能注入 stub 引擎、能直接跑一条转写
@@ -111,8 +118,9 @@ pub use model::{
     ProcessingSummary, PluginArtifact, PluginDerivedContent, PluginEntryKind, PluginInspection,
     PluginInstallation, PluginInvocation, PluginManifest, PluginPermission, PluginProviderFailure,
     PluginRunResult, PluginSourceRef, PluginStyleProfile, PluginTemplate, ProvenanceLink, Provider,
-    ProviderCapability, ProviderTestReport, ProviderTestStatus, RecordingFinalizeResult,
-    RecordingRecovery, RecordingSession, RecordingState, RecordingTicket, ResponseTicket,
+    ProviderCapability, ProviderTestReport, ProviderTestStatus, PurgePreview, PurgeResult,
+    RecordingFinalizeResult, RecordingRecovery, RecordingSession, RecordingState, RecordingTicket,
+    ResponseTicket,
     RestoreReport, SearchFilters, SearchHit,
     SearchMode, SearchPhase, SearchRequest, SearchSnapshot, SegmentManifest, SegmentReceipt,
     SourceItem, SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
@@ -185,6 +193,14 @@ pub struct Core {
     leases: HashMap<String, assets::LeaseRecord>,
     /// 检索会话，内存态：它记录的是「这一次查询的翻页与失效判断」，不是业务数据。
     search_sessions: HashMap<String, search_session::SearchSessionState>,
+    /// 永久清理的预览令牌，内存态：一次性、绑定 capture_id、带过期。
+    ///
+    /// 不持久化：进程重启后令牌作废，用户必须重新预览。这是有意的——一个能删资料的
+    /// 令牌不该写进库、也不该在下次启动后还活着。
+    purge_previews: HashMap<String, recycle::PurgePreviewState>,
+    /// 预览令牌有效期（秒）。产品默认 10 分钟；测试可改（见
+    /// `set_purge_preview_ttl_for_test`）。
+    purge_preview_ttl_seconds: i64,
     /// 语义这一路的运行时状态：模型配置 + 懒加载的嵌入器（进程级单例）。
     ///
     /// `Core::open` 只读环境变量与 stat 文件，**不建 ORT 会话**——启动不做重活。
@@ -379,6 +395,8 @@ impl Core {
             library_file_name,
             leases: HashMap::new(),
             search_sessions: HashMap::new(),
+            purge_previews: HashMap::new(),
+            purge_preview_ttl_seconds: recycle::PURGE_PREVIEW_TTL_SECONDS,
             semantic,
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
             vector_storage: embedding::DEFAULT_VECTOR_STORAGE,
@@ -604,6 +622,10 @@ impl Core {
             day_key: support::day_key(occurred_at, input.utc_offset_minutes),
             ordered_source_ids: Vec::new(),
             draft_text: String::new(),
+            // 刚创建的记录还没有来源，所以四个数字确实都是 0。**没有来源**的记录
+            // （刚建的草稿、空白提交）都可以是全 0；有来源的记录一律由
+            // `processing::summary` 按库里的真实状态算（见 `capture_from_raw` 与
+            // `processing` 模块文档）。
             processing_summary: ProcessingSummary::default(),
         };
 
@@ -664,7 +686,7 @@ impl Core {
             return Ok(serde_json::from_str(&json)?);
         }
 
-        let capture = load_capture(&self.conn, capture_id)?;
+        let capture = load_capture_raw(&self.conn, capture_id)?;
         ensure_revision(&capture, expected_revision)?;
         if capture.state != CaptureState::Draft {
             return Err(CoreError::InvalidState {
@@ -723,6 +745,10 @@ impl Core {
     ///
     /// 任务书 3.2 节要求「核心提交数据与对应的待处理任务/出站事件记录应在同一数据库
     /// 事务中完成」，否则会出现「资料已保存，索引任务却永远丢了」。
+    ///
+    /// 返回的 `Capture.processing_summary` 是**提交那一刻**的快照（来源与任务都在同一
+    /// 事务里刚写好之后算的，回执里存的也是它）；之后的 `get_capture` / `list_captures`
+    /// 读的是当下的值。写路径本身只算这一次，不在开头再算一遍。
     pub fn commit_with_jobs(
         &mut self,
         capture_id: &str,
@@ -751,7 +777,7 @@ impl Core {
             return Ok(serde_json::from_str(&json)?);
         }
 
-        let capture = load_capture(&self.conn, capture_id)?;
+        let capture = load_capture_raw(&self.conn, capture_id)?;
         ensure_revision(&capture, expected_revision)?;
         if capture.state != CaptureState::Draft {
             return Err(CoreError::InvalidState {
@@ -817,6 +843,11 @@ impl Core {
             jobs::enqueue_in_tx(&tx, job.clone())?;
         }
 
+        // 提交之后这条记录才第一次有来源，摘要必须在**同一个事务里**按刚写进去的
+        // 来源与任务算（这是「提交那一刻」的语义，不是实时值）：回执里存的也是这个
+        // 值，幂等重放不会返回一份全 0 的旧快照。整个 commit 只算这一次。
+        committed.processing_summary = processing::summary(&tx, &committed.id)?;
+
         let result = CommitResult {
             capture: committed,
             original_text_revision,
@@ -857,7 +888,7 @@ impl Core {
         }
 
         let (capture_id, parent_revision_id) = load_source_item(&self.conn, source_id)?;
-        let capture = load_capture(&self.conn, &capture_id)?;
+        let capture = load_capture_raw(&self.conn, &capture_id)?;
         // 乐观锁以记录的 revision 为准：记录是聚合根，一次修订同时推进它。
         ensure_revision(&capture, expected_revision)?;
         if capture.state == CaptureState::Draft {
@@ -867,6 +898,7 @@ impl Core {
                 state: capture.state.wire().to_owned(),
             });
         }
+        ensure_not_trashed(&capture, "改正文")?;
 
         // 记录自己的文字（`captures.draft_text`）与「这一篇的上一版」可能是**同一段文字
         // 的两种存法**：提交时会把 `draft_text` 复制成一条 text 修订。改正文如果只改
@@ -1013,9 +1045,15 @@ impl Core {
             )?
             .collect::<rusqlite::Result<Vec<RawCapture>>>()?;
 
+        // 整页的摘要用**一次**聚合查询算完（`processing::summaries`），绝不按记录
+        // 逐条再查四次数；`rows` 里多取的那一条也一起算，代价只有它的来源。
+        let capture_ids: Vec<String> = rows.iter().map(|raw| raw.0.clone()).collect();
+        let summaries = processing::summaries(&self.conn, &capture_ids)?;
+
         let mut captures = Vec::with_capacity(rows.len().min(page_size));
         for raw in rows {
-            captures.push(capture_from_raw(&self.conn, raw)?);
+            let summary = summaries.get(&raw.0).copied().unwrap_or_default();
+            captures.push(capture_from_raw(&self.conn, raw, summary)?);
         }
         // 多取一条用来判断还有没有下一页。
         let next_cursor = if captures.len() > page_size {
@@ -1031,6 +1069,74 @@ impl Core {
             captures,
             next_cursor,
         })
+    }
+
+    // ------------------------------------------------------------ 回收站（B7）
+
+    /// 调整日记归属日期，契约 4.1 节 `captures.moveDay`。
+    ///
+    /// 只改 `day_key`，不改 `occurred_at`（调整不改录音时间戳）。旧日与新日的文本块
+    /// 在同一个事务里重打包，检索按新 day 命中、旧 day 不再出现。
+    pub fn move_day(
+        &mut self,
+        capture_id: &str,
+        target_day_key: &str,
+        expected_revision: i64,
+    ) -> Result<Capture> {
+        recycle::move_day(self, capture_id, target_day_key, expected_revision)
+    }
+
+    /// 移入回收站，契约 4.1 节 `captures.trash`。
+    pub fn trash_capture(
+        &mut self,
+        capture_id: &str,
+        expected_revision: i64,
+        operation_id: &str,
+    ) -> Result<Capture> {
+        recycle::trash(self, capture_id, expected_revision, operation_id)
+    }
+
+    /// 从回收站恢复，契约 4.1 节 `captures.restore`。恢复回移入之前的状态。
+    pub fn restore_capture(
+        &mut self,
+        capture_id: &str,
+        expected_revision: i64,
+        operation_id: &str,
+    ) -> Result<Capture> {
+        recycle::restore(self, capture_id, expected_revision, operation_id)
+    }
+
+    /// 预览永久清理的影响，契约 4.1 节 `captures.previewPurge`。
+    pub fn preview_purge(&mut self, capture_id: &str) -> Result<PurgePreview> {
+        recycle::preview_purge(self, capture_id)
+    }
+
+    /// 永久清理，契约 4.1 节 `captures.purge`。必须带 `previewPurge` 的令牌。
+    ///
+    /// `delete_diary_versions` 是契约 §8 的「由用户决定是否同时删日记版本」：`false`
+    /// （调用方默认）保留仍引用这条记录的版本，`true` 才删并把 `diary_days` 当前指针
+    /// 换到同一天剩下的最新一版。删的是 `generated` 版本，一次生成可能覆盖同一天多条
+    /// 记录，所以默认保留；这个选择会存进幂等指纹，同一个 `operationId` 换选择报冲突。
+    pub fn purge_capture(
+        &mut self,
+        capture_id: &str,
+        preview_token: &str,
+        delete_diary_versions: bool,
+        operation_id: &str,
+    ) -> Result<PurgeResult> {
+        recycle::purge(
+            self,
+            capture_id,
+            preview_token,
+            delete_diary_versions,
+            operation_id,
+        )
+    }
+
+    /// 仅供测试：改预览令牌有效期（秒）。产品默认 10 分钟。
+    #[doc(hidden)]
+    pub fn set_purge_preview_ttl_for_test(&mut self, seconds: i64) {
+        self.purge_preview_ttl_seconds = seconds.max(0);
     }
 
     // ------------------------------------------------------------ 录音
@@ -1535,6 +1641,15 @@ impl Core {
         assets::reap_expired_leases(self)
     }
 
+    /// 从序号之后读取**一批**事件（最多 `limit` 条），契约第 6 节轮询用。
+    ///
+    /// 这是 FRB 桥接面「一次返回一批」的薄包装：真正的有界读取、超前夹取与
+    /// 保留窗口判定都在 [`Self::events_page`]。`limit` 夹在 `1..=1000`，0 会让
+    /// 调用方误以为「没有事件」。
+    pub fn events_since_page(&self, from_sequence: i64, limit: usize) -> Result<Vec<DomainEvent>> {
+        Ok(self.events_page(from_sequence, limit.clamp(1, 1000))?.events)
+    }
+
     /// 从序号之后读取**一页**事件，契约第 6 节。
     ///
     /// - `limit` 是硬上限：SQL 带 `LIMIT`，不会先把整张事件表读进内存再截断；
@@ -1971,6 +2086,26 @@ impl Core {
         backup::create(self, std::path::Path::new(target_path))
     }
 
+    /// 创建备份包，并在成功之后写一条 **`succeeded`** 的 `backup` 任务记录。
+    ///
+    /// **同步完成**：返回的 `Job.id` 指向已经完成的记录，不是排队任务；大库上调用会
+    /// 占住线程，调用方应显示「正在备份」而不是进度轮询。任务记录的 `targetIds` 是
+    /// 备份包路径，`get_job(jobId)` 读得到。
+    ///
+    /// 与 [`Self::create_backup`] 同一套安全保证：目标已存在报 `invalid_argument`
+    /// （绝不覆盖旧备份）、失败时目标路径不留文件。任务记录写入失败时把刚生成的包删掉
+    /// ——不能返回一个「有备份、没 jobId」的成功。
+    pub fn create_backup_job(&mut self, target_path: &str) -> Result<Job> {
+        let report = backup::create(self, std::path::Path::new(target_path))?;
+        match backup::record_completed_job(self, backup::KIND_BACKUP, vec![report.package_path]) {
+            Ok(job) => Ok(job),
+            Err(error) => {
+                let _ = std::fs::remove_file(target_path);
+                Err(error)
+            }
+        }
+    }
+
     /// 检查备份包（契约 `backups.inspect` 的**同步**入口）。
     ///
     /// 逐条目重算哈希、比大小、比条目集合，并检查路径安全与版本兼容。坏在哪就
@@ -2008,6 +2143,30 @@ impl Core {
             self,
             std::path::Path::new(package_path),
             std::path::Path::new(target_dir),
+        )
+    }
+
+    /// 恢复到**新的空目录**，并在成功之后写一条 **`succeeded`** 的 `restore` 任务记录。
+    ///
+    /// **同步完成**：`jobId` 指向已经完成的记录，不是排队任务。`targetIds` 是
+    /// `[恢复出来的 libraryPath, rootDir]`，调用方拿 `get_job(jobId)` 就能找到新库；
+    /// 要不要切过去由前端决定。
+    ///
+    /// 安全保证与 [`Self::restore_backup`] 完全一致：目标必须是新的空目录、不能是
+    /// 当前资料库，失败不留半成品，当前库一字不改。目标非空/损坏包/越界路径/版本
+    /// 不兼容都在写任务行之前拒绝，**不会留下一个 succeeded 的假任务**。
+    pub fn restore_backup_job(&mut self, package_path: &str, target_dir: &str) -> Result<Job> {
+        let report = backup::restore(
+            self,
+            std::path::Path::new(package_path),
+            std::path::Path::new(target_dir),
+        )?;
+        // 任务行写失败时不回滚恢复出来的库：那是用户数据，不能为了记一条任务删掉。
+        // 错误如实返回；调用方拿不到 jobId 时知道这一步没有完成。
+        backup::record_completed_job(
+            self,
+            backup::KIND_RESTORE,
+            vec![report.library_path, report.root_dir],
         )
     }
 
@@ -2068,6 +2227,21 @@ fn ensure_revision(capture: &Capture, expected_revision: i64) -> Result<()> {
         return Err(CoreError::RevisionConflict {
             expected: expected_revision,
             actual: capture.revision,
+        });
+    }
+    Ok(())
+}
+
+/// 回收站里的记录是**只读**的：先恢复，再改正文/导入/最终化录音。
+///
+/// trash 已经拒绝「还有在途录音/导入」的记录；这个检查是第二道闸：旧库、异常路径或
+/// 直接构造出来的 trashed 会话都不能再被写入口复活成「回收站里还在长内容」。
+pub(crate) fn ensure_not_trashed(capture: &Capture, action: &str) -> Result<()> {
+    if capture.state == CaptureState::Trashed {
+        return Err(CoreError::InvalidState {
+            entity: "记录",
+            id: capture.id.clone(),
+            state: format!("在回收站里，不能{action}；先恢复再操作"),
         });
     }
     Ok(())
@@ -2204,7 +2378,15 @@ fn load_revision_text(conn: &Connection, revision_id: &str) -> Result<Option<Str
     Ok(text.flatten())
 }
 
-fn load_capture(conn: &Connection, capture_id: &str) -> Result<Capture> {
+/// 读记录本身，**不算** `processing_summary`（写路径用；写路径不替摘要付费）。
+///
+/// 写路径（`save_draft` / `commit` / `revise_text` / 导入与录音的 prepare/finalize）
+/// 只关心 revision、state、draft_text 这些字段；在那里跑四桶聚合纯属浪费——尤其
+/// `save_draft` 是高频调用。只有 `get_capture` / `list_captures` 需要摘要。
+///
+/// 返回的 `Capture.processing_summary` 是默认值，**不得直接交给调用方**；对外读取
+/// 必须走 `load_capture`（或列表路径的 `processing::summaries`）。
+fn load_capture_raw(conn: &Connection, capture_id: &str) -> Result<Capture> {
     let sql = format!("SELECT {CAPTURE_COLUMNS} FROM captures WHERE id = ?1");
     let raw: Option<RawCapture> = conn
         .query_row(&sql, params![capture_id], |row| {
@@ -2224,7 +2406,7 @@ fn load_capture(conn: &Connection, capture_id: &str) -> Result<Capture> {
         .optional()?;
 
     match raw {
-        Some(row) => capture_from_raw(conn, row),
+        Some(row) => capture_from_raw(conn, row, ProcessingSummary::default()),
         None => Err(CoreError::NotFound {
             entity: "记录",
             id: capture_id.to_owned(),
@@ -2232,7 +2414,18 @@ fn load_capture(conn: &Connection, capture_id: &str) -> Result<Capture> {
     }
 }
 
-fn capture_from_raw(conn: &Connection, raw: RawCapture) -> Result<Capture> {
+/// 对外读取一条记录：记录本身 + **此刻**的四桶摘要。
+fn load_capture(conn: &Connection, capture_id: &str) -> Result<Capture> {
+    let mut capture = load_capture_raw(conn, capture_id)?;
+    capture.processing_summary = processing::summary(conn, capture_id)?;
+    Ok(capture)
+}
+
+fn capture_from_raw(
+    conn: &Connection,
+    raw: RawCapture,
+    processing_summary: ProcessingSummary,
+) -> Result<Capture> {
     let (id, revision, state, occurred_at, created_at, updated_at, time_zone, offset, day_key, draft_text) = raw;
     let mut stmt =
         conn.prepare("SELECT source_id FROM source_items WHERE capture_id = ?1 ORDER BY position")?;
@@ -2256,7 +2449,6 @@ fn capture_from_raw(conn: &Connection, raw: RawCapture) -> Result<Capture> {
         day_key,
         ordered_source_ids,
         draft_text,
-        // B1b/B2 接上提取与索引后才会出现非零值。
-        processing_summary: ProcessingSummary::default(),
+        processing_summary,
     })
 }
