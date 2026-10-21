@@ -1,80 +1,173 @@
-/**
- * 示例页面：录音能力的**手动入口**（真机验证也可以用 hdc 的 verify_mode）。
- *
- * 点「录 5 秒」会走完整链路：申请麦克风权限 → AudioCapturer → 2 秒分片 → 核心
- * registerSegment → finalize（拼音频 + 建 Asset + 排转写任务）。结果在 hilog：
- *
- *   hdc shell "hilog -x -T DiaryRec" | grep DIARY_REC
- *
- * 页面不自己实现录音逻辑：产品代码应该直接用 `recording/VoiceRecorder.ets`。
- */
-import { common } from '@kit.AbilityKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
-import { RecordingVerify } from '../recording/RecordingVerify';
+// 产品界面根页面：底部 Tabs（记录 / 日记 / 搜索 / 片段 / 我的）+ Navigation 二级页。
+//
+// 一级入口是契约 §2 冻结的 5 个、顺序固定（`tools/check_ui_parity.py` 逐字比对）：
+//   记录 → 日记 → 搜索 → 片段 → 我的
+// 任务中心**不是**一级入口：它从全局 header 的「任务」按钮、以及「我的 → 创作与整理 →
+// 任务中心」进（契约 §0.2 / §3）。
+//
+// 页面：
+//   pages/RecordPage             记录（文字新建 + 录音入口）
+//   pages/DiaryPage              日记（按天倒序的成篇正文列表；diary.getDay/listVersions）
+//   pages/DiaryDayPage           日记某一天（正文 + 版本 + 切换当前版本；diary.*）
+//   pages/SearchPage             搜索（search.start/nextPage/upgrade/cancel）
+//   pages/SnippetsPage           片段（captures.list；原始记录与转写状态）
+//   pages/ProfilePage            我的（设置分组 + 任务中心入口）
+//   pages/CaptureDetailPage      记录详情（captures.get / sources.extract / captures.commit）
+//   pages/RecordingPage          录音（VoiceRecorder / finalize / recover）
+//   pages/JobsPage               任务中心（jobs.list/get/retry/cancel/runDue）
+//   pages/TranscriptionConfigPage 转写 provider（providers.list/save/test）
+//
+// 所有核心调用都在 `ui/CoreGateway.ets` 里经 TaskPool 执行；本文件不直接调核心。
 
-const DOMAIN: number = 0x0000;
-const TAG: string = 'DiaryRec';
+import { common } from '@kit.AbilityKit';
+import { CoreGateway } from '../ui/CoreGateway';
+import { AppState } from '../ui/AppState';
+import { databasePath } from '../ui/AppRuntime';
+import { RunDueParams } from '../core/Models';
+import { RecordPage } from './RecordPage';
+import { DiaryPage } from './DiaryPage';
+import { DiaryDayPage } from './DiaryDayPage';
+import { SnippetsPage } from './SnippetsPage';
+import { CaptureDetailPage } from './CaptureDetailPage';
+import { RecordingPage } from './RecordingPage';
+import { SearchPage } from './SearchPage';
+import { JobsPage } from './JobsPage';
+import { ProfilePage } from './ProfilePage';
+import { TranscriptionConfigPage } from './TranscriptionConfigPage';
 
 @Entry
 @Component
 struct Index {
-  @State message: string = 'Diary Core · 录音平台能力';
-  @State status: string = '未开始';
-  @State busy: boolean = false;
-  /** 恢复摘要：已保存 vs 可能丢失的尾巴，直接显示在页面上，不藏在日志里。 */
-  @State recovery: string = '';
+  private pathStack: NavPathStack = new NavPathStack();
+  @State currentTab: number = 0;
+  private lastForegroundKickMs: number = 0;
 
-  private runMode(mode: string, label: string): void {
-    if (this.busy) {
+  aboutToAppear(): void {
+    AppState.init();
+  }
+
+  onPageShow(): void {
+    // 回到前台：让记录/日记/片段重读；顺手推一轮到期任务（OHOS 没有后台唤醒）。
+    AppState.bumpDataVersion();
+    this.kickDueJobs();
+  }
+
+  private kickDueJobs(): void {
+    const now: number = Date.now();
+    if (now - this.lastForegroundKickMs < 30000) {
       return;
     }
-    this.busy = true;
-    this.status = `${label}中…（权限弹框请允许麦克风）`;
+    this.lastForegroundKickMs = now;
     const context = getContext(this) as common.UIAbilityContext;
-    RecordingVerify.run(mode, context, context.filesDir)
-      .then(() => {
-        this.busy = false;
-        this.status = `${label}结束，结果见 hilog（tag DiaryRec）`;
-        if (mode === 'recover') {
-          // 恢复结果必须把「已保存多少 / 可能丢多少」摆在页面上，不能只写日志。
-          this.recovery = RecordingVerify.recoveryHint();
-        }
-      })
-      .catch((err: Object) => {
-        this.busy = false;
-        this.status = `${label}失败，见 hilog`;
-        hilog.error(DOMAIN, TAG, 'INDEX %{public}s failed %{public}s', mode, JSON.stringify(err));
-      });
+    const params: RunDueParams = {
+      budget_ms: 1500,
+      trigger: 'foreground',
+    };
+    CoreGateway.call(databasePath(context), 'jobs.runDue', params).then((result) => {
+      if (result.ok) {
+        AppState.bumpDataVersion();
+      }
+    });
+  }
+
+  @Builder
+  PageMap(name: string, param: string) {
+    if (name === 'capture') {
+      CaptureDetailPage({ pathStack: this.pathStack, captureId: param as string })
+    } else if (name === 'recording') {
+      RecordingPage({ pathStack: this.pathStack })
+    } else if (name === 'transcription') {
+      TranscriptionConfigPage({ pathStack: this.pathStack })
+    } else if (name === 'diaryDay') {
+      NavDestination() {
+        DiaryDayPage({ pathStack: this.pathStack, dayKey: param as string })
+      }
+      .title('日记')
+    } else if (name === 'settings') {
+      // 路由名保留 `settings`：SearchPage / JobsPage 已经在用它跳「我的」，
+      // 改路由名只会制造无谓的跨文件改动（本 PR 不动 SearchPage）。
+      NavDestination() {
+        ProfilePage({ pathStack: this.pathStack })
+      }
+      .title('我的')
+    } else if (name === 'jobs') {
+      NavDestination() {
+        JobsPage({ pathStack: this.pathStack })
+      }
+      .title('任务中心')
+    }
   }
 
   build() {
-    Column({ space: 12 }) {
-      Text(this.message)
-        .fontSize(24)
-        .fontWeight(FontWeight.Bold)
-      Text(this.status)
-        .fontSize(14)
-        .margin({ top: 8 })
-      Button('录 5 秒（2 秒一段）')
-        .enabled(!this.busy)
-        .onClick(() => {
-          this.runMode('record', '录音 5 秒');
+    Navigation(this.pathStack) {
+      Column() {
+        // 全局 header：任务中心是二级页，这里只放一个入口（另一个在「我的」）。
+        Row({ space: 8 }) {
+          Text('不写日记')
+            .fontSize(17)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          Blank()
+          Button('任务')
+            .fontSize(13)
+            .height(32)
+            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
+            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .onClick(() => {
+              this.pathStack.pushPathByName('jobs', '');
+            })
+        }
+        .width('100%')
+        .height(48)
+        .padding({ left: 16, right: 16 })
+
+        Tabs({ barPosition: BarPosition.End, index: this.currentTab }) {
+          TabContent() {
+            RecordPage({ pathStack: this.pathStack })
+          }
+          .tabBar('记录')
+
+          TabContent() {
+            DiaryPage({ pathStack: this.pathStack })
+          }
+          .tabBar('日记')
+
+          TabContent() {
+            SearchPage({ pathStack: this.pathStack })
+          }
+          .tabBar('搜索')
+
+          TabContent() {
+            SnippetsPage({ pathStack: this.pathStack })
+          }
+          .tabBar('片段')
+
+          TabContent() {
+            ProfilePage({ pathStack: this.pathStack })
+          }
+          .tabBar('我的')
+        }
+        .barMode(BarMode.Fixed)
+        .width('100%')
+        .layoutWeight(1)
+        .onChange((index: number) => {
+          if (this.currentTab === index) {
+            return;
+          }
+          this.currentTab = index;
+          // TabContent 不会因为切换重新 `aboutToAppear`：在「记录」里刚写完，切到
+          // 「片段/日记/我的」时那些页面还是旧数据。切 tab 主动让它们重读一次
+          // （各页用 `@StorageLink('ohosDataVersion')` + `@Watch` 接这一下）。
+          AppState.bumpDataVersion();
         })
-      Button('查看上次未收尾的录音')
-        .enabled(!this.busy)
-        .onClick(() => {
-          this.runMode('recover', '查询恢复');
-        })
-      Text(this.recovery)
-        .fontSize(14)
-        .fontColor('#B45309')
-        .margin({ top: 4 })
-      Text('日志：hdc shell "hilog -x -T DiaryRec" | grep DIARY_REC')
-        .fontSize(12)
-        .margin({ top: 12 })
+      }
+      .width('100%')
+      .height('100%')
     }
+    .navDestination(this.PageMap)
+    .hideTitleBar(true)
+    .mode(NavigationMode.Stack)
     .width('100%')
     .height('100%')
-    .justifyContent(FlexAlign.Center)
   }
 }
