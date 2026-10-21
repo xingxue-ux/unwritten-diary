@@ -1,10 +1,15 @@
 // 我的（契约 §2.5）：个人空间与设置分组——**不是**一张诊断表，也不是一级「设置」tab。
 //
 // 分组（与 Windows 的 `_profilePage` 同构）：
-// - 创作与整理：模型服务（语义/转写状态）、任务中心（二级页）、风格偏好/整理时机（未接）；
+// - 创作与整理：模型服务（语义/转写状态）、任务中心（二级页）、风格偏好（未接）；
+// - 设置：整理设置与默认风格（契约 4.4 的 `settings.get` / `settings.update`，已接 C ABI）；
 // - 资料与应用：插件 / 备份与恢复 / 阅读导出 / 存储与回收站 / 封面与加载动画（未接的
 //   全部如实标注，不摆按了没反应的假按钮）；
 // - 设备与诊断：语义索引、队列概览、诊断与能力清单（鸿蒙保留这一组）。
+//
+// 设置这一块**只做最小接线**：读写、三态与乐观锁都在 `state/SettingsStore.ets`
+// （纯数据层，不依赖 ArkUI）。这里只把 store 的字段镜像到 `@State` 上并摆几个
+// 入口，证明接口可用；面板的视觉等 UI 统一那一步再做。
 //
 // 状态如实（不拿「模型加载过」冒充「索引就绪」）：
 // - `runtime_config.semantic.state` 只表示模型/配置的状态；
@@ -26,13 +31,16 @@ import {
   RebuildSemanticParams,
   RunDueParams,
   RuntimeConfig,
+  Settings,
 } from '../core/Models';
 import { CoreGateway, CoreRequest, uiErrorOf } from '../ui/CoreGateway';
 import { EMPTY_UI_ERROR, UiError } from '../ui/Errors';
 import { AppState } from '../ui/AppState';
+import { SettingsStore } from '../state/SettingsStore';
 import {
   databasePath,
   formatBytes,
+  formatDateTime,
   jobStateLabel,
   newOperationId,
 } from '../ui/AppRuntime';
@@ -52,13 +60,21 @@ export struct ProfilePage {
   @State rebuildError: UiError = EMPTY_UI_ERROR;
   @State showCapabilities: boolean = false;
   @State hasBacklog: boolean = false;
+  /** 设置块：store 的字段镜像（数据与并发都在 store 里，页面只负责显示）。 */
+  @State settings: Settings | null = null;
+  @State settingsError: UiError = EMPTY_UI_ERROR;
+  @State settingsMessage: string = '';
+  @State settingsBusy: boolean = false;
   @StorageLink('ohosDataVersion') @Watch('onDataVersionChanged') dataVersion: number = 0;
 
   private dbPath: string = '';
+  /** 设置的数据层（契约 4.4）；页面只读它的字段、调它的方法。 */
+  private settingsStore: SettingsStore | null = null;
 
   aboutToAppear(): void {
     const context = getContext(this) as common.UIAbilityContext;
     this.dbPath = databasePath(context);
+    this.settingsStore = new SettingsStore(this.dbPath);
     this.load();
   }
 
@@ -72,6 +88,7 @@ export struct ProfilePage {
     this.loading = true;
     this.error = EMPTY_UI_ERROR;
     this.indexError = EMPTY_UI_ERROR;
+    this.settingsError = EMPTY_UI_ERROR;
     const requests: CoreRequest[] = [
       { method: 'core.info', params: null },
       { method: 'indexes.status', params: null },
@@ -96,6 +113,30 @@ export struct ProfilePage {
     if (results.length > 2 && results[2].ok) {
       this.jobStatus = results[2].data as JobStatus;
     }
+    await this.loadSettings();
+  }
+
+  /**
+   * 读设置：走 `SettingsStore.refresh()`（`settings.get`）。
+   *
+   * 读失败**不**让整页失败：这一块单独如实报错，其余区块照常显示。
+   */
+  private async loadSettings(): Promise<void> {
+    const store: SettingsStore | null = this.settingsStore;
+    if (store === null) {
+      return;
+    }
+    this.settingsBusy = true;
+    await store.refresh();
+    this.settingsBusy = false;
+    this.syncSettings(store);
+  }
+
+  /** store → 页面 `@State` 的唯一同步点（store 不依赖 ArkUI，页面自己镜像）。 */
+  private syncSettings(store: SettingsStore): void {
+    this.settings = store.settings;
+    this.settingsError = store.error;
+    this.settingsMessage = store.message;
   }
 
   private runtimeConfig(): RuntimeConfig | null {
@@ -365,6 +406,49 @@ export struct ProfilePage {
     this.runDueOnce();
   }
 
+  // ---------------------------------------------------------------- 设置（契约 4.4）
+  //
+  // 逻辑全在 `state/SettingsStore.ets`：三态、`expected_revision`、冲突重读都在那儿。
+  // 这里只做两件事：把 store 的字段镜像到 @State，和把用户动作转成 store 调用。
+
+  /** `build()` 里已经判过非空；这里只做类型收窄，避免每行都写 `as Settings`。 */
+  private currentSettings(): Settings {
+    return this.settings as Settings;
+  }
+
+  private defaultStyleLabel(): string {
+    const styleId: string | null = this.currentSettings().default_style_id;
+    return styleId === null ? '未设置（新建日记跟随界面默认）' : styleId;
+  }
+
+  private async toggleAutoOrganize(isOn: boolean): Promise<void> {
+    const store: SettingsStore | null = this.settingsStore;
+    if (store === null || this.settingsBusy) {
+      return;
+    }
+    this.settingsBusy = true;
+    // 只改开关：store 生成的入参**不含** default_style_id（省略 = 不改）。
+    await store.setAutoOrganizeEnabled(isOn);
+    this.settingsBusy = false;
+    this.syncSettings(store);
+  }
+
+  private async clearDefaultStyle(): Promise<void> {
+    const store: SettingsStore | null = this.settingsStore;
+    if (store === null || this.settingsBusy) {
+      return;
+    }
+    this.settingsBusy = true;
+    // 三态里的「显式 null = 清空」；全页只有这一个按钮走这条路。
+    await store.clearDefaultStyle();
+    this.settingsBusy = false;
+    this.syncSettings(store);
+  }
+
+  private async reloadSettings(): Promise<void> {
+    await this.loadSettings();
+  }
+
   private nativeVersion(): string {
     try {
       return DiaryCore.version();
@@ -412,7 +496,7 @@ export struct ProfilePage {
           Column() {
             PageTitle({
               title: '我的',
-              subtitle: '本地资料边界、创作与整理偏好、设备与诊断',
+              subtitle: '本地资料边界、整理与默认风格设置、设备与诊断',
             })
           }
           .layoutWeight(1)
@@ -533,11 +617,100 @@ export struct ProfilePage {
             Blank()
           }
           .width('100%')
-          InfoRow({ label: '风格偏好', value: '未接：styles.* 还没有 C ABI，本页不提供假入口' })
-          InfoRow({
-            label: '整理时机',
-            value: '未接：整理设置（settings.update）还没有 C ABI，不能在这里排自动整理',
-          })
+          InfoRow({ label: '风格偏好', value: '未接：styles.* 还没有 C ABI，本页不提供风格选择器；默认风格见下面的「设置」' })
+        }
+        .width('100%')
+        .padding(14)
+        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
+        .borderRadius(14)
+        .alignItems(HorizontalAlign.Start)
+
+        // ---------------------------------------------------------- 设置
+        // 契约 4.4 的 `settings.get` / `settings.update` 已经在 C ABI 的 WIRED_METHODS 里
+        // （46 条方法中包含这两条），所以这里是真的读写，不是「未接」占位。
+        // 只做最小接线（显示 + 触发 update）；三态/乐观锁在 `state/SettingsStore.ets`，
+        // 面板视觉等 UI 统一那一步再做——这里沿用本页既有的组件（InfoRow/StatePill）。
+        SectionTitle({ text: '设置' })
+
+        Column({ space: 4 }) {
+          this.section('整理与默认风格（settings.get / update）')
+          if (this.settingsError.code.length > 0) {
+            ErrorBanner({
+              error: this.settingsError,
+              showReload: true,
+              onReload: () => {
+                this.reloadSettings();
+              },
+            })
+          }
+          if (this.settings === null) {
+            if (this.loading || this.settingsBusy) {
+              LoadingRow({ text: '读取设置…' })
+            } else {
+              Text('设置还没有读到，上面的错误说明了原因；这一块不做本地猜测。')
+                .fontSize(12)
+                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .width('100%')
+            }
+          } else {
+            Row({ space: 8 }) {
+              Text('自动整理')
+                .fontSize(13)
+                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .width(92)
+                .flexShrink(0)
+              StatePill({
+                text: this.currentSettings().auto_organize_enabled ? '已开启' : '已关闭',
+                tone: this.currentSettings().auto_organize_enabled ? 'ok' : 'muted',
+              })
+              Blank()
+              Toggle({ type: ToggleType.Switch, isOn: this.currentSettings().auto_organize_enabled })
+                .enabled(!this.settingsBusy)
+                .onChange((isOn: boolean) => {
+                  this.toggleAutoOrganize(isOn);
+                })
+            }
+            .width('100%')
+            InfoRow({
+              label: '计划时间',
+              value: `${this.currentSettings().auto_organize_time}（本地时间；只是检查时机，不是完成承诺）`,
+            })
+            InfoRow({ label: '日记时区', value: this.currentSettings().diary_time_zone })
+            InfoRow({ label: '默认风格', value: this.defaultStyleLabel() })
+            if (this.currentSettings().default_style_id !== null) {
+              Row({ space: 8 }) {
+                Button('清空默认风格')
+                  .fontSize(13)
+                  .height(34)
+                  .enabled(!this.settingsBusy)
+                  .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
+                  .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                  .onClick(() => {
+                    this.clearDefaultStyle();
+                  })
+                Blank()
+              }
+              .width('100%')
+            }
+            Text('风格列表要等 styles.* 接到 C ABI；这里只提供「清空」，不伪造风格选择器。' +
+              '改开关不会碰这个字段（省略 = 不改，只有「清空」才发显式 null）。')
+              .fontSize(12)
+              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+              .width('100%')
+            InfoRow({
+              label: '设置版本',
+              value: `revision ${this.currentSettings().revision} · ${formatDateTime(this.currentSettings().updated_at)}`,
+            })
+            if (this.settingsBusy) {
+              LoadingRow({ text: '处理设置…' })
+            }
+            if (this.settingsMessage.length > 0) {
+              Text(this.settingsMessage)
+                .fontSize(12)
+                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .width('100%')
+            }
+          }
         }
         .width('100%')
         .padding(14)
