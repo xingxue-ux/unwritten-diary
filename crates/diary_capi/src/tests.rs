@@ -2353,15 +2353,15 @@ fn capabilities_include_every_wired_method() {
         }
     }
 
-    // 核心还没有包装的 5 条**不能**出现在诚实的能力清单里。
-    // 回收站四条（trash / restore / previewPurge / purge）已经接上，所以这里只剩
-    // `captures.moveDay`（核心有、桥面没包）与风格/导出那几条。
+    // 核心已经有实现、C ABI 这一层还没包装的几条**不能**出现在诚实的能力清单里。
+    // 回收站五条、风格三条、导出一条、`diary.listDays` 都已接上；剩下的是文件、生成、
+    // 插件与快照那几片（§6.2 的缺口清单）。
     for name in [
-        "captures.moveDay",
-        "styles.get",
-        "styles.save",
-        "styles.list",
-        "exports.create",
+        "diary.generate",
+        "imports.prepare",
+        "plugins.list",
+        "search.snapshot",
+        "core.snapshot",
     ] {
         assert!(
             !capabilities.contains(&name),
@@ -3681,6 +3681,629 @@ fn recycle_trash_restore_preview_and_purge_are_wired() {
         "not_found",
     );
     assert!(message.contains(capture_id.as_str()), "{message}");
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+// ------------------------------------------------ 本批：风格 / 天列表 / 导出 / 归属日
+//
+// 六条方法都真调：参数走 JSON、响应走信封，断言的是**线上字段名与业务后果**，
+// 不是 Rust 结构体。唯一一处白盒是 `styles` 的历史版本行（见 `style_rows` 的说明）。
+
+/// 直接读资料库的 `styles` 表：`(revision, tone, current)`，按 revision 升序。
+///
+/// 为什么白盒看一眼：`styles.get` 只返回**当前版本**，C ABI 没有「按 revision 读历史版本」
+/// 的入口；而 `styles.save` 的承诺是「每次落一个新的不可变版本行，旧行仍在（历史日记的
+/// `styleSnapshotId` 指得到当时那一版）」。不读表就只能测出「新的盖住了旧的」。
+/// 核心开的是 WAL + busy_timeout，测试只读开第二个连接（核心自己的测试同一套做法）。
+fn style_rows(path: &Path, style_id: &str) -> Vec<(i64, String, i64)> {
+    let conn = rusqlite::Connection::open(path).expect("只读打开资料库");
+    let mut statement = conn
+        .prepare(
+            "SELECT revision, COALESCE(tone, ''), current FROM styles \
+             WHERE id = ?1 ORDER BY revision",
+        )
+        .unwrap();
+    statement
+        .query_map([style_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+/// `styles.list` / `styles.get` / `styles.save`：默认风格真实存在、缺失报 `not_found`
+/// （不回退默认风格）、每次保存落新版本、乐观锁冲突零改动、入参两种写法都收。
+#[test]
+fn styles_list_get_and_save_are_wired() {
+    let (dir, path, handle) = open_temp("styles");
+
+    // 默认风格是库里真实的一行：`sty_default`、revision 1、内容全空。
+    let list = expect_ok(&call(handle, "styles.list", Value::Null));
+    let styles = list.as_array().unwrap();
+    let default = styles
+        .iter()
+        .find(|style| style["id"] == json!("sty_default"))
+        .unwrap_or_else(|| panic!("默认风格必须在列表里：{list}"));
+    assert_eq!(default["revision"], json!(1));
+    assert_eq!(default["label"], json!("默认风格"));
+    assert_eq!(default["tone"], Value::Null);
+    assert_eq!(default["examples"], json!([]));
+
+    // 不存在的 id：`not_found`——**不静默回退默认风格**（回退的话这里会拿到一份 profile）。
+    let message = expect_error(
+        &call(handle, "styles.get", json!({"style_id": "sty_missing"})),
+        "not_found",
+    );
+    assert!(message.contains("风格配置"), "{message}");
+    // 空 id 是参数错误，不是「返回默认风格」。
+    expect_error(
+        &call(handle, "styles.get", json!({"style_id": "   "})),
+        "invalid_argument",
+    );
+
+    // 保存：新版本落一行，revision +1；入参是 snake_case（契约 camelCase 也收）。
+    let saved = expect_ok(&call(
+        handle,
+        "styles.save",
+        json!({
+            "profile": {
+                "id": "sty_default",
+                "label": "默认风格",
+                "length_preference": "短",
+                "tone": "克制",
+                "banned_expressions": ["综上所述"],
+            },
+            "expected_revision": 1,
+        }),
+    ));
+    assert_eq!(saved["revision"], json!(2));
+    assert_eq!(saved["lengthPreference"], json!("短"));
+    assert_eq!(saved["bannedExpressions"], json!(["综上所述"]));
+    assert!(
+        saved["updatedAt"].is_string(),
+        "updatedAt 由核心盖章：{saved}"
+    );
+    assert!(
+        saved.get("length_preference").is_none() && saved.get("updated_at").is_none(),
+        "响应是核心 serde 原样（`StyleProfile` 在核心是 camelCase），不做二次翻译：{saved}"
+    );
+
+    // 当前版本是 2；旧版本行仍在表里，当前版本只有一个。
+    let current = expect_ok(&call(handle, "styles.get", json!({"styleId": "sty_default"})));
+    assert_eq!(current["revision"], json!(2));
+    assert_eq!(current["tone"], json!("克制"));
+    assert_eq!(
+        style_rows(&path, "sty_default"),
+        vec![(1, String::new(), 0), (2, "克制".to_owned(), 1)],
+        "旧版本必须原样保留（历史日记的 styleSnapshotId 指向它）"
+    );
+
+    // 拿旧 revision 再写：`revision_conflict`，而且**零改动**（不多一行、内容不变）。
+    let message = expect_error(
+        &call(
+            handle,
+            "styles.save",
+            json!({
+                "profile": {"id": "sty_default", "label": "默认风格", "tone": "冷淡"},
+                "expected_revision": 1,
+            }),
+        ),
+        "revision_conflict",
+    );
+    assert!(message.contains("revision"), "冲突消息要指出版本：{message}");
+    assert_eq!(
+        style_rows(&path, "sty_default"),
+        vec![(1, String::new(), 0), (2, "克制".to_owned(), 1)],
+        "被拒的保存必须零改动"
+    );
+    let after = expect_ok(&call(handle, "styles.get", json!({"style_id": "sty_default"})));
+    assert_eq!(after["tone"], json!("克制"), "冲突后当前内容一个字节都不变");
+
+    // 新 id 省略 expected_revision：新建（实际 revision 按 0 算），camelCase 入参也收。
+    let created = expect_ok(&call(
+        handle,
+        "styles.save",
+        json!({
+            "profile": {"styleId": "sty_mine", "label": "松弛", "person": "第一人称"},
+        }),
+    ));
+    assert_eq!(created["id"], json!("sty_mine"));
+    assert_eq!(created["revision"], json!(1));
+    assert_eq!(created["person"], json!("第一人称"));
+    assert_eq!(created["examples"], json!([]));
+
+    // 对不存在的 id 传非 0 expected_revision：按实际 revision 0 报冲突，不静默新建。
+    expect_error(
+        &call(
+            handle,
+            "styles.save",
+            json!({
+                "profile": {"id": "sty_other", "label": "别的"},
+                "expected_revision": 5,
+            }),
+        ),
+        "revision_conflict",
+    );
+
+    // 列表按展示名排序，两条都在；`styles.list` 不接受参数。
+    let list = expect_ok(&call(handle, "styles.list", json!({})));
+    let ids: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|style| style["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"sty_default"), "{list}");
+    assert!(ids.contains(&"sty_mine"), "{list}");
+    expect_error(
+        &call(handle, "styles.list", json!({"limit": 1})),
+        "invalid_argument",
+    );
+
+    // 参数层：拼错字段、空 label、未知字段都要报错，不静默忽略。
+    expect_error(
+        &call(
+            handle,
+            "styles.save",
+            json!({"profile": {"id": "sty_x", "label": "x", "tnoe": "拼错了"}}),
+        ),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(
+            handle,
+            "styles.save",
+            json!({"profile": {"id": "sty_x", "label": "   "}}),
+        ),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(
+            handle,
+            "styles.save",
+            json!({"profile": {"id": "sty_x", "label": "x"}, "expected_revisions": 1}),
+        ),
+        "invalid_argument",
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `diary.listDays`：真游标分页、范围过滤、坏游标 `cursor_expired`、外层 camelCase。
+#[test]
+fn diary_list_days_pages_and_rejects_bad_cursor() {
+    let (dir, _path, handle) = open_temp("list-days");
+    for (operation, occurred_at, text) in [
+        ("op-days-17", "2026-10-17T09:30:00Z", "十七号的记录。"),
+        ("op-days-18", "2026-10-18T09:30:00Z", "十八号的记录。"),
+        ("op-days-19", "2026-10-19T09:30:00Z", "十九号的记录。"),
+    ] {
+        seed_capture_at(handle, operation, occurred_at, text);
+    }
+
+    // 第一页：按 dayKey 倒序；page_size = 2 且还有一天 ⇒ 有下一页游标。
+    let first = expect_ok(&call(handle, "diary.listDays", json!({"page_size": 2})));
+    let days = first["days"].as_array().unwrap();
+    assert_eq!(days.len(), 2);
+    assert_eq!(days[0]["day_key"], json!("2026-10-19"));
+    assert_eq!(days[1]["day_key"], json!("2026-10-18"));
+    assert_eq!(
+        days[0]["material_counts"],
+        json!({"captures": 1, "processed": 1, "pending": 0, "failed": 0}),
+        "每一天都带真实的材料统计：{}",
+        days[0]
+    );
+    assert!(
+        days[0]["revision"].is_i64(),
+        "DiaryDay 带 revision：{}",
+        days[0]
+    );
+    assert!(
+        first.get("next_cursor").is_none(),
+        "`DiaryDayPage` 在核心是 camelCase，线上是 `nextCursor`：{first}"
+    );
+    let cursor = first["nextCursor"]
+        .as_str()
+        .expect("还有一天，必须有下一页游标")
+        .to_owned();
+
+    // 第二页：游标原样回传，翻完没有下一页。
+    let second = expect_ok(&call(
+        handle,
+        "diary.listDays",
+        json!({"page_size": 2, "cursor": cursor}),
+    ));
+    let days = second["days"].as_array().unwrap();
+    assert_eq!(days.len(), 1);
+    assert_eq!(days[0]["day_key"], json!("2026-10-17"));
+    assert_eq!(second["nextCursor"], Value::Null);
+
+    // 范围是闭区间，按 dayKey 倒序。
+    let ranged = expect_ok(&call(
+        handle,
+        "diary.listDays",
+        json!({"fromDayKey": "2026-10-18", "toDayKey": "2026-10-19"}),
+    ));
+    let keys: Vec<&str> = ranged["days"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|day| day["day_key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, vec!["2026-10-19", "2026-10-18"]);
+
+    // 坏游标：不属于本接口 / 不是合法 dayKey 一律 `cursor_expired`，不静默从头开始。
+    expect_error(
+        &call(handle, "diary.listDays", json!({"cursor": "nope"})),
+        "cursor_expired",
+    );
+    expect_error(
+        &call(
+            handle,
+            "diary.listDays",
+            json!({"cursor": "day:2026-13-40"}),
+        ),
+        "cursor_expired",
+    );
+
+    // 范围倒序是参数错误。
+    expect_error(
+        &call(
+            handle,
+            "diary.listDays",
+            json!({"from_day_key": "2026-10-19", "to_day_key": "2026-10-17"}),
+        ),
+        "invalid_argument",
+    );
+
+    // 省略参数（null）与空对象都是「全库第一页」，page_size 默认 20。
+    for params in [Value::Null, json!({})] {
+        let all = expect_ok(&call(handle, "diary.listDays", params));
+        assert_eq!(all["days"].as_array().unwrap().len(), 3);
+        assert_eq!(all["nextCursor"], Value::Null);
+    }
+
+    // 页长 0 由核心夹到 1（与其它分页方法同一口径，不静默返回空页）。
+    let clamped = expect_ok(&call(handle, "diary.listDays", json!({"page_size": 0})));
+    assert_eq!(clamped["days"].as_array().unwrap().len(), 1);
+    assert!(clamped["nextCursor"].is_string());
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `exports.create`：真文件、`restorable == false`、重名加后缀不覆盖、格式/原件开关明确拒绝。
+#[test]
+fn exports_create_writes_real_files_and_never_overwrites() {
+    let (dir, _path, handle) = open_temp("exports");
+    let day_key = "2026-10-17";
+    seed_capture_at(
+        handle,
+        "op-export",
+        "2026-10-17T09:30:00Z",
+        "今天把书桌清空了，翻出一张旧车票。",
+    );
+    seed_generated_diary(handle, day_key);
+
+    let ticket = expect_ok(&call(
+        handle,
+        "exports.create",
+        json!({"request": {"from_day_key": day_key, "to_day_key": day_key}}),
+    ));
+    assert_eq!(
+        ticket["restorable"],
+        json!(false),
+        "阅读导出不是备份，不能用于恢复：{ticket}"
+    );
+    assert_eq!(
+        ticket["format"],
+        json!("markdown"),
+        "format 省略默认 markdown"
+    );
+    assert_eq!(ticket["dayKeys"], json!([day_key]));
+    assert_eq!(ticket["dayCount"], json!(1));
+    assert!(
+        ticket.get("day_keys").is_none() && ticket.get("byte_size").is_none(),
+        "`ExportTicket` 在核心是 camelCase，响应原样不做翻译：{ticket}"
+    );
+
+    // 产物是**真实文件**，字节数如实，落点固定在资料库自己的 `exports/` 下。
+    let path = ticket["path"].as_str().unwrap().to_owned();
+    let exported = Path::new(&path);
+    assert!(exported.is_file(), "导出文件必须真实存在：{path}");
+    assert!(
+        exported.starts_with(dir.join("exports")),
+        "产物必须在资料库的 exports/ 下：{path}"
+    );
+    assert_eq!(
+        ticket["packageTicket"],
+        json!(path),
+        "票据就是同一个文件的路径"
+    );
+    let bytes = std::fs::read(exported).unwrap();
+    assert_eq!(bytes.len() as i64, ticket["byteSize"].as_i64().unwrap());
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(text.contains(day_key), "文件里要有日期分隔：{text}");
+    assert!(
+        text.contains("今天整理了房间"),
+        "文件里要是这一天的**当前**正文：{text}"
+    );
+    assert!(
+        text.contains("不能用于恢复资料库"),
+        "文件头要写明这不是备份：{text}"
+    );
+
+    // 对应一条已经 `succeeded` 的导出任务（同步完成，不是排队中）。
+    let job = expect_ok(&call(
+        handle,
+        "jobs.get",
+        json!({"job_id": ticket["jobId"]}),
+    ));
+    assert_eq!(job["kind"], json!("export"));
+    assert_eq!(job["state"], json!("succeeded"));
+    assert_eq!(
+        job["target_ids"],
+        json!([path]),
+        "任务的目标里记着产物路径（排查时不用猜文件在哪）"
+    );
+
+    // 同名再导出：自动加后缀，**绝不覆盖**已有文件。
+    let second = expect_ok(&call(
+        handle,
+        "exports.create",
+        json!({"request": {"from_day_key": day_key, "to_day_key": day_key}}),
+    ));
+    let second_path = second["path"].as_str().unwrap();
+    assert_ne!(second_path, path);
+    assert!(
+        second_path.ends_with("-2.md"),
+        "重名要加 -2 后缀：{second_path}"
+    );
+    assert_eq!(
+        std::fs::read(exported).unwrap(),
+        bytes,
+        "第一次的产物一个字节都不能变"
+    );
+    assert!(Path::new(second_path).is_file());
+
+    // camelCase 入参 + plain_text。
+    let plain = expect_ok(&call(
+        handle,
+        "exports.create",
+        json!({
+            "request": {
+                "fromDayKey": day_key,
+                "toDayKey": day_key,
+                "format": "plain_text",
+                "includeAssets": false,
+            },
+        }),
+    ));
+    assert_eq!(plain["format"], json!("plain_text"));
+    // 后缀是按「文件名 + 扩展名」各自算的：`.txt` 没撞上 `.md`，所以还是第一次的名字。
+    assert!(
+        plain["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("readable-export-2026-10-17.txt"),
+        "plain_text 落在 .txt：{}",
+        plain["path"]
+    );
+
+    // includeAssets = true：核心明确拒绝（本构建只写正文），不静默忽略。
+    let message = expect_error(
+        &call(
+            handle,
+            "exports.create",
+            json!({
+                "request": {
+                    "from_day_key": day_key,
+                    "to_day_key": day_key,
+                    "include_assets": true,
+                },
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(message.contains("includeAssets"), "{message}");
+
+    // 不支持的格式、倒序范围、范围里没有当前正文：三种都是明确的错误。
+    expect_error(
+        &call(
+            handle,
+            "exports.create",
+            json!({"request": {"from_day_key": day_key, "to_day_key": day_key, "format": "pdf"}}),
+        ),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(
+            handle,
+            "exports.create",
+            json!({"request": {"from_day_key": "2026-10-18", "to_day_key": "2026-10-17"}}),
+        ),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(
+            handle,
+            "exports.create",
+            json!({"request": {"from_day_key": "2026-01-01", "to_day_key": "2026-01-02"}}),
+        ),
+        "not_found",
+    );
+    // 参数层：`ExportRequest` 没有路径字段，拼错字段就要报错（不能静默忽略一个 output_path）。
+    expect_error(
+        &call(
+            handle,
+            "exports.create",
+            json!({"request": {
+                "from_day_key": day_key,
+                "to_day_key": day_key,
+                "output_path": "/tmp/evil.md",
+            }}),
+        ),
+        "invalid_argument",
+    );
+
+    // OHOS 的路径限制：导出目录必须在**应用沙箱内**。打开这个开关后，临时目录不是沙箱
+    // 路径 → `permission_denied`（核心的 `ExportPathRejected`），而且一个字节都不写
+    // （判定在创建目录之前）。桌面端不受限，所以只有这个测试钩子能验到那条分支。
+    let core = debug_core(handle).expect("句柄必须在登记表里");
+    core.lock().unwrap().set_export_sandbox_only_for_test(true);
+    let message = expect_error(
+        &call(
+            handle,
+            "exports.create",
+            json!({"request": {"from_day_key": day_key, "to_day_key": day_key}}),
+        ),
+        "permission_denied",
+    );
+    assert!(message.contains("沙箱"), "{message}");
+    assert_eq!(
+        std::fs::read_dir(dir.join("exports")).unwrap().count(),
+        3,
+        "被拒的导出不能留下任何文件（前三次的三份）"
+    );
+    debug_core(handle)
+        .expect("句柄必须在登记表里")
+        .lock()
+        .unwrap()
+        .set_export_sandbox_only_for_test(false);
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `captures.moveDay`：改归属日、时间戳不动、`diary.listDays` 看到迁移、乐观锁与同一天无操作。
+#[test]
+fn captures_move_day_updates_the_day_and_list_days_sees_it() {
+    let (dir, _path, handle) = open_temp("move-day");
+    let capture_id = seed_capture_at(
+        handle,
+        "op-move",
+        "2026-10-17T09:30:00Z",
+        "凌晨写下的几行字，想挪到第二天。",
+    );
+    let before = expect_ok(&call(
+        handle,
+        "captures.get",
+        json!({"capture_id": capture_id}),
+    ));
+    let revision = before["revision"].as_i64().unwrap();
+    assert_eq!(before["day_key"], json!("2026-10-17"));
+
+    // 迁移：day_key 变、occurred_at 一个字节都不动（调整不改录音时间戳）。
+    let moved = expect_ok(&call(
+        handle,
+        "captures.moveDay",
+        json!({
+            "id": capture_id,
+            "targetDayKey": "2026-10-18",
+            "expectedRevision": revision,
+        }),
+    ));
+    assert_eq!(moved["id"], json!(capture_id));
+    assert_eq!(moved["day_key"], json!("2026-10-18"));
+    assert_eq!(moved["revision"], json!(revision + 1));
+    assert_eq!(
+        moved["occurred_at"], before["occurred_at"],
+        "调整归属日不改时间戳"
+    );
+    assert_eq!(moved["draft_text"], before["draft_text"]);
+
+    // `diary.listDays` 看到的是迁移后的天：旧日没有材料了，新日有一条。
+    let page = expect_ok(&call(handle, "diary.listDays", Value::Null));
+    let days = page["days"].as_array().unwrap();
+    assert_eq!(days.len(), 1, "旧的一天不该再出现在列表里：{page}");
+    assert_eq!(days[0]["day_key"], json!("2026-10-18"));
+    assert_eq!(days[0]["material_counts"]["captures"], json!(1));
+
+    // 同一天再调：无操作（不推进 revision、不发事件）。
+    let same = expect_ok(&call(
+        handle,
+        "captures.moveDay",
+        json!({
+            "capture_id": capture_id,
+            "target_day_key": "2026-10-18",
+            "expected_revision": revision + 1,
+        }),
+    ));
+    assert_eq!(same["revision"], json!(revision + 1), "同一天不是状态推进");
+
+    // 旧 revision 再调：`revision_conflict`，归属日不变。
+    expect_error(
+        &call(
+            handle,
+            "captures.moveDay",
+            json!({
+                "capture_id": capture_id,
+                "target_day_key": "2026-10-19",
+                "expected_revision": revision,
+            }),
+        ),
+        "revision_conflict",
+    );
+    let unchanged = expect_ok(&call(
+        handle,
+        "captures.get",
+        json!({"capture_id": capture_id}),
+    ));
+    assert_eq!(unchanged["day_key"], json!("2026-10-18"));
+
+    // 坏 dayKey 是参数错误；不存在的记录是 not_found。
+    expect_error(
+        &call(
+            handle,
+            "captures.moveDay",
+            json!({
+                "capture_id": capture_id,
+                "target_day_key": "2026-13-40",
+                "expected_revision": revision + 1,
+            }),
+        ),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(
+            handle,
+            "captures.moveDay",
+            json!({
+                "capture_id": "cap_missing",
+                "target_day_key": "2026-10-18",
+                "expected_revision": 1,
+            }),
+        ),
+        "not_found",
+    );
+
+    // 在回收站里先恢复再改归属日（核心的 `invalid_state`，桥面不改写）。
+    let trashed = expect_ok(&call(
+        handle,
+        "captures.trash",
+        json!({
+            "capture_id": capture_id,
+            "expected_revision": revision + 1,
+            "operation_id": "op-move-trash",
+        }),
+    ));
+    let message = expect_error(
+        &call(
+            handle,
+            "captures.moveDay",
+            json!({
+                "capture_id": capture_id,
+                "target_day_key": "2026-10-19",
+                "expected_revision": trashed["revision"],
+            }),
+        ),
+        "invalid_state",
+    );
+    assert!(message.contains("回收站"), "{message}");
 
     assert_eq!(diary_close(handle), 0);
     std::fs::remove_dir_all(dir).unwrap();
