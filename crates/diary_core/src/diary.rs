@@ -1700,6 +1700,40 @@ fn mark_generation_error(
 /// `diary_generations` 里执行者要用的那几列（避免一个裸元组散在代码里）。
 type GenerationRow = (String, String, Option<String>, Option<String>, String);
 
+/// 在途日记生成的前置校验：快照里每条材料所属的记录必须还在。
+///
+/// 用户永久清理一条记录后，引用它的旧快照会保留（#161 方案 A）；排队中的生成任务
+/// 如果照常执行，就会把快照里的正文写进一个新版本，等于绕过「永久清理」。这里在
+/// 调用模型前拦下：**没有记录就不再生成**，而不是拿旧正文复活它。
+fn ensure_snapshot_captures_exist(
+    core: &Core,
+    generation_id: &str,
+    snapshot: &SnapshotBody,
+) -> Result<()> {
+    let mut missing: Vec<String> = Vec::new();
+    for material in &snapshot.materials {
+        let exists: i64 = core.conn.query_row(
+            "SELECT COUNT(*) FROM captures WHERE id = ?1",
+            params![material.capture_id],
+            |row| row.get(0),
+        )?;
+        if exists == 0 && !missing.iter().any(|id| id == &material.capture_id) {
+            missing.push(material.capture_id.clone());
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(CoreError::InvalidState {
+        entity: "日记生成",
+        id: generation_id.to_owned(),
+        state: format!(
+            "输入快照里的记录已经被永久清理（{}）；不再生成，也不拿快照里的正文复活它",
+            missing.join("、")
+        ),
+    })
+}
+
 fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<(), CoreError> {
     let row: Option<GenerationRow> = core
         .conn
@@ -1787,6 +1821,11 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
         |row| row.get(0),
     )?;
     let snapshot: SnapshotBody = serde_json::from_str(&body_json)?;
+    // **在途生成的前置校验（#155 复审 P2-3）**：快照冻结的是提交那一刻的材料。
+    // 如果其中某条记录已经被用户永久清理，继续生成会把快照 body 里的正文写进一个
+    // 新版本——「永久清理」就被一次排队任务绕过去了。这里在调用模型之前终止，
+    // 不花一次调用、也不产版本；快照本身作为审计保留（#161 方案 A）。
+    ensure_snapshot_captures_exist(core, generation_id, &snapshot)?;
     let freeze = snapshot_freeze(&snapshot)?;
     let plan = plan_generation(&day_key, &snapshot.materials, freeze.as_ref())?;
 

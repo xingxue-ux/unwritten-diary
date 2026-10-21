@@ -110,13 +110,26 @@ abstract class DiaryApi {
     required String operationId,
   });
 
-  /// 预览永久清理的影响：将删除的原件、派生内容，以及仍引用它的日记版本。
+  /// 预览永久清理的影响：将删除的原件、派生内容、AI 回应，与这条记录**有可判定
+  /// 关联**的日记版本（`provenanceLinks` 指向它，或它的输入快照里冻结着这条记录的
+  /// 材料——草稿期的材料没有来源 id，只能靠快照 `materials[].captureId` 认），
+  /// 清理后仍会保留的输入快照（`retainedSourceSnapshotIds`），以及**不会被删除但
+  /// 可能仍含这条记录文字**的版本：派生版本（`derivedDiaryVersionIds`）与归属判不
+  /// 出来的版本（`undeterminedDiaryVersionIds`）。后两类必须在确认框里如实告知，
+  /// 不能报成「没有关联版本」。
   Future<PurgePreview> previewPurge(String id);
 
   /// 永久清理，只由明确的用户操作发起。
+  ///
+  /// [deleteDiaryVersions] 对应契约 §8「由用户决定是否同时删日记版本」：默认
+  /// `false` 保留**有可判定关联**的版本（一次生成可能覆盖同一天多条记录，删 A
+  /// 会连带删掉含 B 内容的日记）；`true` 才一并删除并调整 `diary_days` 当前指针。
+  /// 派生版本与归属判不出来的版本**任何情况下都不删**，结果里分别用
+  /// `derivedDiaryVersionIds` / `undeterminedDiaryVersionIds` 如实回填。
   Future<PurgeResult> purgeCapture({
     required String id,
     required String previewToken,
+    bool deleteDiaryVersions = false,
     required String operationId,
   });
 

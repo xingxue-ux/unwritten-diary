@@ -404,6 +404,22 @@ export class VoiceRecorder {
           MARK, this.errorText);
         throw DiaryError.fromThrown(e as Object);
       }
+      const result = this.core.finalizeRecording({
+        recording_id: ticket.recording_id,
+        last_segment_index: this.lastRegistered,
+        end_reason: effectiveReason,
+      });
+      this.phase = result.state;
+      hilog.info(DOMAIN, TAG, '%{public}s FINALIZE %{public}s',
+        MARK, JSON.stringify(result));
+      hilog.info(DOMAIN, TAG, '%{public}s STOP recording=%{public}s segments=%{public}d receivedMs=%{public}d persistedMs=%{public}d audioMs=%{public}d stopLatencyMs=%{public}d',
+        MARK, ticket.recording_id, result.segment_count, this.receivedMs(),
+        this.persistedMs(), result.logical_duration_ms,
+        nowUptimeMs() - this.stopRequestedMs);
+      // finalize 只保证「音频已保存」；记录要离开 draft 还得提交一次。失败不回滚录音，
+      // 结果写进 commitResult() 交给调用方如实展示。
+      this.commitFinalizedCapture(result);
+      return result;
     } catch (e) {
       primaryError = e as Object;
       // ArkTS 只允许 throw Error 类型；保留原异常（DiaryError 等），

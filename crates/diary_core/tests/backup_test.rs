@@ -23,7 +23,8 @@ use std::time::{Duration, Instant};
 
 use diary_core::{
     BackupFault, BackupGate, Core, CoreError, CreateDraftInput, ErrorCode, ImportManifest,
-    ImportOrigin, ImportRequest, SCHEMA_VERSION,
+    ImportOrigin, ImportRequest, JobState, Provider, ProviderCapability, ProviderTestStatus,
+    SCHEMA_VERSION,
 };
 use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
@@ -1231,4 +1232,135 @@ fn backup_requires_a_file_library() {
         .expect_err("内存库不能导出完整备份");
     assert_code(&error, ErrorCode::InvalidState);
     assert!(!package.exists());
+}
+
+// ------------------------------------------------------------------ 同步完成的任务记录
+
+/// `create_backup_job` / `restore_backup_job` 的 jobId 必须指向**已经完成**的记录，
+/// 且 targetIds 记真实产物路径；拒绝路径不能留下 succeeded 的假任务。
+#[test]
+fn backup_and_restore_jobs_are_succeeded_records_with_real_targets() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let mut core = new_core(dir.path());
+    write_capture(&mut core, "job", "备份与恢复都要有可查的任务记录");
+
+    let package = dir.path().join("job.diarybak");
+    let backup = core
+        .create_backup_job(package.to_str().expect("UTF-8 路径"))
+        .expect("备份 + 任务记录");
+    assert_eq!(backup.kind, "backup");
+    assert_eq!(backup.state, JobState::Succeeded);
+    assert_eq!(
+        backup.target_ids,
+        vec![package.to_string_lossy().into_owned()],
+        "备份任务的 targetIds 必须是包路径"
+    );
+    assert_eq!(
+        core.get_job(&backup.id).expect("任务可查").state,
+        JobState::Succeeded
+    );
+
+    let restored_dir = dir.path().join("restored");
+    let restore = core
+        .restore_backup_job(
+            package.to_str().expect("UTF-8 路径"),
+            restored_dir.to_str().expect("UTF-8 路径"),
+        )
+        .expect("恢复到新库 + 任务记录");
+    assert_eq!(restore.kind, "restore");
+    assert_eq!(restore.state, JobState::Succeeded);
+    assert!(
+        restore
+            .target_ids
+            .contains(&restored_dir.join("library.sqlite").to_string_lossy().into_owned()),
+        "恢复任务的 targetIds 必须包含恢复出来的库路径：{:?}",
+        restore.target_ids
+    );
+    assert_eq!(
+        core.get_job(&restore.id).expect("任务可查").target_ids,
+        restore.target_ids
+    );
+
+    // 目标非空：拒绝发生在写任务行之前，不能多出一条 succeeded 的 restore。
+    let occupied = dir.path().join("occupied");
+    fs::create_dir_all(&occupied).expect("建非空目标");
+    fs::write(occupied.join("keep.txt"), b"keep").expect("写别人的文件");
+    let before = core
+        .list_jobs(None, 200)
+        .expect("列任务")
+        .into_iter()
+        .filter(|job| job.kind == "restore")
+        .count();
+    let error = core
+        .restore_backup_job(
+            package.to_str().expect("UTF-8 路径"),
+            occupied.to_str().expect("UTF-8 路径"),
+        )
+        .expect_err("非空目标必须拒绝");
+    assert_eq!(error.code(), ErrorCode::InvalidState);
+    let after = core
+        .list_jobs(None, 200)
+        .expect("列任务")
+        .into_iter()
+        .filter(|job| job.kind == "restore")
+        .count();
+    assert_eq!(before, after, "被拒绝的恢复不能留下任务记录");
+    assert_eq!(
+        fs::read(occupied.join("keep.txt")).expect("读别人的文件"),
+        b"keep",
+        "拒绝恢复不能动目标目录里的东西"
+    );
+}
+
+/// 契约第 8 节：API 密钥、运行中会话、临时凭据不进入备份。
+///
+/// 这里用真实的密钥托管路径存一个密钥，再从**包里的每个条目**找明文；比只断言
+/// 「某个文件不存在」更强：清单、SQLite 快照或任何随包文件里出现都算失败。
+#[test]
+fn backup_package_never_contains_provider_secret_or_secret_store() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let mut core = new_core(dir.path());
+    write_capture(&mut core, "privacy", "这个库里会存一个密钥，但它不该进备份");
+
+    let secret = "sk-backup-must-not-contain-0123456789";
+    let config = Provider {
+        id: "prv_backup".to_owned(),
+        label: "备份隐私测试".to_owned(),
+        adapter_id: diary_core::OPENAI_COMPATIBLE.to_owned(),
+        endpoint: Some("http://127.0.0.1:11434/v1/".to_owned()),
+        model: Some("qwen-test".to_owned()),
+        capabilities: [ProviderCapability::GenerateText]
+            .into_iter()
+            .collect(),
+        credential_ref: None,
+        enabled: true,
+        test_status: ProviderTestStatus::Untested,
+    };
+    let saved = core
+        .save_provider(&config, Some(secret))
+        .expect("保存带密钥的服务配置");
+    assert!(
+        saved.credential_ref.is_some(),
+        "密钥应写进托管并只留引用"
+    );
+
+    let package = dir.path().join("privacy.diarybak");
+    core.create_backup_job(package.to_str().expect("UTF-8 路径"))
+        .expect("创建备份");
+
+    let parts = read_package(&package);
+    for (name, bytes) in &parts.entries {
+        assert!(
+            !String::from_utf8_lossy(bytes).contains(secret),
+            "备份包条目 {name} 里出现了 API 密钥明文"
+        );
+    }
+    assert!(
+        !parts
+            .entries
+            .iter()
+            .any(|(name, _)| name.contains("secret") || name.contains("credential")),
+        "备份包不应携带密钥/凭据文件：{:?}",
+        parts.entries.iter().map(|(name, _)| name).collect::<Vec<_>>()
+    );
 }

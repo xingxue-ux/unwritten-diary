@@ -431,7 +431,8 @@ fn end_to_end_draft_to_search_to_jobs() {
     let text = "今天在鸿蒙上验证核心的 C ABI，关键词是鹅掌楸与检索。";
 
     let info = expect_ok(&call(handle, "core.info", Value::Null));
-    assert_eq!(info["api_version"], json!("1.1"));
+    // 同一类写死：用常量，别把下一次抬版本又变成一次「main 变红」。
+    assert_eq!(info["api_version"], json!(API_VERSION));
     assert_eq!(info["library_id"], json!("library"));
     assert!(info["data_schema_version"].as_i64().unwrap() > 0);
     let capabilities = info["capabilities"].as_array().unwrap();
@@ -2253,7 +2254,7 @@ fn capabilities_include_every_wired_method() {
     assert_eq!(
         info["api_version"],
         json!("1.1"),
-        "加方法不升 apiVersion（1.1 是必填字段升的，与本块的方法数无关）"
+        "apiVersion 必须与核心同源；加方法本身不抬版本（1.1 是必填响应字段升的）"
     );
 
     let capabilities: Vec<&str> = info["capabilities"]
@@ -2716,10 +2717,16 @@ fn backups_create_inspect_and_restore_round_trip() {
         json!({"target_path": package_text}),
     ));
     assert_eq!(created["package_path"], json!(package_text));
+    // 备份清单里的 `apiVersion` 必须与核心同源（`diary_core::API_VERSION`），
+    // 不是某个写死的字面量。这条断言原本写死 "1.0"，用来钉「#153 加 8 个方法
+    // 不抬版本」；但 #160 因为给 `SearchHit` 加了一个**必填**响应字段把版本抬到
+    // 1.1 之后，它就在 main 上一直红（两次合并的顺序让两边各自本地都绿）。
+    //
+    // 它真正要守的是「桥面不自造版本号」，所以改成与常量比。
     assert_eq!(
         created["api_version"],
         json!(API_VERSION),
-        "备份包记录产出它的核心 API 版本（与 core.info.apiVersion 同口径）"
+        "备份清单的 apiVersion 必须与核心同源，不许自造"
     );
     assert!(package.is_file(), "备份包必须真的落在目标路径");
     assert!(created["counts"]["captures"].as_i64().unwrap() >= 1);

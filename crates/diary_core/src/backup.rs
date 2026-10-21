@@ -7,9 +7,10 @@
 //!    `VACUUM INTO`：它按**读事务**的一致视图导出成另一个完整文件（含 WAL 里已提交
 //!    的内容），对源库只读，因此**备份期间继续写入是安全的**；
 //! 2. **快照边界**：先取数据库快照，再复制**被快照引用**的原件。原件是内容寻址的
-//!    （`blobs/<sha 前两位>/<sha>`），而核心没有任何删除 blob 的路径（回收站/清理都
-//!    不删原件）——所以「快照那一刻被引用的原件，之后必然还在，且内容必然没变」。
-//!    复制时**逐条重算 sha256**，对不上就整份备份失败，绝不产出「看起来成功」的备份；
+//!    （`blobs/<sha 前两位>/<sha>`），内容不会原地改写；但回收站的**永久清理**
+//!    （v16，B7）会删掉不再被任何资产引用的 blob。因此「快照之后、复制之前」正好
+//!    发生 purge 时，复制会因文件缺失而**整份备份失败**——绝不产出缺原件的包，也
+//!    不会静默少一截。复制时**逐条重算 sha256**，对不上同样整份失败；
 //! 3. **落盘之后自校验**：重新打开写好的包，逐条目重算哈希、比大小、比条目集合。
 //!    自校验不过 ⇒ 删掉半成品、报错，目标路径上不会留下任何文件。
 //!
@@ -26,7 +27,9 @@
 //!   并如实记进报告的 `warnings`，绝不因为一场并发的最终化让整份备份失败。
 //!   清单里的 `transientClips` **只列真的装进包里的那几条**：清单不是「打算装什么」
 //!   的声明，而是「包里真的有什么」的记录，否则自校验会反过来把这份备份判成无效
-//!   （issue #95）。
+//!   （issue #95）；
+//! - **API 密钥 / 凭据**：它们在资料库旁边的独立密钥托管文件里，不在 SQLite 快照里，
+//!   也不随包。测试会把包逐条目解压，断言密钥明文不出现在任何条目中（契约第 8 节）。
 
 use std::fs;
 use std::io::{Read, Write};
@@ -41,7 +44,9 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::error::{CoreError, Result};
-use crate::model::{BackupCounts, BackupInspection, BackupReport, RestoreReport};
+use crate::model::{
+    BackupCounts, BackupInspection, BackupReport, Job, JobPriority, JobState, NewJob, RestoreReport,
+};
 use crate::support;
 use crate::Core;
 
@@ -61,6 +66,15 @@ const SNAPSHOT_ENTRY: &str = "db/library.sqlite";
 
 /// 恢复出来的资料库文件名。
 const RESTORED_LIBRARY_FILE: &str = "library.sqlite";
+
+/// 备份任务在 `jobs.kind` 上的名字。
+///
+/// 它只会以 `succeeded` 落库（见 [`record_completed_job`]），队列不会领取它，也不会
+/// 出现「没有执行器」的半截任务。
+pub const KIND_BACKUP: &str = "backup";
+
+/// 恢复任务在 `jobs.kind` 上的名字。同样只以 `succeeded` 落库。
+pub const KIND_RESTORE: &str = "restore";
 
 /// 流式哈希/复制的缓冲区。内存占用与文件大小无关。
 const BUFFER_BYTES: usize = 64 * 1024;
@@ -1619,4 +1633,24 @@ fn read_entry(
     file.read_to_end(&mut bytes)
         .map_err(|err| err.to_string())?;
     Ok(bytes)
+}
+
+/// 写一条**已完成**的备份/恢复任务记录。
+///
+/// 契约的 `backups.create` / `backups.restore` 返回 `jobId`，而核心的这两个入口是
+/// 同步的。这里的取舍与 `exports.create` 一致：同步做完之后写一条 `state = succeeded`
+/// 的任务行，返回的 `jobId` 指向这条**已经完成**的记录，不是排队任务。这样
+/// `jobs.get` 读得到、进度轮询不会挂住，也没有引入一个空壳执行器。
+///
+/// `target_ids` 记真实产物路径（备份包 / 恢复出来的库），排查时不用再猜文件在哪。
+pub(crate) fn record_completed_job(
+    core: &mut Core,
+    kind: &str,
+    target_ids: Vec<String>,
+) -> Result<Job> {
+    let job = NewJob::new(kind, JobPriority::UserOrganize).targeting(target_ids);
+    let tx = core.conn.transaction()?;
+    let job = crate::jobs::enqueue_in_tx_with_state(&tx, job, JobState::Succeeded, None)?;
+    tx.commit()?;
+    Ok(job)
 }
