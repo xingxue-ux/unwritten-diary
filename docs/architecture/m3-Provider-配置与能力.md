@@ -5,7 +5,8 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 以及「默认不联网」这条硬约束。**不做**日记正文生成与提示词（B4b），也不做插件模型能力（M4）。
 
 代码在 `crates/diary_core/src/provider/`（`mod.rs` 配置与门控、`secret.rs` 密钥托管、
-`transport.rs` 传输层、`adapter.rs` 协议适配器、`normalize.rs` 错误归一化），
+`transport.rs` 传输层、`adapter.rs` 协议适配器、`normalize.rs` 错误归一化、
+`presets.rs` 内置服务预设、`models.rs` 模型列表检测），
 契约形状见 [共享接口契约](../development/01-共享接口契约.md) 第 2.7、4.3、4.4、7 节。
 队列语义见 [M4 · 任务调度与补做](m4-任务调度与补做.md)。
 
@@ -19,8 +20,10 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 | 只内置一种 HTTP 协议 | `openai_compatible`（Chat Completions + Audio Transcriptions 的兼容协议） | 任务书要求「先内置一种有公开文档的常用协议，供应商不硬编码进业务层」。很多本机/局域网服务也照这个协议做 |
 | 适配器有**两种形态** | HTTP（`ProtocolAdapter`，经 `Transport` 出网）与**本地引擎**（`LocalEngine`，只读本机库与模型目录，**不可能出网**）；`Adapter` 枚举是统一入口 | 本地引擎没有 URL/密钥/出站调用，硬塞进 HTTP trait 会把「默认不联网」变成一句注释。#91 落地的 `sherpa_onnx` 是第一种本地引擎，口径见 [M3 · 转写链](m3-转写链.md) |
 | 传输层可注入 | `Transport` trait；产品默认 `UreqTransport`，测试注入回放/记账/panic 替身 | CI 不联网也要能跑，而且「有没有真的发生调用」要能被**数出来** |
-| **只有两处会出网** | 用户显式的 `providers.test`，与真的被领取执行的 Provider 作业（`respond`） | 「默认不联网」不是靠约定，是靠没有别的调用点 |
+| **只有三处会出网** | 用户显式的 `providers.test`、用户显式的模型列表检测（`list_provider_models`），与真的被领取执行的 Provider 作业（`respond`） | 「默认不联网」不是靠约定，是靠没有别的调用点。三处都是**用户显式发起**或**任务真的被领取**，没有启动探测/后台预热 |
 | 没有配置/启用任何服务时**一个请求都不发** | 排任务入口先过能力闸门；队列在领取前再过一次 | 排一条注定失败的任务既费流量又骗用户 |
+| 内置服务预设**只是填表草稿** | `presets.rs` 的静态表：endpoint / model / 能力 / 文档链接 + `verified`；不含密钥、不写库、不出网 | 让用户少抄错一个 endpoint，但不替用户做「保存 / 启用 / 先测一次」的决定；未验证的预设如实标 `verified = false` |
+| 模型列表检测**只对 `openai_compatible`** | `GET {endpoint}/models`，解析 `{"data":[{"id":"..."}]}`；别的适配器如实报「不支持列举模型」 | 内置适配器里只有它有这样的接口；本地引擎的 `model` 是目录，没有远端可查。猜格式比报错更糟 |
 
 ## 配置模型
 
@@ -54,6 +57,51 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 所以「默认不联网」在升级路径上同样成立。旧数据一行未动（v1–v8 的表都没被碰），
 照 [M2 · 向量索引与换代](m2-向量索引与换代.md) 的 v7→v8 写法有回归测试
 （`v8_library_migrates_to_v9_and_keeps_old_data_intact`）。
+
+## 内置服务预设
+
+`Core::list_provider_presets()`（`provider::presets`）返回一张**静态**的预设表：每条只回答
+「这一家怎么填」——`adapter_id` / `endpoint` / `model` / 能力集合 / 文档链接，外加
+`verified` 与一句给用户看的 `note`。
+
+| 预设 id | label | adapter_id | endpoint | model | 能力 | verified |
+|---|---|---|---|---|---|---|
+| `deepseek` | DeepSeek | `openai_compatible` | `https://api.deepseek.com` | `deepseek-chat` | `generate_text` | **true** |
+| `openai_compatible` | OpenAI 兼容端点 | `openai_compatible` | （留空，用户填） | （留空，用户填） | `generate_text` + `transcribe_audio` | false |
+| `ollama_local` | Ollama（本机） | `openai_compatible` | `http://127.0.0.1:11434/v1` | （留空，填 `ollama list` 里的名字） | `generate_text` | false |
+
+三条口径：
+
+- **预设只是填表草稿**：`presets()` 不写数据库；`ProviderPreset::to_provider()` 只造一个
+  `Provider` 草稿（`id` 留空、`credential_ref = None`、`enabled = true`、
+  `test_status = untested`），要不要保存、启用、先测一次都由用户决定。核心**不会**因为
+  「有预设」就自动建一条配置，也不会把预设里的 endpoint 当成已配置的服务。
+- **预设不含密钥**：结构体里没有密钥字段，返回值里也没有。密钥仍然只经
+  `Core::save_provider(config, secret)` 进 `SecretStore`，预设永远碰不到它。
+- **`verified` 只认实测**：`true` 表示有人用真实密钥对真实端点跑通过这条预设里的
+  endpoint / model / 能力（最少 `generate_text`）；`false` 表示没有真实实例的联调证据
+  （可能只验过请求构造，也可能只是照文档填的），**不把「看起来能通」写成「已经能通」**。
+  未验证的预设仍可保存、仍可跑连接测试，只是界面/用户不该把它当成已验证。
+
+### DeepSeek 的实测事实（2026-10）
+
+用真实密钥对 `https://api.deepseek.com` 实测（也是这条预设 `verified = true` 的依据）：
+
+- `GET /models` → `200`，`{"object":"list","data":[{"id":"deepseek-flash",...},{"id":"deepseek-v4-pro",...}]}`；
+- `POST /chat/completions` 可用；鉴权是 `Authorization: Bearer <key>`；
+- `deepseek-chat` 是**兼容别名**，会被路由到 `deepseek-flash`（响应里的 `model` 字段是
+  `deepseek-flash`）；`deepseek-chat` / `deepseek-flash` / `deepseek-v4-pro` 都能直接调用。
+
+这一轮代码改动里**真的复跑**的是 `GET /models`（见 `tests/provider_models_live_test.rs`，
+输出 `["deepseek-flash", "deepseek-v4-pro"]`）；`POST /chat/completions` 与路由行为的结论
+来自任务方此前的真实密钥实测，不是这次新验的。
+
+预设默认填 `deepseek-chat`（最稳的兼容名），并把这些写进 `note`；要用 V4 Pro 就先把 model
+改成 `deepseek-v4-pro`，可以先用「模型列表检测」确认真实可用的名字。
+
+`ollama_local` 的 `verified = false` 是有证据的：`adapter.rs` 的单测只钉住了
+`http://127.0.0.1:11434/v1/chat/completions` 这个**请求构造**，没有对真实 Ollama 实例联调；
+`note` 里就写「请求构造已验证，未对真实 Ollama 实例联调」。
 
 ## 密钥存放与它的妥协
 
@@ -163,6 +211,42 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 核心**没有任何「用备用服务商静默转发」的路径**：一次调用只认一个服务（用户点名的，或闸门挑中的
 那一个），失败就如实失败。
 
+## 模型列表检测
+
+`Core::list_provider_models(providerId)`（`provider::models`）做一件事：
+`GET {endpoint}/models`，把 OpenAI 兼容的 `{"data":[{"id":"..."}]}` 解析成
+`Vec<ProviderModelInfo>`。它解决的是「用户不知道 model 该填什么」——尤其是
+`deepseek-chat` 这种别名与真实模型名对不上的情况。
+
+**只有显式调用才出网**：打开资料库、`providers.list`、`presets()`、保存配置都不会顺手探一次，
+与 `providers.test` 同一个口径。测试里用 `PanicTransport` 证明「列配置/列预设」不碰传输层
+（`listing_providers_and_presets_never_calls_the_transport`），回放替身证明一次检测只发一次请求。
+
+请求与解析：
+
+| 项 | 口径 |
+|---|---|
+| 方法/端点 | `GET {endpoint}/models`（endpoint 末尾 `/` 不会拼成双斜杠；endpoint 只填到服务根地址，不要带 `/chat/completions`） |
+| 鉴权 | `Authorization: Bearer <secret>`；明文只在拼这一行时从 `SecretStore` 取，错误与返回值都过 `redact` |
+| 超时 | 与连接测试同一个 `PROBE_TIMEOUT_MS`（20 秒）：都是用户等着看的动作 |
+| 响应 | `{"object":"list","data":[{"id":"...","owned_by":"..."}]}`；`data` 必须存在且是数组 |
+| 容错 | 条目缺 `id` / `id` 为空 → 跳过该条；缺 `owned_by` → `None`（**可选字段缺失不是错误**）；`data: []` → 空列表 |
+| 不支持 | `adapter_id != openai_compatible` → `provider_not_configured` +「不支持列举模型」；本地引擎额外说明「model 是模型目录，没有远端可查」。**不发请求** |
+| 没配 endpoint/凭据 | `provider_not_configured`，消息里给可执行的下一步 |
+
+错误映射沿用上面的归一化表：401/403 → `authentication_failed`、超时 →
+`provider_timeout`、连不上/5xx → `network_unavailable`、429 → `rate_limited`、
+响应解析不了（非 JSON / 缺 `data` / `data` 不是数组）→ `model_unavailable`，
+消息里带 200 字响应摘录（已过密钥擦除）。
+
+本机服务（例如 Ollama）通常不校验密钥，但这一版**仍要求存在一条凭据**才能检测
+（`providers.test` 也是这个口径：拿不到密钥直接 `provider_not_configured`）。本机服务一般会
+忽略这个头，填一个非空占位即可——这条没有对真实 Ollama 实例联调过，记在「没有做到的」里。
+
+**真实联调**：`crates/diary_core/tests/provider_models_live_test.rs` 是一个 `#[ignore]` 用例，
+密钥只从环境变量 `DEEPSEEK_KEY` 读，没有就跳过；断言 DeepSeek 的 `/models` 返回
+`deepseek-flash` 与 `deepseek-v4-pro`。日常 `cargo test` 不会跑它，CI 不受影响。
+
 ## 错误码与重试语义
 
 归一化表（`provider::normalize`，逐条被测试钉住）：
@@ -192,8 +276,9 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 
 不是靠「我们没写这种代码」的承诺，而是三件事一起：
 
-1. **没有别的调用点**。`Transport::send` 只被 `providers.test` 与 Provider 作业执行者调用；
-   没有启动探测、没有后台预热、没有「先试着连一下」；
+1. **没有别的调用点**。`Transport::send` 只被三处调用：`providers.test`、模型列表检测
+   （`list_provider_models`）与 Provider 作业执行者；没有启动探测、没有后台预热、
+   没有「先试着连一下」；
 2. **测试注入「一调用就 panic」的传输层**（`PanicTransport`）：把记录、导入、提取、索引、
    关键词与混合检索、一整轮 `run_due_jobs` 跑一遍，只要有任何一条路径偷偷出网，测试当场 panic
    （`local_work_never_touches_the_network_with_the_default_transport`）。**内存库的默认传输层
@@ -260,7 +345,19 @@ multipart 是手写的（一个文件字段 + 两个文本字段，boundary 是�
   429 尊重 `Retry-After`、5xx 退避、401 等配置且**不频繁重试**、404 终态失败；
 - 回放传输层端到端：`responses.request` → `run_due_jobs` → 正文与模型名落库、
   同内容请求复用同一条任务、已完成的不再花第二次钱；
-- 迁移：v8 → v9 建表、不回填、旧数据一行未动；迁移后的库照样能配置并跑通一次回放调用。
+- 迁移：v8 → v9 建表、不回填、旧数据一行未动；迁移后的库照样能配置并跑通一次回放调用；
+- **内置预设**（`provider::presets` 的 5 条单元测试）：条数与 id 唯一、每条预填的能力都是
+  适配器真的实现了的、DeepSeek 的 endpoint/model/`verified = true` 与实测 note、
+  其余预设 `verified = false` 且 Ollama 的 note 写明「请求构造已验证，未对真实 Ollama 实例
+  联调」、`to_provider()` 只是草稿（id 空、无凭据、untested）、列预设不碰库也不碰网络；
+- **模型列表检测**（`provider::models` 的 14 条单元测试）：正常 `{"data":[{"id":"a"},{"id":"b"}]}`
+  → 两条、URL 与 `Bearer` 头、401 → `authentication_failed`、超时 → `provider_timeout`、
+  连不上 → `network_unavailable`、429 → `rate_limited`、缺 `data` → `model_unavailable`
+  可读消息、非 JSON（含密钥回显）→ 擦除、缺 endpoint/凭据 → `provider_not_configured`、
+  `sherpa_onnx` → 「不支持列举模型」且**零请求**、打开/列配置/列预设零请求；
+- **真实联调**（`tests/provider_models_live_test.rs`，`#[ignore]`）：用环境变量里的真实
+  DeepSeek 密钥跑 `GET /models`，断言返回 `deepseek-flash` 与 `deepseek-v4-pro`；
+  默认不跑、CI 不受影响，密钥不落文件。
 
 命令（全部不联网）：
 
@@ -283,8 +380,18 @@ python3 tools/check_docs.py
   现在要做的话，需要新表 + 新的 DTO 字段（契约变更），见下面「需要拍板」；
 - **没有代理设置**：不读 `HTTP_PROXY` / 系统代理，也没有设置项。企业网络下要手动配可直连的
   endpoint；
-- **没有真机网络环境验证**：所有测试都用回放/记账替身，真实 HTTPS、真实证书链、
-  真实服务商的错误形状都没在 CI 里跑过（CI 不联网）。真机与真实服务的人工验证仍待补；
+- **CI 里没有真实网络验证**：日常测试都用回放/记账替身，真实 HTTPS、真实证书链、
+  真实服务商的错误形状都不在 CI 里跑。这一片新增了一条 `#[ignore]` 的人工联调用例
+  （DeepSeek `/models`，密钥从 `DEEPSEEK_KEY` 读），但它要人手动跑；其他服务商的
+  真实形状仍待补；
+- **模型列表检测只支持 `openai_compatible`**：别的适配器（含 `sherpa_onnx`）如实报
+  「不支持列举模型」。没有分页、没有缓存、没有排序（按远端返回顺序给）；`owned_by`
+  只解析与返回，界面还没用上；
+- **无鉴权的本机服务仍要一条占位凭据**：Ollama 这类服务通常不校验密钥，但当前
+  `list_provider_models` 与 `providers.test` 都要求「存在一条凭据」；`ollama_local`
+  预设因此 `verified = false`，也没有对真实 Ollama 实例联调过；
+- **预设还没到界面**：这一轮只做 Rust 核心；`Core::list_provider_presets()` 还没有
+  经 C ABI / 桥接暴露，界面上也还没有「选预设 → 填表 → 试连 → 保存」这条流程；
 - **没有跟随重定向、没有自定义 CA**：自签证书的局域网服务现在连不上（rustls 只认打包的根集合）；
 - **响应不可解析归到了 `model_unavailable`**：v1 没有更贴切的码。若要更精确，需要新增
   `provider_response_invalid` / `provider_server_error` 之类的码（契约 + Dart 枚举变更）；
@@ -322,3 +429,8 @@ python3 tools/check_docs.py
    之类的码？新增码等于改契约与 Dart 枚举，得两边一起动。
 6. **`ai_responses` 的状态**。契约的 `AiResponse` 没有状态字段，「还没生成」与「生成出空串」在对象上
    不可区分。B4b 做正文与版本语义时要不要加 `state`？
+7. **「保存前就能试连」要不要做**。现在试连（`providers.test`）与模型列表检测都要求**先保存配置**
+   （密钥要先落 `SecretStore`、endpoint 要先过 `providers.save` 的校验）。用户填错一个 endpoint
+   时的实际路径是「保存 → 试连失败 → 回来改 → 再保存」，多绕一圈；预设也只解决了「填什么」，没解决
+   「填得对不对」。要做需要一个「未保存草稿 + 临时凭据」的入口（不落库、内存里用完即弃），
+   涉及密钥生命周期与契约方法，得单独拍板。

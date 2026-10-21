@@ -100,6 +100,8 @@ pub use provider::local_engine::{
     EngineConfig as AsrEngineConfig, EngineReadiness, LocalEngine, ModelKind as AsrModelKind,
     PcmOutcome, PcmRequest, BUILTIN_LOCAL_ASR_ID, SHERPA_ONNX,
 };
+pub use provider::models::ProviderModelInfo;
+pub use provider::presets::ProviderPreset;
 pub use provider::secret::{FileSecretStore, MemorySecretStore, SecretStore};
 pub use transcription::seam::{
     LocalTranscriptEngine, TranscriptEngine, TranscriptOutcome, TranscriptRequest,
@@ -1833,6 +1835,31 @@ impl Core {
     /// 列出脱敏后的服务配置，契约第 4.4 节 `providers.list`。按创建顺序，稳定。
     pub fn list_providers(&self) -> Result<Vec<Provider>> {
         provider::list(self)
+    }
+
+    /// 内置服务预设：**只是填表草稿**，不含密钥、不写库、不出网。
+    ///
+    /// `verified` 表示这条预设有没被真实调用验证过（只认实测，见
+    /// `provider::presets` 的模块文档）。要落地成配置，用
+    /// [`ProviderPreset::to_provider`] 拿草稿、自己补密钥后走 [`Self::save_provider`]；
+    /// 核心**不会**因为「有预设」就替用户建一条配置。
+    pub fn list_provider_presets(&self) -> Vec<ProviderPreset> {
+        provider::presets::presets().to_vec()
+    }
+
+    /// 检测某个服务可用的模型列表（`GET {endpoint}/models`）。
+    ///
+    /// **只有显式调用才发网络请求**——打开资料库、`providers.list`、保存配置都不会
+    /// 顺手探一次，与 `providers.test` 同一个口径。目前只有 `openai_compatible`
+    /// 适配器实现了这件事；本地引擎会如实报「不支持列举模型」。
+    ///
+    /// 错误映射沿用契约第 7 节：401/403 → `authentication_failed`、超时 →
+    /// `provider_timeout`、连不上/5xx → `network_unavailable`、429 → `rate_limited`、
+    /// 响应解析不了 → `model_unavailable`、没配 endpoint/凭据 →
+    /// `provider_not_configured`（消息里带可执行的下一步）。返回值与错误消息都不含
+    /// 密钥明文。
+    pub fn list_provider_models(&self, provider_id: &str) -> Result<Vec<ProviderModelInfo>> {
+        provider::models::list_models(self, provider_id)
     }
 
     /// 保存服务配置，契约第 4.4 节 `providers.save`。
