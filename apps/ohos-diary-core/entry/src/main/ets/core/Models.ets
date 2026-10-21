@@ -880,8 +880,30 @@ export interface Settings {
  * `expected_revision`。
  */
 export interface UpdateSettingsParams {
-  settings: Settings;
+  settings: SettingsInput;
   expected_revision: number;
+}
+
+/**
+ * `settings.update` 的入参形态（只含可写字段）。
+ *
+ * `diary_time_zone` / `auto_organize_enabled` / `auto_organize_time` 三个必填；
+ * `default_style_id` 是**三态**：
+ * - **省略**（`undefined`）= 不改已经设好的默认风格；
+ * - 显式 `null` = 清空；
+ * - 显式值 = 设成它。
+ *
+ * 省略与 `null` 刻意分开：`settings.update` 只改这几个可写字段（模板与上限原样不
+ * 动），把「没传」当成「清空」会静默丢掉用户设好的默认风格。`revision` /
+ * `updated_at` 是只读结论，可省。
+ */
+export interface SettingsInput {
+  diary_time_zone: string;
+  auto_organize_enabled: boolean;
+  auto_organize_time: string;
+  default_style_id?: string | null;
+  revision?: number;
+  updated_at?: string;
 }
 
 // ---------------------------------------------------------------- 事件（契约第 6 节）

@@ -3115,3 +3115,113 @@ fn settings_get_and_update_roundtrip_through_the_c_abi() {
     assert_eq!(diary_close(handle), 0);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// 复审第 4 条：`settings.update` 的 `defaultStyleId` **省略 ≠ 显式 null**。
+///
+/// - **省略** = 不改（`settings.update` 在这一层是部分更新：只改传了的可写字段；
+///   一个不认识 `defaultStyleId` 的旧客户端更新时区/开关时，不能顺手把用户设好的
+///   默认风格清成 NULL）；
+/// - **显式 `null`** = 清空（契约的 `Settings.defaultStyleId` 本来就是可空字段）；
+/// - 空对象 / 缺必填字段 / 字段拼错都是 `invalid_argument`，**不静默补默认值**。
+#[test]
+fn settings_update_keeps_the_default_style_when_the_field_is_omitted() {
+    let (dir, _path, handle) = open_temp("settings-default-style");
+
+    // 先把默认风格设上（revision 1 → 2）。
+    let set = expect_ok(&call(
+        handle,
+        "settings.update",
+        json!({
+            "settings": {
+                "diary_time_zone": "Asia/Shanghai",
+                "auto_organize_enabled": true,
+                "auto_organize_time": "23:15",
+                "defaultStyleId": "sty_default",
+            },
+            "expected_revision": 1,
+        }),
+    ));
+    assert_eq!(set["default_style_id"], json!("sty_default"));
+    assert_eq!(set["revision"], json!(2));
+
+    // 省略 `defaultStyleId`：只改计划时间，默认风格必须原样保留（revision 2 → 3）。
+    let omitted = expect_ok(&call(
+        handle,
+        "settings.update",
+        json!({
+            "settings": {
+                "diary_time_zone": "Asia/Shanghai",
+                "auto_organize_enabled": true,
+                "auto_organize_time": "06:30",
+            },
+            "expected_revision": 2,
+        }),
+    ));
+    assert_eq!(omitted["auto_organize_time"], json!("06:30"));
+    assert_eq!(omitted["revision"], json!(3));
+    assert_eq!(
+        omitted["default_style_id"],
+        json!("sty_default"),
+        "省略 defaultStyleId 不能清空已经设好的默认风格"
+    );
+    let reread = expect_ok(&call(handle, "settings.get", Value::Null));
+    assert_eq!(
+        reread["default_style_id"],
+        json!("sty_default"),
+        "重新读出来仍然是已设的风格"
+    );
+
+    // 显式 null 才是清空（revision 3 → 4）。
+    let cleared = expect_ok(&call(
+        handle,
+        "settings.update",
+        json!({
+            "settings": {
+                "diary_time_zone": "Asia/Shanghai",
+                "auto_organize_enabled": true,
+                "auto_organize_time": "06:30",
+                "defaultStyleId": null,
+            },
+            "expected_revision": 3,
+        }),
+    ));
+    assert!(
+        cleared["default_style_id"].is_null(),
+        "显式 null 才是清空：{cleared}"
+    );
+    assert_eq!(cleared["revision"], json!(4));
+
+    // 空参数 / 缺 settings / 缺必填字段：全部 invalid_argument，一个字节不改。
+    let before = expect_ok(&call(handle, "settings.get", Value::Null));
+    expect_error(
+        &call(handle, "settings.update", json!({})),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(handle, "settings.update", json!({"settings": {}})),
+        "invalid_argument",
+    );
+    let missing = expect_error(
+        &call(
+            handle,
+            "settings.update",
+            json!({
+                "settings": {
+                    "diary_time_zone": "Asia/Shanghai",
+                    "auto_organize_enabled": true,
+                },
+                "expected_revision": 4,
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(
+        missing.contains("auto_organize_time"),
+        "缺必填字段要指名道姓：{missing}"
+    );
+    let after = expect_ok(&call(handle, "settings.get", Value::Null));
+    assert_eq!(after, before, "非法参数必须零改动");
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}

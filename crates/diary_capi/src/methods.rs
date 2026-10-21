@@ -468,7 +468,16 @@ pub(crate) fn dispatch(
         }
         "settings.update" => {
             let input: UpdateSettingsParams = parse(params)?;
-            let settings = input.settings.into_settings();
+            // `defaultStyleId` 的三态在这里落成最终值：**省略 = 不动**（读当前值原样
+            // 带上），显式 `null` = 清空，显式值 = 设成它。放在这里而不是核心，是因为
+            // 「字段缺没缺」只有解析 JSON 的这一层知道；核心拿到的始终是完整对象。
+            // 先读后写的并发安全由 `expected_revision` 的乐观锁保证：读完到写之间
+            // 有人改过，`update_settings` 会报 `revision_conflict` 而不是拿旧值覆盖。
+            let default_style_id = match &input.settings.default_style_id {
+                Some(value) => value.clone(),
+                None => core.get_settings()?.default_style_id,
+            };
+            let settings = input.settings.to_settings(default_style_id);
             to_value(core.update_settings(&settings, input.expected_revision)?)
         }
         // ------------------------------------------------------------ 备份与恢复
@@ -1258,7 +1267,19 @@ struct UpdateSettingsParams {
 /// 字段名与响应一样以核心的 snake_case 为准，同时接受契约里的 camelCase。
 /// `revision` / `updated_at` 是**只读结论**：调用方给不给都不影响写入（核心忽略它们，
 /// 冲突保护只认外层的 `expected_revision`），所以这里允许省略——首次设置不必先伪造
-/// 一个时间戳。其余四个字段是必填的，拼错/漏字段都是 `invalid_argument`。
+/// 一个时间戳。
+///
+/// `diaryTimeZone` / `autoOrganizeEnabled` / `autoOrganizeTime` 三个可写字段必填，
+/// 拼错或漏掉都是 `invalid_argument`。`defaultStyleId` 是**三态**（见
+/// [`deserialize_present`]）：字段**缺失** = 不改已经设好的默认风格，显式 `null` =
+/// 清空，显式值 = 设成它。
+///
+/// 为什么不做成「四字段全必填」：契约的 `Settings.defaultStyleId` 本来就是可空字段，
+/// 而 C ABI 的入参只承载可写的那几个字段（`settings.update` 在核心是「改这四个可写
+/// 字段、模板与上限原样不动」的部分更新）。把 `defaultStyleId` 定成必填会让一个
+/// **不认识这个新字段**的旧客户端无法更新时区/开关——它只能瞎传一个值；而如果单独用
+/// `#[serde(default)]`（复审指出的写法），省略又会被当成 `null`，把用户已经设好的默认
+/// 风格**静默清空**。三态是唯一能同时保住「旧客户端能更新」与「不静默丢设置」的写法。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsInput {
@@ -1272,21 +1293,44 @@ struct SettingsInput {
     auto_organize_enabled: bool,
     #[serde(alias = "autoOrganizeTime")]
     auto_organize_time: String,
-    #[serde(default, alias = "defaultStyleId")]
-    default_style_id: Option<String>,
+    #[serde(
+        default,
+        alias = "defaultStyleId",
+        deserialize_with = "deserialize_present"
+    )]
+    default_style_id: Option<Option<String>>,
+}
+
+/// 区分「字段缺失」「显式 `null`」「显式值」的三态反序列化适配器。
+///
+/// `Option<Option<T>>` 直接反序列化时，`null` 与字段缺失都会得到外层的 `None`，两种
+/// 语义就分不开了。这里只反序列化**内层** `Option<T>`，再包一层 `Some`：
+///
+/// - 字段缺失 → `#[serde(default)]` 给 `None`（外层）；
+/// - 显式 `null` → `Some(None)`；
+/// - 显式值 → `Some(Some(value))`。
+fn deserialize_present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 impl SettingsInput {
     /// 转成核心对象。`revision` / `updated_at` 会被 `update_settings` 忽略，这里给 0 /
     /// 当前时间只是为了满足结构体的形状，不参与任何判断。
-    fn into_settings(self) -> Settings {
+    ///
+    /// `default_style_id` 由调用方先解析好三态再传进来（缺失时取当前值），这里不再
+    /// 关心「省略」——到这一步已经是最终要写入的值。
+    fn to_settings(&self, default_style_id: Option<String>) -> Settings {
         Settings {
-            diary_time_zone: self.diary_time_zone,
+            diary_time_zone: self.diary_time_zone.clone(),
             revision: self.revision,
             updated_at: self.updated_at.unwrap_or_else(Utc::now),
             auto_organize_enabled: self.auto_organize_enabled,
-            auto_organize_time: self.auto_organize_time,
-            default_style_id: self.default_style_id,
+            auto_organize_time: self.auto_organize_time.clone(),
+            default_style_id,
         }
     }
 }
