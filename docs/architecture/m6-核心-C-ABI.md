@@ -229,6 +229,21 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `styles.save` | `Core::save_style`（每次落新版本；可选 `expected_revision` 乐观锁） | `StyleProfile` |
 | `exports.create` | `Core::create_export`（同步生成；产物在资料库 `exports/` 下） | `ExportTicket` |
 
+**响应字段命名：按核心 serde，不按方法名前缀猜。** 同一个 C ABI 里两套写法并存，这是
+**仓库既有事实**、不是某一批才有的：`backups.create` 的 `BackupCounts` 早就是 camelCase，
+而 `Capture` / `PurgePreview` 一直是 snake_case。判断依据只有一处——核心类型上的
+`#[serde(rename_all = "camelCase")]`：会出现在 `data` 里的一共 12 个（`model.rs` 8 个 +
+`config_file.rs` 4 个），`quality/*` 的夹具类型不上桥面、不算在内。
+
+| 写法 | 类型 | 备注 |
+|---|---|---|
+| **camelCase** | `StyleProfile`、`ExportRequest`、`ExportTicket`、`DiaryDayPage`、`BackupCounts`、`PluginManifest`、`PluginInvocation`、`PluginSourceRef`；`RuntimeConfigReport` / `ConfigFileReport` / `SemanticConfigReport` / `TranscriptionConfigReport` | 前五个已接：`BackupCounts` 是 `BackupReport.counts` 那一格；`DiaryDayPage` **只有外层** `nextCursor`，`days` 里是 `DiaryDay`（snake_case）。四个配置报告都挂在 `core.info.runtime_config` 下（加性扩展）。插件三个**还没接**（`plugins.*` 不在能力清单里），列出来是给将来接线的人看的 |
+| **snake_case（多数）** | `Capture`、`CapturePage`、`DraftSaveResult`、`CommitResult`、`SourceRevision`、`ExtractedContent`、`SourceLocation`、`SearchSnapshot` / `SearchHit`、`Job` / `JobPage` / `JobRunSummary` / `JobStatus`、`Provider` / `ProviderTestReport`、`Settings`、`BackupReport` / `BackupInspection` / `RestoreReport`、`PurgePreview` / `PurgeResult`、`RecordingTicket` / `SegmentReceipt` / `RecordingSession` / `RecordingFinalizeResult` / `RecordingRecovery`、`DiaryDay` / `DiaryVersion` / `DiaryVersionPage` | `core.info` 的外层键也是这一套。嵌套时**逐层看**，别拿外层的写法推里层：`DiaryDayPage` 外层 camelCase、里层 snake_case；`BackupReport` 外层 snake_case、`counts` 里 camelCase |
+
+**客户端按每个方法的实际字段名解析，不要按方法名前缀猜。** `captures.*` 是 snake_case
+不代表 `captures.*` 将来新增的方法也是，`styles.*` / `exports.*` 一上来就是 camelCase；
+`Models.ets` 里的接口就是照这张表声明的（`StyleProfile` 那几处还写了原因）。
+
 `settings.get` 的 `data` 是完整设置对象，字段名与核心 serde 输出一致（snake_case）：
 `diary_time_zone` / `revision` / `updated_at` / `auto_organize_enabled` /
 `auto_organize_time` / `default_style_id`。`settings.update` 的 `settings` 入参同时接受
