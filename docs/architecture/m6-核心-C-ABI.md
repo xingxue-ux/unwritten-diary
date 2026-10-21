@@ -168,7 +168,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 ## 6 方法映射表
 
-### 6.1 已接（46 条，`core.info.capabilities` 就是这份清单）
+### 6.1 已接（50 条，`core.info.capabilities` 就是这份清单）
 
 | 契约方法 | 核心调用 | `data` |
 |---|---|---|
@@ -178,6 +178,10 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `captures.commit` | `Core::commit` | `CommitResult` |
 | `captures.get` | `Core::get_capture` | `Capture` |
 | `captures.list` | `Core::list_captures`（`day_key` + 不透明游标） | `CapturePage` |
+| `captures.trash` | `Core::trash_capture`（`expected_revision` 乐观锁 + `operation_id` 幂等） | `Capture`（`state = "trashed"`） |
+| `captures.restore` | `Core::restore_capture`（恢复回移入前的状态） | `Capture` |
+| `captures.previewPurge` | `Core::preview_purge`（只接受回收站里的记录） | `PurgePreview` |
+| `captures.purge` | `Core::purge_capture`（**必须带 `preview_token`**；`delete_diary_versions` 默认 `false`） | `PurgeResult` |
 | `recordings.prepare` | `Core::prepare_recording` | `RecordingTicket` |
 | `recordings.registerSegment` | `Core::register_segment` | `SegmentReceipt` |
 | `recordings.updateState` | `Core::update_recording_state` | `RecordingSession` |
@@ -244,6 +248,28 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 还在缺口里的两条：**`diary.listDays`**（核心没有按天枚举的入口）与 **`diary.generate`**
 （核心有 `generate_diary`，但它要排 AI 任务，属于生成那一片）。鸿蒙日记页因此不显示
 「生成/整理」按钮，只如实说明缺口；列表的日期来自最近的材料与最近 30 天。
+
+**回收站四条（`captures.trash` / `restore` / `previewPurge` / `purge`）**：核心的回收站
+状态机（#155）早就在，缺的一直是 C ABI 这一层——没有它们，鸿蒙「我的」页只能写「回收站
+还没接」。四条只做转接，业务规则一条都不复制：
+
+- 响应是核心模型的 serde 输出**原样**（snake_case）。契约 §8 的 camelCase 名字与线上字段
+  一一对应：`previewToken` → `preview_token`、`derivedDiaryVersionIds` →
+  `derived_diary_version_ids`、`undeterminedDiaryVersionIds` →
+  `undetermined_diary_version_ids`；「有可判定关联的版本」这一格在核心里的字段名是
+  `diary_versions_still_referencing`（就是 `purge` 会删、默认保留的那一份）；
+- `purge` 的 `preview_token` 是**必填**，桥面不替调用方「先预览一次」（那会把一次不可逆
+  操作变成隐式的两次）；令牌一次性、默认 10 分钟过期、绑定 `capture_id`，预览之后清单变了
+  核心直接拒绝并要求重新预览；
+- `delete_diary_versions` 省略即 `false`：删的是 `generated` 版本，而一次生成通常覆盖同一天
+  多条记录，删 A 会连带删掉含 B 内容的日记，所以默认保留。这个选择进幂等指纹——同一个
+  `operation_id` 换选择报 `idempotency_conflict`，不会按新选择再删一次；
+- `derived_diary_version_ids` / `undetermined_diary_version_ids` 与那个选择**无关**：前者正文
+  是用户确认过的内容、后者归属判不出来，两类**一个都不删**，但预览与结果都如实回填——
+  「没删」必须说出来，不能报成「没有」；
+- **可见性口径**（契约 §8）：回收站里的记录立即从默认检索与后续 AI 输入里排除；
+  `captures.list` **不按 `state` 过滤**（回收站页面自己按 `state === "trashed"` 筛），
+  所以「从列表里消失」不是契约承诺，别在界面文案里这么写。
 
 ### 6.1.1 分页方法：游标是**真游标**，不是「传了就报错」
 
@@ -361,16 +387,16 @@ C ABI 没有回调/推送面，所以 `core.events` 不装成 Stream，而是把
    没列出来的就是还没接，界面不该显示成可用）；
 4. `src/tests.rs` 加用例（至少一条成功路径 + 一条参数错误）。
 
-**还没接的（按契约第 4 节分组，代码里带 `TODO(#108)`）**：`captures.moveDay/trash/
-restore/previewPurge/purge`（核心已有回收站状态机，#155 已合入 main）、`styles.list/get/save`
+**还没接的（按契约第 4 节分组，代码里带 `TODO(#108)`）**：`captures.moveDay`（回收站里
+另外四条 `trash/restore/previewPurge/purge` 已接上，见 §6.1）、`styles.list/get/save`
 （核心 `styles.rs` 已有，#166）、`diary.listDays`（核心有 `list_days`）/ `diary.generate`
 （核心有 `generate_diary`，后者要排 AI 任务）、`exports.create`（核心有 `create_export`，要模型
 生成正文）、`responses.*`、`plugins.*`（`run_plugin` 同步返回完整结果，契约要 `jobId`）——
 **核心已有实现，但 C ABI 这一层还没包装**。另外 `imports.*`、`assets.open/release`、
 `search.snapshot`、`jobs.nextWakeup`、`core.snapshot/close/setRuntimeState` 也还没接。
-已接的 46 条见上表：`providers.*` 四条、`sources` 五条（含正文与定位）、`backups.*` 三条、
-`core.events`、`diary.*` 六条、`settings.get / update` 两条都在里面（settings 两条与整理设置
-共用核心 `settings` 表的同一行）。
+已接的 50 条见上表：`providers.*` 四条、`sources` 五条（含正文与定位）、`backups.*` 三条、
+`core.events`、`diary.*` 六条、`captures.*` 九条（含回收站四条）、`settings.get / update`
+两条都在里面（settings 两条与整理设置共用核心 `settings` 表的同一行）。
 
 未接入的方法一律 `invalid_argument` + 已接入清单，**不静默成功、不假装支持**。
 
@@ -567,10 +593,10 @@ cargo +1.94.1 build -p diary_capi --release --target aarch64-unknown-linux-ohos
    `SKIP_ASR_LIBS=1` 构建）：`dlopen` 6 个符号、沙箱建库/落盘、ArkTS 包装、5 个一级入口、
    `diary.*` 读数与空态、任务中心二级入口都有逐页截图。**没有**验证的是两条模型链
    （no-asr 构建不能转写/语义）与大库性能；
-5. **方法子集**：只接了 46 条（§6.1；录音 5 条、`providers.*` 4 条、界面缺口 11 条、
-   `diary.*` 6 条、`settings.*` 2 条、`sources` 正文 4 条、`backups.*` 3 条与 `core.events`
-   都是后续分片补的），其余仍是扩展点；回收站 5 条**核心已有入口、桥面还没接**，
-   styles 3 / 导出 1 共 4 条**核心还没有实现**（§6.2）；
+5. **方法子集**：只接了 50 条（§6.1；录音 5 条、`providers.*` 4 条、界面缺口 11 条、
+   `diary.*` 6 条、`settings.*` 2 条、`sources` 正文 4 条、`backups.*` 3 条、`core.events`
+   与回收站 4 条都是后续分片补的），其余仍是扩展点；回收站只剩 `captures.moveDay`
+   **核心已有入口、桥面没接**，styles 3 / 导出 1 共 4 条**核心还没有实现**（§6.2）；
 6. **性能**：没测吞吐、没测 JSON 序列化占比、没测大库（十万条记录）下的表现；
 7. **并发压力**：跨线程用例是 15 次循环的**正确性**验证，不是压测（没有 P50/P99）；
 8. **错误 message 的语言**：桥面判定的是中文，`serde_json` 的解析错误是英文

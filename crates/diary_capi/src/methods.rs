@@ -13,6 +13,10 @@
 //! | `captures.commit` | `Core::commit` | `CommitResult` |
 //! | `captures.get` | `Core::get_capture` | `Capture` |
 //! | `captures.list` | `Core::list_captures`（`day_key` + 不透明游标） | `CapturePage` |
+//! | `captures.trash` | `Core::trash_capture` | `Capture`（`state = "trashed"`） |
+//! | `captures.restore` | `Core::restore_capture` | `Capture`（恢复回移入前的状态） |
+//! | `captures.previewPurge` | `Core::preview_purge` | `PurgePreview` |
+//! | `captures.purge` | `Core::purge_capture`（必须带 `preview_token`） | `PurgeResult` |
 //! | `recordings.prepare` | `Core::prepare_recording` | `RecordingTicket` |
 //! | `recordings.registerSegment` | `Core::register_segment` | `SegmentReceipt` |
 //! | `recordings.updateState` | `Core::update_recording_state` | `RecordingSession` |
@@ -78,6 +82,21 @@
 //!
 //! 两者都是「只排任务 / 只落数据」，不引入任何新语义。
 //!
+//! 四条 `captures.*` 回收站入口（`trash` / `restore` / `previewPurge` / `purge`）是契约
+//! 4.1 与 §8 的整条链路：没有它们，鸿蒙的「我的」页面只能写「回收站没接」。这一层只做
+//! 转接，**状态机、在途录音/导入的拒绝、幂等指纹与令牌校验全在核心**（`recycle.rs`）：
+//!
+//! - 响应就是核心模型的 serde 输出，字段名 snake_case 原样（契约文档里那些 camelCase
+//!   写法是 Dart 面的名字）：`previewPurge` 的 `preview_token`（契约 `previewToken`）、
+//!   `diary_versions_still_referencing`（契约「有可判定关联的版本」；Dart 面叫
+//!   `diaryVersionsStillReferencing`）、`derived_diary_version_ids`、`undetermined_diary_version_ids`、
+//!   `retained_source_snapshot_ids` 一个不少——后两类**不会删**，但必须如实列出；
+//! - `purge` **必须**带 `preview_token`；`delete_diary_versions` 默认 `false`（保留仍引用
+//!   这条记录的日记版本——一次生成可能覆盖同一天多条记录），选了 `true` 也只删 `generated`
+//!   的那些，`derived_*` / `undetermined_*` 一个都不删；
+//! - `previewPurge` 只接受回收站里的记录（`purge` 不可逆，产品路径是先 trash 再决定），
+//!   不在回收站里是核心的 `invalid_state`，桥面不改写成别的码。
+//!
 //! # 扩展点：再加一个方法要动哪里
 //!
 //! 1. 在 [`dispatch`] 的 `match` 里加一条分支，并在上面的表里加一行（表与代码在同一个文件，
@@ -90,9 +109,9 @@
 //!
 //! ## 还没接的（按契约第 4 节分组，TODO(#108)）
 //!
-//! - 回收站：`captures.moveDay` / `captures.trash` / `captures.restore` /
-//!   `captures.previewPurge` / `captures.purge`——**核心已有回收站状态机（#155 已合入
-//!   main），C ABI 这一层还没包装**，不是核心缺实现；
+//! - 回收站：只剩 `captures.moveDay`——**核心已有（#155 已合入 main），C ABI 这一层还
+//!   没包装**，不是核心缺实现（另外四条 `trash` / `restore` / `previewPurge` / `purge`
+//!   已接上，见 [`WIRED_METHODS`]）；
 //! - 文件：`imports.*`、`assets.open` / `assets.release`；
 //! - 检索：`search.snapshot`（`search.*` 只差它）；
 //! - 任务：`jobs.nextWakeup`；
@@ -129,6 +148,10 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "captures.commit",
     "captures.get",
     "captures.list",
+    "captures.trash",
+    "captures.restore",
+    "captures.previewPurge",
+    "captures.purge",
     "recordings.prepare",
     "recordings.registerSegment",
     "recordings.updateState",
@@ -252,6 +275,45 @@ pub(crate) fn dispatch(
                 input.limit.unwrap_or(DEFAULT_PAGE_SIZE),
             )?;
             to_value(page)
+        }
+        // ------------------------------------------------------------ 回收站（契约 4.1 / §8）
+        // 只做参数搬运：`state` 怎么变、`revision` 怎么推进、在途录音/导入的拒绝、
+        // 幂等回执与事件全在核心 `recycle::trash` / `restore`。响应就是 `Capture`，
+        // `state` 是线上字符串（`trashed` / `draft` / `committed`）。
+        "captures.trash" => {
+            let input: TrashCaptureParams = parse(params)?;
+            let capture =
+                core.trash_capture(&input.capture_id, input.expected_revision, &input.operation_id)?;
+            to_value(capture)
+        }
+        "captures.restore" => {
+            let input: TrashCaptureParams = parse(params)?;
+            let capture = core.restore_capture(
+                &input.capture_id,
+                input.expected_revision,
+                &input.operation_id,
+            )?;
+            to_value(capture)
+        }
+        // 清理不可逆，所以只接受回收站里的记录（核心 `invalid_state`），令牌绑定
+        // `capture_id`、一次性、带过期。清单与拒删理由都由核心盘点，桥面一个字段都不改写。
+        "captures.previewPurge" => {
+            let input: CaptureIdParams = parse(params)?;
+            to_value(core.preview_purge(&input.capture_id)?)
+        }
+        // `preview_token` **必填**（缺了就是 `invalid_argument`，桥面不替调用方「先预览
+        // 一次」——那会把一次不可逆操作变成隐式的两次）。`delete_diary_versions` 默认
+        // `false`：一次生成可能覆盖同一天多条记录，删 A 会连带删掉含 B 内容的日记，
+        // 所以默认保留；这个选择进幂等指纹，同一 `operation_id` 换选择报冲突。
+        "captures.purge" => {
+            let input: PurgeCaptureParams = parse(params)?;
+            let result = core.purge_capture(
+                &input.capture_id,
+                &input.preview_token,
+                input.delete_diary_versions,
+                &input.operation_id,
+            )?;
+            to_value(result)
         }
         // ------------------------------------------------------------ 录音
         "recordings.prepare" => {
@@ -909,6 +971,44 @@ struct ListCapturesParams {
     day_key: Option<String>,
     cursor: Option<String>,
     limit: Option<usize>,
+}
+
+/// `captures.trash` / `captures.restore`：契约 4.1 节的 `id、expectedRevision、operationId`。
+///
+/// 两个方法共用这一份形状：状态机（`draft`/`committed → trashed`、`trashed → 移入前的
+/// 状态`）在核心，桥面不判断当前状态，也不自己推进 revision。`operation_id` 是幂等键：
+/// 同一个键重放返回第一次的结果，不重复推进 revision、不重复发事件。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrashCaptureParams {
+    #[serde(alias = "id", alias = "captureId")]
+    capture_id: String,
+    #[serde(alias = "expectedRevision")]
+    expected_revision: i64,
+    #[serde(alias = "operationId")]
+    operation_id: String,
+}
+
+/// `captures.purge`：契约 4.1 节的 `id、previewToken、deleteDiaryVersions（默认 false）、
+/// operationId`。
+///
+/// `preview_token` **没有默认值、没有「没给就先预览」的兜底**：永久清理必须由一次明确的
+/// 预览授权，缺令牌是调用方的错（`invalid_argument`），不是「帮它猜一个」。
+/// `delete_diary_versions` 省略即 `false`（保留仍引用这条记录的日记版本）；显式 `null`
+/// 也是解析失败，不静默当 `false`。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PurgeCaptureParams {
+    #[serde(alias = "id", alias = "captureId")]
+    capture_id: String,
+    /// `previewPurge` 发出的令牌：一次性、带过期、绑定 `capture_id`。
+    #[serde(alias = "previewToken")]
+    preview_token: String,
+    /// 是否连同仍引用这条记录的 `generated` 日记版本一起删；默认 `false`（保留）。
+    #[serde(default, alias = "deleteDiaryVersions")]
+    delete_diary_versions: bool,
+    #[serde(alias = "operationId")]
+    operation_id: String,
 }
 
 /// `recordings.prepare`：申请录音票据与限域暂存目录。

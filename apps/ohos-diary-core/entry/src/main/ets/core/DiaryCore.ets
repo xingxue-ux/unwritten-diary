@@ -60,6 +60,9 @@ import {
   ProviderConfig,
   ProviderIdParams,
   ProviderTestReport,
+  PurgeCaptureParams,
+  PurgePreview,
+  PurgeResult,
   RebuildIndexParams,
   RebuildSemanticParams,
   RecoverRecordingParams,
@@ -87,6 +90,7 @@ import {
   SourceLocation,
   SourceRevision,
   TestProviderParams,
+  TrashCaptureParams,
   UpdateSettingsParams,
 } from './Models';
 
@@ -195,7 +199,7 @@ export class DiaryCore {
     return diaryNapi.openHandleCount();
   }
 
-  // ---------------------------------------------------------------- 契约方法（46 条）
+  // ---------------------------------------------------------------- 契约方法（50 条）
   //
   // 一一对应 `crates/diary_capi/src/methods.rs` 的 `WIRED_METHODS`。方法名与方法体里的
   // 字符串必须一致；`tools/check_arkts_capi_contract.py` 会核对。
@@ -244,6 +248,61 @@ export class DiaryCore {
    */
   listCaptures(params: ListCapturesParams | null = null): CapturePage {
     return this.invokeData('captures.list', params) as CapturePage;
+  }
+
+  // ---------------------------------------------------------------- 回收站（契约 4.1 / §8）
+  //
+  // 四条只做转接：状态机（含「还有在途录音/导入就拒绝」）、幂等回执、预览令牌的
+  // 绑定/一次性/过期、以及日记版本的三种分类全在核心 `recycle.rs`。
+  //
+  // **可见性口径**（契约 §8）：回收站里的记录立即从**默认检索与后续 AI 输入**里排除；
+  // `captures.list` 不按 `state` 过滤（回收站页面自己按 `state === 'trashed'` 筛），
+  // 所以「我的」页不要指望列表帮它隐藏行。
+
+  /**
+   * `captures.trash`：移入回收站（`state = 'trashed'`，`revision` +1）。
+   *
+   * 只推进状态，正文/来源/转写都还在（恢复后照旧可读）。已经在回收站里报
+   * `invalid_state`；还有没收尾的录音/导入时拒绝，要求先结束或取消。
+   */
+  trashCapture(params: TrashCaptureParams): Capture {
+    return this.invokeData('captures.trash', params) as Capture;
+  }
+
+  /**
+   * `captures.restore`：从回收站恢复回**移入之前**的状态（`draft` / `committed`）。
+   *
+   * 不在回收站里报 `invalid_state`；v16 之前没有回收站入口，旧行的「原状态」按
+   * `committed` 解释（不会把已提交的记录悄悄变成草稿）。
+   */
+  restoreCapture(params: TrashCaptureParams): Capture {
+    return this.invokeData('captures.restore', params) as Capture;
+  }
+
+  /**
+   * `captures.previewPurge`：预览永久清理会删掉什么、会如实保留什么。
+   *
+   * 只接受回收站里的记录（不在回收站里是 `invalid_state`——清理不可逆，产品路径是
+   * 先 `trashCapture` 再决定）。返回的 `preview_token` 是 `purgeCapture` 的**必填**参数：
+   * 一次性、默认 10 分钟过期、绑定这条记录。
+   */
+  previewPurge(params: CaptureIdParams): PurgePreview {
+    return this.invokeData('captures.previewPurge', params) as PurgePreview;
+  }
+
+  /**
+   * `captures.purge`：按预览永久清理（不可逆）。
+   *
+   * `delete_diary_versions` 默认 `false`：要删的是 `generated` 版本，而一次生成可能
+   * 覆盖同一天多条记录，删 A 会连带删掉含 B 内容的日记，所以默认保留。`true` 也只删
+   * 「有可判定关联」的那些；`derived_diary_version_ids`（用户确认过的编辑/合并）与
+   * `undetermined_diary_version_ids`（归属判不出来）**一个都不删**，结果里如实回填。
+   *
+   * 预览之后内容变了会拒绝并要求重新预览；同一个 `operation_id` 换选择报
+   * `idempotency_conflict`。
+   */
+  purgeCapture(params: PurgeCaptureParams): PurgeResult {
+    return this.invokeData('captures.purge', params) as PurgeResult;
   }
 
   // ---------------------------------------------------------------- 录音（契约 4.2）
