@@ -34,6 +34,7 @@ import {
   DiaryDay,
   DiaryDayPage,
   DiaryDayParams,
+  DiaryGenerationTicket,
   DiaryVersion,
   DiaryVersionPage,
   DiaryVersionParams,
@@ -44,6 +45,7 @@ import {
   ExtractedContent,
   ExtractParams,
   FinalizeRecordingParams,
+  GenerateDiaryParams,
   IndexStatus,
   IndexStatusParams,
   InspectBackupParams,
@@ -694,6 +696,22 @@ export class DiaryCore {
    */
   mergeDiary(params: MergeDiaryParams): DiaryVersion {
     return this.invokeData('diary.merge', params) as DiaryVersion;
+  }
+
+  /**
+   * `diary.generate`：受理一次生成——冻结这一天的输入、排一条 `diary_generate` 任务，
+   * 返回 `DiaryGenerationTicket`（`job_id` / `source_snapshot_id`）。
+   *
+   * **返回票据 ≠ 已生成**：真正的模型调用在 `jobs.runDue` 里。没有可用服务时也照样
+   * 返回票据，任务会停在 `waiting_configuration` 等配置（与 #66 的能力闸门同一口径），
+   * 这不是一次调用失败，也不会写一版空正文冒充成功。
+   *
+   * **输入在返回前已冻结**：快照行不可变，事后改材料不影响这一版。候选/当前：首次
+   * （当天没有当前版本、也没有用户自己的版本）生成的结果成为当前版本，其余一律候选；
+   * 同快照哈希 + 同 `operation_id` 不重复产版本（`reason = 'regenerate'` 是例外）。
+   */
+  generateDiary(params: GenerateDiaryParams): DiaryGenerationTicket {
+    return this.invokeData('diary.generate', params) as DiaryGenerationTicket;
   }
 
   // ---------------------------------------------------------------- 风格与阅读导出（契约 4.3 / 4.4）
