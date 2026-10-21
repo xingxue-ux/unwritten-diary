@@ -145,9 +145,46 @@ pub(crate) fn rebuild(core: &mut Core, source_scope: Option<&[String]>) -> Resul
     };
 
     let tx = core.conn.transaction()?;
+    let written = rebuild_in_tx(&tx, &day_filter, &day_condition, &scope_values)?;
+    tx.commit()?;
+    Ok(written)
+}
 
+/// 在**调用方的事务里**重打包指定的日子，返回写进库的块数。
+///
+/// 回收站的 `moveDay` / `purge` 要改 `captures.day_key` 或删记录，同时让
+/// `text_chunks` / `chunk_spans` 与新的真相同步。把重打包放进同一个事务里，
+/// 就不会出现「记录已经换了日子、块还按旧日子打包」或「purge 的库行已经没了、
+/// 块里还留着正文」这种半截状态。
+///
+/// 只重打包 `days` 里的日子：回收站一次只影响一条记录与它所在（或曾经所在）的
+/// 那一天，不应该借一次 purge 重算整库。
+pub(crate) fn rebuild_days_in_tx(tx: &rusqlite::Transaction<'_>, days: &[String]) -> Result<i64> {
+    let mut values: Vec<String> = Vec::with_capacity(days.len());
+    for day in days {
+        if !values.iter().any(|existing| existing == day) {
+            values.push(day.clone());
+        }
+    }
+    if values.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = placeholders(values.len());
+    let day_filter = format!(" AND c.day_key IN ({placeholders})");
+    let day_condition = format!("day_key IN ({placeholders})");
+    rebuild_in_tx(tx, &day_filter, &day_condition, &values)
+}
+
+/// `rebuild` 与 `rebuild_days_in_tx` 的共同实现：收集 → 打包 → 删除已消失的块 →
+/// 写回。事务由调用方提交（或者回滚），这里不 `commit`。
+fn rebuild_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    day_filter: &str,
+    day_condition: &str,
+    scope_values: &[String],
+) -> Result<i64> {
     // 整日取篇：范围重建要连范围外同一天的那几篇一起重算（见函数说明）。
-    let pieces = collect_pieces(&tx, &day_filter, &scope_values)?;
+    let pieces = collect_pieces(tx, day_filter, scope_values)?;
 
     let refs: Vec<Piece<'_>> = pieces
         .iter()
@@ -180,10 +217,9 @@ pub(crate) fn rebuild(core: &mut Core, source_scope: Option<&[String]>) -> Resul
             chunk_id_of(day_key, chunk)
         })
         .collect();
-    delete_stale_chunks(&tx, &day_condition, &scope_values, &new_ids)?;
+    delete_stale_chunks(tx, day_condition, scope_values, &new_ids)?;
 
     if packed.is_empty() {
-        tx.commit()?;
         return Ok(0);
     }
 
@@ -201,11 +237,10 @@ pub(crate) fn rebuild(core: &mut Core, source_scope: Option<&[String]>) -> Resul
             current_day = first.day_key.clone();
             ordinal = 0;
         }
-        write_chunk(&tx, chunk, first, ordinal, &by_id, &now)?;
+        write_chunk(tx, chunk, first, ordinal, &by_id, &now)?;
         ordinal += 1;
         written += 1;
     }
-    tx.commit()?;
     Ok(written)
 }
 

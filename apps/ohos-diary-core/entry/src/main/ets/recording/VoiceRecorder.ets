@@ -393,6 +393,9 @@ export class VoiceRecorder {
           MARK, ticket.recording_id, result.segment_count, this.receivedMs(),
           this.persistedMs(), result.logical_duration_ms,
           nowUptimeMs() - this.stopRequestedMs);
+        // finalize 只保证「音频已保存」；记录要离开 draft 还得提交一次。失败不回滚录音，
+        // 结果写进 commitResult() 交给调用方如实展示。
+        this.commitFinalizedCapture(result);
         return result;
       } catch (e) {
         this.phase = 'error';

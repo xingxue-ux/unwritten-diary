@@ -1,0 +1,11 @@
+name: ui_strings
+description: 不写日记的共享语义文案表（Flutter asset 载体，不含 Dart 代码）。
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.9.0 <4.0.0"
+
+flutter:
+  assets:
+    - ui_strings.json

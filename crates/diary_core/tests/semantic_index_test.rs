@@ -3980,7 +3980,11 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
         diary_core::SCHEMA_VERSION,
         "空库直接建到最新"
     );
-    assert_eq!(diary_core::SCHEMA_VERSION, 17, "当前构建是 17；v15 的迁移段仍要能跑");
+    assert_eq!(
+        diary_core::SCHEMA_VERSION,
+        17,
+        "当前构建是 17（v15 的列/索引 + v16 的回收站列 + v17 的 styles 表）"
+    );
     let counters = Arc::new(Counters::default());
     core.set_embedder(stub(&counters, vec![]));
     write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
@@ -4072,7 +4076,7 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
         let recorded: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
-                rusqlite::params![diary_core::SCHEMA_VERSION],
+params![diary_core::SCHEMA_VERSION],
                 |row| row.get(0),
             )
             .unwrap();
@@ -4104,10 +4108,10 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
 /// 评审 #133 第 1 条（真隐患）：v15 的「列」与「索引」必须各有一个守卫。
 ///
 /// 造一个「`auto_rebuild_marker` 已在、`idx_chunk_vectors_caliber` 被手工删掉」的
-/// v15 库——手工删索引、或将来单独补索引的库都长这样。旧实现是
+/// 当前版本库——手工删索引、或将来单独补索引的库都长这样。旧实现是
 /// `current < 15 && !column_exists(...)` 一个守卫包住整段：列已在 ⇒ 整段跳过，
 /// 索引永远补不回来。修完后每次 `open` 都做一次 `sqlite_master` 轻量检查，
-/// 索引缺就建（幂等；`current` 是 15 也一样）。
+/// 索引缺就建（幂等；版本号已经是当前值也一样）。
 #[test]
 fn a_v15_library_with_a_dropped_caliber_index_recreates_it_on_open() {
     let dir = tempfile::tempdir().unwrap();
@@ -4122,7 +4126,11 @@ fn a_v15_library_with_a_dropped_caliber_index_recreates_it_on_open() {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, diary_core::SCHEMA_VERSION, "前提：库是最新版本");
+        assert_eq!(
+            version,
+            diary_core::SCHEMA_VERSION,
+            "前提：库是最新版本"
+        );
         let column_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('index_meta') \

@@ -61,6 +61,11 @@ mod processing;
 #[cfg(any(test, feature = "ai-quality"))]
 pub mod quality;
 mod recordings;
+/// 回收站：移入 / 恢复 / 改归属日 / 预览与永久清理（B7）。
+///
+/// 产品代码只走 `Core` 上的五个薄封装；模块内部的口径与测试断言见
+/// `crates/diary_core/tests/recycle_test.rs`。
+mod recycle;
 /// 转写链（#91）：本机引擎、分段转写、时间戳对齐与质量集接缝。
 ///
 /// 公开是为了让测试与 `tools/probe` 能注入 stub 引擎、能直接跑一条转写
@@ -112,9 +117,12 @@ pub use model::{
     OrganizeSkippedDay, OrganizeStatus, OrganizeTemplate, OrganizeTemplateParam, ProcessingStatus,
     ProcessingSummary, PluginArtifact, PluginDerivedContent, PluginEntryKind, PluginInspection,
     PluginInstallation, PluginInvocation, PluginManifest, PluginPermission, PluginProviderFailure,
-    PluginRunResult, PluginSourceRef, PluginTemplate, ProvenanceLink, Provider, ProviderCapability,
-    ProviderTestReport, ProviderTestStatus, RecordingFinalizeResult, RecordingRecovery,
-    RecordingSession, RecordingState, RecordingTicket, ResponseTicket, RestoreReport, SearchFilters,
+PluginRunResult, PluginSourceRef, PluginTemplate, ProvenanceLink, Provider, ProviderCapability,
+    ProviderTestReport, ProviderTestStatus, PurgePreview, PurgeResult,
+    RecordingFinalizeResult, RecordingRecovery, RecordingSession, RecordingState, RecordingTicket,
+    ResponseTicket, RestoreReport, SearchFilters,
+    // `PluginStyleProfile` 不从这里导出：`model` 现在用契约名 `StyleProfile`（#114），
+    // 旧名由本文件下方的 `pub type PluginStyleProfile = StyleProfile;` 提供。
     SearchHit, StyleProfile,
     SearchMode, SearchPhase, SearchRequest, SearchSnapshot, SegmentManifest, SegmentReceipt,
     SourceItem, SourceKind, SourceLocation, SourceLocator, SourceRevision, TextRange,
@@ -191,6 +199,14 @@ pub struct Core {
     leases: HashMap<String, assets::LeaseRecord>,
     /// 检索会话，内存态：它记录的是「这一次查询的翻页与失效判断」，不是业务数据。
     search_sessions: HashMap<String, search_session::SearchSessionState>,
+    /// 永久清理的预览令牌，内存态：一次性、绑定 capture_id、带过期。
+    ///
+    /// 不持久化：进程重启后令牌作废，用户必须重新预览。这是有意的——一个能删资料的
+    /// 令牌不该写进库、也不该在下次启动后还活着。
+    purge_previews: HashMap<String, recycle::PurgePreviewState>,
+    /// 预览令牌有效期（秒）。产品默认 10 分钟；测试可改（见
+    /// `set_purge_preview_ttl_for_test`）。
+    purge_preview_ttl_seconds: i64,
     /// 语义这一路的运行时状态：模型配置 + 懒加载的嵌入器（进程级单例）。
     ///
     /// `Core::open` 只读环境变量与 stat 文件，**不建 ORT 会话**——启动不做重活。
@@ -389,6 +405,8 @@ impl Core {
             library_file_name,
             leases: HashMap::new(),
             search_sessions: HashMap::new(),
+            purge_previews: HashMap::new(),
+            purge_preview_ttl_seconds: recycle::PURGE_PREVIEW_TTL_SECONDS,
             semantic,
             hybrid_min_score: search_session::HYBRID_SEMANTIC_MIN_SCORE,
             vector_storage: embedding::DEFAULT_VECTOR_STORAGE,
@@ -890,6 +908,7 @@ impl Core {
                 state: capture.state.wire().to_owned(),
             });
         }
+        ensure_not_trashed(&capture, "改正文")?;
 
         // 记录自己的文字（`captures.draft_text`）与「这一篇的上一版」可能是**同一段文字
         // 的两种存法**：提交时会把 `draft_text` 复制成一条 text 修订。改正文如果只改
@@ -1060,6 +1079,74 @@ impl Core {
             captures,
             next_cursor,
         })
+    }
+
+    // ------------------------------------------------------------ 回收站（B7）
+
+    /// 调整日记归属日期，契约 4.1 节 `captures.moveDay`。
+    ///
+    /// 只改 `day_key`，不改 `occurred_at`（调整不改录音时间戳）。旧日与新日的文本块
+    /// 在同一个事务里重打包，检索按新 day 命中、旧 day 不再出现。
+    pub fn move_day(
+        &mut self,
+        capture_id: &str,
+        target_day_key: &str,
+        expected_revision: i64,
+    ) -> Result<Capture> {
+        recycle::move_day(self, capture_id, target_day_key, expected_revision)
+    }
+
+    /// 移入回收站，契约 4.1 节 `captures.trash`。
+    pub fn trash_capture(
+        &mut self,
+        capture_id: &str,
+        expected_revision: i64,
+        operation_id: &str,
+    ) -> Result<Capture> {
+        recycle::trash(self, capture_id, expected_revision, operation_id)
+    }
+
+    /// 从回收站恢复，契约 4.1 节 `captures.restore`。恢复回移入之前的状态。
+    pub fn restore_capture(
+        &mut self,
+        capture_id: &str,
+        expected_revision: i64,
+        operation_id: &str,
+    ) -> Result<Capture> {
+        recycle::restore(self, capture_id, expected_revision, operation_id)
+    }
+
+    /// 预览永久清理的影响，契约 4.1 节 `captures.previewPurge`。
+    pub fn preview_purge(&mut self, capture_id: &str) -> Result<PurgePreview> {
+        recycle::preview_purge(self, capture_id)
+    }
+
+    /// 永久清理，契约 4.1 节 `captures.purge`。必须带 `previewPurge` 的令牌。
+    ///
+    /// `delete_diary_versions` 是契约 §8 的「由用户决定是否同时删日记版本」：`false`
+    /// （调用方默认）保留仍引用这条记录的版本，`true` 才删并把 `diary_days` 当前指针
+    /// 换到同一天剩下的最新一版。删的是 `generated` 版本，一次生成可能覆盖同一天多条
+    /// 记录，所以默认保留；这个选择会存进幂等指纹，同一个 `operationId` 换选择报冲突。
+    pub fn purge_capture(
+        &mut self,
+        capture_id: &str,
+        preview_token: &str,
+        delete_diary_versions: bool,
+        operation_id: &str,
+    ) -> Result<PurgeResult> {
+        recycle::purge(
+            self,
+            capture_id,
+            preview_token,
+            delete_diary_versions,
+            operation_id,
+        )
+    }
+
+    /// 仅供测试：改预览令牌有效期（秒）。产品默认 10 分钟。
+    #[doc(hidden)]
+    pub fn set_purge_preview_ttl_for_test(&mut self, seconds: i64) {
+        self.purge_preview_ttl_seconds = seconds.max(0);
     }
 
     // ------------------------------------------------------------ 录音
@@ -1564,6 +1651,15 @@ impl Core {
         assets::reap_expired_leases(self)
     }
 
+    /// 从序号之后读取**一批**事件（最多 `limit` 条），契约第 6 节轮询用。
+    ///
+    /// 这是 FRB 桥接面「一次返回一批」的薄包装：真正的有界读取、超前夹取与
+    /// 保留窗口判定都在 [`Self::events_page`]。`limit` 夹在 `1..=1000`，0 会让
+    /// 调用方误以为「没有事件」。
+    pub fn events_since_page(&self, from_sequence: i64, limit: usize) -> Result<Vec<DomainEvent>> {
+        Ok(self.events_page(from_sequence, limit.clamp(1, 1000))?.events)
+    }
+
     /// 从序号之后读取**一页**事件，契约第 6 节。
     ///
     /// - `limit` 是硬上限：SQL 带 `LIMIT`，不会先把整张事件表读进内存再截断；
@@ -2032,6 +2128,26 @@ impl Core {
         backup::create(self, std::path::Path::new(target_path))
     }
 
+    /// 创建备份包，并在成功之后写一条 **`succeeded`** 的 `backup` 任务记录。
+    ///
+    /// **同步完成**：返回的 `Job.id` 指向已经完成的记录，不是排队任务；大库上调用会
+    /// 占住线程，调用方应显示「正在备份」而不是进度轮询。任务记录的 `targetIds` 是
+    /// 备份包路径，`get_job(jobId)` 读得到。
+    ///
+    /// 与 [`Self::create_backup`] 同一套安全保证：目标已存在报 `invalid_argument`
+    /// （绝不覆盖旧备份）、失败时目标路径不留文件。任务记录写入失败时把刚生成的包删掉
+    /// ——不能返回一个「有备份、没 jobId」的成功。
+    pub fn create_backup_job(&mut self, target_path: &str) -> Result<Job> {
+        let report = backup::create(self, std::path::Path::new(target_path))?;
+        match backup::record_completed_job(self, backup::KIND_BACKUP, vec![report.package_path]) {
+            Ok(job) => Ok(job),
+            Err(error) => {
+                let _ = std::fs::remove_file(target_path);
+                Err(error)
+            }
+        }
+    }
+
     /// 检查备份包（契约 `backups.inspect` 的**同步**入口）。
     ///
     /// 逐条目重算哈希、比大小、比条目集合，并检查路径安全与版本兼容。坏在哪就
@@ -2069,6 +2185,30 @@ impl Core {
             self,
             std::path::Path::new(package_path),
             std::path::Path::new(target_dir),
+        )
+    }
+
+    /// 恢复到**新的空目录**，并在成功之后写一条 **`succeeded`** 的 `restore` 任务记录。
+    ///
+    /// **同步完成**：`jobId` 指向已经完成的记录，不是排队任务。`targetIds` 是
+    /// `[恢复出来的 libraryPath, rootDir]`，调用方拿 `get_job(jobId)` 就能找到新库；
+    /// 要不要切过去由前端决定。
+    ///
+    /// 安全保证与 [`Self::restore_backup`] 完全一致：目标必须是新的空目录、不能是
+    /// 当前资料库，失败不留半成品，当前库一字不改。目标非空/损坏包/越界路径/版本
+    /// 不兼容都在写任务行之前拒绝，**不会留下一个 succeeded 的假任务**。
+    pub fn restore_backup_job(&mut self, package_path: &str, target_dir: &str) -> Result<Job> {
+        let report = backup::restore(
+            self,
+            std::path::Path::new(package_path),
+            std::path::Path::new(target_dir),
+        )?;
+        // 任务行写失败时不回滚恢复出来的库：那是用户数据，不能为了记一条任务删掉。
+        // 错误如实返回；调用方拿不到 jobId 时知道这一步没有完成。
+        backup::record_completed_job(
+            self,
+            backup::KIND_RESTORE,
+            vec![report.library_path, report.root_dir],
         )
     }
 
@@ -2129,6 +2269,21 @@ fn ensure_revision(capture: &Capture, expected_revision: i64) -> Result<()> {
         return Err(CoreError::RevisionConflict {
             expected: expected_revision,
             actual: capture.revision,
+        });
+    }
+    Ok(())
+}
+
+/// 回收站里的记录是**只读**的：先恢复，再改正文/导入/最终化录音。
+///
+/// trash 已经拒绝「还有在途录音/导入」的记录；这个检查是第二道闸：旧库、异常路径或
+/// 直接构造出来的 trashed 会话都不能再被写入口复活成「回收站里还在长内容」。
+pub(crate) fn ensure_not_trashed(capture: &Capture, action: &str) -> Result<()> {
+    if capture.state == CaptureState::Trashed {
+        return Err(CoreError::InvalidState {
+            entity: "记录",
+            id: capture.id.clone(),
+            state: format!("在回收站里，不能{action}；先恢复再操作"),
         });
     }
     Ok(())
