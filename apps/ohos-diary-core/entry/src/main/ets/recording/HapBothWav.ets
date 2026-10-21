@@ -31,3 +31,30 @@ export function readWavPcm(path: string): Uint8Array {
   }
   return bytes.slice(44);
 }
+
+/**
+ * PCM 的均方根幅度（16 bit 小端）。只用于把「这段音频有多大声音」记进日志：
+ * 转写结果不对时，先看它是不是静音/被 AEC 削掉了，再谈识别质量。
+ */
+export function pcmRms(pcm: Uint8Array): number {
+  const count = Math.floor(pcm.length / 2);
+  let sum = 0;
+  for (let i = 0; i < count; i++) {
+    const sample = (pcm[i * 2] | (pcm[i * 2 + 1] << 8)) << 16 >> 16;
+    sum += sample * sample;
+  }
+  return count > 0 ? Math.round(Math.sqrt(sum / count)) : 0;
+}
+
+/** PCM 的峰值幅度（16 bit 小端）。与 `pcmRms` 一起判断这段音是不是「有声音但很小」。 */
+export function pcmPeak(pcm: Uint8Array): number {
+  const count = Math.floor(pcm.length / 2);
+  let peak = 0;
+  for (let i = 0; i < count; i++) {
+    const sample = Math.abs((pcm[i * 2] | (pcm[i * 2 + 1] << 8)) << 16 >> 16);
+    if (sample > peak) {
+      peak = sample;
+    }
+  }
+  return peak;
+}

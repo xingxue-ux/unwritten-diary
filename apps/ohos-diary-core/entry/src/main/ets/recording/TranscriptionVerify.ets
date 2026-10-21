@@ -9,6 +9,11 @@
 //               ⇒ 量「热态」转写耗时（不含模型加载）
 //   asr_search  以 `--ps query=<词>` 跑 search.start，打印命中（验证转写文本可检索）
 //   asr_remove  删掉本探针保存的 provider 行（连接测试失败后重新配置用）
+//   asr_download 从 `--ps base=<url>` 下载模型/词表（rport 到宿主机）
+//   asr_record_play 设备扬声器播 zh.wav、麦克风录回来（**受系统 AEC 影响，不能量准确率**）
+//   asr_inject  把 zh.wav 按平台层录音约定直接登记 → 跑转写 → 与已知答案比对
+//               输出 `DIARY_ASR INJECT_TEXT` / `INJECT_RESULT`（debug-only；
+//               `--ps base=<url>` 只用于缺 zh.wav 时下载，179 KB）
 //
 // 为什么要有 `asr_setup` 这一步：设备的应用沙箱 `/data/app/el2/.../files` 是
 // `drwxrwx--- <app uid>`，`hdc file send`（shell uid）写不进去。模型只能由**应用
@@ -24,9 +29,11 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { audio } from '@kit.AudioKit';
 import { taskpool } from '@kit.ArkTS';
 import { DiaryCore } from '../core/DiaryCore';
-import { SearchParams, SearchSnapshot } from '../core/Models';
+import { Capture, ExtractedContent, Job, JobPage, SearchParams, SearchSnapshot } from '../core/Models';
 import { AsrJobsReport, runAsrJobs } from './AsrWorker';
+import { pcmPeak, pcmRms, readWavPcm } from './HapBothWav';
 import { downloadToFile, ExpectedFile } from './ModelDownload';
+import { injectWavAsRecording } from './RecordingInject';
 import { RecordingVerify } from './RecordingVerify';
 
 const DOMAIN: number = 0x0000;
@@ -88,6 +95,29 @@ const EXPECTED_ZH_WAV: ExpectedFile = {
   sha256: 'b77f1794fe374a0ba1ee1dc458bfaf9349496cbbfc32780c50ba3c5a7ad8e373',
 };
 
+/**
+ * `asr_inject` 的已知答案：README 里 2026-10-17 真机 `DIARY_HAP TRANSCRIPT` 的原文。
+ *
+ * 注入的 PCM 与那次完全相同的 `zh.wav`（同一份 178,988 B / sha256 钉死），所以
+ * 「同一段音频、同一个引擎，应该转出同一句话」。比对是宽松的：去标点/空白后
+ * 字符级相似度 ≥ 0.8 就算通过（数字写成「九/五」等常见差异不算失败）。
+ */
+const EXPECTED_ZH_TEXT: string = '开饭时间早上9点至下午5点。';
+const SIMILARITY_THRESHOLD: number = 0.8;
+
+/** `asr_inject` 从 `extracted_contents` 读到的正文与元数据。 */
+interface InjectedText {
+  found: boolean;
+  sourceId: string;
+  extractorId: string;
+  status: string;
+  coverage: string;
+  errorCode: string;
+  text: string;
+  /** 排障：逐个来源的 extractor/status/coverage/长度，用分号连起来。 */
+  detail: string;
+}
+
 export class TranscriptionVerify {
   static async run(
     mode: string,
@@ -115,6 +145,8 @@ export class TranscriptionVerify {
         await TranscriptionVerify.downloadModels(filesDir, baseUrl);
       } else if (mode === 'asr_record_play') {
         await TranscriptionVerify.recordWithPlayback(context, filesDir, baseUrl);
+      } else if (mode === 'asr_inject') {
+        await TranscriptionVerify.injectKnownWavAndCheck(filesDir, baseUrl);
       } else {
         hilog.error(DOMAIN, TAG, '%{public}s UNKNOWN_MODE mode=%{public}s', MARK, mode);
       }
@@ -362,6 +394,191 @@ export class TranscriptionVerify {
     }
   }
 
+  // ---------------------------------------------------------------- 已知 PCM 注入
+
+  /**
+   * `asr_inject`：把一段已知的 `zh.wav` 注入成录音 → 跑转写 → 与标准答案比对。
+   *
+   * 为什么需要它：`asr_record_play` 是「扬声器播、麦克风录」，系统 AEC/降噪会把
+   * **自己正在播的声音**从采集里减掉（这正是 AEC 的目的），所以那条路径证明不了
+   * 转写准不准——它测到的是「回声消除有多彻底」。这里绕开声学路径，把已知 PCM
+   * 按平台层录音约定直接登记，变量只剩「引擎 + 模型 + 解码链」。
+   *
+   * 只下载 `zh.wav`（179 KB，本地 rport）；模型/tokens 已在沙箱里，不重下。
+   */
+  static async injectKnownWavAndCheck(filesDir: string, baseUrl: string): Promise<void> {
+    const wavPath = `${filesDir}/zh.wav`;
+    if (!fs.accessSync(wavPath) || fs.statSync(wavPath).size !== EXPECTED_ZH_WAV.bytes) {
+      await downloadToFile(`${baseUrl}/zh.wav`, wavPath, EXPECTED_ZH_WAV);
+    }
+    const core = DiaryCore.openInDirectory(filesDir);
+    try {
+      const injected = injectWavAsRecording(core, wavPath, 'op-asr-inject', 'asr_inject');
+      hilog.info(DOMAIN, TAG,
+        '%{public}s INJECT wav=%{public}s wavBytes=%{public}d pcmBytes=%{public}d pcmMs=%{public}d rms=%{public}d peak=%{public}d',
+        MARK, injected.wavPath, injected.segmentByteSize, injected.pcmBytes,
+        injected.pcmMs, injected.rms, injected.peak);
+      hilog.info(DOMAIN, TAG,
+        '%{public}s INJECT SEG index=%{public}d file=%{public}s bytes=%{public}d pcmMs=%{public}d sha256=%{public}s durable=%{public}s',
+        MARK, injected.segmentIndex, injected.segmentFileName, injected.segmentByteSize,
+        injected.segmentDurationMs, injected.segmentSha256.substring(0, 16),
+        injected.durable ? 'true' : 'false');
+      hilog.info(DOMAIN, TAG,
+        '%{public}s INJECT FINALIZE capture=%{public}s asset=%{public}s audioMs=%{public}d segments=%{public}d state=%{public}s queued=%{public}s',
+        MARK, injected.captureId, injected.assetId, injected.finalize.logical_duration_ms,
+        injected.finalize.segment_count, injected.finalize.state,
+        injected.finalize.transcription_queued ? 'true' : 'false');
+
+      const started = Date.now();
+      const raw = await taskpool.execute(
+        runAsrJobs, `${filesDir}/library.sqlite`, 180000, 'asr_inject');
+      const report = JSON.parse(raw as string) as AsrJobsReport;
+      logJson('jobs.report', report);
+      hilog.info(DOMAIN, TAG,
+        '%{public}s INJECT JOBS wallMs=%{public}d openMs=%{public}d runMs=%{public}d pssDeltaKb=%{public}d error=%{public}s',
+        MARK, Date.now() - started, report.open_ms, report.run_ms,
+        report.pss_after_kb - report.pss_before_kb, report.error);
+      if (report.summary !== null) {
+        hilog.info(DOMAIN, TAG,
+          '%{public}s INJECT JOBS processed=%{public}d succeeded=%{public}d failed=%{public}d retrying=%{public}d dueBacklog=%{public}d',
+          MARK, report.summary.processed, report.summary.succeeded, report.summary.failed,
+          report.summary.retrying, report.summary.due_backlog);
+      }
+
+      TranscriptionVerify.logTranscribeJobs(core, injected.assetId);
+      const extracted = TranscriptionVerify.readInjectedText(
+        core, injected.captureId, injected.assetId);
+      hilog.info(DOMAIN, TAG,
+        '%{public}s INJECT EXTRACT found=%{public}s source=%{public}s extractor=%{public}s status=%{public}s coverage=%{public}s error=%{public}s detail=%{public}s',
+        MARK, extracted.found ? 'true' : 'false', extracted.sourceId, extracted.extractorId,
+        extracted.status, extracted.coverage, extracted.errorCode, extracted.detail);
+
+      const expectedNormalized = normalizeForCompare(EXPECTED_ZH_TEXT);
+      const actualNormalized = normalizeForCompare(extracted.text);
+      const distance = editDistance(expectedNormalized, actualNormalized);
+      const denominator = Math.max(expectedNormalized.length, actualNormalized.length);
+      const similarity = denominator === 0 ? 1 : 1 - distance / denominator;
+      const ok = similarity >= SIMILARITY_THRESHOLD;
+      hilog.info(DOMAIN, TAG,
+        '%{public}s INJECT_SIMILARITY expected=%{public}s actual=%{public}s distance=%{public}d length=%{public}d similarity=%{public}s threshold=%{public}s',
+        MARK, expectedNormalized, actualNormalized, distance, denominator,
+        similarity.toFixed(4), SIMILARITY_THRESHOLD.toFixed(2));
+      hilog.info(DOMAIN, TAG, '%{public}s INJECT_TEXT text=%{public}s', MARK, extracted.text);
+      hilog.info(DOMAIN, TAG,
+        '%{public}s INJECT_RESULT ok=%{public}s similarity=%{public}s text=%{public}s',
+        MARK, ok ? 'true' : 'false', similarity.toFixed(2), extracted.text);
+    } catch (e) {
+      const message = describeError(e as Object);
+      hilog.error(DOMAIN, TAG,
+        '%{public}s INJECT_RESULT ok=false similarity=0.00 text= error=%{public}s',
+        MARK, message);
+      throw new Error(message);
+    } finally {
+      core.close();
+    }
+  }
+
+  /** 只打本条注入对应的转写任务：`attempt_count` / `error_code` 是失败排查的第一现场。 */
+  private static logTranscribeJobs(core: DiaryCore, assetId: string): void {
+    const page: JobPage = core.listJobs({ limit: 50 });
+    let matched = 0;
+    for (let i = 0; i < page.jobs.length; i++) {
+      const job: Job = page.jobs[i];
+      if (job.kind !== 'transcribe') {
+        continue;
+      }
+      let targetsThisAsset = false;
+      for (let j = 0; j < job.target_ids.length; j++) {
+        if (job.target_ids[j] === assetId) {
+          targetsThisAsset = true;
+        }
+      }
+      if (!targetsThisAsset) {
+        continue;
+      }
+      matched++;
+      const progress = job.progress === null
+        ? '-' : `${job.progress.completed}/${job.progress.total}`;
+      hilog.info(DOMAIN, TAG,
+        '%{public}s INJECT JOB id=%{public}s state=%{public}s attempt=%{public}d/%{public}d error=%{public}s progress=%{public}s next=%{public}s',
+        MARK, job.id, job.state, job.attempt_count, job.max_attempts,
+        job.error_code === null ? '' : job.error_code, progress,
+        job.next_attempt_at === null ? '' : job.next_attempt_at);
+    }
+    hilog.info(DOMAIN, TAG, '%{public}s INJECT JOBS matched=%{public}d scanned=%{public}d',
+      MARK, matched, page.jobs.length);
+  }
+
+  /**
+   * 从 `extracted_contents` 读注入录音的正文。
+   *
+   * 先用 `captures.get(...).ordered_source_ids` 精确定位这条录音的来源（不能取「第一篇
+   * 音频」：沙箱里有历史录音）；读不到时再退回关键词检索，按 `locator.asset_id` 匹配。
+   */
+  private static readInjectedText(
+    core: DiaryCore,
+    captureId: string,
+    assetId: string,
+  ): InjectedText {
+    const out: InjectedText = {
+      found: false,
+      sourceId: '',
+      extractorId: '',
+      status: '',
+      coverage: '',
+      errorCode: '',
+      text: '',
+      detail: '',
+    };
+    const capture: Capture = core.getCapture({ capture_id: captureId });
+    for (let i = 0; i < capture.ordered_source_ids.length; i++) {
+      const sourceId = capture.ordered_source_ids[i];
+      const content: ExtractedContent | null = core.extractedContent({ source_id: sourceId });
+      if (content === null) {
+        out.detail += `${i}:${sourceId}:null;`;
+        continue;
+      }
+      out.detail += `${i}:${sourceId}:${content.extractor_id}/${content.status}/${content.coverage}/len=${content.text.length};`;
+      if (TranscriptionVerify.takeTranscription(out, content)) {
+        return out;
+      }
+    }
+
+    // 兜底：capture 的来源列表没带音频（或顺序变了）时，按 asset_id 在检索命中里找。
+    const snapshot: SearchSnapshot = core.search({
+      request: { query: '开饭', page_size: 50 },
+      query_revision: 1,
+    });
+    for (let i = 0; i < snapshot.results.length; i++) {
+      const hit = snapshot.results[i];
+      if (hit.source_kind !== 'audio' || hit.source_id === null ||
+        hit.locator === null || hit.locator.asset_id !== assetId) {
+        continue;
+      }
+      const content: ExtractedContent | null = core.extractedContent({ source_id: hit.source_id });
+      if (content !== null && TranscriptionVerify.takeTranscription(out, content)) {
+        out.detail += `fallback:${hit.source_id};`;
+        return out;
+      }
+    }
+    return out;
+  }
+
+  /** 只认 `local_transcription`（本机引擎）的提取结果；别的抽取器不算转写证据。 */
+  private static takeTranscription(out: InjectedText, content: ExtractedContent): boolean {
+    if (content.extractor_id !== 'local_transcription') {
+      return false;
+    }
+    out.found = true;
+    out.sourceId = content.source_id;
+    out.extractorId = content.extractor_id;
+    out.status = content.status;
+    out.coverage = content.coverage;
+    out.errorCode = content.error_code === null ? '' : content.error_code;
+    out.text = content.text;
+    return true;
+  }
+
   // ---------------------------------------------------------------- 检索
 
   static search(filesDir: string, query: string): void {
@@ -402,52 +619,58 @@ export class TranscriptionVerify {
   }
 }
 
-/** 读 WAV 的 PCM 数据段（跳过 RIFF 头；找不到 `data` 就按 44 字节头处理）。 */
-function readWavPcm(path: string): Uint8Array {
-  const size = fs.statSync(path).size;
-  const buffer = new ArrayBuffer(size);
-  const file = fs.openSync(path, fs.OpenMode.READ_ONLY);
-  try {
-    fs.readSync(file.fd, buffer);
-  } finally {
-    fs.closeSync(file);
-  }
-  const bytes = new Uint8Array(buffer);
-  let pos = 12;
-  while (pos + 8 <= bytes.length) {
-    const id = String.fromCharCode(bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]);
-    const size = bytes[pos + 4] | (bytes[pos + 5] << 8) | (bytes[pos + 6] << 16) | (bytes[pos + 7] << 24);
-    if (id === 'data') {
-      const start = pos + 8;
-      const end = Math.min(start + size, bytes.length);
-      return bytes.slice(start, end);
+/**
+ * 比对前归一化：去掉标点、空白与全角空格，英文转小写。
+ *
+ * 只做「字符级」比较，不做同音/数字改写：相似度用编辑距离算，阈值 0.8 已经容许
+ * 少量差异（例如把 9 写成「九」、多一个「了」）。
+ */
+function normalizeForCompare(text: string): string {
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code <= 0x20 || code === 0x3000) {
+      continue;
     }
-    pos += 8 + size + (size % 2);
+    // ASCII 标点/符号区间：!-/ : @ [ - ` { ~
+    if ((code >= 0x21 && code <= 0x2F) || (code >= 0x3A && code <= 0x40) ||
+      (code >= 0x5B && code <= 0x60) || (code >= 0x7B && code <= 0x7E)) {
+      continue;
+    }
+    // 全角标点（中文正文里最常见的一批；不用 Unicode 属性转义，ArkTS 各版本都稳）。
+    if ('，。！？、；：（）《》【】…—·“”‘’'.indexOf(text.charAt(i)) >= 0) {
+      continue;
+    }
+    out += text.charAt(i);
   }
-  return bytes.slice(44);
+  return out.toLowerCase();
 }
 
-/** PCM 的均方根与峰值（16 bit 小端，只用于把播放幅度记进日志）。 */
-function pcmRms(pcm: Uint8Array): number {
-  const count = Math.floor(pcm.length / 2);
-  let sum = 0;
-  for (let i = 0; i < count; i++) {
-    const sample = (pcm[i * 2] | (pcm[i * 2 + 1] << 8)) << 16 >> 16;
-    sum += sample * sample;
+/** 字符级编辑距离（Levenshtein）；用于宽松判定，不做分词。 */
+function editDistance(a: string, b: string): number {
+  const n = b.length;
+  const prev: number[] = [];
+  const curr: number[] = [];
+  for (let j = 0; j <= n; j++) {
+    prev.push(j);
+    curr.push(0);
   }
-  return count > 0 ? Math.round(Math.sqrt(sum / count)) : 0;
-}
-
-function pcmPeak(pcm: Uint8Array): number {
-  const count = Math.floor(pcm.length / 2);
-  let peak = 0;
-  for (let i = 0; i < count; i++) {
-    const sample = Math.abs((pcm[i * 2] | (pcm[i * 2 + 1] << 8)) << 16 >> 16);
-    if (sample > peak) {
-      peak = sample;
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const substitution = prev[j - 1] + (a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1);
+      const deletion = prev[j] + 1;
+      const insertion = curr[j - 1] + 1;
+      curr[j] = Math.min(substitution, Math.min(deletion, insertion));
+    }
+    // 交换两行，避免每次分配新数组（两行都只依赖上一行与当前行左侧）。
+    for (let j = 0; j <= n; j++) {
+      const value = curr[j];
+      curr[j] = prev[j];
+      prev[j] = value;
     }
   }
-  return peak;
+  return prev[n];
 }
 
 function sleep(ms: number): Promise<void> {

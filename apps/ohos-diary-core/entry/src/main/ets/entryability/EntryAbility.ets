@@ -54,6 +54,9 @@ const DEBUG_BUILD: boolean = BuildProfile.DEBUG;
  *   --ps verify_mode asr_download  经 hdc rport 从宿主机下载模型/词表到沙箱
  *       可加 --ps base=http://127.0.0.1:8001 指向另一个宿主端口（默认 8000）；
  *       验证「Content-Length / sha256 不对时保留旧文件并报错」时用它避免挤占 8000。
+ *   --ps verify_mode asr_inject    把沙箱里的 zh.wav 按平台层录音约定注入成录音，
+ *       跑转写并与已知答案比对（DIARY_ASR INJECT_TEXT / INJECT_RESULT）；
+ *       绕开「扬声器→麦克风」的系统 AEC，量的是引擎准确率，不是回声消除效果。
  *
  * 「配置 + 两个 ORT 共存」入口（#108 收尾片，实现在 `verify/HapBothVerify.ets`）：
  *   --ps verify_mode hap_both --ps query=<语义查询>   下 core-config.json 与 bge 模型
@@ -67,7 +70,7 @@ export default class EntryAbility extends UIAbility {
   /** `asr_search` 的检索词；其它模式忽略。 */
   private query: string = '';
   /**
-   * `asr_download` / `asr_record_play` 的模型服务基址。
+   * `asr_download` / `asr_record_play` / `asr_inject` 的模型服务基址。
    *
    * 默认走 `hdc rport` 的 8000；验证下载完整性时可以指到另一个端口（宿主机起
    * 不同的 HTTP 服务，故意返回错的 Content-Length / sha256），不影响默认路径。
