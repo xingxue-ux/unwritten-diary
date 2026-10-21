@@ -59,6 +59,7 @@
 //! | `diary.saveEdit` | `Core::save_diary_edit` | `DiaryVersion` |
 //! | `diary.setCurrent` | `Core::set_diary_current` | `DiaryDay` |
 //! | `diary.merge` | `Core::merge_diary_versions` | `DiaryVersion` |
+//! | `diary.generate` | `Core::generate_diary`（只排任务；执行在 `jobs.runDue`） | `DiaryGenerationTicket`（`job_id` / `source_snapshot_id`） |
 //! | `styles.list` | `Core::list_styles` | `StyleProfile[]` |
 //! | `styles.get` | `Core::get_style`（不存在 `not_found`，不回退默认风格） | `StyleProfile` |
 //! | `styles.save` | `Core::save_style`（每次落新版本；可选 `expected_revision` 乐观锁） | `StyleProfile` |
@@ -70,11 +71,11 @@
 //! 给了就从该序号之后补；`next_sequence` 原样回传给下一次调用。`limit` 默认 200、上限
 //! 1000，超出部分不返回并如实标 `truncated: true`（下一页从 `next_sequence` 继续）。
 //!
-//! 七条 `diary.*` 是「日记」一级入口的数据源（契约 §2.2）：没有它们，鸿蒙日记页
+//! 八条 `diary.*` 是「日记」一级入口的数据源（契约 §2.2）：没有它们，鸿蒙日记页
 //! 无数据可取。它们**只做转接**——候选/当前、revision 闸门、幂等与版本链都在核心
-//! （`diary::get_day` / `save_edit` / `set_current` / `merge_versions`），桥面不复制规则。
-//! 「没有任何材料、也没有版本」的一天在核心里是 `not_found`，这是**空态**不是错误，
-//! 界面据此显示「还没有成篇日记」。
+//! （`diary::get_day` / `save_edit` / `set_current` / `merge_versions` / `request_generation`），
+//! 桥面不复制规则。「没有任何材料、也没有版本」的一天在核心里是 `not_found`，这是
+//! **空态**不是错误，界面据此显示「还没有成篇日记」。
 //!
 //! `diary.listDays` 是第七条（#168 的核心入口，C ABI 这一层最后补上）：它回答「库里
 //! 有哪些天、每天多少条材料」（回收站不算），按 dayKey 倒序；游标不透明、坏游标
@@ -82,8 +83,20 @@
 //! `DiaryDay` 没有 rename），外层的 `next_cursor` 是 **camelCase `nextCursor`**（核心
 //! `DiaryDayPage` 有 `#[serde(rename_all = "camelCase")]`）——照核心 serde 原样，不翻译。
 //!
-//! 还差的一条不在本题材里：`diary.generate`（核心有 `generate_diary`，但它要排 AI
-//! 任务，属于生成那一片）。界面**不显示**这条的按钮，只如实说明缺口。
+//! `diary.generate` 是第八条，也是这一组的最后一条：它只**受理**一次生成——把这一天的
+//! 输入冻结成不可变快照、排一条 `diary_generate` 任务、返回 `DiaryGenerationTicket`
+//! （`job_id` / `source_snapshot_id`；核心类型没有 `rename_all`，响应就是 snake_case）。
+//! 真正的模型调用在 `jobs.runDue` 里，**返回票据 ≠ 已生成**。没有可用服务时也照样返回
+//! 票据：队列把任务停在 `waiting_configuration` 等配置（与 #66 的能力闸门同一口径），
+//! 这不是一次调用失败；核心也绝不会为了「看起来成功」写一版空正文。
+//!
+//! - **输入在返回前已冻结**：快照行不可变，事后改材料不影响这一版；
+//! - **候选/当前**：首次（当天没有当前版本、也没有用户自己的版本）成为当前版本，其余
+//!   一律候选；同快照哈希 + 同 `operationId` 不重复产版本（`reason = regenerate` 是例外）；
+//! - `reason` 按 `DiaryGenerationReason` 的 serde wire 值收全四种：`manual` / `scheduled` /
+//!   `automatic` / `regenerate`（后两种是自动整理那一路，界面主动生成只用 `manual` /
+//!   `regenerate`）；`style_id` 省略用默认风格，点名不存在的风格是 `not_found`，这一天
+//!   没有任何可读材料是 `invalid_argument`（不排空任务）。
 //!
 //! 两条「为什么在这里」的说明（本块的任务书只点名了另外六条）：
 //!
@@ -149,8 +162,8 @@
 //! - 文件：`imports.*`、`assets.open` / `assets.release`；
 //! - 检索：`search.snapshot`（`search.*` 只差它）；
 //! - 任务：`jobs.nextWakeup`；
-//! - 日记：只剩 `diary.generate`（核心有 `generate_diary`，但要排 AI 任务，属于生成
-//!   那一片）——`diary.listDays` 已接上，见 [`WIRED_METHODS`]；
+//! - 日记：**没有缺口**——`diary.generate` 是最后一条，八条 `diary.*` 都已接上，
+//!   见 [`WIRED_METHODS`]；
 //! - 其余：`core.snapshot` / `core.close` / `core.setRuntimeState`、`responses.*`、
 //!   `plugins.*`——要么核心还没有对应实现，要么属于后面的块。
 //!   （回收站五条、风格三条、导出一条都已接上，见 [`WIRED_METHODS`]。）
@@ -165,8 +178,8 @@ use diary_core::model::{
 };
 use diary_core::provider::local_engine::is_ohos_app_data_path;
 use diary_core::{
-    Core, CoreError, CreateDraftInput, JobState, Provider, ProviderCapability, SearchFilters,
-    SearchMode, SearchRequest, Settings,
+    Core, CoreError, CreateDraftInput, DiaryGenerationReason, JobState, Provider,
+    ProviderCapability, SearchFilters, SearchMode, SearchRequest, Settings,
 };
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -231,6 +244,7 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "diary.saveEdit",
     "diary.setCurrent",
     "diary.merge",
+    "diary.generate",
     "styles.list",
     "styles.get",
     "styles.save",
@@ -730,6 +744,21 @@ pub(crate) fn dispatch(
                 &input.operation_id,
             )?;
             to_value(version)
+        }
+        // 受理一次生成：**只冻结输入 + 排任务**，不在这次调用里调模型。返回的票据
+        // （`job_id` / `source_snapshot_id`）是「已经受理」的凭据，不是「已经生成」的
+        // 结果；真正的执行在 `jobs.runDue`。没有可用服务时核心照样返回票据，任务由
+        // 队列停在 `waiting_configuration`（与 #66 的能力闸门同一口径），所以这里**不能**
+        // 先查能力闸门再决定要不要调用——那会把「等配置」误报成一次调用失败。
+        "diary.generate" => {
+            let input: GenerateDiaryParams = parse(params)?;
+            let ticket = core.generate_diary(
+                &input.day_key,
+                input.style_id.as_deref(),
+                input.reason,
+                &input.operation_id,
+            )?;
+            to_value(ticket)
         }
         // ------------------------------------------------------------ 风格（契约 4.3 / 2.5）
         // 三条只做转接：默认风格 `sty_default` 是库里真实的一行（不是查不出来的魔法值）；
@@ -1723,6 +1752,29 @@ struct MergeDiaryParams {
     body: String,
     #[serde(alias = "expectedRevision")]
     expected_revision: i64,
+    #[serde(alias = "operationId")]
+    operation_id: String,
+}
+
+/// `diary.generate`：`day_key` + 可选 `style_id` + `reason` + `operation_id`。
+///
+/// `reason` **不在这里手写字符串白名单**：直接反序列化核心的
+/// [`DiaryGenerationReason`]，它的 serde wire 值是 `manual` / `scheduled` / `automatic` /
+/// `regenerate`（`model.rs` 的 `#[serde(rename_all = "snake_case")]`）。桥面另写一份
+/// 白名单迟早会与核心漂移；非法值由 serde 报 `unknown variant`，桥面统一转
+/// `invalid_argument`。`scheduled` / `automatic` 是自动整理那一路，界面主动生成只用
+/// `manual` / `regenerate`。
+///
+/// `style_id` 省略（或 `null`）= 用默认风格；点名不存在的风格由核心报 `not_found`
+/// （**不静默回退默认风格**）。`operation_id` 是幂等键，空串会被核心拒绝。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenerateDiaryParams {
+    #[serde(alias = "dayKey")]
+    day_key: String,
+    #[serde(default, alias = "styleId")]
+    style_id: Option<String>,
+    reason: DiaryGenerationReason,
     #[serde(alias = "operationId")]
     operation_id: String,
 }

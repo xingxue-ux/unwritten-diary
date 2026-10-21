@@ -278,62 +278,36 @@ fn enqueue_for_test(handle: *mut Handle, kind: &str, target_ids: &[&str]) -> Str
     core.enqueue_job(job).expect("入队应当成功").id
 }
 
-/// 用核心自己的入口造一版「基于这一天材料生成」的日记，返回版本 id。
+/// 用 C ABI 的 `diary.generate` + `jobs.runDue` 造一版「基于这一天材料生成」的日记，
+/// 返回版本 id。
 ///
-/// 为什么借核心入口：`diary.generate` 还没接到 C ABI（它要排 AI 任务，属于生成那一片），
-/// 但 `captures.previewPurge` 的**三类版本清单**必须有真数据才验得出来——空清单证明不了
-/// 「字段传对了」。传输层是 `ScriptedTransport`（回放，不联网），生成任务由核心队列真的
-/// 跑一遍；之后所有断言仍然只走 C ABI。
+/// `captures.previewPurge` 的**三类版本清单**与 `exports.create` 都要有真版本才验得出来
+/// ——空清单证明不了「字段传对了」。传输层是 `ScriptedTransport`（回放，不联网），
+/// 其余全部走导出入口；`diary.generate` 接上之后这里不再借核心入口。
 fn seed_generated_diary(handle: *mut Handle, day_key: &str) -> String {
-    let core = debug_core(handle).expect("句柄必须在登记表里");
-    let mut core = core.lock().unwrap();
-    core.set_transport_for_test(Arc::new(diary_core::ScriptedTransport::ok(vec![
-        diary_core::HttpResponse::new(
-            200,
-            json!({
-                "model": "qwen-test",
-                "choices": [{
-                    "message": {
-                        "role": "assistant",
-                        "content": "今天整理了房间，翻出一些旧东西，坐了很久。",
-                    }
-                }],
-            })
-            .to_string(),
-        ),
-    ])) as Arc<dyn diary_core::Transport>);
-    core.save_provider(
-        &diary_core::Provider {
-            id: "prv_capi_recycle".to_owned(),
-            label: "测试服务".to_owned(),
-            adapter_id: diary_core::OPENAI_COMPATIBLE.to_owned(),
-            endpoint: Some("http://127.0.0.1:11434/v1".to_owned()),
-            model: Some("qwen-test".to_owned()),
-            capabilities: [diary_core::ProviderCapability::GenerateText]
-                .into_iter()
-                .collect::<std::collections::HashSet<_>>(),
-            credential_ref: None,
-            enabled: true,
-            test_status: diary_core::ProviderTestStatus::Untested,
-        },
-        Some("sk-test-secret-0123456789"),
-    )
-    .expect("保存测试服务");
-    core.generate_diary(
-        day_key,
-        None,
-        diary_core::DiaryGenerationReason::Manual,
-        "op-capi-recycle-gen",
-    )
-    .expect("排生成任务");
-    let summary = core
-        .run_due_jobs(chrono::Utc::now(), 30_000, "test", 16)
-        .expect("跑一轮任务");
-    assert_eq!(summary.succeeded, 1, "生成任务应当成功：{summary:?}");
-    core.get_diary_day(day_key)
-        .expect("生成后应当能读到这一天")
-        .current_version_id
+    save_generate_provider(handle);
+    script_generation_reply(handle, "今天整理了房间，翻出一些旧东西，坐了很久。");
+    let ticket = expect_ok(&call(
+        handle,
+        "diary.generate",
+        json!({
+            "day_key": day_key,
+            "reason": "manual",
+            "operation_id": "op-capi-seed-generated",
+        }),
+    ));
+    assert!(ticket["job_id"].is_string(), "{ticket}");
+    let summary = run_due(handle);
+    assert_eq!(
+        summary["succeeded"],
+        json!(1),
+        "生成任务应当成功：{summary}"
+    );
+    let day = expect_ok(&call(handle, "diary.getDay", json!({"day_key": day_key})));
+    day["current_version_id"]
+        .as_str()
         .expect("首次生成成为当前版本")
+        .to_owned()
 }
 
 /// 把预览令牌的有效期改成 `seconds` 秒（`0` = 立刻过期，用来验过期路径）。
@@ -1732,11 +1706,11 @@ fn captures_get_and_list_use_real_cursor_pagination() {
 /// 成功路径覆盖读的三条（`getDay` / `listVersions` / `getVersion` 的缺省语义）：
 /// 有材料、还没有成篇版本的一天；以及「空的一天是 `not_found`，不是空对象」。
 ///
-/// 写路径（`saveEdit` / `setCurrent` / `merge`）在这里只能验错误面：**C ABI 没有
-/// 创建首版的入口**（`diary.generate` 未接，它要排 AI 任务），所以没有合法的
-/// `base_version_id` 可给。这些用例断言的是参数校验与核心错误码**原样透传**，
-/// 不伪造一个「成功」的版本；`saveEdit`/`merge` 的成功路径由核心自己的测试覆盖
-/// （`diary.rs` 的 `#[cfg(test)]`），桥面只多做一次 JSON 解析 + 转发。
+/// 写路径（`saveEdit` / `setCurrent` / `merge`）在这里只验错误面：本用例特意不生成
+/// 任何版本（生成要配服务并跑队列，成功路径由 `generate_*` 用例覆盖），所以没有合法的
+/// `base_version_id` 可给。这些断言的是参数校验与核心错误码**原样透传**，不伪造一个
+/// 「成功」的版本；版本链本身的成功路径由核心自己的测试覆盖（`diary.rs` 的
+/// `#[cfg(test)]`），桥面只多做一次 JSON 解析 + 转发。
 ///
 /// 另：`setCurrent` 与 `saveEdit`/`merge` 的 `expected_revision` 都是
 /// `DiaryDay.revision`（持久单调），不是版本数——这里也用这个值构造请求。
@@ -1946,6 +1920,384 @@ fn diary_day_and_versions_are_wired() {
         json!({"capture_id": capture_id}),
     ));
     assert_eq!(capture["state"], json!("committed"));
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 生成用例的服务配置：一条 `generate_text` 能力的假服务（不联网，传输层另换）。
+fn save_generate_provider(handle: *mut Handle) {
+    let saved = expect_ok(&call(
+        handle,
+        "providers.save",
+        json!({
+            "config": {
+                "id": "prv_capi_generate",
+                "label": "C ABI 生成测试服务",
+                "adapter_id": "openai_compatible",
+                "endpoint": "http://127.0.0.1:11434/v1",
+                "model": "qwen-test",
+                "capabilities": ["generate_text"],
+                "credential_ref": null,
+                "enabled": true,
+                "test_status": "untested"
+            },
+            "secret": "sk-test-secret-0123456789"
+        }),
+    ));
+    assert_eq!(saved["id"], json!("prv_capi_generate"));
+    assert_eq!(saved["capabilities"], json!(["generate_text"]));
+}
+
+/// 把句柄背后的传输层换成回放：`diary_generate` 执行时只发一次 chat 请求。
+///
+/// 与 `seed_generated_diary` 同一个理由：核心的 `Transport` 只能从核心入口替换，
+/// 但**被测的方法仍然全部走 C ABI**；回放内容固定，所以「发生了几次调用」「版本
+/// 正文是什么」都是数出来的，不是真联网猜的。
+fn script_generation_reply(handle: *mut Handle, text: &str) {
+    let core = debug_core(handle).expect("句柄必须在登记表里");
+    let transport = diary_core::ScriptedTransport::ok(vec![diary_core::HttpResponse::new(
+        200,
+        json!({
+            "model": "qwen-test",
+            "choices": [{"message": {"role": "assistant", "content": text}}],
+        })
+        .to_string(),
+    )]);
+    core.lock()
+        .unwrap()
+        .set_transport_for_test(Arc::new(transport) as Arc<dyn diary_core::Transport>);
+}
+
+fn run_due(handle: *mut Handle) -> Value {
+    expect_ok(&call(
+        handle,
+        "jobs.runDue",
+        json!({"budget_ms": 30_000, "trigger": "test"}),
+    ))
+}
+
+/// `diary.generate` 的**票据语义**：没有可用 provider 时也照样返回票据（不是错误），
+/// `jobs.runDue` 之后任务停在 `waiting_configuration`（不是 `failed`），并且没有为了
+/// 「看起来成功」写一版空正文。
+///
+/// 这是本条方法最容易被误读的口径：返回票据 = 输入已冻结、任务已受理，**不等于已生成**。
+#[test]
+fn generate_without_provider_returns_ticket_and_waits_for_configuration() {
+    let (dir, _path, handle) = open_temp("diary-generate-no-provider");
+    seed_capture_at(
+        handle,
+        "op-capi-generate-noprovider",
+        "2026-10-19T09:30:00Z",
+        "今天没有配置服务，也要先把这一天冻住。",
+    );
+
+    // 没有 provider、传输层还是真的（但根本不会被调用）：调用本身必须成功。
+    let ticket = expect_ok(&call(
+        handle,
+        "diary.generate",
+        json!({
+            "day_key": "2026-10-19",
+            "reason": "manual",
+            "operation_id": "op-capi-generate-1",
+        }),
+    ));
+    let job_id = ticket["job_id"].as_str().expect("票据必须有 job_id");
+    let snapshot_id = ticket["source_snapshot_id"]
+        .as_str()
+        .expect("票据必须有 source_snapshot_id");
+    assert!(job_id.starts_with("job_"), "job_id 形状不对：{ticket}");
+    assert!(
+        snapshot_id.starts_with("snp_"),
+        "source_snapshot_id 形状不对：{ticket}"
+    );
+    // 核心 `DiaryGenerationTicket` 没有 rename_all：信封里的 `data` 就是这两个 snake_case
+    // 字段，没有 camelCase 副本。
+    let fields = ticket.as_object().unwrap();
+    assert_eq!(fields.len(), 2, "票据字段不该多也不该少：{ticket}");
+    assert!(fields.contains_key("job_id") && fields.contains_key("source_snapshot_id"));
+    assert!(!fields.contains_key("jobId") && !fields.contains_key("sourceSnapshotId"));
+
+    // `runDue` 真的领取了这条任务，但闸门把它停在等配置——不是失败、不消耗尝试次数。
+    let summary = run_due(handle);
+    assert_eq!(summary["succeeded"], json!(0), "{summary}");
+    assert_eq!(summary["failed"], json!(0), "等配置不是失败：{summary}");
+    let job = expect_ok(&call(handle, "jobs.get", json!({"job_id": job_id})));
+    assert_eq!(job["state"], json!("waiting_configuration"), "{job}");
+    assert_eq!(job["error_code"], json!("provider_not_configured"), "{job}");
+    assert_eq!(
+        job["attempt_count"],
+        json!(0),
+        "等配置不消耗尝试次数：{job}"
+    );
+    assert_eq!(job["requires_user_action"], json!(true), "{job}");
+
+    // 没有版本、更没有空正文冒充成功；材料仍然在，界面看到的是「还没有成篇日记」。
+    let versions = expect_ok(&call(
+        handle,
+        "diary.listVersions",
+        json!({"day_key": "2026-10-19"}),
+    ));
+    assert_eq!(versions["versions"], json!([]));
+    let day = expect_ok(&call(
+        handle,
+        "diary.getDay",
+        json!({"day_key": "2026-10-19"}),
+    ));
+    assert_eq!(day["current_version_id"], json!(null));
+    assert_eq!(day["candidate_version_ids"], json!([]));
+    assert_eq!(day["material_counts"]["captures"], json!(1));
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 同一条 `operationId` 重放：返回**原票据**，不重复产版本、不重复调模型。
+///
+/// 与核心 `diary_generation_test.rs` 的同名用例同一口径；这里验的是 C ABI 这一层
+/// 也把幂等键原样交给核心（而不是自己再造一份去重逻辑）。
+#[test]
+fn generate_same_operation_id_does_not_duplicate_version() {
+    let (dir, _path, handle) = open_temp("diary-generate-idempotent");
+    seed_capture_at(
+        handle,
+        "op-capi-gen-idem-seed",
+        "2026-10-20T09:30:00Z",
+        "今天把旧车票夹进了书里。",
+    );
+    save_generate_provider(handle);
+    script_generation_reply(handle, "今天把旧车票夹进了书里，想起很多事。");
+
+    let request = json!({
+        "day_key": "2026-10-20",
+        "reason": "manual",
+        "operation_id": "op-capi-gen-idem-1",
+    });
+    let first = expect_ok(&call(handle, "diary.generate", request.clone()));
+    let replay = expect_ok(&call(handle, "diary.generate", request.clone()));
+    assert_eq!(replay, first, "同一条 operationId 必须返回原票据");
+
+    let summary = run_due(handle);
+    assert_eq!(summary["succeeded"], json!(1), "{summary}");
+    let versions = expect_ok(&call(
+        handle,
+        "diary.listVersions",
+        json!({"day_key": "2026-10-20"}),
+    ));
+    assert_eq!(versions["versions"].as_array().unwrap().len(), 1);
+
+    // 生成完成后再重放同一条 operationId：仍然拿回原票据，版本数不变。
+    let replay_after = expect_ok(&call(handle, "diary.generate", request));
+    assert_eq!(replay_after, first);
+    let summary = run_due(handle);
+    assert_eq!(
+        summary["succeeded"],
+        json!(0),
+        "没有第二条任务可跑：{summary}"
+    );
+    let versions = expect_ok(&call(
+        handle,
+        "diary.listVersions",
+        json!({"day_key": "2026-10-20"}),
+    ));
+    assert_eq!(
+        versions["versions"].as_array().unwrap().len(),
+        1,
+        "重放不许产第二个版本：{versions}"
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 有 provider（回放传输，不联网）：`runDue` 后 `diary.getDay` 能看到 `currentVersionId`。
+///
+/// 首次生成（这一天没有当前版本、也没有用户自己的版本）成为当前版本——这是「返回票据
+/// ≠ 已生成」的另一半：真正的版本是队列执行后落下的，票据里的快照 id 与版本对得上。
+#[test]
+fn generate_with_provider_becomes_current_after_run_due() {
+    let (dir, _path, handle) = open_temp("diary-generate-current");
+    seed_capture_at(
+        handle,
+        "op-capi-gen-current-seed",
+        "2026-10-21T09:30:00Z",
+        "今天去了公园，风有点大。",
+    );
+    save_generate_provider(handle);
+    script_generation_reply(handle, "今天去了公园，风有点大，坐了很久。");
+
+    let ticket = expect_ok(&call(
+        handle,
+        "diary.generate",
+        json!({
+            "day_key": "2026-10-21",
+            "reason": "manual",
+            "operation_id": "op-capi-gen-current-1",
+        }),
+    ));
+    // 返回时还没有版本：票据只代表「已受理」。
+    let before = expect_ok(&call(
+        handle,
+        "diary.getDay",
+        json!({"day_key": "2026-10-21"}),
+    ));
+    assert_eq!(before["current_version_id"], json!(null));
+    assert_eq!(before["candidate_version_ids"], json!([]));
+
+    let summary = run_due(handle);
+    assert_eq!(summary["processed"], json!(1), "{summary}");
+    assert_eq!(summary["succeeded"], json!(1), "{summary}");
+
+    let day = expect_ok(&call(
+        handle,
+        "diary.getDay",
+        json!({"day_key": "2026-10-21"}),
+    ));
+    let current = day["current_version_id"]
+        .as_str()
+        .expect("首次生成应当成为当前版本");
+    assert_eq!(day["candidate_version_ids"], json!([]));
+    let version = expect_ok(&call(
+        handle,
+        "diary.getVersion",
+        json!({"version_id": current}),
+    ));
+    assert_eq!(version["body"], json!("今天去了公园，风有点大，坐了很久。"));
+    assert_eq!(version["origin"], json!("generated"));
+    assert_eq!(
+        version["source_snapshot_id"], ticket["source_snapshot_id"],
+        "版本必须指向票据冻结的那一份快照"
+    );
+    assert_eq!(
+        version["generation_info"]["provider_id"],
+        json!("prv_capi_generate")
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `reason` 传非法值：桥面在调用核心之前就报 `invalid_argument`，不落快照、不排任务。
+///
+/// 合法值以核心 `DiaryGenerationReason` 的 serde wire 值为准（见 `model.rs`），桥面不另
+/// 维护一份字符串表；所以「拼错原因」和「缺原因」是同一类参数错误。
+#[test]
+fn generate_rejects_invalid_reason_before_touching_the_core() {
+    let (dir, _path, handle) = open_temp("diary-generate-invalid-reason");
+
+    let message = expect_error(
+        &call(
+            handle,
+            "diary.generate",
+            json!({
+                "day_key": "2026-10-19",
+                "reason": "yesterday",
+                "operation_id": "op-capi-generate-bad",
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(message.contains("参数不合法"), "{message}");
+    assert!(
+        message.contains("reason") || message.contains("unknown variant"),
+        "{message}"
+    );
+
+    // 缺 reason 同样是参数错误（必填字段不静默补默认值）。
+    expect_error(
+        &call(
+            handle,
+            "diary.generate",
+            json!({"day_key": "2026-10-19", "operation_id": "op-capi-generate-bad"}),
+        ),
+        "invalid_argument",
+    );
+
+    // 空 operationId 由核心拒绝（消息点名幂等键）；同样不排任务。
+    let message = expect_error(
+        &call(
+            handle,
+            "diary.generate",
+            json!({
+                "day_key": "2026-10-19",
+                "reason": "manual",
+                "operation_id": "   ",
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(message.contains("operationId"), "{message}");
+
+    // 一次都没有受理：任务表仍是空的。
+    let jobs = expect_ok(&call(handle, "jobs.list", Value::Null));
+    assert_eq!(jobs["jobs"], json!([]));
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// camelCase 别名 + 可选 `style_id` + 票据字段名：`Models.ets` 能照实际 JSON 声明。
+///
+/// `#181` 立的规矩是 snake_case 为主名、camelCase 为别名；响应仍然只按核心 serde 的
+/// 一套字段输出（`DiaryGenerationTicket` 没有 rename ⇒ 只有 `job_id` /
+/// `source_snapshot_id`）。点名不存在的风格由核心报 `not_found`，不静默回退默认风格。
+#[test]
+fn generate_accepts_camel_case_aliases_and_optional_style() {
+    let (dir, _path, handle) = open_temp("diary-generate-aliases");
+    seed_capture_at(
+        handle,
+        "op-capi-gen-alias-seed",
+        "2026-10-22T09:30:00Z",
+        "今天把窗台的绿萝换了盆。",
+    );
+
+    let ticket = expect_ok(&call(
+        handle,
+        "diary.generate",
+        json!({
+            "dayKey": "2026-10-22",
+            "styleId": "sty_default",
+            "reason": "regenerate",
+            "operationId": "op-capi-gen-alias-1",
+        }),
+    ));
+    assert!(ticket["job_id"].is_string(), "{ticket}");
+    assert!(ticket["source_snapshot_id"].is_string(), "{ticket}");
+    assert!(
+        ticket.get("jobId").is_none() && ticket.get("sourceSnapshotId").is_none(),
+        "响应只输出核心 serde 的一套写法：{ticket}"
+    );
+
+    // 点名了不存在的风格：核心 not_found，桥面不改写、不回退默认风格。
+    let message = expect_error(
+        &call(
+            handle,
+            "diary.generate",
+            json!({
+                "day_key": "2026-10-22",
+                "style_id": "sty_missing",
+                "reason": "manual",
+                "operation_id": "op-capi-gen-alias-missing-style",
+            }),
+        ),
+        "not_found",
+    );
+    assert!(message.contains("sty_missing"), "{message}");
+
+    // `deny_unknown_fields`：拼错的字段不许静默忽略。
+    expect_error(
+        &call(
+            handle,
+            "diary.generate",
+            json!({
+                "day_key": "2026-10-22",
+                "reason": "manual",
+                "operation_id": "op-capi-gen-alias-extra",
+                "unexpected_field": 1,
+            }),
+        ),
+        "invalid_argument",
+    );
 
     assert_eq!(diary_close(handle), 0);
     std::fs::remove_dir_all(dir).unwrap();
@@ -2506,10 +2858,9 @@ fn capabilities_include_every_wired_method() {
     }
 
     // 核心已经有实现、C ABI 这一层还没包装的几条**不能**出现在诚实的能力清单里。
-    // 回收站五条、风格三条、导出一条、`diary.listDays` 都已接上；剩下的是文件、生成、
-    // 插件与快照那几片（§6.2 的缺口清单）。
+    // 回收站五条、风格三条、导出一条、`diary.listDays` 与 `diary.generate` 都已接上；
+    // 剩下的是文件、插件与快照那几片（§6.2 的缺口清单）。
     for name in [
-        "diary.generate",
         "imports.prepare",
         "plugins.list",
         "search.snapshot",
