@@ -15,7 +15,7 @@
 | # | 结论 | 强度 |
 |---|---|---|
 | 1 | C ABI **不在 main 里**（PR #117 未合）⇒ 本分支从 `origin/main` = `e4e3c0a` 起步，**merge** 了 `origin/feat/B8a-core-c-abi`（`29a076e`），没有改写 C ABI 的任何一行 | 实测（`git log --oneline`） |
-| 2 | 模块形状是**三层**：`libdiary_capi.so`（Rust，6 个 C 符号）→ `libdiary_napi.so`（C++，7 个 JS 函数）→ `DiaryCore.ets`（30 条契约方法）；JSON **一进一出**，中间不拆不拼 | 实测（能编 + 静态核对） |
+| 2 | 模块形状是**三层**：`libdiary_capi.so`（Rust，6 个 C 符号）→ `libdiary_napi.so`（C++，7 个 JS 函数）→ `DiaryCore.ets`（38 条契约方法）；JSON **一进一出**，中间不拆不拼 | 实测（能编 + 静态核对） |
 | 3 | NAPI 层**只在「调用没能发生」时抛 JS 异常**（`ERR_DIARY_LIB/ARGS/HANDLE/OPEN/CALL`）；业务错误仍返回 `ok:false` 信封，由 ArkTS 侧统一转成 `DiaryError` 异常 | 实测（代码 + 契约核对） / 真机已验（临时身份） |
 | 4 | **错误码一个没新增**：21 个核心码原样透传；唯一的宿主码 `native_unavailable` 表示「调用没能发生」，不进核心码表 | 实测（`tools/check_arkts_capi_contract.py`） |
 | 5 | 交叉编译 + shim 编译过：`libdiary_capi.so` 11,369,880 B（`NEEDED` 只有 `libc.so`）、`libdiary_napi.so` 46,824 B（`NEEDED` = `libace_napi.z.so` / `libc++_shared.so` / `libc.so`）、6 个 C 符号全在 | 实测（见 §8.1） |
@@ -74,7 +74,7 @@ libdiary_capi.so      Rust：diary_open / diary_call / diary_close / diary_versi
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
-| `version()` | `() => string` | `diary_capi_version()` 原文，如 `diary_capi/0.1.0 apiVersion=1.0` |
+| `version()` | `() => string` | `diary_capi_version()` 原文，如 `diary_capi/0.1.0 apiVersion=1.1` |
 | `open(path)` | `(string) => number` | 打开/创建资料库，返回**句柄 id**；失败抛 `ERR_DIARY_OPEN` |
 | `close(handle)` | `(number) => void` | 关闭；未知/已关闭抛 `ERR_DIARY_HANDLE` |
 | `call(handle, json)` | `(number, string) => string` | 返回**信封 JSON 原文**；业务错误不抛 |
@@ -203,7 +203,8 @@ corrupted_backup, incompatible_backup
   多出来的字段运行时仍在）；
 - `search` 的 `params` 是 `{ request, query_revision }`（C ABI 的形状），
   不是扁平的 `{ query }`——因为 `query_revision` 是检索会话的一部分；
-- 方法子集 30 条：`capabilities` 里没列出来的就是还没接，不会假装支持。
+- 方法子集 38 条：`capabilities` 里没列出来的就是还没接，不会假装支持（其中回收站 5 /
+  styles 3 / 导出 1 是**核心还没有实现**，不是 ArkTS 漏接）。
 
 ## 6 库放置与打包
 
@@ -524,7 +525,8 @@ $ python3 tools/check_arkts_capi_contract.py
    JSON / hilog 里都要特殊处理。
 5. **`stringFree` 要不要暴露**：现在不暴露（内部复制+释放，§3.3）。暴露它只会多一类
    「重复释放」的错误，没有收益。
-6. **方法子集**：C ABI 现在接了 30 条（录音 5 条、`providers.*` 4 条、界面缺口 11 条都是后续分片补的），
+6. **方法子集**：C ABI 现在接了 38 条（录音 5 条、`providers.*` 4 条、本批 sources 正文 4 +
+   备份 3 + 事件 1 都是后续分片补的；回收站/styles/导出 9 条仍缺核心实现），
    ArkTS 已同步。每加一条 C ABI 方法，只需在 `DiaryCore.ets` 加一个方法（检查器会抓漏），
    再在 `Models.ets` 里给返回/参数类型；不用动 C++。
 7. **`native_unavailable` 这个宿主码**：要不要换成 `invalid_state`（复用核心码）？

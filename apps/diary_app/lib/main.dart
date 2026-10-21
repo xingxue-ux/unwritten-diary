@@ -11,11 +11,19 @@ import 'src/core_wakeup.dart';
 import 'src/experience_shell.dart';
 import 'src/sketch_ui.dart';
 import 'src/theme.dart';
+import 'src/ui_strings.dart';
 
 const _previewMode = bool.fromEnvironment('DIARY_DEMO_MODE');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 文案表随安装包分发；读不到时界面会显示 ⟨文案表未加载: ...⟩ 占位，
+  // 这里留下原因，不退回任何硬编码文案。
+  try {
+    await uiStrings.load();
+  } on Object catch (error) {
+    debugPrint('共享文案加载失败（${UiStrings.assetPath}）：$error');
+  }
   if (Platform.isAndroid && !_previewMode) {
     // A scheduler failure must never prevent the diary from opening for text.
     try {

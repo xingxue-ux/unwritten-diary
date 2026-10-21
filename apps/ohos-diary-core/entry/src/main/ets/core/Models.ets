@@ -145,6 +145,17 @@ export interface CommitResult {
   original_text_revision: SourceRevision | null;
 }
 
+/** `sources.locate` 的结果：前端能否打开原件，以及不能打开时的真实原因。 */
+export interface SourceLocation {
+  source_ref: string;
+  locator: SourceLocator;
+  available: boolean;
+  /** 原件资产 id；纯文字来源没有可打开的原件，这里是 null。 */
+  asset_id: string | null;
+  /** `available === false` 时的原因（原样展示，不要自己改写）。 */
+  reason: string | null;
+}
+
 /** 定位信息：文字区间 / 时间区间 / 页码 / 图片矩形（用不到的字段是 null）。 */
 export interface SourceLocator {
   locator_type: string;
@@ -192,7 +203,10 @@ export interface TextRange {
 /** 一条检索命中。 */
 export interface SearchHit {
   hit_id: string;
+  /** 同一来源的命中折叠归组用的键；片段命中时是 `source_id`，**不是**记录 id。 */
   group_id: string;
+  /** 这一条命中属于哪篇记录（`captures.id`）；两种命中都有，跳详情页用它。 */
+  capture_id: string;
   /** `text` / `image` / `audio` / `video` / `file` / `link`。 */
   source_kind: string;
   /** 命中原因，元素是 `keyword` / `semantic` / `metadata`。 */
@@ -328,6 +342,91 @@ export interface IndexStatus {
   reasons: string[];
 }
 
+// ---------------------------------------------------------------- 日记（契约 2.5 / 4.3）
+//
+// 字段名与 `diary_core::model` 的 serde 输出一致（snake_case）。
+// 「哪一版是当前、哪些是候选」只在 `DiaryDay` 里表达：`DiaryVersion` 本身没有状态字段。
+
+/** 当天的材料统计（数字都是真值，不是估计）。 */
+export interface MaterialCounts {
+  /** 当天的记录数（不含回收站）。 */
+  captures: number;
+  /** 已经有可用正文的材料数（用户的文字天然算「已处理」）。 */
+  processed: number;
+  /** 还在等提取的材料数。 */
+  pending: number;
+  /** 提取失败、暂无可读正文的材料数。 */
+  failed: number;
+}
+
+/**
+ * 某一天的日记聚合视图（`diary.getDay`）。
+ *
+ * **空的一天是 `not_found`，不是空对象**：核心只在「这一天既没有材料也没有版本」时
+ * 报 `not_found`，界面据此显示「今天还没有成篇日记」，不要把它当读取失败。
+ */
+export interface DiaryDay {
+  day_key: string;
+  /** 这一天的时区名；没有任何材料也没有生成过时是 `UTC`（缺省，不是推测）。 */
+  time_zone: string;
+  /** 当前版本；这一天还没有任何版本时为 null。 */
+  current_version_id: string | null;
+  /** 候选版本（除当前版本之外的全部版本），最新在前。 */
+  candidate_version_ids: string[];
+  /**
+   * 这一天的 revision：持久、单调递增的状态推进计数。
+   *
+   * `saveEdit` / `setCurrent` / `merge` 的 `expected_revision` 必须原样回传它
+   * （不是版本数：换当前版本不增加版本数）。
+   */
+  revision: number;
+  material_counts: MaterialCounts;
+  /** 覆盖程度：`complete` / `partial` / `metadata_only` / `unavailable`。 */
+  coverage: string;
+  updated_at: string;
+}
+
+/** 生成过程的审计信息（合并版本也会带这一格：`modelCalls = "0"`）。 */
+export interface GenerationInfo {
+  prompt_version: string;
+  provider_id: string | null;
+  model: string | null;
+  /** 生成选项：固定的协议参数与**如实记录的步数**（键值都是字符串）。 */
+  generation_options: Object;
+  covered_source_count: number;
+  unprocessed_source_count: number;
+}
+
+/** 正文与来源的关联；`body_range` 为 null 表示整段关联或位置不可靠（不伪造）。 */
+export interface ProvenanceLink {
+  source_id: string;
+  source_revision_id: string;
+  locator: SourceLocator;
+  body_range: TextRange | null;
+  note: string | null;
+}
+
+/** 一条日记版本（正文是自然段；来源关联在 `provenance_links`）。 */
+export interface DiaryVersion {
+  id: string;
+  day_key: string;
+  parent_version_id: string | null;
+  /** `generated` / `user_edit` / `merge`。 */
+  origin: string;
+  body: string;
+  created_at: string;
+  source_snapshot_id: string | null;
+  style_snapshot_id: string | null;
+  generation_info: GenerationInfo | null;
+  provenance_links: ProvenanceLink[];
+}
+
+/** `diary.listVersions` 的分页结果；`next_cursor` 不透明，原样回传。 */
+export interface DiaryVersionPage {
+  versions: DiaryVersion[];
+  next_cursor: string | null;
+}
+
 // ---------------------------------------------------------------- 请求参数
 //
 // 字段名以核心 Rust 参数名为准（snake_case）；契约表里的 camelCase 写法 C ABI 也接受，
@@ -382,6 +481,35 @@ export interface ListCapturesParams {
 /** `sources.extract` 的参数：`source_ref` 可以是来源 id，也可以是修订 id。 */
 export interface ExtractParams {
   source_ref: string;
+}
+
+/**
+ * `sources.extractedContent` / `sources.previousRevision` 的参数：只要来源 id。
+ *
+ * 两个方法都可能返回 `null`（还没提取过 / 没有上一版），这是正常结果，不是错误。
+ */
+export interface SourceIdParams {
+  source_id: string;
+}
+
+/**
+ * `sources.reviseText` 的参数：改正文会建**新修订**，不覆盖旧内容。
+ *
+ * `expected_revision` 是记录的 revision；不符会抛 `revision_conflict`，
+ * 核心一个字节都不改。`operation_id` 是幂等键，重放返回同一条修订。
+ */
+export interface ReviseTextParams {
+  source_id: string;
+  text: string;
+  expected_revision: number;
+  operation_id: string;
+}
+
+/** `sources.locate` 的参数：来源引用 + 定位信息（`locator_type` 用线上字符串）。 */
+export interface LocateSourceParams {
+  /** 来源 id 或修订 id；契约表写作 `sourceRef`，Dart 方法参数名是 `ref`。 */
+  source_ref: string;
+  locator: SourceLocator;
 }
 
 /** `search.start` 的检索条件；只有 `query` 必填。 */
@@ -499,6 +627,64 @@ export interface AcknowledgeAttentionParams {
   attention_key: string;
 }
 
+// ---------------------------------------------------------------- 日记请求参数（契约 4.3）
+
+/** `diary.getDay` 的参数。 */
+export interface DiaryDayParams {
+  /** `YYYY-MM-DD`（核心校验；形状不对报 `invalid_argument`）。 */
+  day_key: string;
+}
+
+/**
+ * `diary.listVersions` 的参数。
+ *
+ * `cursor` 原样回传上一页的 `next_cursor`；`limit` 默认 20，核心夹 1–100。
+ */
+export interface ListDiaryVersionsParams {
+  day_key: string;
+  cursor?: string | null;
+  limit?: number;
+}
+
+/** `diary.getVersion` 的参数。 */
+export interface DiaryVersionParams {
+  version_id: string;
+}
+
+/**
+ * `diary.saveEdit` 的参数：人工编辑写成**新版本**，基版一个字节都不动。
+ *
+ * `expected_revision` 是 `DiaryDay.revision`（不是版本数）；不符报
+ * `revision_conflict`，核心零改动。`operation_id` 是幂等键。
+ */
+export interface SaveDiaryEditParams {
+  base_version_id: string;
+  body: string;
+  expected_revision: number;
+  operation_id: string;
+}
+
+/**
+ * `diary.setCurrent` 的参数。
+ *
+ * 只能指向这一天自己的版本；`expected_revision` 是 `DiaryDay.revision`。
+ * 这一行契约没有 `operation_id`：按目标状态幂等。
+ */
+export interface SetDiaryCurrentParams {
+  day_key: string;
+  version_id: string;
+  expected_revision: number;
+}
+
+/** `diary.merge` 的参数：`body` 是用户确认后的正文（核心不调模型）。 */
+export interface MergeDiaryParams {
+  base_version_id: string;
+  candidate_version_ids: string[];
+  body: string;
+  expected_revision: number;
+  operation_id: string;
+}
+
 // ---------------------------------------------------------------- 录音（契约 4.2）
 
 /** `recordings.prepare` 的结果：平台层只能往 `staging_ticket` 这个目录里写片段。 */
@@ -548,6 +734,14 @@ export interface RecordingSession {
 /** `recordings.finalize` 的结果。转写任务与最终化同一个事务，`transcription_queued` 为 true。 */
 export interface RecordingFinalizeResult {
   recording_id: string;
+  /** 这条录音挂到的记录；恢复路径靠它拿回 capture id 才能提交。 */
+  capture_id: string;
+  /**
+   * finalize 完成后记录的权威 revision（就是这次递增后的值）。
+   *
+   * `captures.commit` 的 `expected_revision` 必须用它，**不要自己猜**。
+   */
+  capture_revision: number;
   asset_id: string;
   state: string;
   segment_count: number;
@@ -655,4 +849,159 @@ export interface ProviderTestReport {
   message: string | null;
   /** 能力 → `ok` / `failed` 的逐项结论（JSON 对象，键是能力名）。 */
   results: Object;
+}
+
+// ---------------------------------------------------------------- 事件（契约第 6 节）
+
+/** 一条持久业务事件；`sequence` 是单调递增的游标。 */
+export interface DomainEvent {
+  event_id: string;
+  sequence: number;
+  /** 线上字符串：`capture.changed` / `asset.changed` / `job.changed` … */
+  type: string;
+  entity_id: string;
+  revision: number;
+  emitted_at: string;
+}
+
+/**
+ * `core.events` 的一页。
+ *
+ * `next_sequence` 原样作为下一次调用的 `from_sequence`；`truncated === true` 表示
+ * 这一页之后还有事件，必须继续拉，不能把一页当成全部。
+ */
+export interface DomainEventPage {
+  events: DomainEvent[];
+  next_sequence: number;
+  truncated: boolean;
+}
+
+/**
+ * `core.events` 的参数。
+ *
+ * `from_sequence` 省略 = 从**当前最新**序号开始（只等下一条，不补历史）；
+ * 显式给 0 才是从头补。`limit` 默认 200、上限 1000。
+ */
+export interface EventsParams {
+  from_sequence?: number | null;
+  limit?: number;
+}
+
+// ---------------------------------------------------------------- 备份与恢复（契约 4.5）
+
+/**
+ * 备份快照里的关键行数。
+ *
+ * **键是 camelCase**：核心的 `BackupCounts` 带 `#[serde(rename_all = "camelCase")]`
+ * （与备份清单的其它字段同一套写法）。外层 `BackupReport` 仍是 snake_case——这是
+ * 核心 serde 的现状，ArkTS 侧照实声明，不要按外层类推。
+ */
+export interface BackupCounts {
+  /** 记录数（含草稿与回收站：备份是整库）。 */
+  captures: number;
+  /** 原始文字/原件修订数。 */
+  sourceRevisions: number;
+  /** 老 schema 的备份可能没有这几项，是 null。 */
+  assets: number | null;
+  blobs: number | null;
+  importsInFlight: number | null;
+  openRecordings: number | null;
+}
+
+/** `backups.create` 的结果（同步入口，不是契约里的 `jobId`）。 */
+export interface BackupReport {
+  /** 备份包（归档文件）的最终路径；写完并自校验通过之后才有这个文件。 */
+  package_path: string;
+  byte_size: number;
+  schema_version: number;
+  api_version: string;
+  core_version: string;
+  created_at: string;
+  blob_count: number;
+  blob_bytes: number;
+  transient_clip_count: number;
+  counts: BackupCounts;
+  /** 需要调用方知道的事实（未完成的导入/录音、暂存片段没进包等）。 */
+  warnings: string[];
+}
+
+/**
+ * `backups.inspect` 的结果。
+ *
+ * **不抛错**：包坏了/路径越界/版本不兼容都进 `issues`，先展示再决定要不要恢复；
+ * 只有连清单都读不出来才抛 `corrupted_backup`。
+ */
+export interface BackupInspection {
+  package_path: string;
+  format_version: number;
+  schema_version: number;
+  api_version: string;
+  core_version: string;
+  created_at: string;
+  byte_size: number;
+  blob_count: number;
+  blob_bytes: number;
+  asset_count: number;
+  transient_clip_count: number;
+  counts: BackupCounts;
+  /** 每条格式是 `种类: 细节`，种类只有 `corrupted` / `unsafe_path` / `incompatible`。 */
+  issues: string[];
+  /** 本构建能不能恢复这个包。 */
+  compatible: boolean;
+  /** 是否逐条目校验过哈希。 */
+  hashes_verified: boolean;
+}
+
+/** `backups.restore` 的结果：恢复出来的新库（当前库一个字节都没动）。 */
+export interface RestoreReport {
+  /** 恢复出来的资料库文件路径；直接交给 `DiaryCore.open()`。 */
+  library_path: string;
+  root_dir: string;
+  schema_version: number;
+  api_version: string;
+  core_version: string;
+  created_at: string;
+  byte_size: number;
+  blob_count: number;
+  blob_bytes: number;
+  transient_clip_count: number;
+  counts: BackupCounts;
+  warnings: string[];
+}
+
+/**
+ * `backups.create` 的参数。
+ *
+ * `target_path` 是**包文件的完整路径**；OHOS 上必须在应用沙箱内（否则
+ * `invalid_argument`）。`include_assets` 只能是 true（核心只做完整备份）。
+ */
+export interface CreateBackupParams {
+  target_path: string;
+  include_assets?: boolean;
+}
+
+/** `backups.inspect` 的参数：包路径（OHOS 上同样必须在沙箱内）。 */
+export interface InspectBackupParams {
+  package_path: string;
+}
+
+/** `RestoreOptions` 的 JSON 形态；默认恢复到新库、不动当前库。 */
+export interface RestoreOptions {
+  restore_as_new_library?: boolean;
+  /**
+   * 形状兼容字段：核心恢复的是快照整体（索引/向量都在里面），这个开关不改变结果。
+   */
+  include_indexes?: boolean;
+}
+
+/**
+ * `backups.restore` 的参数。
+ *
+ * 契约的 Dart 形状只有包票据 + 选项；C ABI 必须把**恢复目标目录**也说清楚
+ * （核心要求一个新的空目录），所以多一个 `target_dir`。
+ */
+export interface RestoreBackupParams {
+  package_path: string;
+  target_dir: string;
+  options?: RestoreOptions;
 }

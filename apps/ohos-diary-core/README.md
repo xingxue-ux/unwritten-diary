@@ -23,7 +23,7 @@ apps/ohos-diary-core/
 │       ├── index.d.ts
 │       └── oh-package.json5
 ├── entry/src/main/ets/
-│   ├── core/DiaryCore.ets                  # 薄封装：30 条契约方法 + rawCall/rawEnvelope
+│   ├── core/DiaryCore.ets                  # 薄封装：36 条契约方法 + rawCall/rawEnvelope
 │   ├── core/DiaryError.ets                 # 21 个核心码 + native_unavailable
 │   ├── core/Envelope.ets                   # 请求拼装 / 响应拆封
 │   ├── core/Models.ets                     # data 与参数的 ArkTS 类型（snake_case）
@@ -207,9 +207,21 @@ hap_verify_v2.cpp(VerifyAppPkcs7:163) GetCertChains from pkcs7 failed
 
 `recording/` 下是**语音日记的采集链路**：`AudioCapturer`（PCM 16 kHz / 单声道 / 16 bit）
 → 每 2 秒封一段写进核心给的 `staging_ticket` → `recordings.registerSegment` → 停止时
-`recordings.finalize`（拼逻辑音频、建 Asset、同事务排转写任务）。完整设计、权限、长时任务、
-真机数字与「没做到的」见
+`recordings.finalize`（拼逻辑音频、建 Asset、同事务排转写任务）→ `captures.commit`
+（用 finalize 返回的 `capture_id` / `capture_revision` 把记录提交成 `committed`）。
+完整设计、权限、长时任务、真机数字与「没做到的」见
 [`docs/architecture/m6-平板与PC平台能力.md`](../../docs/architecture/m6-平板与PC平台能力.md)。
+
+`finalize` 只保证「音频已保存」，它不会把记录变成 `committed`；不提交的话，音频、转写、
+关键词与 AI 日记都在，但记录永远停在 draft，界面无法把它当成一篇。提交失败**不回滚**
+音频与来源，`VoiceRecorder.commitResult()` 会给出 `failed` 与错误行；核心返回
+`invalid_state`（很可能上次已经提交成功）按幂等成功处理并写日志。
+
+**空 draft 的残留（如实记录，未修）**：启动失败（还没登记任何片段）时会留下一条没有
+来源、也没有正文的 draft，而 Flutter 启动会把最新 draft 当编辑器草稿恢复，用户会看到
+空白草稿。核心当前没有 `captures.trash` / 安全删除空 draft 的能力；本片**不**写破坏性
+SQL，也不为了清它去提交一条空记录，只把 id 暴露为 `abandonedDraftId()` 并打
+`DRAFT_LEAK` 日志。代价是残留仍在；等核心有安全删除能力后再由产品侧清理。
 
 真机命令（**先 force-stop**，否则 `aa start` 只触发 onNewWant，不会重跑 `onWindowStageCreate`）：
 

@@ -64,6 +64,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AiResponse dco_decode_ai_response(dynamic raw);
 
   @protected
+  AssetLease dco_decode_asset_lease(dynamic raw);
+
+  @protected
   AssetStorageState dco_decode_asset_storage_state(dynamic raw);
 
   @protected
@@ -740,6 +743,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AiResponse sse_decode_ai_response(SseDeserializer deserializer);
+
+  @protected
+  AssetLease sse_decode_asset_lease(SseDeserializer deserializer);
 
   @protected
   AssetStorageState sse_decode_asset_storage_state(
@@ -1569,6 +1575,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_ai_response(AiResponse self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_asset_lease(AssetLease self, SseSerializer serializer);
 
   @protected
   void sse_encode_asset_storage_state(

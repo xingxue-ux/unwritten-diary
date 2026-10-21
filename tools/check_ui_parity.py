@@ -93,8 +93,8 @@ REQUIRED_KEYS: tuple[str, ...] = (
     "privacy.local_only",
 )
 
-# 源码引用文案 key 的约定写法。当前两端都还没接表，所以引用数应当是 0；
-# 接表之后这里会自动开始检查，防止代码用了表里没有的 key。
+# 源码引用文案 key 的约定写法。Flutter 已接表，ArkTS 尚未接；
+# 这里只校验「引用的 key 在表里存在」，不要求两端引用数相同。
 KEY_REFERENCE_RE = re.compile(
     r"""(?:uiStrings\.(?:get|t)|uiString)\s*\(\s*(['"])([a-z][a-z0-9_.-]*)\1""",
     re.IGNORECASE,
@@ -493,7 +493,8 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     references = scan_key_references(root)
-    referenced_missing = sorted({ref["key"] for ref in references if ref["key"] not in strings})
+    referenced_keys = sorted({ref["key"] for ref in references})
+    referenced_missing = [key for key in referenced_keys if key not in strings]
     if referenced_missing:
         failures.append(
             Failure(
@@ -560,6 +561,8 @@ def main(argv: list[str] | None = None) -> int:
             "key_count": len(strings),
             "required_missing": required_missing,
             "referenced": references,
+            "referenced_key_count": len(referenced_keys),
+            "referenced_keys": referenced_keys,
             "referenced_missing": referenced_missing,
         },
         "failures": [failure.as_dict() for failure in failures],
@@ -590,7 +593,7 @@ def main(argv: list[str] | None = None) -> int:
             f"  文案表：{len(strings)} 个 key"
             f"  [{strings_path.relative_to(root) if strings_path.is_relative_to(root) else strings_path}]"
         )
-        print(f"  源码引用：{len(references)} 个 key")
+        print(f"  源码引用：{len(referenced_keys)} 个 key（{len(references)} 处）")
         if args.expect:
             print("  [诊断] 使用了 --expect：只改比较基准，不是放行开关；CI 永不传这个参数。")
         if nav_status == "skipped":

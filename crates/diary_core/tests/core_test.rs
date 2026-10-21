@@ -198,7 +198,7 @@ fn events_are_emitted_in_order_on_every_write() {
     core.save_draft(&id, "内容", 1, "op-save").unwrap();
     core.commit(&id, 2, "op-commit").unwrap();
 
-    let events = core.events_since(0).unwrap();
+    let events = core.events_page(0, 1000).unwrap().events;
     assert!(events.len() >= 3, "创建、保存、提交都应留下事件");
     let mut previous = 0;
     for event in &events {
@@ -208,8 +208,45 @@ fn events_are_emitted_in_order_on_every_write() {
         assert_eq!(event.event_type.wire(), "capture.changed");
     }
     // 游标之后的读取不能重复给出旧事件。
-    let tail = core.events_since(events[1].sequence).unwrap();
+    let tail = core
+        .events_page(events[1].sequence, 1000)
+        .unwrap()
+        .events;
     assert_eq!(tail.len(), events.len() - 2);
+}
+
+#[test]
+fn events_since_page_is_bounded_and_reads_forward() {
+    let (mut core, id) = core_with_draft();
+    let mut revision = 1;
+    for index in 0..5 {
+        revision = core
+            .save_draft(
+                &id,
+                &format!("分页事件 {index}"),
+                revision,
+                &format!("op-page-{index}"),
+            )
+            .unwrap()
+            .revision;
+    }
+    assert!(revision > 1);
+
+    let all = core.events_page(0, 1000).unwrap().events;
+    assert!(all.len() > 4, "五次保存至少留下五条事件");
+
+    // 每页两条：返回值必须是有界的一批，且从游标之后继续。
+    let first = core.events_since_page(0, 2).unwrap();
+    assert_eq!(first, all[..2].to_vec());
+    let second = core
+        .events_since_page(first.last().unwrap().sequence, 2)
+        .unwrap();
+    assert_eq!(second, all[2..4].to_vec());
+    assert!(second[0].sequence > first[1].sequence);
+
+    // 0 被夹成 1，不会静默返回空；超大值被夹成 1000，不会绕过上限。
+    assert_eq!(core.events_since_page(0, 0).unwrap().len(), 1);
+    assert_eq!(core.events_since_page(0, usize::MAX).unwrap(), all);
 }
 
 #[test]
@@ -272,7 +309,7 @@ fn committed_data_survives_reopening_the_library() {
     assert_eq!(capture.draft_text, "关机前写下的内容");
     assert_eq!(capture.ordered_source_ids.len(), 1);
 
-    let events = core.events_since(0).unwrap();
+    let events = core.events_page(0, 1000).unwrap().events;
     assert!(events.len() >= 3, "事件也要留下来");
 }
 

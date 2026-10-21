@@ -1501,6 +1501,17 @@ fn semantic_hits_are_per_piece_and_snippets_come_from_that_pieces_span() {
     assert_eq!(sleep.matched_by, vec![diary_core::MatchedBy::Semantic]);
     assert_eq!(sleep.source_kind, SourceKind::File);
     assert_eq!(sleep.source_id.as_deref(), Some(first.as_str()));
+    // 语义来源篇：group_id 是来源篇的折叠键（source_id），capture_id 是这篇来源
+    // 所属的记录。两者不同，界面跳记录详情页必须用后者。
+    assert_eq!(sleep.group_id, first, "语义来源篇的 group_id 是来源篇的 id");
+    assert_eq!(
+        sleep.capture_id, a,
+        "语义来源篇的 capture_id 是它所属的记录"
+    );
+    assert_ne!(
+        sleep.capture_id, sleep.group_id,
+        "语义来源篇上 capture_id 与 group_id 不是一回事"
+    );
     assert!(sleep.revision_id.is_some(), "来源篇要带上修订");
     assert_eq!(
         sleep.snippet.as_deref(),
@@ -1527,6 +1538,14 @@ fn semantic_hits_are_per_piece_and_snippets_come_from_that_pieces_span() {
     let express = hit_of(&snapshot, &second);
     assert_eq!(express.source_kind, SourceKind::File);
     assert_eq!(
+        express.capture_id, a,
+        "同块第二篇的 capture_id 也是它所属的那篇记录"
+    );
+    assert_ne!(
+        express.capture_id, express.group_id,
+        "来源篇的 capture_id 与 group_id 不同"
+    );
+    assert_eq!(
         express.snippet.as_deref(),
         Some("快递放在门口。"),
         "每一篇各拿自己那一段"
@@ -1539,11 +1558,115 @@ fn semantic_hits_are_per_piece_and_snippets_come_from_that_pieces_span() {
     // 记录自己写的文字：与关键词那一路同一个口径（groupId = capture_id）。
     let capture_hit = hit_of(&snapshot, &b);
     assert_eq!(capture_hit.hit_id, format!("cap_{b}"));
+    assert_eq!(
+        capture_hit.capture_id, b,
+        "语义记录文字命中的 capture_id 是这篇记录"
+    );
+    assert_eq!(
+        capture_hit.capture_id, capture_hit.group_id,
+        "记录文字命中天然自成一组，两者相同"
+    );
     assert_eq!(capture_hit.source_id, None);
     assert_eq!(capture_hit.revision_id, None);
     assert_eq!(capture_hit.source_kind, SourceKind::Text);
     assert_eq!(capture_hit.snippet.as_deref(), Some("我最近总是睡不着。"));
     assert_eq!(capture_hit.locator, None, "记录文字没有原件可定位");
+}
+
+/// 合块里的篇分属**不同记录**时，`captureId` 必须各自取自己那段 span 的记录。
+///
+/// 这条钉的是「`captureId` 从哪来」：`text_chunks` 没有 `capture_id`（块跨记录），
+/// 字段只能取 `chunk_spans` 里**该 snippet 所属那个 span** 的 `capture_id`。
+/// 上面的用例里两篇来源都属于同一条记录，所以它证明不了「不是第一段 span 的记录」——
+/// 把实现错改成「取第一段 span 的 capture」，那条用例仍然全绿。这里用同一天
+/// 两条**不同记录**各自的短来源合进同一块来把这条钉死：A 的命中拿到 A、B 的命中
+/// 拿到 B；错取第一段时，至少有一条会指到别人的日记。
+#[test]
+fn semantic_hits_take_the_capture_of_their_own_span_across_captures() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![("失眠", unit(0))]));
+
+    // 同一天、两条不同的记录，各挂一篇短来源：按 B3c-1 的「同一天短篇合块」规则
+    // 会合进**同一块**，块里两段 span 的 capture_id 不同。
+    let a = write_capture(&mut core, at(2026, 9, 22), "", "capA");
+    let piece_a = import_and_extract(
+        &mut core,
+        &a,
+        "A-睡眠.txt",
+        "连续几天失眠，凌晨两点还醒着。\n",
+        "capA-material",
+    );
+    let b = write_capture(&mut core, at(2026, 9, 22), "", "capB");
+    let piece_b = import_and_extract(
+        &mut core,
+        &b,
+        "B-快递.txt",
+        "失眠之后下楼拿快递，风很大。\n",
+        "capB-material",
+    );
+    assert_ne!(a, b, "前提：两条记录不是同一条");
+
+    let built = core.build_semantic_index(None).unwrap();
+    assert_eq!(built.total_chunks, 1, "同一天两篇短来源应当合进一块");
+
+    // 前提必须成立，否则这个用例会退化成「各自成块」而失去意义：这一块真的含
+    // 两段 span、分属两条不同的记录。
+    let conn = open(&path);
+    let spans: i64 = conn
+        .query_row("SELECT COUNT(*) FROM chunk_spans", [], |row| row.get(0))
+        .unwrap();
+    let captures_in_chunk: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT capture_id) FROM chunk_spans",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(spans, 2, "前提：块里有两段 span");
+    assert_eq!(
+        captures_in_chunk, 2,
+        "前提：两段 span 分属两条不同的记录（这正是上面的用例缺的那一半）"
+    );
+
+    let snapshot = search_mode(&mut core, "失眠", SearchMode::Semantic, 20);
+    assert_eq!(snapshot.results.len(), 2, "两条来源各成一条命中");
+
+    let hit_a = hit_of(&snapshot, &piece_a);
+    let hit_b = hit_of(&snapshot, &piece_b);
+    assert_eq!(
+        hit_a.capture_id, a,
+        "A 的命中要拿到 A 那条记录（取它自己那段 span 的 capture_id）"
+    );
+    assert_eq!(
+        hit_b.capture_id, b,
+        "B 的命中要拿到 B 那条记录；取成第一段 span 的记录就会指到 A"
+    );
+    assert_ne!(
+        hit_a.capture_id, hit_b.capture_id,
+        "同一块里两条命中分属不同记录，captureId 不能相同"
+    );
+    assert_eq!(
+        hit_a.group_id, piece_a,
+        "语义来源篇的 group_id 仍是来源篇自己的 id"
+    );
+    assert_eq!(hit_b.group_id, piece_b);
+    assert_ne!(
+        hit_a.capture_id, hit_a.group_id,
+        "来源篇命中上 capture_id 与 group_id 不是一回事"
+    );
+    assert_ne!(hit_b.capture_id, hit_b.group_id);
+    assert_eq!(
+        hit_a.snippet.as_deref(),
+        Some("连续几天失眠，凌晨两点还醒着。")
+    );
+    assert_eq!(
+        hit_b.snippet.as_deref(),
+        Some("失眠之后下楼拿快递，风很大。"),
+        "B 的摘录只能是 B 自己那段"
+    );
 }
 
 /// 那篇「被切成两块、两块都含失眠」的长文（issue #57 的同分场景）。
@@ -3857,7 +3980,11 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
         diary_core::SCHEMA_VERSION,
         "空库直接建到最新"
     );
-    assert_eq!(diary_core::SCHEMA_VERSION, 17, "当前构建是 17；v15 的迁移段仍要能跑");
+    assert_eq!(
+        diary_core::SCHEMA_VERSION,
+        17,
+        "当前构建是 17（v15 的列/索引 + v16 的回收站列 + v17 的 styles 表）"
+    );
     let counters = Arc::new(Counters::default());
     core.set_embedder(stub(&counters, vec![]));
     write_capture(&mut core, at(2026, 9, 20), "妈妈打电话来。", "opA");
@@ -3949,7 +4076,7 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
         let recorded: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
-                rusqlite::params![diary_core::SCHEMA_VERSION],
+params![diary_core::SCHEMA_VERSION],
                 |row| row.get(0),
             )
             .unwrap();
@@ -3981,10 +4108,10 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
 /// 评审 #133 第 1 条（真隐患）：v15 的「列」与「索引」必须各有一个守卫。
 ///
 /// 造一个「`auto_rebuild_marker` 已在、`idx_chunk_vectors_caliber` 被手工删掉」的
-/// v15 库——手工删索引、或将来单独补索引的库都长这样。旧实现是
+/// 当前版本库——手工删索引、或将来单独补索引的库都长这样。旧实现是
 /// `current < 15 && !column_exists(...)` 一个守卫包住整段：列已在 ⇒ 整段跳过，
 /// 索引永远补不回来。修完后每次 `open` 都做一次 `sqlite_master` 轻量检查，
-/// 索引缺就建（幂等；`current` 是 15 也一样）。
+/// 索引缺就建（幂等；版本号已经是当前值也一样）。
 #[test]
 fn a_v15_library_with_a_dropped_caliber_index_recreates_it_on_open() {
     let dir = tempfile::tempdir().unwrap();
@@ -3999,7 +4126,11 @@ fn a_v15_library_with_a_dropped_caliber_index_recreates_it_on_open() {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, diary_core::SCHEMA_VERSION, "前提：库是最新版本");
+        assert_eq!(
+            version,
+            diary_core::SCHEMA_VERSION,
+            "前提：库是最新版本"
+        );
         let column_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('index_meta') \
