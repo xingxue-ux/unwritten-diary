@@ -6829,12 +6829,16 @@ impl SseDecode for diary_core::model::EventType {
         let mut inner = <i32>::sse_decode(deserializer);
         return match inner {
             0 => diary_core::model::EventType::CaptureChanged,
-            1 => diary_core::model::EventType::AssetChanged,
-            2 => diary_core::model::EventType::DiaryVersionCreated,
-            3 => diary_core::model::EventType::DiaryCurrentChanged,
-            4 => diary_core::model::EventType::JobChanged,
-            5 => diary_core::model::EventType::IndexCoverageChanged,
-            6 => diary_core::model::EventType::PluginChanged,
+            1 => diary_core::model::EventType::CaptureTrashed,
+            2 => diary_core::model::EventType::CaptureRestored,
+            3 => diary_core::model::EventType::CaptureMovedDay,
+            4 => diary_core::model::EventType::CapturePurged,
+            5 => diary_core::model::EventType::AssetChanged,
+            6 => diary_core::model::EventType::DiaryVersionCreated,
+            7 => diary_core::model::EventType::DiaryCurrentChanged,
+            8 => diary_core::model::EventType::JobChanged,
+            9 => diary_core::model::EventType::IndexCoverageChanged,
+            10 => diary_core::model::EventType::PluginChanged,
             _ => unreachable!("Invalid variant for EventType: {}", inner),
         };
     }
@@ -10145,12 +10149,16 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::EventType> 
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self.0 {
             diary_core::model::EventType::CaptureChanged => 0.into_dart(),
-            diary_core::model::EventType::AssetChanged => 1.into_dart(),
-            diary_core::model::EventType::DiaryVersionCreated => 2.into_dart(),
-            diary_core::model::EventType::DiaryCurrentChanged => 3.into_dart(),
-            diary_core::model::EventType::JobChanged => 4.into_dart(),
-            diary_core::model::EventType::IndexCoverageChanged => 5.into_dart(),
-            diary_core::model::EventType::PluginChanged => 6.into_dart(),
+            diary_core::model::EventType::CaptureTrashed => 1.into_dart(),
+            diary_core::model::EventType::CaptureRestored => 2.into_dart(),
+            diary_core::model::EventType::CaptureMovedDay => 3.into_dart(),
+            diary_core::model::EventType::CapturePurged => 4.into_dart(),
+            diary_core::model::EventType::AssetChanged => 5.into_dart(),
+            diary_core::model::EventType::DiaryVersionCreated => 6.into_dart(),
+            diary_core::model::EventType::DiaryCurrentChanged => 7.into_dart(),
+            diary_core::model::EventType::JobChanged => 8.into_dart(),
+            diary_core::model::EventType::IndexCoverageChanged => 9.into_dart(),
+            diary_core::model::EventType::PluginChanged => 10.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -12335,12 +12343,16 @@ impl SseEncode for diary_core::model::EventType {
         <i32>::sse_encode(
             match self {
                 diary_core::model::EventType::CaptureChanged => 0,
-                diary_core::model::EventType::AssetChanged => 1,
-                diary_core::model::EventType::DiaryVersionCreated => 2,
-                diary_core::model::EventType::DiaryCurrentChanged => 3,
-                diary_core::model::EventType::JobChanged => 4,
-                diary_core::model::EventType::IndexCoverageChanged => 5,
-                diary_core::model::EventType::PluginChanged => 6,
+                diary_core::model::EventType::CaptureTrashed => 1,
+                diary_core::model::EventType::CaptureRestored => 2,
+                diary_core::model::EventType::CaptureMovedDay => 3,
+                diary_core::model::EventType::CapturePurged => 4,
+                diary_core::model::EventType::AssetChanged => 5,
+                diary_core::model::EventType::DiaryVersionCreated => 6,
+                diary_core::model::EventType::DiaryCurrentChanged => 7,
+                diary_core::model::EventType::JobChanged => 8,
+                diary_core::model::EventType::IndexCoverageChanged => 9,
+                diary_core::model::EventType::PluginChanged => 10,
                 _ => {
                     unimplemented!("");
                 }

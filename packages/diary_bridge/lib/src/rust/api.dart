@@ -67,6 +67,12 @@ abstract class BridgeSession implements RustOpaqueInterface {
   });
 
   /// 从某个序号之后读取持久业务事件。
+  ///
+  /// 核心按**分页**读（`Core::events_page`，SQL 带 `LIMIT`）；这一层为了保持 Dart
+  /// 面「一次拿全」的语义循环取页，但每次查询只取 `EVENTS_PAGE` 条，不会把整张
+  /// 事件表一次性 materialize 进 SQLite → Rust 的中间列表。真正的有界读取在
+  /// **C ABI** 那一路（`core.events` 直接透传 `limit`/`truncated`）；这里仍是
+  /// 「全部事件」的返回形状，调用方自己管好游标。
   Future<List<DomainEvent>> eventsSince({required PlatformInt64 fromSequence});
 
   /// 从某个序号之后读取**一批**持久业务事件（最多 `limit` 条）。
