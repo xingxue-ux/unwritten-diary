@@ -25,3 +25,7 @@ sha2.workspace = true
 # 只为「损坏备份包的 inspect issues 路径」造一个坏 zip（与核心测试同一套读写方式）。
 # workspace 里已有的依赖，不引入新 crate。
 zip.workspace = true
+# 只为 `styles.save` 的**只读**断言：`styles.get` 只返回当前版本，C ABI 没有「按 revision
+# 读历史版本」的入口，而「每次保存落一个新的不可变版本行、旧行仍在」只能从表里看。
+# 核心开的是 WAL + busy_timeout，测试只读打开第二个连接（与核心自己的测试同一套做法）。
+rusqlite.workspace = true

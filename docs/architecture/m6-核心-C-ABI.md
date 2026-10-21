@@ -168,7 +168,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 ## 6 方法映射表
 
-### 6.1 已接（50 条，`core.info.capabilities` 就是这份清单）
+### 6.1 已接（56 条，`core.info.capabilities` 就是这份清单）
 
 | 契约方法 | 核心调用 | `data` |
 |---|---|---|
@@ -182,6 +182,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `captures.restore` | `Core::restore_capture`（恢复回移入前的状态） | `Capture` |
 | `captures.previewPurge` | `Core::preview_purge`（只接受回收站里的记录） | `PurgePreview` |
 | `captures.purge` | `Core::purge_capture`（**必须带 `preview_token`**；`delete_diary_versions` 默认 `false`） | `PurgeResult` |
+| `captures.moveDay` | `Core::move_day`（只改 `day_key`、不动 `occurred_at`；`expected_revision` 乐观锁） | `Capture` |
 | `recordings.prepare` | `Core::prepare_recording` | `RecordingTicket` |
 | `recordings.registerSegment` | `Core::register_segment` | `SegmentReceipt` |
 | `recordings.updateState` | `Core::update_recording_state` | `RecordingSession` |
@@ -217,11 +218,16 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `backups.restore` | `Core::restore_backup`（同步入口；只恢复到新库，来源/目标都必须沙箱内） | `RestoreReport` |
 | `core.events` | `Core::events_page`（按序号轮询持久事件，一页一次 SQL `LIMIT`，见 §6.1.2） | `{events,next_sequence,truncated}` |
 | `diary.getDay` | `Core::get_diary_day` | `DiaryDay` |
+| `diary.listDays` | `Core::list_days`（范围 + 不透明游标，回收站不算） | `DiaryDayPage`（外层 `nextCursor`） |
 | `diary.listVersions` | `Core::list_diary_versions`（不透明游标，最新在前） | `DiaryVersionPage` |
 | `diary.getVersion` | `Core::get_diary_version` | `DiaryVersion` |
 | `diary.saveEdit` | `Core::save_diary_edit`（写新版本，基版不动） | `DiaryVersion` |
 | `diary.setCurrent` | `Core::set_diary_current` | `DiaryDay` |
 | `diary.merge` | `Core::merge_diary_versions`（不调模型，`modelCalls = 0`） | `DiaryVersion` |
+| `styles.list` | `Core::list_styles`（当前版本；默认风格 `sty_default` 也在） | `StyleProfile[]` |
+| `styles.get` | `Core::get_style`（不存在 `not_found`，**不回退默认风格**） | `StyleProfile` |
+| `styles.save` | `Core::save_style`（每次落新版本；可选 `expected_revision` 乐观锁） | `StyleProfile` |
+| `exports.create` | `Core::create_export`（同步生成；产物在资料库 `exports/` 下） | `ExportTicket` |
 
 `settings.get` 的 `data` 是完整设置对象，字段名与核心 serde 输出一致（snake_case）：
 `diary_time_zone` / `revision` / `updated_at` / `auto_organize_enabled` /
@@ -245,13 +251,18 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 - `diary.setCurrent` 没有 `operationId`（契约这一行本来就没有）：它不产生任何东西，
   按目标状态幂等。
 
-还在缺口里的两条：**`diary.listDays`**（核心没有按天枚举的入口）与 **`diary.generate`**
-（核心有 `generate_diary`，但它要排 AI 任务，属于生成那一片）。鸿蒙日记页因此不显示
-「生成/整理」按钮，只如实说明缺口；列表的日期来自最近的材料与最近 30 天。
+`diary.listDays`（#168 的核心入口）是后来的第七条：它回答「库里有哪些天、每天多少条材料」
+（回收站不算），按 dayKey 倒序；游标不透明、坏游标 `cursor_expired`。**响应外层是
+camelCase 的 `nextCursor`**（核心 `DiaryDayPage` 带 `#[serde(rename_all = "camelCase")]`），
+`days` 里每一天仍按 `DiaryDay` 的 snake_case 输出——同一个对象里两套写法并存，是核心
+serde 原样的结果，桥面不翻译（`Models.ets` 的 `DiaryDayPage` 照实声明）。
 
-**回收站四条（`captures.trash` / `restore` / `previewPurge` / `purge`）**：核心的回收站
-状态机（#155）早就在，缺的一直是 C ABI 这一层——没有它们，鸿蒙「我的」页只能写「回收站
-还没接」。四条只做转接，业务规则一条都不复制：
+还在缺口里的只剩 **`diary.generate`**（核心有 `generate_diary`，但它要排 AI 任务，属于
+生成那一片）。鸿蒙日记页因此不显示「生成」按钮（整理模板那一路也还没接），只如实说明缺口。
+
+**回收站五条（`captures.trash` / `restore` / `previewPurge` / `purge` / `moveDay`）**：
+核心的回收站状态机（#155）早就在，缺的一直是 C ABI 这一层——没有它们，鸿蒙「我的」页
+只能写「回收站还没接」。五条只做转接，业务规则一条都不复制：
 
 - 响应是核心模型的 serde 输出**原样**（snake_case）。契约 §8 的 camelCase 名字与线上字段
   一一对应：`previewToken` → `preview_token`、`derivedDiaryVersionIds` →
@@ -270,10 +281,41 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 - **可见性口径**（契约 §8）：回收站里的记录立即从默认检索与后续 AI 输入里排除；
   `captures.list` **不按 `state` 过滤**（回收站页面自己按 `state === "trashed"` 筛），
   所以「从列表里消失」不是契约承诺，别在界面文案里这么写。
+- **`captures.moveDay` 只改归属日**：`occurred_at` 一个字节都不动（调整不改录音时间戳），
+  只改 `day_key`；旧日与新日的文本块在核心的同一个事务里重打包，所以 `diary.listDays`
+  与检索立刻按新的一天命中。同一天再调是**无操作**（不推进 revision、不发事件，返回原
+  `Capture`）；在回收站里是 `invalid_state`（先恢复再改）；`expected_revision` 不符是
+  `revision_conflict` 且零改动。
+
+**风格三条（`styles.list` / `get` / `save`）与导出一条（`exports.create`）**：核心的
+`styles.rs`（#166）与 `export.rs`（#167）早就有实现，缺的是 C ABI 这一层。四条只做转接：
+
+- **`styles.list` 里一定有默认风格 `sty_default`**（`revision = 1`、内容全空）：它是
+  「没有偏好」的真实配置，不是查不出来的魔法值；
+- **`styles.get` 对不存在的 id 报 `not_found`，不静默回退默认风格**——回退会让界面以为
+  用户设过偏好；
+- **`styles.save` 每次落一个新的不可变版本行**：`revision` 由核心 +1，旧版本保留（历史
+  日记的 `styleSnapshotId` 仍指得到当时那一版）；带 `expected_revision` 时是乐观锁
+  （不符 `revision_conflict`、零改动），省略表示「明确接受覆盖当前版本」；`revision` /
+  `updatedAt` 由核心盖章，调用方传了也**不转发**（桥面收下这两个字段只是为了让
+  「读出来改一改再存回去」能原样回传）；
+- **`exports.create` 是同步生成**：返回的 `jobId` 指向一条 `state = succeeded` 的导出任务
+  记录（`jobs.get` 读得到），**不是排队中的任务**；产物固定落在资料库自己的 `exports/`
+  下，重名自动加后缀、绝不覆盖。`ExportRequest`（契约与核心都如此）**没有路径字段**，
+  桥面也不接受调用方路径——想控制落点请用 `backups.*` 的路径入口；
+- **`restorable` 恒为 `false`**：文件里只有当前日记正文（没有数据库、没有原件、没有
+  索引），不能用于恢复资料库；`include_assets = true` 会被核心 `invalid_argument` 明确
+  拒绝，不静默忽略这个开关。
+- **字段名是 camelCase**：`StyleProfile` / `ExportTicket` 在核心带
+  `#[serde(rename_all = "camelCase")]`（`lengthPreference` / `bannedExpressions` /
+  `jobId` / `packageTicket` / `byteSize` / `dayKeys` / `dayCount` / `createdAt`），响应
+  照核心 serde 原样；契约表的 `styleId` / `fromDayKey` 与这是同一套写法。桥面**不另造
+  DTO、不做二次翻译**——「响应 snake_case」那条口径说的是 `Capture` 这类没有 rename 的
+  模型，判断以核心的 serde 属性为准。
 
 ### 6.1.1 分页方法：游标是**真游标**，不是「传了就报错」
 
-四条分页方法都把核心的**不透明游标**原样透传，没有把「只接第一页」当成已接：
+五条分页方法都把核心的**不透明游标**原样透传，没有把「只接第一页」当成已接：
 
 | 方法 | 参数 | `data` | 游标语义 |
 |---|---|---|---|
@@ -281,6 +323,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `jobs.list` | `states?` / `cursor?` / `limit?`（默认 20，核心夹 1–200） | `JobPage` | 键集 `(priority DESC, created_at, id)`；`next_cursor` 原样回传 |
 | `diary.listVersions` | `day_key` / `cursor?` / `limit?`（默认 20，核心夹 1–100） | `DiaryVersionPage` | 键集 `(created_at DESC, id DESC)`；最新在前；`next_cursor` 原样回传 |
 | `search.nextPage` | `session_id` / `cursor?` | `SearchSnapshot` | 会话内偏移 + 结果代次；省略 `cursor` = 继续用会话记着的下一页 |
+| `diary.listDays` | `from_day_key?` / `to_day_key?` / `cursor?` / `page_size?`（默认 20，核心夹 1–100） | `DiaryDayPage` | 键集 `day:<dayKey>`（倒序）；外层键是 **`nextCursor`**（camelCase），坏游标 `cursor_expired` |
 
 `jobs.list` 的游标是这一片给核心加的 `Core::list_jobs_page`：原有 `list_jobs(states, limit)`
 只能取「前 N 条」（`limit` 还夹在 200），没法越过第 200 条。新入口与它同排序、同状态筛选，
@@ -387,16 +430,17 @@ C ABI 没有回调/推送面，所以 `core.events` 不装成 Stream，而是把
    没列出来的就是还没接，界面不该显示成可用）；
 4. `src/tests.rs` 加用例（至少一条成功路径 + 一条参数错误）。
 
-**还没接的（按契约第 4 节分组，代码里带 `TODO(#108)`）**：`captures.moveDay`（回收站里
-另外四条 `trash/restore/previewPurge/purge` 已接上，见 §6.1）、`styles.list/get/save`
-（核心 `styles.rs` 已有，#166）、`diary.listDays`（核心有 `list_days`）/ `diary.generate`
-（核心有 `generate_diary`，后者要排 AI 任务）、`exports.create`（核心有 `create_export`，要模型
-生成正文）、`responses.*`、`plugins.*`（`run_plugin` 同步返回完整结果，契约要 `jobId`）——
-**核心已有实现，但 C ABI 这一层还没包装**。另外 `imports.*`、`assets.open/release`、
-`search.snapshot`、`jobs.nextWakeup`、`core.snapshot/close/setRuntimeState` 也还没接。
-已接的 50 条见上表：`providers.*` 四条、`sources` 五条（含正文与定位）、`backups.*` 三条、
-`core.events`、`diary.*` 六条、`captures.*` 九条（含回收站四条）、`settings.get / update`
-两条都在里面（settings 两条与整理设置共用核心 `settings` 表的同一行）。
+**还没接的（按契约第 4 节分组，代码里带 `TODO(#108)`）**：`diary.generate`（核心有
+`generate_diary`，要排 AI 任务，属于生成那一片）、`responses.*`、`plugins.*`（`run_plugin`
+同步返回完整结果，契约要 `jobId`）——**核心已有实现，但 C ABI 这一层还没包装**。另外
+`imports.*`、`assets.open/release`、`search.snapshot`、`jobs.nextWakeup`、
+`core.snapshot/close/setRuntimeState` 也还没接。
+
+回收站五条、风格三条、`exports.create` 与 `diary.listDays` 都已在这一批接完（见 §6.1），
+**回收站与风格/导出不再有缺口**。已接的 56 条见上表：`providers.*` 四条、`sources` 五条
+（含正文与定位）、`backups.*` 三条、`core.events`、`diary.*` 七条、`captures.*` 十条
+（含回收站五条）、`styles.*` 三条、`exports.create` 一条，以及 `settings.get / update` 两条
+（与整理设置共用核心 `settings` 表的同一行）。
 
 未接入的方法一律 `invalid_argument` + 已接入清单，**不静默成功、不假装支持**。
 
@@ -438,7 +482,17 @@ diary_call(h, json)
 ### 9.1 FFI 边界与生命周期用例（`crates/diary_capi/src/tests.rs`，CI 可跑、不联网）
 
 本批另加 `diary_day_and_versions_are_wired`（`diary.getDay` / `listVersions` 的读到与空态、
-写路径的参数/核心错误透传）；并入 #153 的用例后 `cargo test -p diary_capi` 当前共 **25 条**。
+写路径的参数/核心错误透传）；`cargo test -p diary_capi` 当前共 **32 条**。
+
+回收站 / 风格 / 天列表 / 导出 / 归属日这一批另加 4 条（每条都真调，断言线上字段名与业务后果）：
+
+| 用例 | 覆盖 |
+|---|---|
+| `styles_list_get_and_save_are_wired` | `styles.list` 含默认风格 `sty_default`；`styles.get` 缺失 → `not_found`（不回退默认风格）、空 id → `invalid_argument`；`styles.save` 落新版本（`revision` +1、camelCase 响应）、旧版本行仍在（白盒只读一眼 `styles` 表）；`expected_revision` 不符 → `revision_conflict` **且零改动**；新 id 省略 / 非 0 `expectedRevision` 的两种口径 |
+| `diary_list_days_pages_and_rejects_bad_cursor` | 三天的真游标翻页（`page_size = 2` → 2 + 1 天、`nextCursor` 为空）、`fromDayKey`/`toDayKey` 闭区间、坏游标两种都是 `cursor_expired`、倒序范围 `invalid_argument`、省略参数与 `page_size = 0` 的夹取 |
+| `exports_create_writes_real_files_and_never_overwrites` | 产物真实存在（在 `<库>/exports/` 下、字节数一致）、`restorable == false`、`jobId` 指向 `succeeded` 的 `export` 任务、重名加 `-2` 后缀且第一次的文件一字节不变、`plain_text` 落 `.txt`、`includeAssets = true` / 未知格式 / 倒序范围 / 空范围 / 未知字段全部明确报错 |
+| `captures_move_day_updates_the_day_and_list_days_sees_it` | 改 `day_key` 后 `diary.listDays` 只看到新的一天、`occurred_at` 不变；同一天是无操作；旧 revision → `revision_conflict` 且归属日不变；坏 dayKey / 不存在 / 回收站里三种错误 |
+
 下表只列最初那 8 条 FFI 边界/生命周期用例。
 
 | 用例 | 覆盖 |
