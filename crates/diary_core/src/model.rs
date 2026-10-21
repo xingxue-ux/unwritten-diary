@@ -31,6 +31,16 @@ impl CaptureState {
     }
 }
 
+/// SQL 谓词：只保留**不在回收站**的记录（`alias` 是查询里的表别名，如 `Some("c")`）。
+///
+/// 「回收站」这个状态字符串只从 [`CaptureState::Trashed`] 取，不再把
+/// `state != 'trashed'` 抄到每条 SQL 里；以后改状态名或加别的「不算数」状态时，
+/// 只有这一处要动。返回 `String` 是因为调用方要把它拼进各自的查询，不能参数化表名。
+pub(crate) fn capture_not_trashed(alias: Option<&str>) -> String {
+    let prefix = alias.map(|alias| format!("{alias}.")).unwrap_or_default();
+    format!("{prefix}state != '{}'", CaptureState::Trashed.wire())
+}
+
 /// 原始内容的作者，契约第 2.2 节。AI 生成的正文不写成 user。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1635,6 +1645,15 @@ pub struct DiaryDay {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 分页的日记天列表，契约 `DiaryDayPage`（`diary.listDays`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiaryDayPage {
+    pub days: Vec<DiaryDay>,
+    /// 还有下一页时是本次最后一天的游标；没有更多时为 `None`。调用方不要解析它。
+    pub next_cursor: Option<String>,
+}
+
 /// 生成过程的审计信息，契约 2.5 节。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GenerationInfo {
@@ -2022,6 +2041,55 @@ pub struct RestoreReport {
     pub warnings: Vec<String>,
 }
 
+/// 可阅读导出请求（#113），字段逐项对齐契约 `ExportRequest`。
+///
+/// 契约里**没有输出路径**：产物由核心落在自己管理的导出目录里，调用方只拿
+/// `ExportTicket.packageTicket`。这是刻意的——核心不接受任意绝对路径，避免把
+/// 「导出」变成可写穿沙箱的入口。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRequest {
+    /// 闭区间起点，`YYYY-MM-DD`。
+    pub from_day_key: String,
+    /// 闭区间终点，`YYYY-MM-DD`。
+    pub to_day_key: String,
+    /// `markdown` / `plain_text`。
+    pub format: String,
+    /// 契约字段。本构建的阅读导出只写正文，**不随附原件**；传 `true` 会明确拒绝，
+    /// 不静默忽略。
+    pub include_assets: bool,
+}
+
+/// 可阅读导出的结果（#113）。
+///
+/// **这不是备份**：`restorable` 恒为 `false`。导出物只有当前日记正文，没有数据库、
+/// 没有原件、没有索引；它不能用于恢复资料库，迁移请走 `backups.*`。
+///
+/// 契约的 `ExportTicket` 只有 `jobId` / `packageTicket` 两个字段（Dart 侧不改契约），
+/// 所以桥接层会把这里更完整的字段一并交出去：`path` 与 `byteSize` 是落盘后的事实，
+/// `packageTicket` 指向同一个文件、交给平台保存层使用。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportTicket {
+    /// 这次导出对应的本地任务记录（同步完成；`jobs.get` 能读到 `succeeded`）。
+    pub job_id: String,
+    /// 平台保存层可用的文件句柄。**本构建里就是导出文件的绝对路径**。
+    pub package_ticket: Option<String>,
+    /// 导出文件最终落盘位置（重名时已加后缀，不是调用方传进来的原始路径）。
+    pub path: String,
+    /// 导出文件的字节数（UTF-8 编码后）。
+    pub byte_size: i64,
+    /// `markdown` / `plain_text`。
+    pub format: String,
+    /// 实际写进文件的天，按 dayKey 升序；没有可导出的正文时不会产出文件。
+    pub day_keys: Vec<String>,
+    /// 写进文件的天数（等于 `day_keys.len()`）。
+    pub day_count: i64,
+    pub created_at: DateTime<Utc>,
+    /// 恒为 `false`：阅读导出不能用于恢复资料库。需要恢复请用 `backups.create`。
+    pub restorable: bool,
+}
+
 // ------------------------------------------------------------ 插件（#88，B6）
 //
 // 这些类型是**桥接与缓存清单的公开形状**。插件清单字段与任务书 §8.2 一一对应；
@@ -2158,13 +2226,20 @@ pub struct PluginTemplate {
     pub body: String,
 }
 
-/// 风格输入：字段与契约 `StyleProfile` 对齐（#114 的现有形状），但**不落库**。
+/// 风格配置：**逐字段对齐契约 `StyleProfile`**（#114），也是 `styles.*` 的落库对象。
 ///
-/// 这一片把渲染好的文本交回调用方；`styles.*` 的存储仍是 #114 的未完成部分，
-/// 不在这里另造一套风格表。
+/// 字段名与 Dart 契约一一对应（`lengthPreference` / `emotionalTemperature` /
+/// `rhetoricLevel` / `bannedExpressions`），没有另造一套。
+///
+/// `revision` 是这条风格**当前版本的修订号**：每次 `saveStyle` 落一个新版本就 +1；
+/// 生成时冻结的 `styleSnapshotId` 指向 `styles` 表里某个**不可变版本行**，所以风格
+/// 后来被改过，也不会改变历史日记「当时用的哪一版」。
+///
+/// 这个类型原来叫 `PluginStyleProfile`（插件模板只读它、不落库）。`styles.*` 落地后
+/// 统一用契约名；`diary_core::PluginStyleProfile` 仍作为别名导出，插件侧不用改。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginStyleProfile {
+pub struct StyleProfile {
     pub id: String,
     pub label: String,
     pub revision: i64,
@@ -2198,7 +2273,7 @@ pub struct PluginInvocation {
     pub from_day_key: Option<String>,
     pub to_day_key: Option<String>,
     /// 风格模板的输入（#114 的 `StyleProfile` 形状）。
-    pub style_profile: Option<PluginStyleProfile>,
+    pub style_profile: Option<StyleProfile>,
     /// 导出格式：`markdown` / `plain_text`；声明式模板必须与模板的 format 一致。
     pub format: Option<String>,
     /// 命令的附加文字；有 1 MiB 上限，作为**数据**交给插件，不是指令。

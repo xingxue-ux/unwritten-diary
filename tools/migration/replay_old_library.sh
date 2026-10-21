@@ -17,7 +17,7 @@
 # Options:
 #   --workdir DIR          default build/migration-replay/<timestamp>
 #   --with-blobs           also copy <source-dir>/blobs for an asset drill
-#   --expected-schema N    default 13 (current SCHEMA_VERSION)
+#   --expected-schema N    default 18 (current SCHEMA_VERSION)
 #   --keep                  keep the replay directory (default: keep; flag is documentation)
 #   --dry-run              stop after the consistent copy and pre-migration checks
 #
@@ -30,7 +30,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SOURCE=""
 WORKDIR=""
 WITH_BLOBS=0
-EXPECTED_SCHEMA=13
+EXPECTED_SCHEMA=18
 DRY_RUN=0
 
 usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -124,7 +124,10 @@ hash_source "$SRC_HASH_BEFORE"
 cat "$SRC_HASH_BEFORE"
 
 step "2/6 一致快照（SQLite .backup，含已提交 WAL）"
-sqlite3 -cmd '.timeout 5000' "$SRC_DB" ".backup '$DST_DB'"
+# `-readonly` 很关键：带未检查点 WAL 的旧库如果按读写打开，SQLite 会在连接关闭时
+# 做检查点并删掉 -wal，源库就被改了（本脚本的核心承诺是不写源库）。只读连接走同一个
+# backup API，但不会回写源库；它可能创建一个临时的 -shm，不算资料内容。
+sqlite3 -readonly -cmd '.timeout 5000' "$SRC_DB" ".backup '$DST_DB'"
 [[ -f "$DST_DB" ]] || fail "备份 API 没有产出 $DST_DB"
 # The copy must already be at the source schema; migration happens only when
 # Core::open runs in step 4.

@@ -4,6 +4,8 @@
 
 把桥接的 `BridgeSession` 适配成契约的 `DiaryApi`，让前端（F0，已合入）能经**契约接口**跑真核心。代码在 `packages/diary_bridge/lib/src/bridge_diary_api.dart`。桥接本身见 [M1 · 桥接接线](m1-桥接接线.md)。
 
+> **2026-10-21 覆盖率更新（64/76，#166 接上风格三条 + #167 接上天列表与阅读导出）**：59/76 → 62/76 是 `styles.list` / `styles.get` / `styles.save`（核心 `styles.rs`、桥接 `list_styles` / `get_style` / `save_style`、适配层 `listStyles` / `getStyle` / `saveStyle`，#166）；再 → 64/76 是 `diary.listDays`（#168）与 `exports.create`（#113 / #167）。下面的 2026-10-20 记录保留为历史。
+>
 > **2026-10-20 覆盖率更新（59/76）**：在记录路径之外，这一轮又接上了事件流、来源定位、资产租约、索引状态/重建、任务确认提醒等（详见文末「覆盖率扩展」）。备份只有**路径专用**的 `createBackupAtPath` / `inspectBackupAtPath` / `restoreBackupAtPath`：契约 `backups.*` 收的是 `PlatformHost` 限域票据，票据解析尚未实现，因此**不宣告**契约备份能力。下面「只接记录路径」「3 项测试」等段落是 2026-10-09 首版的现场记录，保留作为历史；当前口径以文末与 `packages/diary_bridge/README.md` 为准。
 
 ## 这一片解决了什么
@@ -51,7 +53,9 @@ cd packages/diary_bridge && dart test
 
 ## 没有做到的
 
-- **只覆盖记录路径**：其余契约方法（导入、提取、搜索、任务、录音…）未接，`capabilities` 里也没有它们。
+- **不是全部契约方法都接了**：记录、导入/录音交接、提取、检索、Provider/回应、日记生成与版本、
+  风格（`styles.list/get/save`）、天列表（`diary.listDays`）、阅读导出（`exports.create`）
+  与队列驱动已接；回收站/清理、设置、备份票据化入口等仍未接，`capabilities` 里也没有它们。
 - **前端还没切到真核心**：`apps/diary_app` 仍注入 `MockDiaryApi`。切换是 `main.dart` 那一处 + `demoMode: false`，但真核心需要**库路径、时区**，Android 还要把 `.so` 放进 app 并加载——这些正是 F1/`platform_host` 的活，还不存在。硬切会让应用起不来，所以这一片**刻意没有动前端目录**。
 - **`trashed` 分支仍未端到端验证**：核心 v16 已经有 `captures.trash` / `restore` / `previewPurge` / `purge`（含集成测试），但这一层的适配器还没接这五个方法，所以 Flutter 侧仍然调不到；`state <> 'trashed'` 的证据目前只在核心集成测试里（关键词、语义、AI 材料三条）。
 - **`mock` 与核心的初始 revision 不一致**：核心从 **1** 开始，`diary_mock` 从 **0** 开始（契约没规定起点）。前端逻辑不受影响（它用 `expectedRevision: 当前值`），但**照 mock 写的断言切到真核心会红**——我自己就在这条上翻过车。已单独记 issue。
@@ -85,7 +89,7 @@ cd packages/diary_bridge && dart test
 
 `createBackupAtPath` 的 `includeAssets = false` 明确拒绝：核心只做完整备份，不含原件就不是可恢复的备份。`restoreBackupAtPath` 的 `includeIndexes` 不改变核心的整库快照——`false` 不会剔除索引表，`true` 也不会额外重建；索引始终可以在恢复后重建。目标目录必须不存在或为空，非空/坏包/版本不兼容都在写任务行之前拒绝。
 
-**仍没接的 17 条**（`noSuchMethod` 会实时列出；「核心」「桥接」两列是本次盘点实测）：
+**仍没接的 12 条**（`noSuchMethod` 会实时列出；「核心」「桥接」两列是本次盘点实测）：
 
 | 契约方法 | 核心 | 桥接 | 结论 |
 |---|---|---|---|
@@ -93,20 +97,15 @@ cd packages/diary_bridge && dart test
 | `backups.inspect` | 有（同步） | 有 | 同上 |
 | `backups.restore` | 有（同步） | 有 | 同上 |
 | `core.setRuntimeState` | 无 | 无 | **真的缺核心**：契约要上报前后台/压力供调度，核心没有对应入口；不造只记不做的实现，另立项 |
-| `captures.moveDay` | 无 | 无 | 等 PR #155 合入；不在本分支复制那份回收站代码 |
-| `captures.trash` | 无 | 无 | 同上 |
-| `captures.restore` | 无 | 无 | 同上 |
-| `captures.previewPurge` | 无 | 无 | 同上 |
-| `captures.purge` | 无 | 无 | 同上 |
-| `diary.listDays` | 无 | 无 | 等 PR #159 合入 |
-| `styles.list` | 无 | 无 | 等 PR #159 合入 |
-| `styles.get` | 无 | 无 | 等 PR #159 合入 |
-| `styles.save` | 无 | 无 | 等 PR #159 合入 |
-| `exports.create` | 无 | 无 | 等 PR #159 合入 |
+| `captures.moveDay` | 有（#155 已合入 main） | 有 | 回收站入口已在核心落地；适配层这一轮刻意不接，另开 PR 接 |
+| `captures.trash` | 有 | 有 | 同上 |
+| `captures.restore` | 有 | 有 | 同上 |
+| `captures.previewPurge` | 有 | 有 | 同上 |
+| `captures.purge` | 有 | 有 | 同上 |
 | `settings.get` | 部分（只有 `OrganizeSettings`） | 无 | v18 设置线在做；本分支刻意不碰 |
 | `settings.update` | 部分（只有 `OrganizeSettings`） | 无 | 同上 |
 | `plugins.invoke` | 有（`run_plugin` 同步返回完整结果） | 有（`run_plugin`） | 契约返回 `jobId`，核心没有可读的插件任务结果；需契约/任务化另立项，不做假 jobId |
 
-**能力清单**：适配层只报 `_wiredMethods` 与桥接 `wired_capabilities` 的交集；这 17 条都不在里面（包括备份三条）。
+**能力清单**：适配层只报 `_wiredMethods` 与桥接 `wired_capabilities` 的交集；这 12 条都不在里面（包括备份三条）。#166 接上了风格三条（`styles.list` / `styles.get` / `styles.save`），#167 又接上了 `diary.listDays` 与 `exports.create`，所以它们从上面的差集里移除了；覆盖数 59/76 → 62/76 → **64/76**。
 
-**验证层级**：本机 Linux（WSL2 x86_64、Rust 1.94.1）真 cdylib + 真 SQLite；`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`dart analyze --fatal-infos`、`dart test`（67 项）都实跑。Windows/Android 真机未跑。
+**验证层级**：本机 Linux（WSL2 x86_64、Rust 1.94.1）真 cdylib + 真 SQLite；`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（593 通过 / 0 失败 / 8 忽略）、`dart analyze --fatal-infos` 都实跑；`dart test`（端到端）由 CI 的 `bridge` 任务跑，本机未跑。Windows/Android 真机未跑。

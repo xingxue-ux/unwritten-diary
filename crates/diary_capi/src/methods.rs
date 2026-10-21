@@ -64,8 +64,9 @@
 //! 「没有任何材料、也没有版本」的一天在核心里是 `not_found`，这是**空态**不是错误，
 //! 界面据此显示「还没有成篇日记」。
 //!
-//! 还差的两条不在本题材里：`diary.listDays`（核心还没有按天枚举的入口）与
-//! `diary.generate`（核心有 `generate_diary`，但它要排 AI 任务，属于生成那一片）。
+//! 还差的两条不在本题材里：`diary.listDays`（核心已加 `list_days`，#168 合入 main；
+//! C ABI 这一层还没包装）与 `diary.generate`（核心有 `generate_diary`，但它要排 AI
+//! 任务，属于生成那一片）。
 //! 界面**不显示**这两条的按钮，只如实说明缺口。
 //!
 //! 两条「为什么在这里」的说明（本块的任务书只点名了另外六条）：
@@ -90,14 +91,15 @@
 //! ## 还没接的（按契约第 4 节分组，TODO(#108)）
 //!
 //! - 回收站：`captures.moveDay` / `captures.trash` / `captures.restore` /
-//!   `captures.previewPurge` / `captures.purge`——**核心还没有对应入口**（没有
-//!   `trash_capture` / `preview_purge` / `purge_capture` / `move_day`），不是桥面漏接；
+//!   `captures.previewPurge` / `captures.purge`——**核心已有回收站状态机（#155 已合入
+//!   main），C ABI 这一层还没包装**，不是核心缺实现；
 //! - 文件：`imports.*`、`assets.open` / `assets.release`；
 //! - 检索：`search.snapshot`（`search.*` 只差它）；
 //! - 任务：`jobs.nextWakeup`；
-//! - 风格与导出：`styles.*` / `exports.create`——**核心还没有**风格落库与导出入口；
-//! - 日记：`diary.listDays`（核心还没有按天枚举入口）/ `diary.generate`（核心有
-//!   `generate_diary`，但要排 AI 任务，属于生成那一片）；
+//! - 风格与导出：`styles.list/get/save`（核心 `styles.rs` 已有，#166）与
+//!   `exports.create`（核心 `export.rs` 已有，#167）——核心有实现，C ABI 还没包装；
+//! - 日记：`diary.listDays`（核心有 `list_days`，C ABI 还没包装）/ `diary.generate`
+//!   （核心有 `generate_diary`，但要排 AI 任务，属于生成那一片）；
 //! - 其余：`core.snapshot` / `core.close` / `core.setRuntimeState`、`responses.*`、
 //!   `plugins.*`——要么核心还没有对应实现，要么属于后面的块。
 //!   （`settings.get` / `settings.update` 已接上，见 [`WIRED_METHODS`]。）

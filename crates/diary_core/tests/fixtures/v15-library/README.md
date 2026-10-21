@@ -17,9 +17,9 @@
 
 `crates/diary_core/tests/styles_schema_v17_test.rs` 的
 `a_real_v15_library_fixture_with_an_uncheckpointed_wal_migrates_to_v17` 会在每次
-`cargo test`（CI）里把它复制到临时目录、连同 `-wal` 一起打开，断言 v15 → 17 的
-两段结构（回收站列 + `styles` 表/索引）都补上、旧记录原样可读、
-`schema_migrations` 保留 15 并新增 17。
+`cargo test`（CI）里把它复制到临时目录、连同 `-wal` 一起打开，断言 v15 → 18 的
+三段结构（回收站列 + `styles` 表/索引 + `settings` 表）都补上、旧记录原样可读、
+`schema_migrations` 保留 15 并新增 18。
 
 样本由 [`tools/migration/make_v15_fixture.sh`](../../../../../tools/migration/make_v15_fixture.sh)
 生成，可复现。`backups` 的 `-wal` 哈希会随每次生成时的 WAL salt 变化，表里是**本次入库**
@@ -27,6 +27,6 @@
 
 这份样本也跑过一次完整的
 [`tools/migration/replay_old_library.sh`](../../../../../tools/migration/replay_old_library.sh)：
-源库 db/-wal 哈希逐位未变、迁移后 `schema=17`、`quick_check=ok`、
+源库 db/-wal 哈希逐位未变、迁移后 `schema=18`、`quick_check=ok`、
 `foreign_key_check` 为空、`captures`/`source_items` 行数 2/2 不变、
-`REPLAY schemaVersion=17`。
+`REPLAY schemaVersion=18`。

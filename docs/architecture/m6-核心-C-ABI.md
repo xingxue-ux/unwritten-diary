@@ -362,15 +362,14 @@ C ABI 没有回调/推送面，所以 `core.events` 不装成 Stream，而是把
 4. `src/tests.rs` 加用例（至少一条成功路径 + 一条参数错误）。
 
 **还没接的（按契约第 4 节分组，代码里带 `TODO(#108)`）**：`captures.moveDay/trash/
-restore/previewPurge/purge`——**核心已有入口（#155 已合），桥面还没接**；`styles.*`、
-`exports.create`——**核心还没有对应入口**（`get_style` / `save_style` / `list_styles` /
-`create_export` 全仓零命中），不是桥面漏接；另开核心线（styles 表 / export）。其余：
-`imports.*`、`assets.open/release`、
-`search.snapshot`、`jobs.nextWakeup`、`core.snapshot/close/setRuntimeState`、
-`diary.listDays` / `diary.generate`（核心有 `generate_diary`，但它要排 AI 任务）、
-`responses.*` / `plugins.*`——要么还没接，要么属于后面的块。
-`providers.*` 四条、`sources` 正文 5 条、`backups.*` 三条、`core.events`、
-`diary.*` 六条、`settings.get / update` 两条都已接（见上表；settings 两条与整理设置
+restore/previewPurge/purge`（核心已有回收站状态机，#155 已合入 main）、`styles.list/get/save`
+（核心 `styles.rs` 已有，#166）、`diary.listDays`（核心有 `list_days`）/ `diary.generate`
+（核心有 `generate_diary`，后者要排 AI 任务）、`exports.create`（核心有 `create_export`，要模型
+生成正文）、`responses.*`、`plugins.*`（`run_plugin` 同步返回完整结果，契约要 `jobId`）——
+**核心已有实现，但 C ABI 这一层还没包装**。另外 `imports.*`、`assets.open/release`、
+`search.snapshot`、`jobs.nextWakeup`、`core.snapshot/close/setRuntimeState` 也还没接。
+已接的 46 条见上表：`providers.*` 四条、`sources` 五条（含正文与定位）、`backups.*` 三条、
+`core.events`、`diary.*` 六条、`settings.get / update` 两条都在里面（settings 两条与整理设置
 共用核心 `settings` 表的同一行）。
 
 未接入的方法一律 `invalid_argument` + 已接入清单，**不静默成功、不假装支持**。

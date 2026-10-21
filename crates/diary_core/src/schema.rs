@@ -35,35 +35,37 @@ use rusqlite::{params, Connection};
 /// 「至多一条活着的整代重建」。v1–v14 也没有一张键值表可借用；`index_meta` 是
 /// 单行的索引元数据，这一列与它同一个主题，所以升版本、写迁移是诚实的代价。
 ///
-/// 16 是回收站（B7）抬的号：给 `captures` 加一列 `trashed_from_state`，记住移入
-/// 回收站之前是 `draft` 还是 `committed`。契约 3.1 节的状态机写的是「恢复回原状态」，
-/// 而 v1–v15 的 `captures` 没有第二处能存这个事实：`state` 已经被 `trashed` 占用，
-/// 派生内容（有没有 source / 有没有正文）都不能可靠反推（空白草稿提交后是
+/// **16 是回收站（B7，#155）抬的号**：给 `captures` 加一列 `trashed_from_state`，
+/// 记住移入回收站之前是 `draft` 还是 `committed`。契约 3.1 节的状态机写的是「恢复回
+/// 原状态」，而 v1–v15 的 `captures` 没有第二处能存这个事实：`state` 已经被 `trashed`
+/// 占用，派生内容（有没有 source / 有没有正文）都不能可靠反推（空白草稿提交后是
 /// `committed`、也可以没有任何来源）。所以这是**必要的加性迁移**：只加一列，
 /// 老数据留 NULL（升级前没有回收站入口，NULL 在恢复时按 `committed` 的解释处理，
 /// 见 `recycle::restore`），不回填、不改任何已有行。
 ///
-/// **17 / 18 是本轮另外两条线的号**：17 是风格（#159，建 `styles` 表并种默认风格），
-/// 18 是完整设置对象（#108，建 `settings` 并把 v11 的整理设置行并进去）。
+/// **17 是风格管理（#114）抬的号**：`styles` 表 + `idx_styles_current` 部分唯一索引
+/// + 默认风格 `sty_default` 的种子行。
 ///
-/// **合入顺序是死的：16 → 17 → 18**。#166（v17）必须先合；本 PR 若先合入库到 18，
-/// #166 再合就会让「库是 18、构建只认 17」的安装因 `current > SCHEMA_VERSION` 直接
-/// 拒绝打开用户正常的库——那时 #166 必须重编号到 18 并改所有断言，不能只改常量。
+/// **18 是完整设置对象（#108）抬的号**：建 `settings` 单行表，把 v11 的
+/// `organize_settings` 原值并进去后删掉旧表——整理设置与完整设置读写同一行，不是
+/// 两张平行表。
 ///
-/// **本支同时保留 16 / 17 两段 DDL**（即使本支不实现回收站与风格功能）：版本号是
-/// 单调的，跳过中间段等于那段迁移永远丢失——一个 v15 老库打开本构建会一路到 18，
-/// 之后 #155 / #159 的 `current < 16` / `current < 17` 再也不成立，缺的列与表再也
-/// 补不上。三段的守卫都是**结构判定**（`column_exists` / `table_exists`），幂等、
-/// 与起始版本无关；三条线不管谁先合入，后合入的一方在合并时删掉重复段即可。
+/// **合入顺序是死的：16 → 17 → 18**，版本号单调。#166 已经先合入（17），本 PR 接
+/// 18；一个 v15 老库打开本构建会一路跑完 16 / 17 / 18 三段，缺一段就再也补不上
+/// （`current` 一旦写成 18，`current < 16` / `current < 17` 永远不成立）。所以
+/// **三段 DDL 都保留在本文件里**，且每段的守卫都是**纯结构判定**
+/// （`column_exists` / `table_exists` / `index_exists`），幂等、与起始版本无关；
+/// 「版本号已经是 18 但结构缺一块」的库由 `ensure_v16_v17_v18_structure` 在每次
+/// open 时收敛。
 ///
 /// v18 这一段把 v11 的 `organize_settings` 单行并进新的 `settings` 单行，并补上契约
-/// 要求的 `diary_time_zone` / `default_style_id`。**不是两张平行表**：迁移把旧行原样
-/// 搬进新行（含 `revision` / `updated_at`），随后删掉旧表；整理设置与完整设置从此读写
-/// 同一行。迁移**不回填**用户没设过的值：`diary_time_zone` 取表默认的 `UTC`（核心不知道
-/// 设备时区，平台层首次启动时显式写入），`default_style_id` 为 NULL，自动整理仍是默认关。
+/// 要求的 `diary_time_zone` / `default_style_id`。迁移把旧行原样搬进新行（含
+/// `revision` / `updated_at`），随后删掉旧表；**不回填**用户没设过的值：
+/// `diary_time_zone` 取表默认的 `UTC`（核心不知道设备时区，平台层首次启动时显式
+/// 写入），`default_style_id` 为 NULL，自动整理仍是默认关。
 ///
-/// 如果本 PR 合入前 main 的版本号又变了（比如 17 已合并后还多了一段），必须整体
-/// 重编号并重写结构守卫（`!table_exists("settings")`）；**不要**只改常量。
+/// 如果本 PR 合入前 main 的版本号又变了，必须整体重编号并重写结构守卫
+/// （`!table_exists("settings")`）；**不要**只改常量。
 pub const SCHEMA_VERSION: i64 = 18;
 
 /// 迁移到最新版本。已经是最新则什么都不做。
@@ -196,11 +198,14 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 没有「替用户记一次自动尝试」这种默认：升级后的第一次 `open` 仍会按当时的
         // 口径如实判断该不该自动排一条。
     }
-    // v16 的守卫是**纯结构判定**，不掺版本号：一个 `user_version` 已经是 16、却缺
-    // 这一列的库（版本号先写、DDL 没落，或手工改过版本）也必须在这里补回来。
-    // `ALTER TABLE ADD COLUMN` 只在缺列时执行一次；列在就什么都不做，重复 open 幂等。
-    // 这是 #159 复审与 PR #155 复审同一条：`current < 16 && !column_exists(...)`
-    // 会让「自称 16 但缺列」的库永远跳过迁移。
+// v16：回收站（#155）的加列。**这段 DDL 已经在 main 上，这里保留是为了让 v15
+    // 直升 17 的库也拿到它**：版本号一旦写成 17，`current < 16` 不再成立，只有纯结构
+    // 守卫还能补上这一列。与 #155 的内容逐字一致，只有一份 `const V16`。
+    //
+    // 守卫是**纯结构判定**：只看列在不在，不看版本号。`current < 16 && 列不在`
+    // 会漏掉「自称 16、实际缺列」的库：这次 open 把版本写成 17 并返回成功，列仍缺，
+    // 要等下一次 open 才补。列在就跳过——重复 open、或从 v16 库升上来都不会重复
+    // ALTER；v1 老库也会在这里提前拿到这条可空列，纯加性、不碰已有数据。
     if !column_exists(&tx, "captures", "trashed_from_state")? {
         tx.execute_batch(V16)?;
         // **不回填**：升级前没有「移入回收站」的入口（虽然有 `trashed` 这个值，
@@ -208,17 +213,18 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 解释成 `committed`（见 `recycle::restore`）——不能凭有没有来源去猜，
         // 空白草稿提交之后也是 `committed`。
     }
-    // v17：风格版本表（#159 / #114）。同一条「版本号单调、不能跳段」的规则：本支
-    // 不实现风格功能，但 v15 → 18 必须把 styles 表建出来，否则 #159 合入后那些库
-    // 已经是 18，`current < 17` 永远不成立，表再也补不上。
+    // v17：风格版本表（#114）。同一条「版本号单调、不能跳段」的规则：v15 → 18 必须
+    // 把 styles 表建出来，否则版本号一旦写成 18，`current < 17` 永远不成立，表再也
+    // 补不上。
     //
-    // 守卫同样是**纯结构判定**：styles 表不在就补，不看 `current`。表已在就跳过；
-    // 半建失败或手工删过表的库由 `ensure_v16_v17_v18_structure` 在每次 open 时补。
-    // 种一行默认风格空版本（`sty_default`），让不点名风格的生成有一个真实存在的
-    // 快照行可指——**不替用户编偏好**。
-    if !table_exists(&tx, "styles")? {
+    // 守卫同样是**纯结构判定**：styles 表或 `idx_styles_current` 不在就补，不看
+    // `current`。两条 DDL 都是 IF NOT EXISTS，重复执行幂等；半建失败或手工删过表/
+    // 索引的库由 `ensure_v16_v17_v18_structure` 在每次 open 时补。种一行默认风格的
+    // 空版本（`sty_default`），让不点名风格的生成有一个真实存在的快照行可指——
+    // **不替用户编偏好**；种子只在 `styles::seed_default_style` 一处。
+    if !table_exists(&tx, "styles")? || !index_exists(&tx, "idx_styles_current")? {
         tx.execute_batch(V17)?;
-        seed_default_style_row(&tx, crate::support::now())?;
+        crate::styles::seed_default_style(&tx, crate::support::now())?;
     }
     // v18：完整设置对象与整理设置**并成同一行**（契约 4.4 `settings.get / update`）。
     //
@@ -301,26 +307,6 @@ fn ensure_v15_caliber_index(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V15_CALIBER_INDEX)
 }
 
-/// v17 的默认风格种子行（`sty_default`）。
-///
-/// **临时**：本支没有 `styles` 模块（风格功能在 #159/PR #159）。为了让 v15 老库直升 18
-/// 时也留下「不点名风格时能指到的真实快照行」，这里按 #159 的 `styles::seed_default_style`
-/// 逐字复刻一行；#159 合入后删掉这个函数、改调 `crate::styles::seed_default_style`。
-/// 不替用户编任何偏好：偏好列全是 NULL，示例与禁用表达是空数组。
-fn seed_default_style_row(
-    tx: &rusqlite::Transaction<'_>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> rusqlite::Result<()> {
-    tx.execute(
-        "INSERT OR IGNORE INTO styles (snapshot_id, id, revision, label, updated_at, \
-         length_preference, person, tone, emotional_temperature, rhetoric_level, examples, \
-         banned_expressions, current) VALUES (?1, ?1, 1, ?2, ?3, NULL, NULL, NULL, NULL, NULL, \
-         '[]', '[]', 1)",
-        params!["sty_default", "默认风格", crate::support::to_iso(now)],
-    )?;
-    Ok(())
-}
-
 /// v18 的建表 + 搬行 + 删旧表 + 种默认行。
 ///
 /// 迁移事务与「版本号已是最新但结构缺失」的自愈路径共用这一份逻辑，避免两处写出
@@ -384,7 +370,7 @@ fn ensure_v16_v17_v18_structure(conn: &mut Connection) -> rusqlite::Result<()> {
     if missing_styles || missing_current_index {
         // V17 的两条 DDL 都是 IF NOT EXISTS：表在、索引不在时只补索引。
         tx.execute_batch(V17)?;
-        seed_default_style_row(&tx, crate::support::now())?;
+        crate::styles::seed_default_style(&tx, crate::support::now())?;
     }
     if missing_settings {
         migrate_settings_table(&tx)?;
@@ -1160,14 +1146,27 @@ CREATE INDEX IF NOT EXISTS idx_chunk_vectors_caliber
 /// `committed`），有来源也不一定等于提交过（导入可以发生在草稿上）。所以存一份。
 ///
 /// 只加列、不回填：升级前没有回收站入口，老库里不会出现需要恢复的 `trashed` 行。
+/// **全仓只有这一处 `V16` 定义**（#155 已合入 main；本支升到 18 时只保留守卫）。
 const V16: &str = "ALTER TABLE captures ADD COLUMN trashed_from_state TEXT;";
 
-/// v17：风格版本表（#159 / #114）。本构建不实现风格功能，但**必须保留这段 DDL**：
-/// 版本号单调，跳过 17 会让 v15 老库直升 18 后永远补不上 styles 表。
+/// v17：风格版本表（#114）。
 ///
-/// 列与契约 `StyleProfile` 一一对应；`examples` / `banned_expressions` 存 JSON 数组；
-/// `snapshot_id` 是版本行的稳定标识；`current = 1` 是当前版本标记。**没有回填**：
-/// 默认风格的空版本行由 `seed_default_style_row` 种下，不替用户编偏好。
+/// 为什么按 `(id, revision)` 一行一个版本，而不是一条风格一行、保存时原地改：
+/// `diary_versions.style_snapshot_id` 要能回答「这一版当时用的哪一版风格」。覆盖式
+/// 存储会让历史日记在用户下次改风格时**悄悄换掉**它指向的内容——那不是审计，是
+/// 篡改。新版本不可变的代价只是表里多几行（用户改风格的次数有限）。
+///
+/// 列与契约 `StyleProfile` 一一对应：`label` / `updated_at` / `length_preference` /
+/// `person` / `tone` / `emotional_temperature` / `rhetoric_level` / `examples` /
+/// `banned_expressions`。`examples` / `banned_expressions` 存 JSON 数组：它们永远
+/// 整组读写，不需要按元素做 SQL 过滤，单独建表只会多一条 join 与一处不一致的机会。
+///
+/// `snapshot_id` 是版本行的稳定标识（默认风格的第一版就是 `sty_default`，这样既有的
+/// `styleSnapshotId = sty_default` 升级后仍指得到真实记录）。`current = 1` 是当前
+/// 版本标记；部分唯一索引保证一条风格至多一个当前版本。
+///
+/// **没有回填**：只建表；默认风格的空版本行由 `styles::seed_default_style` 种下，
+/// 值只有一个来源（`styles.rs` 的常量），不在 SQL 里再抄一遍。
 const V17: &str = r#"
 CREATE TABLE IF NOT EXISTS styles (
     snapshot_id           TEXT PRIMARY KEY,
