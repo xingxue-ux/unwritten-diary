@@ -465,6 +465,8 @@ export class DiaryCore {
    */
   updateSettings(params: UpdateSettingsParams): Settings {
     return this.invokeData('settings.update', params) as Settings;
+  }
+
   // ---------------------------------------------------------------- 备份与恢复（契约 4.5）
   //
   // 核心这三个是**同步**入口（契约那三行返回 jobId 的任务化是 #70，不在本块）。
