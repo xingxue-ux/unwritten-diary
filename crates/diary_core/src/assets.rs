@@ -59,7 +59,9 @@ pub(crate) struct LeaseRecord {
 pub(crate) fn prepare(core: &mut Core, request: ImportRequest<'_>) -> Result<ImportTicket> {
     let root = core.root_dir()?.to_path_buf();
     // 记录不存在就不该开票：否则会出现没人认领的暂存文件。
-    let _ = crate::load_capture(&core.conn, request.capture_id)?;
+    let capture = crate::load_capture_raw(&core.conn, request.capture_id)?;
+    // 回收站里的记录只读：不在 trash 之后再开始一次新导入。
+    crate::ensure_not_trashed(&capture, "导入新材料")?;
 
     let fingerprint = support::fingerprint(&[
         "imports.prepare",
@@ -139,6 +141,10 @@ pub(crate) fn finish(
             state: session.state.wire().to_owned(),
         });
     }
+    // 记录在回收站里就是只读的：不再把暂存字节搬进文件库、也不再往它身上挂来源。
+    // 放在任何文件/哈希动作之前，失败时暂存文件原样留着，用户可以先恢复再重试。
+    let capture = crate::load_capture(&core.conn, &session.capture_id)?;
+    crate::ensure_not_trashed(&capture, "完成导入")?;
 
     let staging_abs = root.join(&session.staging_rel_path);
     if staging_abs.to_string_lossy() != staging_ticket {
@@ -242,7 +248,7 @@ pub(crate) fn finish(
     )?;
 
     // 记录本身也要推进 revision：导入的材料是这条记录的一部分。
-    let capture = crate::load_capture(&tx, &session.capture_id)?;
+    let capture = crate::load_capture_raw(&tx, &session.capture_id)?;
     let new_revision = capture.revision + 1;
     tx.execute(
         "UPDATE captures SET revision = ?1, updated_at = ?2 WHERE id = ?3",
