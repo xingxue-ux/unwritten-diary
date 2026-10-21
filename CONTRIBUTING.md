@@ -256,7 +256,7 @@ indicating out-of-sync code.
 
 **通用原则**：本机失败先看「是不是挂载盘/工具链」，再怀疑改动；但**不要把本机通过当验收**——最终以 CI 与（开发完成后的）真机为准。
 
-### 10.6 合并 `main` 之后必须**重跑 codegen**
+### 10.6 生成产物必须与源码同源（**CI 会拦**，本地仍建议先跑）
 
 **症状**：合并 `main` 后一切测试都过，但应用一启动就报 10.4 里那个内容哈希不一致。
 
@@ -264,18 +264,36 @@ indicating out-of-sync code.
 **自动合并**它们——结果语法上没问题、也能编译，但与合并后的 `api.rs` **不同源**。我在这几条 PR 上
 连着踩了两次。
 
+更常见的是另一种：改了 `crates/diary_bridge/src/api.rs` 或 `crates/diary_core/src/model.rs`，
+**忘了重跑 codegen**。这时 `cargo build` 和 `dart test` **都还是绿的**——#143 往 `model.rs` 加了
+`JobPage` 没重生成，漂了 2 行注释；#153 给 `events_since` 加了文档注释又漏了一次。最坏的情形是
+**签名漂移但类型兼容**：Dart 侧静默用错字段，编译不报错、测试也发现不了。
+
+**这条规矩现在由 CI 兜底（#148）**：`bridge` job 里有一步「codegen 是否同步」，跑
+`tools/check_codegen_freshness.sh`——用钉死的 `2.13.0` 真跑一遍 `flutter_rust_bridge_codegen generate`，
+再要求 `crates/diary_bridge/src/frb_generated.rs` 与 `packages/diary_bridge/lib/src/rust/` **逐字节不变**。
+不同步时该 job 直接红，日志里给出 `git diff --stat`、完整 diff 和修复命令。所以**忘了重生成，PR 过不了**；
+但**别把 CI 当第一道**——本地跑一次只要十几秒，比等一轮 CI 快得多。
+
 **工具链以仓库根的 `rust-toolchain.toml` 为准（当前 `1.94.1`）**：本地 `cargo` 若是别的版本（例如
 1.98.1），跑 codegen 或测试时用 `cargo +1.94.1`——两个版本生成的 `model.dart` 会差一行自动注释
 （`assert_receiver_is_total_eq` ↔ `assert_fields_are_eq`），不钉版本就会每次都在 diff 里重新吵这一行。
 
 **规则**：
 
-1. 合并 `main`（或任何改过 `crates/diary_bridge/**` 的分支）之后，**重跑**
-   `flutter_rust_bridge_codegen generate`，并看 `git status` 是否有产物变化——**有变化就说明刚才那份是错的**，
-   连同产物一起提交；
-2. 提交前跑一次桥接测试（它会触发内容哈希校验）：
-   `cargo build --release -p diary_bridge && (cd packages/diary_bridge && dart test)`；
-3. **不要手工合并生成产物**，冲突时先取一侧再重跑生成（第 4 节已要求生成命令与产物同 PR）。
+1. 改动 `crates/diary_bridge/**`、`crates/diary_core/src/model.rs`（及其引用的类型）之后，**在同一个
+   PR 里**重跑 `flutter_rust_bridge_codegen generate`，并把产物一起提交；
+2. 提交前跑一次自检（十几秒，和 CI 跑的是同一条命令）：
+
+   ```bash
+   bash tools/check_codegen_freshness.sh
+   ```
+
+   它会把重生成后的产物留在工作区，红了直接 `git add` 就是修好；
+3. 合并 `main` 之后仍建议本地再跑一次：自动合并产物的问题 CI 会拦，但本地定位更快；
+4. **不要手工合并生成产物**，冲突时先取一侧再重跑生成（第 4 节已要求生成命令与产物同 PR）；
+5. 提交前跑一次桥接测试（它会触发内容哈希校验）：
+   `cargo build --release -p diary_bridge && (cd packages/diary_bridge && dart test)`。
 
 ### 10.7 依赖解析与构建产物的两个坑
 
