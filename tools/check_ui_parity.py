@@ -3,19 +3,33 @@
 
 检查两层：
 
-1. **一级导航**：Flutter 的 `_navItem(...)` 调用与 ArkTS 的
-   `TabContent() { ... }.tabBar('...')` 必须与产品决定一致，且两端顺序相同。
-   产品决定见 `docs/product/界面结构契约.md` §2：
+1. **一级导航**：Flutter 的 `_navItem(...)` 调用与 ArkTS 的一级导航必须与产品决定
+   一致，且两端顺序相同。产品决定见 `docs/product/界面结构契约.md` §2：
    `记录 / 日记 / 搜索 / 片段 / 我的`（任务中心是二级，不是 tab）。
+   ArkTS 支持两种写法，**哪种存在就解析哪种**：
+
+   - **底部页签（旧壳）**：`TabContent() { ... }.tabBar('记录')`；
+   - **顶部导航条（新壳，PR #188 起）**：`this.NavItem('记录', 0)` 这样的组件调用，
+     或者名字里带 `nav` / `tab` / `entry` 的 `string[]` / `[('记录', 0), ...]`
+     元组数组常量。
+
+   解析是**结构化**的：按组件调用、括号配对与数组元素取标签和顺序，不看缩进、
+   不看行号，所以重排缩进、改换行、插注释都不会让它失明。解析前会先剥掉
+   `//` 与 `/* */` 注释（替换成等长空格），注释里贴的示例入口不会被算成入口。两种结构同时存在但
+   入口清单不一致 ⇒ 红（说明有一份是废弃的，得删掉）。
+
 2. **文案 key**：`packages/ui_strings/ui_strings.json` 必须存在，必须是
    `key -> 非空中文文案` 的扁平 JSON；契约定下的必需 key 一个都不能少。
    源码里已经按约定引用（`uiStrings.get('...')` / `uiStrings.t('...')` /
    `uiString('...')`）的 key 也必须在表里。
 
-**缺壳时跳过，不是通过**：`origin/main` 上 `Index.ets` 还是录音验证页
-（没有 `TabContent`），此时「跨端入口一致性」这一项**跳过、exit 0**，但会打印
-`[跳过]` 且 JSON 的 `nav.status` 是 `skipped`（不是 `passed`）。PR #150 合入后，
-`Index.ets` 一旦包含 `TabContent`，这一项自动生效；若还是 4 入口就立刻红。
+**跳过条件收得很窄**：只有「`Index.ets` 不存在」或「底部页签、顶部导航两种结构都
+没找到」才允许跳过。跳过时仍然 **exit 0**，但人类输出会打 `[跳过]` 和醒目原因，
+JSON 的 `nav.status` 是 `skipped`（不是 `passed`）——按 `CONTRIBUTING.md` §10.1.1
+的例子 3，「跳过要如实说没跑，而不是显示绿」。
+一旦找到导航结构，**数量 / 集合 / 顺序不符就是 exit 1**；找到结构却取不到字面量
+标签（例如有 `TabContent` 却没有 `.tabBar`、`NavItem(SOME_VAR, i)` 用了变量）
+同样是 exit 1，不是跳过。
 **不要用 `|| true` / `continue-on-error` 把它伪装成绿**，也不要把「跳过」说成「通过」。
 
 用法：
@@ -26,7 +40,8 @@
 `--expect` **只给自测/排障用，CI 永远不传**：它只改变比较基准，不是放行开关；
 不匹配仍然非零退出。默认基准是产品决定的 5 入口，不依赖这个参数。
 
-退出码：0 = 通过或「缺壳跳过」；1 = 发现漂移/缺 key/解析失败；2 = 命令行用法错误。
+退出码：0 = 通过或「确实没有可比对的导航结构」；1 = 发现漂移/缺 key/解析失败；
+2 = 命令行用法错误。
 """
 
 from __future__ import annotations
@@ -112,6 +127,37 @@ FLUTTER_DESKTOP_BLOCK_RE = re.compile(
 )
 FLUTTER_DESKTOP_ENTRY_RE = re.compile(r"""\(\s*(\d+)\s*,\s*'([^']*)'\s*\)""")
 
+# ── ArkTS 顶部导航（PR #188 起的主结构）────────────────────────────────────
+# 组件调用：`this.NavItem('记录', 0)`。@Builder 定义 `NavItem(label: string, ...)`
+# 的第一个参数是参数名、不是字面量，所以不会命中这里（下面另有调用标记专门排除定义）。
+ARKTS_NAV_ITEM_RE = re.compile(
+    r"""(?:\bthis\s*\.\s*)?\bNavItem\s*\(\s*(['"])([^'"]*)\1""",
+)
+# 对象参数：`NavItem({ label: '记录' })`。
+ARKTS_NAV_ITEM_OBJECT_RE = re.compile(
+    r"""\bNavItem\s*\(\s*\{\s*(?:label|title|text)\s*:\s*(['"])([^'"]*)\1""",
+)
+# 调用的存在性标记：`(?!label\s*:)` 把 `NavItem(label: string, index: number)` 定义排除掉。
+ARKTS_NAV_ITEM_CALL_RE = re.compile(r"""\bNavItem\s*\(\s*(?!label\s*:)""")
+# 入口数组常量：`private readonly navItems: Array<[string, number]> = [...]`。
+# 只认名字里带 nav/tab/entry/menu 的（按 camelCase / snake_case 分词），
+# 避免把普通文案数组、`pathStack` 之类的东西当成导航清单。
+ARKTS_ARRAY_HEAD_RE = re.compile(
+    r"""\b([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[^=;\n{}]+?)?\s*=\s*\[""",
+)
+ARKTS_NAV_WORDS = frozenset(
+    {"nav", "navigation", "tab", "tabs", "entry", "entries", "menu", "menuitem"}
+)
+ARKTS_TUPLE_ENTRY_RE = re.compile(
+    r"""[\[(]\s*(['"])([^'"]*)\1\s*,\s*-?\d+\s*[\])]""",
+)
+ARKTS_STRING_RE = re.compile(r"""(['"])((?:\\.|[^'"\\])*)\1""")
+# 顶部导航的内容区：`Column() { RecordPage(...) } ... .visibility(this.currentTab === 0 ...)`。
+# `page` 只写进 JSON 当上下文，不参与通过/失败判定。
+ARKTS_TAB_PAGE_RE = re.compile(
+    r"""\b([A-Z][A-Za-z0-9_]*Page)\s*\([^()]*\)[\s\S]{0,400}?currentTab\s*===\s*(\d+)""",
+)
+
 STRING_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", "'": "'", '"': '"'}
 
 
@@ -151,8 +197,54 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
 
 
-def find_matching_brace(text: str, open_index: int) -> int:
-    """返回与 `open_index` 处 `{` 配对的 `}` 下标；跳过字符串/模板字符串。"""
+def strip_comments(text: str) -> str:
+    """把 `//` 与 `/* */` 注释替换成等长空格（保留换行），再交给解析器。
+
+    注释里的示例代码不是 UI：文档里写一句 `NavItem('<文案>', <索引>)` 不能变成
+    第 6 个入口。替换时保持长度与行号不变，所以 `line_of` 仍然指向真实行。
+    """
+    out: list[str] = []
+    i = 0
+    quote: str | None = None
+    while i < len(text):
+        ch = text[i]
+        if quote is not None:
+            out.append(ch)
+            if ch == "\\" and i + 1 < len(text):
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt == "/":
+                end = text.find("\n", i)
+                if end < 0:
+                    end = len(text)
+                out.append(" " * (end - i))
+                i = end
+                continue
+            if nxt == "*":
+                end = text.find("*/", i + 2)
+                stop = len(text) if end < 0 else end + 2
+                out.append("".join("\n" if c == "\n" else " " for c in text[i:stop]))
+                i = stop
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def find_matching(text: str, open_index: int, open_ch: str, close_ch: str) -> int:
+    """返回与 `open_index` 处 `open_ch` 配对的 `close_ch` 下标；跳过字符串/模板字符串。"""
     depth = 0
     quote: str | None = None
     escaped = False
@@ -169,14 +261,18 @@ def find_matching_brace(text: str, open_index: int) -> int:
         else:
             if ch in ("'", '"', "`"):
                 quote = ch
-            elif ch == "{":
+            elif ch == open_ch:
                 depth += 1
-            elif ch == "}":
+            elif ch == close_ch:
                 depth -= 1
                 if depth == 0:
                     return i
         i += 1
     return -1
+
+
+def find_matching_brace(text: str, open_index: int) -> int:
+    return find_matching(text, open_index, "{", "}")
 
 
 def unescape_single(value: str) -> str:
@@ -236,7 +332,7 @@ def parse_flutter_desktop(text: str) -> list[Entry] | None:
 
 
 def parse_arkts(text: str) -> list[Entry]:
-    """按 `TabContent() { ... }.tabBar('...')` 的顺序解析一级入口。"""
+    """按 `TabContent() { ... }.tabBar('...')` 的顺序解析一级入口（底部页签）。"""
     entries: list[Entry] = []
     cursor = 0
     while True:
@@ -264,6 +360,103 @@ def parse_arkts(text: str) -> list[Entry]:
             )
         cursor = close_brace + 1
     return entries
+
+
+def is_nav_name(name: str) -> bool:
+    """判断常量名是不是「导航清单」：按 camelCase / snake_case 分词后看词根。"""
+    words = re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+", name)
+    return any(word.lower() in ARKTS_NAV_WORDS for word in words)
+
+
+def parse_nav_items(text: str) -> list[Entry]:
+    """按出现顺序解析 `this.NavItem('记录', 0)` / `NavItem({ label: '记录' })`。"""
+    hits: list[tuple[int, str]] = []
+    for pattern in (ARKTS_NAV_ITEM_RE, ARKTS_NAV_ITEM_OBJECT_RE):
+        hits.extend((match.start(), match.group(2)) for match in pattern.finditer(text))
+    hits.sort(key=lambda hit: hit[0])
+    return [
+        Entry(index=index, label=unescape_single(label), line=line_of(text, offset))
+        for index, (offset, label) in enumerate(hits)
+    ]
+
+
+def parse_nav_array(text: str) -> tuple[list[Entry], str | None]:
+    """解析导航项数组常量；返回 (入口, 常量名)。
+
+    支持 `['记录', ...]` 与 `[('记录', 0), ...]` / `[['记录', 0], ...]`。
+    顺序按数组元素顺序——UI 的 `ForEach` 就是这么渲染的，所以交换元素必须红。
+    """
+    for match in ARKTS_ARRAY_HEAD_RE.finditer(text):
+        name = match.group(1)
+        if not is_nav_name(name):
+            continue
+        open_index = match.end() - 1
+        close_index = find_matching(text, open_index, "[", "]")
+        if close_index < 0:
+            continue
+        body_start = open_index + 1
+        body = text[body_start:close_index]
+        hits = [
+            (found.start(), found.group(2))
+            for found in ARKTS_TUPLE_ENTRY_RE.finditer(body)
+        ]
+        if len(hits) < 2:
+            hits = [
+                (found.start(), found.group(2))
+                for found in ARKTS_STRING_RE.finditer(body)
+            ]
+        if len(hits) < 2:
+            continue
+        return (
+            [
+                Entry(
+                    index=index,
+                    label=unescape_single(label),
+                    line=line_of(text, body_start + offset),
+                )
+                for index, (offset, label) in enumerate(hits)
+            ],
+            name,
+        )
+    return [], None
+
+
+def parse_top_pages(text: str) -> dict[int, str]:
+    """从 `currentTab === N` 的显隐条件里取每个入口对应的页面（只进 JSON）。"""
+    pages: dict[int, str] = {}
+    for match in ARKTS_TAB_PAGE_RE.finditer(text):
+        pages.setdefault(int(match.group(2)), match.group(1))
+    return pages
+
+
+def has_top_nav_hint(text: str) -> bool:
+    """有没有顶部导航的「痕迹」——哪怕取不到字面量标签也算，不能当没看见。"""
+    if ARKTS_NAV_ITEM_CALL_RE.search(text):
+        return True
+    return any(
+        is_nav_name(match.group(1)) for match in ARKTS_ARRAY_HEAD_RE.finditer(text)
+    )
+
+
+def parse_top_nav(text: str) -> tuple[list[Entry], str | None, bool]:
+    """解析顶部导航；返回 (入口, 结构名, 是否看到顶部导航的痕迹)。"""
+    entries = parse_nav_items(text)
+    if entries:
+        return entries, "nav-item", True
+    entries, name = parse_nav_array(text)
+    if entries:
+        return entries, f"array:{name}", True
+    return [], None, has_top_nav_hint(text)
+
+
+def describe_structure(structure: str | None) -> str:
+    if structure == "tabs":
+        return "底部页签"
+    if structure == "nav-item":
+        return "顶部导航"
+    if structure and structure.startswith("array:"):
+        return f"顶部导航数组 {structure.split(':', 1)[1]}"
+    return structure or ""
 
 
 def parse_expected(raw: str) -> list[str]:
@@ -415,7 +608,7 @@ def main(argv: list[str] | None = None) -> int:
         failures.append(Failure("flutter.missing_file", f"找不到 Flutter 壳：{flutter_path}"))
         flutter_entries: list[Entry] = []
     else:
-        flutter_text = read_text(flutter_path)
+        flutter_text = strip_comments(read_text(flutter_path))
         flutter_entries = parse_flutter(flutter_text)
         desktop_entries = parse_flutter_desktop(flutter_text)
         if desktop_entries is not None and [e.label for e in desktop_entries] != [
@@ -429,9 +622,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"_navItem {' / '.join(e.label for e in flutter_entries)}",
                 )
             )
+
     arkts_entries: list[Entry] = []
     arkts_error: str | None = None
     arkts_shell_present = False
+    arkts_structure: str | None = None
+    arkts_structures = {"tabs": False, "top_bar": False}
     nav_status = "error"
     nav_reason: str | None = None
     if not arkts_path.is_file():
@@ -439,27 +635,66 @@ def main(argv: list[str] | None = None) -> int:
         nav_reason = arkts_error
         failures.append(Failure("arkts.missing_file", arkts_error))
     else:
-        arkts_text = read_text(arkts_path)
-        has_tab_content = re.search(r"\bTabContent\s*\(", arkts_text) is not None
-        arkts_shell_present = has_tab_content
-        if not has_tab_content:
-            # 比较一个不存在的东西没有意义。跳过而不是失败，但必须留下可审计的原因：
-            # 人类输出打 [跳过]，JSON 的 nav.status 是 skipped（不是 passed）。
-            nav_status = "skipped"
+        # 先去掉注释：注释里贴的示例入口不是 UI，不能算进清单。
+        arkts_text = strip_comments(read_text(arkts_path))
+        # 两种结构各自解析；谁存在就核对谁。两个都不存在才允许跳过。
+        tabs_present = re.search(r"\bTabContent\s*\(", arkts_text) is not None
+        tab_entries = parse_arkts(arkts_text) if tabs_present else []
+        top_entries, top_structure, top_hint = parse_top_nav(arkts_text)
+        arkts_structures = {"tabs": tabs_present, "top_bar": top_hint}
+        arkts_shell_present = tabs_present or top_hint
+        if top_entries:
+            pages = parse_top_pages(arkts_text)
+            for entry in top_entries:
+                entry.page = pages.get(entry.index)
+        if top_entries:
+            arkts_entries = top_entries
+            arkts_structure = top_structure
+        elif tab_entries:
+            arkts_entries = tab_entries
+            arkts_structure = "tabs"
+
+        # 两份结构同时存在：入口清单必须一致；不一致说明有一份是废弃的，不能猜哪份算数。
+        if tab_entries and top_entries:
+            tab_labels = [entry.label for entry in tab_entries]
+            top_labels = [entry.label for entry in top_entries]
+            if tab_labels != top_labels:
+                failures.append(
+                    Failure(
+                        "arkts.nav.structures",
+                        "Index.ets 同时有底部页签与顶部导航，但入口不一致："
+                        f"底部 {' / '.join(tab_labels)} != 顶部 {' / '.join(top_labels)}；"
+                        "删掉废弃的那一份，只留一份可核对的清单",
+                    )
+                )
+
+        if top_hint and not top_entries:
+            # 看到了顶部导航的写法却取不到字面量标签：不能假装没看见，按解析失败处理。
+            nav_status = "error"
             nav_reason = (
-                "ArkTS 还没有产品壳（Index.ets 未包含 TabContent），"
-                "入口一致性待 PR #150 合入后比对"
+                "Index.ets 有顶部导航的写法（NavItem(...) 调用或 nav/tab 命名的数组），"
+                "但取不到字面量入口标签；检查器无法核对顺序，按解析失败处理"
             )
             arkts_error = nav_reason
-        else:
-            arkts_entries = parse_arkts(arkts_text)
-            if not arkts_entries:
+            failures.append(Failure("arkts.nav_unparsed", nav_reason))
+        elif not arkts_entries:
+            if tabs_present:
                 nav_status = "error"
                 nav_reason = "Index.ets 有 TabContent，但没有解析到任何 .tabBar(...) 入口"
                 arkts_error = nav_reason
                 failures.append(Failure("arkts.tabbar_unparsed", nav_reason))
             else:
-                nav_status = "checked"
+                # 比较一个不存在的东西没有意义。跳过而不是失败，但必须留下可审计的原因：
+                # 人类输出打 [跳过]，JSON 的 nav.status 是 skipped（不是 passed）。
+                nav_status = "skipped"
+                nav_reason = (
+                    "Index.ets 里既没有底部页签（TabContent().tabBar(...)），也没有顶部导航"
+                    "（NavItem('标签', 索引) 调用或名字带 nav/tab/entry 的数组常量）"
+                    "——没有可比对的入口清单"
+                )
+                arkts_error = nav_reason
+        else:
+            nav_status = "checked"
 
     if nav_status == "checked":
         nav_failures("flutter", flutter_entries, expected, failures)
@@ -537,7 +772,7 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "check": "nav.cross_side",
                     "reason": nav_reason,
-                    "effect": "exit 0；不声称入口一致；PR #150 合入后自动恢复检查",
+                    "effect": "exit 0；不声称入口一致；找到任一种导航结构后自动恢复检查",
                 }
             ]
             if nav_status == "skipped"
@@ -552,6 +787,8 @@ def main(argv: list[str] | None = None) -> int:
             "path": str(arkts_path),
             "exists": arkts_path.is_file(),
             "shell_present": arkts_shell_present,
+            "nav_structure": arkts_structure,
+            "structures": arkts_structures,
             "nav": [entry.as_dict() for entry in arkts_entries],
             "error": arkts_error,
         },
@@ -574,32 +811,38 @@ def main(argv: list[str] | None = None) -> int:
         def labels(entries: list[Entry]) -> str:
             return " / ".join(entry.label for entry in entries) if entries else "（未解析到）"
 
+        def rel(path: Path) -> str:
+            return str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
+
         print("UI 结构检查（5 入口 + 共享文案 key）")
         print(f"  期望：{len(expected)} 个入口：{' / '.join(expected)}")
         print(
             f"  Flutter：{len(flutter_entries)} 个入口：{labels(flutter_entries)}"
-            f"  [{flutter_path.relative_to(root) if flutter_path.is_relative_to(root) else flutter_path}]"
+            f"  [{rel(flutter_path)}]"
         )
-        arkts_nav_label = (
-            "（未包含 TabContent，跳过）"
-            if nav_status == "skipped"
-            else labels(arkts_entries)
-        )
+        if nav_status == "skipped":
+            arkts_nav_label = "（没有可比对的一级导航，跳过）"
+            structure_note = ""
+        else:
+            arkts_nav_label = labels(arkts_entries)
+            structure_note = (
+                f"（{describe_structure(arkts_structure)}）" if arkts_structure else ""
+            )
         print(
-            f"  ArkTS  ：{len(arkts_entries)} 个入口：{arkts_nav_label}"
-            f"  [{arkts_path.relative_to(root) if arkts_path.is_relative_to(root) else arkts_path}]"
+            f"  ArkTS  ：{len(arkts_entries)} 个入口{structure_note}：{arkts_nav_label}"
+            f"  [{rel(arkts_path)}]"
         )
-        print(
-            f"  文案表：{len(strings)} 个 key"
-            f"  [{strings_path.relative_to(root) if strings_path.is_relative_to(root) else strings_path}]"
-        )
+        print(f"  文案表：{len(strings)} 个 key  [{rel(strings_path)}]")
         print(f"  源码引用：{len(referenced_keys)} 个 key（{len(references)} 处）")
         if args.expect:
             print("  [诊断] 使用了 --expect：只改比较基准，不是放行开关；CI 永不传这个参数。")
         if nav_status == "skipped":
             print()
             print(f"[跳过] {nav_reason}")
-            print("  跳过不等于通过：JSON 的 nav.status 是 skipped，consistent 是 null。")
+            print(
+                "  跳过不等于通过：JSON 的 nav.status 是 skipped，consistent 是 null；"
+                "这只表示没有可比对的导航结构。"
+            )
         if failures:
             print()
             for failure in failures:
@@ -611,7 +854,7 @@ def main(argv: list[str] | None = None) -> int:
         elif nav_status == "skipped":
             print()
             print("结果：绿（入口检查跳过；文案表检查通过）。")
-            print("跳过原因见上；等 PR #150 合入后会自动开始比对入口。")
+            print("跳过原因见上：没有可比对的导航结构，不是「入口一致」。")
         else:
             print()
             print("结果：绿。两端一级入口与共享文案 key 一致。")
