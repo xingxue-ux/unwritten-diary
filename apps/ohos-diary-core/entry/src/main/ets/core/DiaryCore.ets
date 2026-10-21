@@ -206,7 +206,16 @@ export class DiaryCore {
     return diaryNapi.selfDir();
   }
 
-  /** 还没关闭的句柄数（泄漏自检；所有 `DiaryCore` 都 close 之后应为 0）。 */
+  /**
+   * 还没关闭的句柄数（泄漏自检）。
+   *
+   * 直接 `open` / `close` 的用法（探针、录音主线程会话）关完后应为 0；
+   * 但页面走的 `CoreGateway` 会按资料库路径缓存 worker 会话（预览令牌等内存态
+   * 必须跨调用存活），所以页面用过的进程里会**常驻**句柄：每个 taskpool 线程
+   * 最多 1 个（真机实测 4 线程池 ⇒ 最多 4 个）。`CoreWorker.closeAll()` 只能清掉
+   * 执行它的那条线程的缓存，其余线程的句柄随进程退出回收，不能保证调用后归零。
+   * 详见 `entry/src/main/ets/ui/CoreSessions.ets` 的线程模型说明。
+   */
   static openHandleCount(): number {
     return diaryNapi.openHandleCount();
   }

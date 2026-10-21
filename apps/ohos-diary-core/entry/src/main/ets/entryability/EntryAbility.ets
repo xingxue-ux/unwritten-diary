@@ -8,6 +8,7 @@ import { DeviceVerify } from '../verify/DeviceVerify';
 import { RecordingVerify } from '../recording/RecordingVerify';
 import { TranscriptionVerify } from '../recording/TranscriptionVerify';
 import { HapBothVerify } from '../verify/HapBothVerify';
+import { CoreGateway } from '../ui/CoreGateway';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryCore';
@@ -194,8 +195,14 @@ export default class EntryAbility extends UIAbility {
 
   onDestroy(): void {
     hilog.info(DOMAIN, TAG, '%{public}s onDestroy', MARK);
+    // 停录音的同时，尽力关掉页面通道缓存的 worker 会话（线程模型见 CoreSessions）。
+    // 两者都不阻塞 onDestroy；进程退出时系统会回收剩余句柄。
     RecordingVerify.shutdown().catch((err: Object) => {
       hilog.warn(DOMAIN, TAG, '%{public}s SHUTDOWN failed %{public}s',
+        MARK, JSON.stringify(err));
+    });
+    CoreGateway.closeAll().catch((err: Object) => {
+      hilog.warn(DOMAIN, TAG, '%{public}s CLOSE_ALL failed %{public}s',
         MARK, JSON.stringify(err));
     });
   }

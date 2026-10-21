@@ -2,15 +2,18 @@
 //
 // - 所有调用都走 `taskpool.execute(runCoreBatch, ...)`：不在 UI 线程碰 SQLite / 模型；
 // - `call` / `callMany` **不抛异常**，返回 `CoreResult`；页面只用 `ok` + `error`；
-// - 一次 `callMany` 只 open/close 一次核心，适合「列表 + 每条的抽取状态」这种
-//   一次页面加载要发很多条请求的场景。
+// - 一次 `callMany` 只取一次核心会话，适合「列表 + 每条的抽取状态」这种
+//   一次页面加载要发很多条请求的场景；
+// - 同一 `dbPath` 的会话**跨调用复用**（不再每批 open/close）：`preview_token` 等
+//   只存在核心内存里的状态必须活过两次 `call`，见 `CoreSessions.ets`。`closeAll()`
+//   是 App 退出/测试用的收尾口（只清当前 worker 线程的缓存，见其注释）。
 //
 // 这不是异步化的全部答案：核心仍然是同步的，只是被搬到了 worker。真正的
 // 事件/回调通道还没有（见 PR 的「没做的/缺口」）。
 
 import { taskpool } from '@kit.ArkTS';
 import { CoreErrorInfo, EMPTY_UI_ERROR, gatewayError, toUiError, UiError } from './Errors';
-import { runCoreBatch } from './CoreWorker';
+import { closeCoreSessions, runCoreBatch } from './CoreWorker';
 
 /** 一批请求里的单条结果。`data` 已经解析成对象。 */
 export interface CoreResult {
@@ -37,6 +40,24 @@ interface WireResponse {
 }
 
 export class CoreGateway {
+  /**
+   * 尽力关掉 worker 里缓存的核心会话（App 退出 / 测试收尾）。
+   *
+   * **不是全进程保证**：TaskPool 的每个 worker 线程各有一份模块缓存，这里只能
+   * 让接到这条任务的线程把它自己的缓存关掉（详见 `CoreSessions.ets` 的线程模型）。
+   * 进程退出后系统会回收其余句柄；测试若要在同一线程里断言归零，请在 worker
+   * 任务内直接调 `CoreSessions.closeAll()`。
+   *
+   * 与 `call` / `callMany` 一样不抛异常：收尾失败不该让退出流程失败。
+   */
+  static async closeAll(): Promise<void> {
+    try {
+      await taskpool.execute(closeCoreSessions);
+    } catch (e) {
+      // 收尾是尽力而为；进程退出时句柄由系统回收。
+    }
+  }
+
   /** 单条调用。 */
   static async call(
     dbPath: string,

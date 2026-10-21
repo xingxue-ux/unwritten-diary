@@ -16,15 +16,14 @@
 // 这是测试与推进用的功能界面：不做视觉设计，颜色最多用 `ui/Sketch.ets`；
 // 也没有新增 ui_strings key（直接写中文）。
 //
-// ⚠️ 已知集成缺口（2026-10-22 真机复现，修法不在本页）：
-// `RecycleStore.previewPurge()` 与 `purge()` 是两次 `CoreGateway.call`，每次调用都在
+// ✅ 历史缺口（2026-10-22 真机复现，已由 `ui/CoreSessions.ets` 修掉；页面逻辑不变）：
+// 以前 `RecycleStore.previewPurge()` 与 `purge()` 是两次 `CoreGateway.call`，每次调用都在
 // TaskPool worker 里 open → 调核心 → close；而核心的 `preview_token` 只存在**当前核心
 // 会话的内存里**（`crates/diary_core/src/recycle.rs` 明确不持久化）。最后一个句柄关闭后
 // 核心析构，令牌随之消失，所以本页点「确认永久删除」必然拿到 `invalid_state`。
-// 真机对照：在**同一个** Core 会话里 preview → purge 能成功（一次性验证），说明 UI 与核心
-// 都没问题，缺的是「预览与清理跨调用共享同一核心会话」。本页按 store 的结论如实显示
-// 「没有删除、请重新预览后再确认」，不伪装成功；修法（CoreGateway 保持会话 / 令牌持久化）
-// 需要另开 PR，不在本页加业务逻辑。
+// 现在 `CoreGateway` 按资料库路径缓存 worker 会话，跨调用复用同一个 Core（预览与清理即使
+// 落在不同 taskpool 线程，底层也是同一个核心），本页不用改。
+// store 仍按原口径处理失败：invalid_state 时作废旧令牌并只读重预览，绝不伪装成功。
 
 import { common } from '@kit.AbilityKit';
 import { Capture, PurgePreview, PurgeResult } from '../core/Models';
