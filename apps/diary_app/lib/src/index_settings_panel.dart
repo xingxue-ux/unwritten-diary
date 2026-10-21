@@ -1,8 +1,10 @@
 import 'package:diary_api/diary_api.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'index_settings_controller.dart';
 import 'sketch_ui.dart';
+import 'ui_strings.dart';
 
 class IndexSettingsPanel extends StatelessWidget {
   const IndexSettingsPanel({super.key, required this.controller});
@@ -93,6 +95,17 @@ class IndexSettingsPanel extends StatelessWidget {
                       ),
                     ),
                 ],
+                if (defaultTargetPlatform == TargetPlatform.windows) ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    '当前 Windows 构建不含任何本地模型文件；语义检索与录音转写需要配置模型目录后才能使用。应用目前不会自动下载模型。',
+                    style: TextStyle(
+                      color: SketchColors.muted,
+                      fontSize: 12,
+                      height: 1.5,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -171,13 +184,13 @@ class IndexSettingsPanel extends StatelessWidget {
 }
 
 String _jobLabel(JobState state) => switch (state) {
-  JobState.queued => '排队中',
-  JobState.running => '正在处理',
-  JobState.succeeded => '已完成',
-  JobState.retryWait => '稍后自动重试',
-  JobState.waitingConfiguration => '等待配置本地模型',
-  JobState.waitingDependency => '等待材料处理',
-  JobState.waitingNetwork => '等待网络',
-  JobState.failed => '未完成',
-  JobState.cancelled => '已取消',
+  JobState.queued => uiStrings.t('job.queued'),
+  JobState.running => uiStrings.t('job.running'),
+  JobState.succeeded => uiStrings.t('job.succeeded'),
+  JobState.retryWait => uiStrings.t('job.retry_wait'),
+  JobState.waitingConfiguration => uiStrings.t('job.waiting_configuration'),
+  JobState.waitingDependency => uiStrings.t('job.waiting_dependency'),
+  JobState.waitingNetwork => uiStrings.t('job.waiting_network'),
+  JobState.failed => uiStrings.t('job.failed'),
+  JobState.cancelled => uiStrings.t('job.cancelled'),
 };

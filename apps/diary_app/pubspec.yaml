@@ -22,6 +22,8 @@ dependencies:
   file_selector: ^1.1.0
   platform_host:
     path: ../../packages/platform_host
+  ui_strings:
+    path: ../../packages/ui_strings
 
 dev_dependencies:
   flutter_test:
@@ -31,6 +33,10 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
+    # 共享文案表 packages/ui_strings/ui_strings.json 由 path 依赖 `ui_strings`
+    # 以 package asset 提供，bundle key 是 packages/ui_strings/ui_strings.json。
+    # 不在这里重复列一份：Flutter 的 package asset 只从包内 lib/ 解析，
+    # 在这里列 packages/ui_strings/... 会报 "No file or variants found"。
     - assets/brand/app_icon.png
     # Third-party license texts and notices travel with the binary. Keeping
     # them as Flutter assets puts them in the APK/AAB and in the Windows

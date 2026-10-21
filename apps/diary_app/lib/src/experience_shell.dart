@@ -26,6 +26,7 @@ import 'revision_diff.dart';
 import 'sketch_ui.dart';
 import 'style_settings_controller.dart';
 import 'style_settings_panel.dart';
+import 'ui_strings.dart';
 
 /// The text, search, and source revision paths use DiaryApi. Remaining preview
 /// screens identify their local, disposable simulation state in the UI.
@@ -291,7 +292,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       FileImportPhase.verifying => '正在校验',
       FileImportPhase.saved => '已保存',
       FileImportPhase.interrupted => '已停止复制',
-      FileImportPhase.failed => '未完成',
+      FileImportPhase.failed => uiStrings.t('job.failed'),
     };
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -438,8 +439,8 @@ class _ExperienceShellState extends State<ExperienceShell>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('移入回收站？'),
-        content: const Text('记录会离开时间线，之后仍可从“存储与回收站”恢复。'),
+        title: const Text('移入回收站'),
+        content: Text(uiStrings.t('danger.trash_confirm')),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -459,7 +460,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       await _capture.refresh();
       if (!mounted) return;
       _back();
-      _toast('记录已移入回收站');
+      _toast('记录${uiStrings.t('state.trashed')}');
     } else {
       _toast(_libraryCare.message ?? '记录没有移入回收站。');
     }
@@ -894,6 +895,11 @@ class _ExperienceShellState extends State<ExperienceShell>
         _notice(_coreSearch.upgradeWarning!, icon: Icons.info_outline),
       if (_coreSearch.snapshot?.phase == SearchPhase.hybridReady)
         _notice('已结合关键词和语义结果。', icon: Icons.auto_awesome_outlined),
+      if (_coreSearch.snapshot?.indexCoverage == Coverage.partial)
+        _notice(
+          uiStrings.t('search.partial_coverage'),
+          icon: Icons.info_outline,
+        ),
       if (_coreSearch.error != null && _coreSearch.hits.isEmpty)
         _notice(_coreSearch.error!, icon: Icons.error_outline),
       if (!_coreSearch.loading &&
@@ -944,7 +950,7 @@ class _ExperienceShellState extends State<ExperienceShell>
             return _sliverContent(
               _resultTile(
                 capture.state == CaptureState.draft ? '正在写的草稿' : '刚刚收好的记录',
-                '${widget.demoMode ? '本次会话文字' : '本地文字'} · ${capture.state == CaptureState.draft ? '草稿' : '已提交'} · ${_dateLabel(capture.occurredAt.toLocal())}',
+                '${widget.demoMode ? '本次会话文字' : '本地文字'} · ${capture.state == CaptureState.draft ? uiStrings.t('state.draft') : uiStrings.t('state.committed')} · ${_dateLabel(capture.occurredAt.toLocal())}',
                 capture.draftText,
                 () => _openDetail(capture.id),
               ),
@@ -1650,7 +1656,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         _notice(
           widget.demoMode
               ? '这是单设备演示资料库，没有账号与自动同步。'
-              : '当前资料保存在本机。备份、导出和回收站只在核心能力就绪时执行。',
+              : '${uiStrings.t('privacy.local_only')}备份、导出和回收站只在核心能力就绪时执行。',
         ),
         if (!widget.demoMode) ...[
           const SizedBox(height: 18),
@@ -1670,11 +1676,21 @@ class _ExperienceShellState extends State<ExperienceShell>
         _section('创作与整理', [
           if (!widget.demoMode &&
               _indexSettings.status?.semanticIndexReady == false)
-            ('搜索索引 · 需要处理', '语义检索尚未就绪，点此查看原因并重建', 'index', Icons.manage_search),
+            (
+              '搜索索引 · ${uiStrings.t('job.needs_attention')}',
+              '语义检索尚未就绪，点此查看原因并重建',
+              'index',
+              Icons.manage_search,
+            ),
           ('风格偏好', '篇幅、语气与叙述方式', 'style', Icons.tune),
           ('模型服务', '能力、连接与使用范围', 'model', Icons.auto_awesome_outlined),
           ('整理时机', '安静地安排每天的整理', 'schedule', Icons.schedule),
-          ('任务中心', '等待、处理中与需要处理', 'tasks', Icons.inbox_outlined),
+          (
+            '任务中心',
+            '等待、${uiStrings.t('job.running')}与${uiStrings.t('job.needs_attention')}',
+            'tasks',
+            Icons.inbox_outlined,
+          ),
         ]),
         const SizedBox(height: 18),
         _section('资料与应用', [
@@ -1975,7 +1991,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       const SizedBox(height: 16),
       _resultTile(
         '待配置 · 录音转写',
-        '示例 · 需要处理',
+        '示例 · ${uiStrings.t('job.needs_attention')}',
         '声音原件仍可保留；配置转写能力后再继续。',
         () => _openPanel('model'),
       ),
@@ -2388,7 +2404,7 @@ class _ExperienceShellState extends State<ExperienceShell>
               Text(
                 capture == null
                     ? (widget.demoMode ? '处理状态：示例 · 部分材料仍待处理' : '状态：未能读取')
-                    : '状态：${widget.demoMode ? '本次会话文字' : '本地文字'} · ${capture.state == CaptureState.draft ? '草稿' : '已提交'}',
+                    : '状态：${widget.demoMode ? '本次会话文字' : '本地文字'} · ${capture.state == CaptureState.draft ? uiStrings.t('state.draft') : uiStrings.t('state.committed')}',
                 style: const TextStyle(color: SketchColors.muted),
               ),
             ],

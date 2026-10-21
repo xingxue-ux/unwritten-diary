@@ -4,6 +4,7 @@ import 'package:diary_api/diary_api.dart';
 import 'package:flutter/material.dart';
 
 import 'sketch_ui.dart';
+import 'ui_strings.dart';
 
 /// A narrow, usable local-provider setup while remote key storage is pending.
 class AiProviderPanel extends StatefulWidget {
@@ -127,7 +128,10 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
         ),
       ),
       const SizedBox(height: 8),
-      const Text('默认不联网。只有你测试连接或发起整理时，才会调用已配置的服务。'),
+      Text(
+        uiStrings.t('privacy.local_only'),
+        style: const TextStyle(color: SketchColors.text, height: 1.5),
+      ),
       const SizedBox(height: 18),
       SketchFrame(
         child: Column(
