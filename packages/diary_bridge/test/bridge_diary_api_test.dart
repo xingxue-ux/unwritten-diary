@@ -472,6 +472,88 @@ void main() {
     );
 
   });
+
+  test('阅读导出入口经契约接口可用', () async {
+    await api.open();
+
+    // 提交一条今天的记录，但没有当前日记正文：导出必须如实报 notFound，
+    // 不能拿草稿/记录文字硬凑一份「阅读导出」。
+    final draft = await api.createDraft(operationId: 'adapter-export-draft');
+    final written = await api.saveDraft(
+      id: draft.id,
+      text: '导出适配层用的记录。',
+      expectedRevision: draft.revision,
+      operationId: 'adapter-export-save',
+    );
+    await api.commit(
+      id: draft.id,
+      expectedRevision: written.revision,
+      operationId: 'adapter-export-commit',
+    );
+
+    // exports.create 已经接到真核心：没有当前日记正文的日期范围如实报 notFound；
+    // 非法格式报 invalidArgument（不是 UnsupportedError，也不是静默成功）。
+    await expectLater(
+      api.createExport(
+        ExportRequest(
+          fromDayKey: draft.dayKey,
+          toDayKey: draft.dayKey,
+          format: 'markdown',
+        ),
+      ),
+      throwsA(
+        isA<DiaryException>().having(
+          (error) => error.code,
+          'code',
+          DiaryErrorCode.notFound,
+        ),
+      ),
+    );
+    await expectLater(
+      api.createExport(
+        ExportRequest(
+          fromDayKey: draft.dayKey,
+          toDayKey: draft.dayKey,
+          format: 'pdf',
+        ),
+      ),
+      throwsA(
+        isA<DiaryException>().having(
+          (error) => error.code,
+          'code',
+          DiaryErrorCode.invalidArgument,
+        ),
+      ),
+    );
+  });
+
+  test('天列表入口经契约接口可用', () async {
+    await api.open();
+
+    // 提交一条今天的记录，天列表里就要有今天；计数只断言「至少这一条」，
+    // 因为同一个库里别的测试也建过今天的记录。
+    final draft = await api.createDraft(operationId: 'adapter-days-draft');
+    final written = await api.saveDraft(
+      id: draft.id,
+      text: '天列表适配层用的记录。',
+      expectedRevision: draft.revision,
+      operationId: 'adapter-days-save',
+    );
+    await api.commit(
+      id: draft.id,
+      expectedRevision: written.revision,
+      operationId: 'adapter-days-commit',
+    );
+    final days = await api.listDays(pageSize: 20);
+    expect(days.days.map((day) => day.dayKey), contains(draft.dayKey));
+    expect(
+      days.days
+          .firstWhere((day) => day.dayKey == draft.dayKey)
+          .materialCounts
+          .captures,
+      greaterThanOrEqualTo(1),
+    );
+  });
 }
 
 String _defaultLibraryPath() {

@@ -10,16 +10,17 @@ import '../diary_bridge.dart' as bridge;
 
 /// 把桥接的 `BridgeSession` 适配成契约的 [api.DiaryApi]。
 ///
-/// **覆盖记录、来源与资产、检索、远端服务、索引、任务、日记、风格、插件与备份检查**：
+/// **覆盖记录、来源与资产、检索、远端服务、索引、任务、日记、风格、阅读导出、插件与备份检查**：
 /// `open` / `snapshot` / `close` / `events` / 记录 CRUD / 导入与录音交接 /
 /// `openAsset` / `releaseAsset` / `locateSource` / `startSearch` / `nextPage` /
 /// `searchSnapshot` / `cancelSearch` / `upgradeSearch` / `listProviders` /
 /// `saveProvider` / `removeProvider` / `testProvider` / `requestResponse` /
 /// `getResponse` / `indexesStatus` / `rebuildIndexes` / `rebuildSemanticIndex` /
-/// 任务读取、取消、重试、到期执行与 `acknowledgeAttention` / `getDay` /
+/// 任务读取、取消、重试、到期执行与 `acknowledgeAttention` / `getDay` / `listDays` /
 /// `generateDiary` / `listVersions` / `getVersion` / `saveDiaryEdit` /
 /// `setCurrentVersion` / `mergeDiary` / **风格 `listStyles` / `getStyle` /
-/// `saveStyle`（#114，`styles.*`）** / 插件管理。`invokePlugin` 仍是契约里的
+/// `saveStyle`（#114，`styles.*`）** / **阅读导出 `createExport`（#113：核心同步生成
+/// 文件，`jobId` 指向已完成记录；导出不能用于恢复资料库）** / 插件管理。`invokePlugin` 仍是契约里的
 /// **票据式**形状（返回 `jobId`），而核心的 `run_plugin` 是同步返回完整结果的；
 /// 这条任务化接线没做，所以 `plugins.invoke` 不在能力清单里。其余契约方法一律抛
 /// [UnsupportedError]（和 `diary_mock` 的做法一致），并且**不出现在
@@ -150,9 +151,11 @@ class BridgeDiaryApi implements api.DiaryApi {
     'diary.saveEdit',
     'diary.setCurrent',
     'diary.merge',
+    'diary.listDays',
     'styles.list',
     'styles.get',
     'styles.save',
+    'exports.create',
     'indexes.status',
     'indexes.rebuild',
     'indexes.rebuildSemantic',
@@ -900,6 +903,30 @@ class BridgeDiaryApi implements api.DiaryApi {
     return _diaryVersion(version);
   }
 
+  // ------------------------------------------------------------ 天列表（#113 前置）
+
+  @override
+  Future<api.DiaryDayPage> listDays({
+    String? fromDayKey,
+    String? toDayKey,
+    String? cursor,
+    int pageSize = 20,
+  }) async {
+    final session = _open;
+    final page = await _translate(
+      () => session.listDays(
+        fromDayKey: fromDayKey,
+        toDayKey: toDayKey,
+        cursor: cursor,
+        pageSize: pageSize,
+      ),
+    );
+    return api.DiaryDayPage(
+      days: page.days.map(_diaryDay).toList(growable: false),
+      nextCursor: page.nextCursor,
+    );
+  }
+
   // ------------------------------------------------------------ 风格（#114）
 
   @override
@@ -937,6 +964,33 @@ class BridgeDiaryApi implements api.DiaryApi {
       ),
     );
     return _styleProfile(saved);
+  }
+
+  // ------------------------------------------------------------ 阅读导出（#113）
+
+  /// 契约 `exports.create`：返回 jobId + 包句柄。
+  ///
+  /// 桥接层同步生成文件（job 记录已经是 `succeeded`），`packageTicket` 是核心
+  /// 管理的导出文件绝对路径。**契约的 `ExportTicket` 没有 `path` / `byteSize`
+  /// 字段**，所以这两个值只在桥接的 `ExportTicket` 上；Dart 适配层不改契约，
+  /// 只映射契约已有的两个字段。阅读导出**不能用于恢复资料库**。
+  @override
+  Future<api.ExportTicket> createExport(api.ExportRequest request) async {
+    final session = _open;
+    final ticket = await _translate(
+      () => session.createExport(
+        request: bridge.ExportRequest(
+          fromDayKey: request.fromDayKey,
+          toDayKey: request.toDayKey,
+          format: request.format,
+          includeAssets: request.includeAssets,
+        ),
+      ),
+    );
+    return api.ExportTicket(
+      jobId: ticket.jobId,
+      packageTicket: ticket.packageTicket,
+    );
   }
 
   Future<api.ImportStatus> finishImport({

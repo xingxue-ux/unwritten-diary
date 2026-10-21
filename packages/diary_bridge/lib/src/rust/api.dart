@@ -66,6 +66,16 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
+  /// 把日期范围内**当前日记正文**导成 Markdown / 纯文本，契约 `exports.create`。
+  ///
+  /// **同步完成**：返回的 `jobId` 指向一条 `state = succeeded` 的导出任务记录，
+  /// `packageTicket` 是核心管理的导出文件绝对路径。契约的 `ExportTicket` 只有
+  /// `jobId` / `packageTicket`，所以 Dart 适配层拿不到这里的 `byteSize`；桥接层
+  /// 直接暴露完整结果（`path` / `byteSize` / `restorable = false`）。
+  ///
+  /// **这不是备份**：`restorable` 恒为 false，不能用于恢复资料库。
+  Future<ExportTicket> createExport({required ExportRequest request});
+
   /// 从某个序号之后读取持久业务事件。
   ///
   /// 核心按**分页**读（`Core::events_page`，SQL 带 `LIMIT`）；这一层为了保持 Dart
@@ -177,6 +187,14 @@ abstract class BridgeSession implements RustOpaqueInterface {
     String? dayKey,
     String? cursor,
     required int limit,
+  });
+
+  /// 有哪些天、每天多少条材料（回收站不算），按 dayKey 倒序。
+  Future<DiaryDayPage> listDays({
+    String? fromDayKey,
+    String? toDayKey,
+    String? cursor,
+    required int pageSize,
   });
 
   /// 分页读某一天的日记版本，契约 `diary.listVersions`。最新在前。
