@@ -246,29 +246,86 @@ class StorageTrashPanel extends StatelessWidget {
   ) async {
     final preview = await controller.previewPurge(capture);
     if (preview == null || !context.mounted) return;
+    var deleteDiaryVersions = false;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('永久清理这条记录？'),
-        content: Text(
-          '将删除 ${preview.assetIds.length} 个原件、'
-          '${preview.derivedContentIds.length} 项派生内容。'
-          '${preview.diaryVersionsStillReferencing.isEmpty ? '' : '\n仍有 ${preview.diaryVersionsStillReferencing.length} 个日记版本引用过它。'}'
-          '\n\n此操作不能撤销。',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('永久清理这条记录？'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '将删除 ${preview.assetIds.length} 个原件、'
+                  '${preview.derivedContentIds.length} 项派生内容'
+                  '${preview.aiResponseIds.isEmpty ? '' : '、${preview.aiResponseIds.length} 条引用它的 AI 回应'}。',
+                ),
+                if (preview.diaryVersionsStillReferencing.isNotEmpty)
+                  CheckboxListTile(
+                    value: deleteDiaryVersions,
+                    onChanged: (value) => setDialogState(
+                      () => deleteDiaryVersions = value ?? false,
+                    ),
+                    title: Text(
+                      '同时删除 ${preview.diaryVersionsStillReferencing.length} 个仍引用它的日记版本',
+                    ),
+                    subtitle: const Text(
+                      '不勾选则保留这些版本。它们可能同时包含同一天其他记录的内容，'
+                      '删掉会连带丢失那些内容。',
+                    ),
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                  ),
+                if (preview.retainedSourceSnapshotIds.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      '另有 ${preview.retainedSourceSnapshotIds.length} 份输入快照仍保留当时材料的正文'
+                      '（#161）。永久清理不会删除这些快照，界面不宣称已清干净。',
+                    ),
+                  ),
+                if (preview.derivedDiaryVersionIds.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      '另有 ${preview.derivedDiaryVersionIds.length} 个版本是从上面这些版本'
+                      '编辑/合并出来的（正文是你确认过的内容），永久清理不会删除它们；'
+                      '但它们可能仍含这条记录的文字。',
+                    ),
+                  ),
+                if (preview.undeterminedDiaryVersionIds.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      '还有 ${preview.undeterminedDiaryVersionIds.length} 个版本查不出归属'
+                      '（缺少输入记录）。为避免误删其他内容，永久清理不会删除它们。',
+                    ),
+                  ),
+                const Padding(
+                  padding: EdgeInsets.only(top: 12),
+                  child: Text('此操作不能撤销。'),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('保留'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('永久清理'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('保留'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('永久清理'),
-          ),
-        ],
       ),
     );
-    if (confirmed == true) await controller.purge(preview);
+    if (confirmed == true) {
+      await controller.purge(preview, deleteDiaryVersions: deleteDiaryVersions);
+    }
   }
 }
 

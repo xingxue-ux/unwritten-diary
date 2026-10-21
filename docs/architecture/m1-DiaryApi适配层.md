@@ -51,6 +51,6 @@ cd packages/diary_bridge && dart test
 
 - **只覆盖记录路径**：其余契约方法（导入、提取、搜索、任务、录音…）未接，`capabilities` 里也没有它们。
 - **前端还没切到真核心**：`apps/diary_app` 仍注入 `MockDiaryApi`。切换是 `main.dart` 那一处 + `demoMode: false`，但真核心需要**库路径、时区**，Android 还要把 `.so` 放进 app 并加载——这些正是 F1/`platform_host` 的活，还不存在。硬切会让应用起不来，所以这一片**刻意没有动前端目录**。
-- **`trashed` 分支未验证**：回收站没有对外接口，`state <> 'trashed'` 这条只在代码里，没有端到端证据。
+- **`trashed` 分支仍未端到端验证**：核心 v16 已经有 `captures.trash` / `restore` / `previewPurge` / `purge`（含集成测试），但这一层的适配器还没接这五个方法，所以 Flutter 侧仍然调不到；`state <> 'trashed'` 的证据目前只在核心集成测试里（关键词、语义、AI 材料三条）。
 - **`mock` 与核心的初始 revision 不一致**：核心从 **1** 开始，`diary_mock` 从 **0** 开始（契约没规定起点）。前端逻辑不受影响（它用 `expectedRevision: 当前值`），但**照 mock 写的断言切到真核心会红**——我自己就在这条上翻过车。已单独记 issue。
 - **Android / Windows 未验证**：只在该 Linux 宿主跑过；Android 上的 `.so` 加载在 B1b 的桥接探针里验过，但适配层本身没有设备证据。
