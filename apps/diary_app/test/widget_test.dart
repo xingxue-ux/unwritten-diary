@@ -4,10 +4,12 @@ import 'dart:ui' as ui;
 
 import 'package:diary_api/diary_api.dart';
 import 'package:diary_mock/diary_mock.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:unwritten_diary/main.dart';
 import 'package:unwritten_diary/src/sketch_ui.dart';
+import 'package:unwritten_diary/src/ui_strings.dart';
 
 double _contrastRatio(Color foreground, Color background) {
   final a = foreground.computeLuminance();
@@ -248,6 +250,11 @@ Future<void> openApp(WidgetTester tester, MockDiaryApi api) async {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
+    await uiStrings.load();
+  });
+
   testWidgets('timeline builds only visible tiles from 1001 records', (
     tester,
   ) async {
@@ -696,7 +703,7 @@ void main() {
     await tester.tap(find.byKey(const Key('finish-capture')));
     await tester.pump(const Duration(seconds: 1));
     await tester.pumpAndSettle();
-    expect(find.textContaining('记录版本冲突'), findsWidgets);
+    expect(find.textContaining('内容已被修改'), findsWidgets);
     expect(find.text('没有丢失'), findsOneWidget);
     expect(find.text('复制文字'), findsOneWidget);
     expect(find.text('重试'), findsNothing);
@@ -871,6 +878,30 @@ void main() {
     expect(find.textContaining('已嵌入的内容可以搜到'), findsOneWidget);
     expect(find.text('还有 3 块待嵌入。'), findsOneWidget);
     expect(find.text('语义检索暂不可用'), findsNothing);
+  });
+
+  testWidgets('Windows index settings disclose that models are not bundled', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      final api = IndexSettingsUiApi();
+      await tester.pumpWidget(DiaryApp(api: api));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('我的').last);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('搜索索引 · 需要处理'));
+      await tester.tap(find.text('搜索索引 · 需要处理'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('当前 Windows 构建不含任何本地模型文件'), findsOneWidget);
+      expect(find.textContaining('语义检索与录音转写需要配置模型目录后才能使用'), findsOneWidget);
+      expect(find.textContaining('不会自动下载模型'), findsOneWidget);
+      // 有 IndexStatus.reasons 时就原样显示，不另编一句替代。
+      expect(find.text('· 本地模型已更换，需要重建'), findsOneWidget);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 
   testWidgets('main routes fit a narrow screen at two times text scale', (

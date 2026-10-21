@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import 'library_care_controller.dart';
 import 'sketch_ui.dart';
+import 'ui_strings.dart';
 
 typedef TicketPicker = Future<String?> Function();
 
@@ -36,6 +37,11 @@ class BackupRestorePanel extends StatelessWidget {
                 icon: Icons.inventory_2_outlined,
                 title: '完整备份',
                 detail: '包含原始材料、日记版本和必要配置，可以恢复。',
+              ),
+              const SizedBox(height: 8),
+              Text(
+                uiStrings.t('backup.not_encrypted'),
+                style: const TextStyle(color: SketchColors.muted, height: 1.5),
               ),
               const SizedBox(height: 14),
               SketchAction(
@@ -121,8 +127,8 @@ class BackupRestorePanel extends StatelessWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('恢复到新的资料库？'),
-        content: const Text('当前资料库不会被覆盖。恢复完成后，你可以单独打开新资料库核对内容。'),
+        title: const Text('恢复备份'),
+        content: Text(uiStrings.t('danger.restore_confirm')),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -257,6 +263,8 @@ class StorageTrashPanel extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                Text(uiStrings.t('danger.purge_confirm')),
+                const SizedBox(height: 12),
                 Text(
                   '将删除 ${preview.assetIds.length} 个原件、'
                   '${preview.derivedContentIds.length} 项派生内容'
@@ -440,7 +448,8 @@ class _TrashTile extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
         ),
         subtitle: Text(
-          '${capture.dayKey} · ${capture.orderedSourceIds.length} 个原始来源',
+          '${uiStrings.t('state.trashed')} · ${capture.dayKey} · '
+          '${capture.orderedSourceIds.length} 个原始来源',
         ),
       ),
       Wrap(
