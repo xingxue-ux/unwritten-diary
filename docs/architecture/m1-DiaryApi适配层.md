@@ -4,7 +4,7 @@
 
 把桥接的 `BridgeSession` 适配成契约的 `DiaryApi`，让前端（F0，已合入）能经**契约接口**跑真核心。代码在 `packages/diary_bridge/lib/src/bridge_diary_api.dart`。桥接本身见 [M1 · 桥接接线](m1-桥接接线.md)。
 
-> **2026-10-21 覆盖率更新（62/76，#166 接上风格三条）**：这一轮在 59/76 之上接上了 `styles.list` / `styles.get` / `styles.save`（核心 `styles.rs`、桥接 `list_styles` / `get_style` / `save_style`、适配层 `listStyles` / `getStyle` / `saveStyle`），因此不再是 59/76。下面的 2026-10-20 记录保留为历史。
+> **2026-10-21 覆盖率更新（64/76，#166 接上风格三条 + #167 接上天列表与阅读导出）**：59/76 → 62/76 是 `styles.list` / `styles.get` / `styles.save`（核心 `styles.rs`、桥接 `list_styles` / `get_style` / `save_style`、适配层 `listStyles` / `getStyle` / `saveStyle`，#166）；再 → 64/76 是 `diary.listDays`（#168）与 `exports.create`（#113 / #167）。下面的 2026-10-20 记录保留为历史。
 >
 > **2026-10-20 覆盖率更新（59/76）**：在记录路径之外，这一轮又接上了事件流、来源定位、资产租约、索引状态/重建、任务确认提醒等（详见文末「覆盖率扩展」）。备份只有**路径专用**的 `createBackupAtPath` / `inspectBackupAtPath` / `restoreBackupAtPath`：契约 `backups.*` 收的是 `PlatformHost` 限域票据，票据解析尚未实现，因此**不宣告**契约备份能力。下面「只接记录路径」「3 项测试」等段落是 2026-10-09 首版的现场记录，保留作为历史；当前口径以文末与 `packages/diary_bridge/README.md` 为准。
 
@@ -89,7 +89,7 @@ cd packages/diary_bridge && dart test
 
 `createBackupAtPath` 的 `includeAssets = false` 明确拒绝：核心只做完整备份，不含原件就不是可恢复的备份。`restoreBackupAtPath` 的 `includeIndexes` 不改变核心的整库快照——`false` 不会剔除索引表，`true` 也不会额外重建；索引始终可以在恢复后重建。目标目录必须不存在或为空，非空/坏包/版本不兼容都在写任务行之前拒绝。
 
-**仍没接的 14 条**（`noSuchMethod` 会实时列出；「核心」「桥接」两列是本次盘点实测）：
+**仍没接的 12 条**（`noSuchMethod` 会实时列出；「核心」「桥接」两列是本次盘点实测）：
 
 | 契约方法 | 核心 | 桥接 | 结论 |
 |---|---|---|---|
@@ -102,12 +102,10 @@ cd packages/diary_bridge && dart test
 | `captures.restore` | 有 | 有 | 同上 |
 | `captures.previewPurge` | 有 | 有 | 同上 |
 | `captures.purge` | 有 | 有 | 同上 |
-| `diary.listDays` | 无（实现在 #167 的堆叠分支上） | 无 | 等 #167（`feat/1019-readable-export`）合入后接 |
-| `exports.create` | 无（实现在 #167 的堆叠分支上） | 无 | 同上 |
 | `settings.get` | 部分（只有 `OrganizeSettings`） | 无 | v18 设置线在做；本分支刻意不碰 |
 | `settings.update` | 部分（只有 `OrganizeSettings`） | 无 | 同上 |
 | `plugins.invoke` | 有（`run_plugin` 同步返回完整结果） | 有（`run_plugin`） | 契约返回 `jobId`，核心没有可读的插件任务结果；需契约/任务化另立项，不做假 jobId |
 
-**能力清单**：适配层只报 `_wiredMethods` 与桥接 `wired_capabilities` 的交集；这 14 条都不在里面（包括备份三条）。风格三条（`styles.list` / `styles.get` / `styles.save`）在 #166 这一轮**已经接上**（核心 `styles.*`、桥接 `list_styles` / `get_style` / `save_style`），所以从上面的差集里移除了；覆盖数从 59/76 变成 62/76。
+**能力清单**：适配层只报 `_wiredMethods` 与桥接 `wired_capabilities` 的交集；这 12 条都不在里面（包括备份三条）。#166 接上了风格三条（`styles.list` / `styles.get` / `styles.save`），#167 又接上了 `diary.listDays` 与 `exports.create`，所以它们从上面的差集里移除了；覆盖数 59/76 → 62/76 → **64/76**。
 
 **验证层级**：本机 Linux（WSL2 x86_64、Rust 1.94.1）真 cdylib + 真 SQLite；`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（572 通过 / 0 失败 / 8 忽略）、`dart analyze --fatal-infos` 都实跑；`dart test`（端到端）由 CI 的 `bridge` 任务跑，本机未跑。Windows/Android 真机未跑。

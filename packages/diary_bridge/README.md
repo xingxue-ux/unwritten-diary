@@ -11,7 +11,7 @@ Dart 侧访问 Rust 核心的唯一入口，含 [flutter_rust_bridge](https://cj
 | `lib/diary_bridge.dart` | 公开入口（barrel），上层只 import 这一个文件 |
 | `lib/src/rust/` | 生成文件（`api.dart`、`lib.dart`、`frb_generated*.dart`），**禁止手改** |
 | `lib/src/rust/third_party/diary_core/model.dart` | 核心数据结构的 Dart 镜像，同样由 codegen 生成 |
-| `lib/src/bridge_diary_api.dart` | 契约 `DiaryApi` 的适配层（62/76，见下） |
+| `lib/src/bridge_diary_api.dart` | 契约 `DiaryApi` 的适配层（64/76，见下） |
 | `test/bridge_probe_test.dart` | 端到端测试：Dart 真正调用到 Rust cdylib 并读写资料库 |
 | `test/bridge_diary_api_test.dart` | 端到端测试：**只经 `DiaryApi`** 跑真核心（前端真正用的那条路径） |
 | `test/bridge_diary_coverage_test.dart` | 本轮新接方法：事件流、资产租约、来源定位、索引、确认提醒、路径专用备份检查 |
@@ -69,7 +69,7 @@ dart pub get && dart test                    # 全套，跑完整读写链路
 
 ## 现状与未验证
 
-已验证（本机 WSL + Rust 1.94.1）：`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（572 通过 / 0 失败 / 8 忽略）、`dart analyze --fatal-infos`；`dart test` 的端到端链路由 CI 的 `bridge` 任务跑（本机未跑，不在这里报数字）。`BridgeSession` 全链路读写、`CoreError` → 契约第 7 节错误码映射、能力清单、中文与 emoji 往返。
+已验证（本机 WSL + Rust 1.94.1）：`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（579 通过 / 0 失败 / 8 忽略）、`dart analyze --fatal-infos`；`dart test` 的端到端链路由 CI 的 `bridge` 任务跑（本机未跑，不在这里报数字）。`BridgeSession` 全链路读写、`CoreError` → 契约第 7 节错误码映射、能力清单、中文与 emoji 往返。
 
 **没接的就是 `LibraryInfo.capabilities` 里没列的**（最近一次核对的差集，12 条）：备份三条（`backups.create` / `inspectBackup` / `restoreBackup`——契约收 `PlatformHost` 限域票据，票据解析协议待另立；本轮只有路径专用入口）、回收站五条（`captures.moveDay/trash/restore/previewPurge/purge`；#155 已在 main，适配层还没接）、`setRuntimeState`（核心没有资源调度入口）、`getSettings` / `updateSettings`（设置线在做）、`invokePlugin`（核心同步返回完整结果且没有结果读取入口，硬套 `jobId` 会造出「有 id 没结果」的假票据）。**已经接上**的是上面的 64 条：记录与导入、提取与来源定位、检索与索引、Provider 配置与回应、日记的生成与版本（含编辑/指定当前/合并）、风格（`styles.*`）、天列表（`diary.listDays`）、阅读导出（`exports.create`）与队列驱动。
 
