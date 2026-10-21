@@ -77,11 +77,19 @@ createDraft（拿 capture_id）
       └ 登记失败：persisted 保持旧值，失败原因写进 updateState 的 message
   → recordings.updateState(stopping, received, persisted)   // 第二个参数只用 persisted
   → recordings.finalize(last_segment_index, end_reason)
+      └ 返回 capture_id + capture_revision（finalize 只递增 revision，state 仍是 draft）
+  → captures.commit(capture_id, expected_revision=capture_revision, 不带 jobs)
   → ContinuousTask.stop
 ```
 
 关键取舍：
 
+- **`finalize` 与 `captures.commit` 分开**：`finalize` 的语义是「音频已保存」；把记录
+  推进成 `committed` 是聚合根的状态推进，由客户端用 finalize 返回的**权威 revision**
+  提交。分开后可以重试、可以保留「录完先不提交」的按钮语义，也不把「录音一定自动成篇」
+  写死进核心；反过来说，`commit` 不带 jobs，不会重复排 finalize 已经排过的转写任务。
+  提交失败不回滚音频/来源，`VoiceRecorder.commitResult()` 如实报 `failed`；`invalid_state`
+  按「可能已提交」幂等处理并写日志。
 - **核心调用不在每个 `readData` 里做**：`registerSegment` 只在片段封闭时调一次（2 秒一次），
   `updateState` 一秒一次；常规 `readData` 只做「写文件 + 增量哈希 + 判断是否该轮转」。
 - **哈希在写的时候算**：用 `cryptoFramework.Md('SHA256')` 的 `updateSync/digestSync`，
@@ -222,8 +230,9 @@ await this.win.setWindowKeepScreenOn(false);  // 停止 / 异常 / abort / onDes
 
 - **失败不阻断录音**：拿不到窗口或系统拒绝（`1300002` 窗口状态异常 / `1300003` WMS 异常等）时，
   只把 `ok=false` + 系统错误码写进 `KEEP_SCREEN_ON ok=false code=… message=…`，录音继续；
-- **停止/异常必须关掉**：`VoiceRecorder.stop()` 的 `finally`、`abort()`、`fail()`、
-  `cleanupAfterFailure()` 都会走 `ScreenKeepOn.disable()`；`RecordingVerify.shutdown()`
+- **停止/异常必须关掉**：`VoiceRecorder.stop()` 的外层 `try/finally`（包住「停采集 → 封闭
+  尾段 → 上报 stopping → finalize」全流程，所以 `writer.finish()` 或 `reportState()` 抛错也
+  会释放）、`abort()`、`fail()`、`cleanupAfterFailure()` 都会走 `ScreenKeepOn.disable()`；`RecordingVerify.shutdown()`
   在 Ability 销毁时也走 `abort()`。日志 `KEEP_SCREEN_ON released` 是收回成功的证据；
 - **不碰电源状态**：不按 Power、不 `power-shell suspend`、不改息屏超时（见 §0）；
 - 系统文档提醒 `setWindowKeepScreenOn(true)` 只应在必要场景使用，非标准使用可能被系统判定并
@@ -259,7 +268,7 @@ PR #117 的 C ABI 只接了 9 条方法，**没有 `recordings.*`**；这一片�
   与参数错误用例（本机受重线约束**没有跑 `cargo test`**，只做了 `cargo check --all-targets`；
   真机上的录音链路本身就是这 5 条方法的端到端实测）。
 
-`DiaryCore.ets` 同步补了 5 个类型化方法（14 条契约方法），
+`DiaryCore.ets` 同步补了 5 个类型化方法（当时 14 条契约方法；#143 之后 30 条），
 `python3 tools/check_arkts_capi_contract.py` 通过。
 
 ## 6 恢复（进程被杀之后）

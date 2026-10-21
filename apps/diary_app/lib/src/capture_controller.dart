@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:diary_api/diary_api.dart';
 import 'package:flutter/foundation.dart';
 
+import 'ui_strings.dart';
+
 enum SavePhase { ready, editing, saving, saved, failed }
 
 /// Text capture state. A pending write keeps its operationId until the core
@@ -308,9 +310,11 @@ class CaptureController extends ChangeNotifier {
   String _message(Object failure) {
     if (failure is! DiaryException) return '这次操作没有完成，请稍后重试。';
     return switch (failure.code) {
-      DiaryErrorCode.revisionConflict => '记录版本冲突。文字还在这里，请先复制，再重新打开应用。',
+      DiaryErrorCode.revisionConflict =>
+        '${uiStrings.t('error.revision_conflict')}。文字还在这里，请先复制，再重新打开应用。',
       DiaryErrorCode.idempotencyConflict => '重复操作发生冲突。文字还在这里，请先复制，再重新打开应用。',
-      DiaryErrorCode.invalidState => '这条记录的状态已变化。文字还在这里，请先复制，再重新打开应用。',
+      DiaryErrorCode.invalidState =>
+        '${uiStrings.t('error.invalid_state')}。文字还在这里，请先复制，再重新打开应用。',
       _ => failure.message,
     };
   }

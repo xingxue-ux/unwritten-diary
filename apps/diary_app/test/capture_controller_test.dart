@@ -4,6 +4,7 @@ import 'package:diary_api/diary_api.dart';
 import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:unwritten_diary/src/capture_controller.dart';
+import 'package:unwritten_diary/src/ui_strings.dart';
 
 class SaveCall {
   const SaveCall(this.text, this.revision, this.operationId);
@@ -128,6 +129,11 @@ class SlowListApi extends MockDiaryApi {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
+    await uiStrings.load();
+  });
+
   test(
     'save and finish serialize edits made while a save is in flight',
     () async {

@@ -64,6 +64,24 @@ export class RecorderOptions {
   endReason: string = 'user_stop';
 }
 
+/**
+ * `finalize` 之后那次 `captures.commit` 的结果。
+ *
+ * `finalize` 已经把音频/来源落库，提交失败**不回滚**录音；但界面必须能区分
+ * 「已保存、已成篇」与「已保存、提交失败」，所以失败不放静默、只记录在这里。
+ */
+export class RecordingCommitResult {
+  /** `not_attempted` / `committed` / `already_committed` / `failed`。 */
+  state: string = 'not_attempted';
+  capture_id: string = '';
+  /** `finalize` 返回的 revision（提交前）。 */
+  revision_before: number = -1;
+  /** `commit` 成功时核心返回的权威 revision；未提交/失败时为 -1。 */
+  revision_after: number = -1;
+  /** 失败原因（`code=… message=…`）；成功为空串。 */
+  error: string = '';
+}
+
 /** 采集器封装：一个实例只录一次（下一次要 new）。 */
 export class VoiceRecorder {
   private readonly core: DiaryCore;
@@ -73,10 +91,15 @@ export class VoiceRecorder {
   private readonly screen: ScreenKeepOn = new ScreenKeepOn();
 
   private ticket: RecordingTicket | null = null;
+  /** 本会话建的那条记录。提交必须点名它，不能去提交「最新一条 draft」。 */
+  private captureId: string = '';
   private capturer: audio.AudioCapturer | null = null;
   private writer: PcmSegmentWriter | null = null;
   private bgTask: ContinuousTaskResult = new ContinuousTaskResult();
   private keepScreen: KeepScreenOnResult = new KeepScreenOnResult();
+  private commitOutcome: RecordingCommitResult = new RecordingCommitResult();
+  /** 启动失败留下的、没有任何来源的空 draft（核心没有安全的删除能力，见 README）。 */
+  private abandonedDraft: string = '';
 
   private segmentIndex: number = 0;
   private lastRegistered: number = -1;
@@ -139,6 +162,26 @@ export class VoiceRecorder {
     return this.bgTask;
   }
 
+  /**
+   * `finalize` 之后提交记录的结果。
+   *
+   * `state === 'failed'` 表示**音频与来源已保存、但记录还停在 draft**；界面要如实
+   * 显示「已保存，提交失败」，不能把它当成录音失败，也不能静默当成功。
+   */
+  commitResult(): RecordingCommitResult {
+    return this.commitOutcome;
+  }
+
+  /**
+   * 启动失败时留下的空 draft id（没有登记任何片段、也没写过正文）。
+   *
+   * 核心目前没有安全的「只删空 draft」能力；这里只如实记录，交给产品侧未来在
+   * `captures.trash` 之类的能力上清理，绝不自己删库。
+   */
+  abandonedDraftId(): string {
+    return this.abandonedDraft;
+  }
+
   /** 录音期间「保持屏幕常亮」的设置结果（失败也要能看见）。 */
   keepScreenResult(): KeepScreenOnResult {
     return this.keepScreen;
@@ -186,6 +229,8 @@ export class VoiceRecorder {
         operation_id: `op-ohos-draft-${nonce}`,
       });
       this.phase = 'preparing';
+      // 记下本会话自己的 capture id：finalize 后提交必须点名它，绝不提交「最新 draft」。
+      this.captureId = capture.id;
       hilog.info(DOMAIN, TAG, '%{public}s CAPTURE draft id=%{public}s tz=%{public}s offset=%{public}d',
         MARK, capture.id, timeZone, offsetMinutes);
 
@@ -281,52 +326,83 @@ export class VoiceRecorder {
     this.phase = 'stopping';
     this.stopRequestedMs = nowUptimeMs();
 
-    // 1. 停采集器。`stop()` 失败不该阻止后续收尾（可能本来就没跑起来）。
-    await this.stopCapturer();
+    // **整个收尾都在这层 try 里**：`writer.finish()`（封闭尾段）与 `reportState()`
+    // 都在原来的 try/finally 之外；它们一抛错，phase 就停在 `stopping`，而屏幕常亮
+    // 与长时任务只会在 finalize 的 finally / 无片段分支里释放 ⇒ 永远不释放。
+    // 现在无论哪一步抛错都先走 finally；异常本身照常往上抛（不吞）。
+    // 用 `primaryError` 记下「已经有异常在飞」，避免 finally 里的释放失败
+    // 覆盖掉真正的原因（finally 抛错会替换原异常）。
+    let primaryError: Object | null = null;
+    try {
+      // 1. 停采集器。`stop()` 失败不该阻止后续收尾（可能本来就没跑起来）。
+      await this.stopCapturer();
 
-    // 2. 封闭最后一段；没有 PCM 的尾巴直接删掉，不登记空片段。
-    //    只有登记**成功**才把它算进 persistedMs；失败就保持旧值，并写进 message，
-    //    让核心的 `error_message` 与恢复日志都能看见「最后一段没登记」。
-    let tailMessage = '';
-    if (this.writer !== null) {
-      const file = this.writer.finish();
-      this.writer = null;
-      if (file.pcmBytes > 0) {
-        try {
-          this.register(file);
-        } catch (e) {
-          tailMessage = `最后一段（序号 ${file.index}，${file.durationMs} ms）登记失败：${describeError(e as Object)}`;
-          hilog.error(DOMAIN, TAG, '%{public}s SEG tail register failed %{public}s',
-            MARK, tailMessage);
-        }
-      } else {
-        hilog.info(DOMAIN, TAG, '%{public}s SEG drop index=%{public}d reason=empty bytes=%{public}d',
-          MARK, file.index, file.byteSize);
-        try {
-          fs_unlink(file.path);
-        } catch (e) {
-          // 删不掉也不影响核心：没有登记就不会进最终化。
+      // 2. 封闭最后一段；没有 PCM 的尾巴直接删掉，不登记空片段。
+      //    只有登记**成功**才把它算进 persistedMs；失败就保持旧值，并写进 message，
+      //    让核心的 `error_message` 与恢复日志都能看见「最后一段没登记」。
+      let tailMessage = '';
+      if (this.writer !== null) {
+        const file = this.writer.finish();
+        this.writer = null;
+        if (file.pcmBytes > 0) {
+          try {
+            this.register(file);
+          } catch (e) {
+            tailMessage = `最后一段（序号 ${file.index}，${file.durationMs} ms）登记失败：${describeError(e as Object)}`;
+            hilog.error(DOMAIN, TAG, '%{public}s SEG tail register failed %{public}s',
+              MARK, tailMessage);
+          }
+        } else {
+          hilog.info(DOMAIN, TAG, '%{public}s SEG drop index=%{public}d reason=empty bytes=%{public}d',
+            MARK, file.index, file.byteSize);
+          try {
+            fs_unlink(file.path);
+          } catch (e) {
+            // 删不掉也不影响核心：没有登记就不会进最终化。
+          }
         }
       }
-    }
 
-    // 3. 先上报 stopping（核心不虚构麦克风状态），再最终化。
-    //    第二个参数**只用 persistedMs**：尾段登记失败时它还是旧值，绝不虚报「已持久化」。
-    this.reportState('stopping', this.receivedMs(), this.persistedMs(), tailMessage);
-    hilog.info(DOMAIN, TAG, '%{public}s STOP_PROGRESS receivedMs=%{public}d persistedMs=%{public}d unregisteredTailMs=%{public}d equal=%{public}s',
-      MARK, this.receivedMs(), this.persistedMs(), this.unregisteredTailMs(),
-      this.receivedMs() === this.persistedMs() ? 'true' : 'false');
+      // 3. 先上报 stopping（核心不虚构麦克风状态），再最终化。
+      //    第二个参数**只用 persistedMs**：尾段登记失败时它还是旧值，绝不虚报「已持久化」。
+      this.reportState('stopping', this.receivedMs(), this.persistedMs(), tailMessage);
+      hilog.info(DOMAIN, TAG, '%{public}s STOP_PROGRESS receivedMs=%{public}d persistedMs=%{public}d unregisteredTailMs=%{public}d equal=%{public}s',
+        MARK, this.receivedMs(), this.persistedMs(), this.unregisteredTailMs(),
+        this.receivedMs() === this.persistedMs() ? 'true' : 'false');
 
-    if (this.lastRegistered < 0) {
-      await this.releaseHold();
-      throw new DiaryError('invalid_state', '没有可用的已封闭片段，核心会拒绝最终化（先检查麦克风权限/采集回调）');
-    }
+      if (this.lastRegistered < 0) {
+        // 外层 finally 会释放 hold；这里不重复调，异常照常抛给调用方。
+        throw new DiaryError('invalid_state', '没有可用的已封闭片段，核心会拒绝最终化（先检查麦克风权限/采集回调）');
+      }
 
-    try {
-      const effectiveReason = this.interrupted ? `${reason}_interrupted` : reason;
-      if (this.interrupted) {
-        hilog.warn(DOMAIN, TAG, '%{public}s STOP interrupted=true endReason=%{public}s',
-          MARK, effectiveReason);
+      try {
+        const effectiveReason = this.interrupted ? `${reason}_interrupted` : reason;
+        if (this.interrupted) {
+          hilog.warn(DOMAIN, TAG, '%{public}s STOP interrupted=true endReason=%{public}s',
+            MARK, effectiveReason);
+        }
+        const result = this.core.finalizeRecording({
+          recording_id: ticket.recording_id,
+          last_segment_index: this.lastRegistered,
+          end_reason: effectiveReason,
+        });
+        this.phase = result.state;
+        hilog.info(DOMAIN, TAG, '%{public}s FINALIZE %{public}s',
+          MARK, JSON.stringify(result));
+        hilog.info(DOMAIN, TAG, '%{public}s STOP recording=%{public}s segments=%{public}d receivedMs=%{public}d persistedMs=%{public}d audioMs=%{public}d stopLatencyMs=%{public}d',
+          MARK, ticket.recording_id, result.segment_count, this.receivedMs(),
+          this.persistedMs(), result.logical_duration_ms,
+          nowUptimeMs() - this.stopRequestedMs);
+        // finalize 只保证「音频已保存」；记录要离开 draft 还得提交一次。失败不回滚录音，
+        // 结果写进 commitResult() 交给调用方如实展示。
+        this.commitFinalizedCapture(result);
+        return result;
+      } catch (e) {
+        this.phase = 'error';
+        this.errorText = describeError(e as Object);
+        hilog.error(DOMAIN, TAG, '%{public}s FINALIZE failed %{public}s',
+          MARK, this.errorText);
+        throw DiaryError.fromThrown(e as Object);
       }
       const result = this.core.finalizeRecording({
         recording_id: ticket.recording_id,
@@ -340,16 +416,29 @@ export class VoiceRecorder {
         MARK, ticket.recording_id, result.segment_count, this.receivedMs(),
         this.persistedMs(), result.logical_duration_ms,
         nowUptimeMs() - this.stopRequestedMs);
+      // finalize 只保证「音频已保存」；记录要离开 draft 还得提交一次。失败不回滚录音，
+      // 结果写进 commitResult() 交给调用方如实展示。
+      this.commitFinalizedCapture(result);
       return result;
     } catch (e) {
-      this.phase = 'error';
-      this.errorText = describeError(e as Object);
-      hilog.error(DOMAIN, TAG, '%{public}s FINALIZE failed %{public}s',
-        MARK, this.errorText);
-      throw DiaryError.fromThrown(e as Object);
+      primaryError = e as Object;
+      // ArkTS 只允许 throw Error 类型；保留原异常（DiaryError 等），
+      // 极端的非 Error 抛出值统一包成 Error，至少不丢消息。
+      throw e instanceof Error ? e : new Error(describeError(e as Object));
     } finally {
-      // 无论成功/失败，都要把「保持屏幕常亮」和长时任务收掉。
-      await this.releaseHold();
+      // 无条件释放「保持屏幕常亮」与长时任务。`releaseHold()` 自身幂等。
+      // 已经有异常时：先释放，释放再失败只记日志，别覆盖真正的故障；
+      // 一切正常时：释放失败照常抛给调用方（不能假装已经收掉）。
+      if (primaryError === null) {
+        await this.releaseHold();
+      } else {
+        try {
+          await this.releaseHold();
+        } catch (e) {
+          hilog.warn(DOMAIN, TAG, '%{public}s RELEASE failed while propagating %{public}s: %{public}s',
+            MARK, describeError(primaryError), describeError(e as Object));
+        }
+      }
     }
   }
 
@@ -364,6 +453,52 @@ export class VoiceRecorder {
       this.writer = null;
     }
     await this.releaseHold();
+  }
+
+  // ---------------------------------------------------------------- 提交记录
+
+  /**
+   * `finalize` 成功后把记录提交成 `committed`。
+   *
+   * 为什么不在核心 `finalize` 里自动提交：
+   * - `finalize` 的语义是「音频已保存」，提交是**记录聚合根**的状态推进，两件事；
+   * - 分开后客户端可以重试、也可以保留「录完先不提交」的按钮语义，不写死；
+   * - 提交失败不回滚音频与来源——此时音视频/转写都已落库，只差记录状态。
+   *
+   * 幂等：`operation_id` 由 `recording_id` 派生，同一条录音重试不会重复提交；
+   * 若核心回 `invalid_state`（很可能上次已经提交成功），按幂等成功处理并写日志。
+   */
+  private commitFinalizedCapture(result: RecordingFinalizeResult): void {
+    const outcome = new RecordingCommitResult();
+    outcome.capture_id = result.capture_id;
+    outcome.revision_before = result.capture_revision;
+    this.commitOutcome = outcome;
+    try {
+      const committed = this.core.commit({
+        capture_id: result.capture_id,
+        expected_revision: result.capture_revision,
+        operation_id: `op-ohos-commit-${result.recording_id}`,
+      });
+      outcome.state = 'committed';
+      outcome.revision_after = committed.capture.revision;
+      hilog.info(DOMAIN, TAG, '%{public}s COMMIT ok=true capture=%{public}s state=%{public}s revisionBefore=%{public}d revisionAfter=%{public}d',
+        MARK, result.capture_id, committed.capture.state, outcome.revision_before,
+        outcome.revision_after);
+    } catch (e) {
+      const err = DiaryError.fromThrown(e as Object);
+      if (err.code === 'invalid_state') {
+        // 重试时可能已经提交过。当作幂等成功，但不猜 revision：commit 没有返回，
+        // 权威值只能下次读取；日志里把「unknown」写清楚。
+        outcome.state = 'already_committed';
+        hilog.warn(DOMAIN, TAG, '%{public}s COMMIT skipped capture=%{public}s reason=invalid_state assume_already_committed revisionBefore=%{public}d revisionAfter=unknown',
+          MARK, result.capture_id, outcome.revision_before);
+        return;
+      }
+      outcome.state = 'failed';
+      outcome.error = err.toLogLine();
+      hilog.error(DOMAIN, TAG, '%{public}s COMMIT failed capture=%{public}s revisionBefore=%{public}d audioSaved=true recordStillDraft=true error=%{public}s',
+        MARK, result.capture_id, outcome.revision_before, outcome.error);
+    }
   }
 
   // ---------------------------------------------------------------- 采集回调
@@ -554,6 +689,15 @@ export class VoiceRecorder {
     if (this.writer !== null) {
       this.writer.abort();
       this.writer = null;
+    }
+    // 「空 draft 泄漏」的现状：启动失败会留下一条没有来源、没有正文的草稿，而
+    // Flutter 启动会把最新 draft 当编辑器草稿恢复。核心目前**没有**「只删空 draft」
+    // 的安全能力（captures.trash/purge 都还没接），自己写 SQL 删是破坏性路径，不做。
+    // 这里只如实记录 capture id 并交给调用方；残留与后续方案见 apps/ohos-diary-core/README.md。
+    if (this.captureId.length > 0 && this.lastRegistered < 0) {
+      this.abandonedDraft = this.captureId;
+      hilog.warn(DOMAIN, TAG, '%{public}s DRAFT_LEAK capture=%{public}s sources=0 draftText=empty action=left_in_place reason=core_has_no_safe_delete',
+        MARK, this.captureId);
     }
     this.releaseHold().catch((e: Object) => {
       hilog.warn(DOMAIN, TAG, '%{public}s CLEANUP release hold failed %{public}s',

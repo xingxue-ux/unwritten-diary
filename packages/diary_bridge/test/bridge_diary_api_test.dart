@@ -51,7 +51,7 @@ void main() {
 
   test('经契约接口完成一条记录（真核心 + 真 SQLite）', () async {
     final opened = await api.open();
-    expect(opened.coreInfo.apiVersion, '1.0');
+    expect(opened.coreInfo.apiVersion, '1.1');
     // 版本号只在这一处维护（见 expected_schema.dart 的说明）。
     expect(opened.coreInfo.dataSchemaVersion, expectedDataSchemaVersion);
     expect(opened.coreInfo.capabilities, contains('captures.commit'));
@@ -326,16 +326,42 @@ void main() {
     final snapshot = await api.snapshot();
     expect(snapshot.coreInfo.capabilities, contains('captures.list'));
     expect(snapshot.coreInfo.capabilities, contains('search.start'));
-    expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.status')));
-    // **语义**重建这一条接了（设置页要在换过模型之后触发「重建语义索引」）：
-    // 核心入口 → 桥接 → 适配层 → 能力项都在。
-    expect(
-      snapshot.coreInfo.capabilities,
-      contains('indexes.rebuildSemantic'),
+    expect(snapshot.coreInfo.capabilities, contains('indexes.status'));
+    expect(snapshot.coreInfo.capabilities, contains('indexes.rebuild'));
+    expect(snapshot.coreInfo.capabilities, contains('indexes.rebuildSemantic'));
+    expect(snapshot.coreInfo.capabilities, contains('jobs.get'));
+    expect(snapshot.coreInfo.capabilities, contains('jobs.list'));
+    // 备份契约三条**不宣告**：契约收的是 PlatformHost 的限域票据，而票据解析
+    // 尚未实现；本轮只有显式带 AtPath 的路径专用入口（见适配层类注释）。
+    // 仍然没接的（原因见 `noSuchMethod` 与适配层文档）：不列进能力清单。
+    for (final capability in [
+      'backups.create',
+      'backups.inspect',
+      'backups.restore',
+      'settings.get',
+      'settings.update',
+      'plugins.invoke',
+      'captures.trash',
+      'core.setRuntimeState',
+    ]) {
+      expect(
+        snapshot.coreInfo.capabilities,
+        isNot(contains(capability)),
+        reason: capability,
+      );
+    }
+
+    // 契约入口必须诚实报错，而不是把票据当路径或返回空结果。
+    await expectLater(
+      () => api.inspectBackup('ticket:backup-package'),
+      throwsA(
+        isA<UnsupportedError>().having(
+          (error) => error.message,
+          'message',
+          contains('backups.inspect'),
+        ),
+      ),
     );
-    // **关键词**那条照旧没接：核心与桥接都通了（能力项进了 wired_capabilities），
-    // 但适配层的 `_wiredMethods` 仍然不含它，所以这里必须是「没有」。
-    expect(snapshot.coreInfo.capabilities, isNot(contains('indexes.rebuild')));
   });
 
   test('到期任务入口经 DiaryApi 返回真实核心摘要', () async {
@@ -352,11 +378,24 @@ void main() {
 
   test('语义索引重建经契约接口排得上，重放拿到同一个 jobId', () async {
     await api.open();
+    final before = await api.indexesStatus();
+    expect(before.semanticIndexReady, isFalse);
     final ticket = await api.rebuildSemanticIndex(
       reason: '适配层端到端',
       operationId: 'adapter-semantic-1',
     );
     expect(ticket.jobId, isNotEmpty, reason: '拿到的是真实任务 id，不是编出来的');
+    final queued = await api.getJob(ticket.jobId);
+    expect(queued.kind, 'semantic_index');
+    expect(queued.state.isTerminal, isFalse);
+    final active = await api.listJobs(
+      states: {
+        JobState.queued,
+        JobState.waitingConfiguration,
+        JobState.waitingDependency,
+      },
+    );
+    expect(active.jobs.map((job) => job.id), contains(ticket.jobId));
 
     // 同一个 (reason, operationId)：同一条任务。
     final replay = await api.rebuildSemanticIndex(

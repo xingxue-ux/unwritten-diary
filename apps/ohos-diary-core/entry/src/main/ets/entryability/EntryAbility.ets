@@ -59,10 +59,11 @@ const DEBUG_BUILD: boolean = BuildProfile.DEBUG;
  *   --ps verify_mode hap_both --ps query=<语义查询>   下 core-config.json 与 bge 模型
  *       → 语义索引/语义检索 → 录音转写 → 再重建语义索引并检索转写文本（同一次启动）
  *
- * 不带参数时就是原来的同步 Smoke（用于量主线程阻塞）。
+ * 不带参数时进入**产品界面**（`pages/Index` 的 Tabs），不跑任何探针。
+ * 探针仍然只在显式给 `--ps verify_mode <mode>` 时执行。
  */
 export default class EntryAbility extends UIAbility {
-  private mode: string = 'smoke';
+  private mode: string = '';
   /** `asr_search` 的检索词；其它模式忽略。 */
   private query: string = '';
   /**
@@ -107,6 +108,11 @@ export default class EntryAbility extends UIAbility {
       hilog.warn(DOMAIN, TAG,
         '%{public}s PROBE_DISABLED mode=%{public}s buildMode=%{public}s reason=release（探针代码在包里但不可达）',
         MARK, this.mode, BuildProfile.BUILD_MODE_NAME);
+    } else if (this.mode.length === 0) {
+      // 产品路径：没有 verify_mode ⇒ 只加载界面，不跑 Smoke/录音/转写探针。
+      hilog.info(DOMAIN, TAG,
+        '%{public}s PRODUCT_UI mode=(none) buildMode=%{public}s（未跑探针）',
+        MARK, BuildProfile.BUILD_MODE_NAME);
     } else if (this.mode === 'hap_both') {
       HapBothVerify.run(this.mode, this.context, filesDir, this.query, this.order).catch((err: Object) => {
         hilog.error(DOMAIN, TAG, '%{public}s HAP_BOTH failed %{public}s',

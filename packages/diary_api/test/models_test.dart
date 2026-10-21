@@ -204,6 +204,7 @@ void main() {
       const hitA = SearchHit(
         hitId: 'h1',
         groupId: 'g1',
+        captureId: 'c1',
         sourceKind: SourceKind.text,
         matchedBy: {MatchedBy.keyword, MatchedBy.semantic},
         coverage: Coverage.complete,
@@ -211,12 +212,26 @@ void main() {
       const hitB = SearchHit(
         hitId: 'h1',
         groupId: 'g1',
+        captureId: 'c1',
         sourceKind: SourceKind.text,
         matchedBy: {MatchedBy.semantic, MatchedBy.keyword},
         coverage: Coverage.complete,
       );
       expect(hitA, hitB);
       expect(hitA.hashCode, hitB.hashCode);
+      const hitC = SearchHit(
+        hitId: 'h1',
+        groupId: 'g1',
+        captureId: 'c2',
+        sourceKind: SourceKind.text,
+        matchedBy: {MatchedBy.keyword, MatchedBy.semantic},
+        coverage: Coverage.complete,
+      );
+      expect(
+        hitA,
+        isNot(hitC),
+        reason: 'captureId 参与相等判断：拿它跳详情页，错一位就是另一篇记录',
+      );
     });
 
     test('locator 工厂保留版本与区间', () {

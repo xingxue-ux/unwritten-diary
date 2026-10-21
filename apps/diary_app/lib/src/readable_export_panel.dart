@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'readable_export_controller.dart';
 import 'sketch_ui.dart';
+import 'ui_strings.dart';
 
 class ReadableExportPanel extends StatefulWidget {
   const ReadableExportPanel({super.key, required this.controller});
@@ -48,7 +49,10 @@ class _ReadableExportPanelState extends State<ReadableExportPanel> {
         const SizedBox(height: 18),
         SketchFrame(
           fill: SketchColors.soft,
-          child: const Text('阅读导出不能用于完整恢复；需要迁移资料时请使用“完整备份”。'),
+          child: Text(
+            '${uiStrings.t('export.contains_private_data')}\n'
+            '阅读导出不能用于完整恢复；需要迁移资料时请使用“完整备份”。',
+          ),
         ),
         const SizedBox(height: 18),
         SketchFrame(
