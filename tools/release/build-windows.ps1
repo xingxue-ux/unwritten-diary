@@ -179,6 +179,21 @@ $installedTargets = (& rustup target list --installed) -join ' '
 if ($installedTargets -notmatch 'x86_64-pc-windows-msvc') {
   Fail '缺少 Rust target x86_64-pc-windows-msvc（rustup target add x86_64-pc-windows-msvc）。'
 }
+# **host 必须是 msvc**。`rust-toolchain.toml` 只钉版本（1.94.1）、不钉 host，
+# rustup 会按 `default_host_triple` 解析——本机若设成 gnu，解析结果就是
+# `1.94.1-x86_64-pc-windows-gnu`，主机侧 build script 走 mingw，`cargo build`
+# 以 101 退出并报 `lld: unable to find library -lgcc_eh`。那行错误和"缺库"无关，
+# 是工具链选错了；不在这里拦一道，使用者只能自己猜（#172 第 3 条）。
+$activeToolchain = (& rustup show active-toolchain) 2>$null
+if ($activeToolchain -notmatch 'windows-msvc') {
+  $defaultHost = ((& rustup show) 2>$null | Select-String -Pattern 'Default host') -replace '.*:\s*', ''
+  $message = ('当前 Rust 工具链不是 msvc：{0}（本机 default host：{1}）。' +
+    '`rust-toolchain.toml` 只钉版本、不钉 host，所以 rustup 会按 default_host_triple 解析成 gnu 构建，' +
+    '表现为 cargo 以 101 退出并报 lld: unable to find library -lgcc_eh。' +
+    '绕过：设 RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc 后重跑本脚本（同一个 1.94.1 的 msvc 构建）。') -f $activeToolchain, $defaultHost
+  Fail $message
+}
+Write-Host "rust：$activeToolchain"
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 $vs = $null
 if (Test-Path $vswhere) {
