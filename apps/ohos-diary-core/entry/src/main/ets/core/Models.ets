@@ -428,6 +428,24 @@ export interface DiaryVersionPage {
 }
 
 /**
+ * `diary.generate` 的票据：**已受理 ≠ 已生成**。
+ *
+ * 返回它时输入已经冻结（快照行已落库），真正的模型调用由 `jobs.runDue` 执行。
+ * 没有可用服务时也照样返回票据——任务会停在 `waiting_configuration` 等配置，
+ * 不是一次调用失败。界面的「生成」按钮拿到票据后应去看任务/日记，而不是立刻假定
+ * 有了一版正文。
+ *
+ * ⚠️ 这两个字段是 **snake_case**：核心 `DiaryGenerationTicket` 没有
+ * `#[serde(rename_all = "camelCase")]`，C ABI 照 serde 原样输出。不要按
+ * `jobId` / `sourceSnapshotId` 解析（那是 Dart 面/契约表的写法）。
+ */
+export interface DiaryGenerationTicket {
+  job_id: string;
+  /** 这一版冻结的输入清单；事后改材料不影响它。 */
+  source_snapshot_id: string;
+}
+
+/**
  * `diary.listDays` 的结果：有哪些天、每天多少条材料（回收站不算），按 dayKey 倒序。
  *
  * ⚠️ 这一格是 **camelCase**：核心的 `DiaryDayPage` 带 `#[serde(rename_all = "camelCase")]`，
@@ -920,6 +938,29 @@ export interface MergeDiaryParams {
   candidate_version_ids: string[];
   body: string;
   expected_revision: number;
+  operation_id: string;
+}
+
+/**
+ * `diary.generate` 的生成原因，与核心 `DiaryGenerationReason` 的 serde wire 值一致。
+ *
+ * `scheduled` / `automatic` 是自动整理那一路（用设置里的整理模板、结果一律进候选）；
+ * 界面上的「生成 / 再来一版」只用 `manual` / `regenerate`。
+ */
+export type DiaryGenerationReason = 'manual' | 'scheduled' | 'automatic' | 'regenerate';
+
+/**
+ * `diary.generate` 的参数。
+ *
+ * `style_id` 省略（或 `null`）= 用默认风格；点名不存在的风格报 `not_found`，
+ * **不会静默回退默认风格**。`operation_id` 是幂等键：同一条重放返回原票据，
+ * 换了内容报 `idempotency_conflict`。
+ */
+export interface GenerateDiaryParams {
+  /** `YYYY-MM-DD`（核心校验）。 */
+  day_key: string;
+  style_id?: string | null;
+  reason: DiaryGenerationReason;
   operation_id: string;
 }
 

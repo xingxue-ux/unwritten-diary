@@ -168,7 +168,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 ## 6 方法映射表
 
-### 6.1 已接（58 条，`core.info.capabilities` 就是这份清单）
+### 6.1 已接（59 条，`core.info.capabilities` 就是这份清单）
 
 | 契约方法 | 核心调用 | `data` |
 |---|---|---|
@@ -226,6 +226,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `diary.saveEdit` | `Core::save_diary_edit`（写新版本，基版不动） | `DiaryVersion` |
 | `diary.setCurrent` | `Core::set_diary_current` | `DiaryDay` |
 | `diary.merge` | `Core::merge_diary_versions`（不调模型，`modelCalls = 0`） | `DiaryVersion` |
+| `diary.generate` | `Core::generate_diary`（只冻结输入 + 排 `diary_generate` 任务；执行在 `jobs.runDue`） | `DiaryGenerationTicket`（`job_id` / `source_snapshot_id`，snake_case） |
 | `styles.list` | `Core::list_styles`（当前版本；默认风格 `sty_default` 也在） | `StyleProfile[]` |
 | `styles.get` | `Core::get_style`（不存在 `not_found`，**不回退默认风格**） | `StyleProfile` |
 | `styles.save` | `Core::save_style`（每次落新版本；可选 `expected_revision` 乐观锁） | `StyleProfile` |
@@ -282,8 +283,21 @@ camelCase 的 `nextCursor`**（核心 `DiaryDayPage` 带 `#[serde(rename_all = "
 `days` 里每一天仍按 `DiaryDay` 的 snake_case 输出——同一个对象里两套写法并存，是核心
 serde 原样的结果，桥面不翻译（`Models.ets` 的 `DiaryDayPage` 照实声明）。
 
-还在缺口里的只剩 **`diary.generate`**（核心有 `generate_diary`，但它要排 AI 任务，属于
-生成那一片）。鸿蒙日记页因此不显示「生成」按钮（整理模板那一路也还没接），只如实说明缺口。
+**`diary.generate` 是第八条、也是这一组的最后一条**：它只**受理**一次生成——把这一天的
+输入冻结成不可变快照、排一条 `diary_generate` 任务、返回 `DiaryGenerationTicket`
+（`job_id` / `source_snapshot_id`；核心类型没有 `#[serde(rename_all)]`，所以是 snake_case，
+不是契约表里的 `jobId` / `sourceSnapshotId`）。真正的模型调用在 `jobs.runDue` 里。
+
+- **返回票据 ≠ 已生成**：没有可用服务时也照样返回票据——任务停在
+  `waiting_configuration` 等配置（与 #66 的能力闸门同一口径），**不是一次调用失败**；
+  核心也不会写一版空正文冒充成功；
+- **输入在返回前已冻结**：快照行不可变，事后改材料不影响这一版；
+- **候选/当前**：首次（当天没有当前版本、也没有用户自己的版本）生成的结果成为当前版本，
+  其余一律候选；同快照哈希 + 同 `operationId` 不重复产版本（`reason = regenerate` 是例外）；
+- **`reason` 的合法值**照核心 `DiaryGenerationReason` 的 serde wire 值收全四种：`manual` /
+  `scheduled` / `automatic` / `regenerate`（后两种是自动整理那一路、结果一律候选；界面主动
+  生成只用 `manual` / `regenerate`）。`styleId` 省略用默认风格，点名不存在的风格是
+  `not_found`（**不静默回退**），这一天没有任何可读材料是 `invalid_argument`（不排空任务）。
 
 **回收站五条（`captures.trash` / `restore` / `previewPurge` / `purge` / `moveDay`）**：
 核心的回收站状态机（#155）早就在，缺的一直是 C ABI 这一层——没有它们，鸿蒙「我的」页
@@ -455,17 +469,18 @@ C ABI 没有回调/推送面，所以 `core.events` 不装成 Stream，而是把
    没列出来的就是还没接，界面不该显示成可用）；
 4. `src/tests.rs` 加用例（至少一条成功路径 + 一条参数错误）。
 
-**还没接的（按契约第 4 节分组，代码里带 `TODO(#108)`）**：`diary.generate`（核心有
-`generate_diary`，要排 AI 任务，属于生成那一片）、`responses.*`、`plugins.*`（`run_plugin`
-同步返回完整结果，契约要 `jobId`）——**核心已有实现，但 C ABI 这一层还没包装**。另外
-`imports.*`、`assets.open/release`、`search.snapshot`、`jobs.nextWakeup`、
-`core.snapshot/close/setRuntimeState` 也还没接。
-
-回收站五条、风格三条、`exports.create` 与 `diary.listDays` 都已在这一批接完（见 §6.1），
-**回收站与风格/导出不再有缺口**。已接的 58 条见上表：`providers.*` 六条、`sources` 五条
-（含正文与定位）、`backups.*` 三条、`core.events`、`diary.*` 七条、`captures.*` 十条
-（含回收站五条）、`styles.*` 三条、`exports.create` 一条，以及 `settings.get / update` 两条
+**日记这一片没有缺口**：`diary.generate` 是最后一条，已接；§6.1 的 59 条就是
+`WIRED_METHODS` 的完整清单。已接的 59 条见上表：`providers.*` 六条、`sources` 五条
+（含正文与定位）、`backups.*` 三条、`core.events`、`diary.*` 八条、`captures.*` 十条
+（含回收站五条）、`recordings.*` 五条、`search.*` 四条、`indexes.*` 三条、`jobs.*` 七条、
+`styles.*` 三条、`exports.create` 一条，以及 `settings.get / update` 两条
 （与整理设置共用核心 `settings` 表的同一行）。
+
+不属于上述方法表、**仍未包装**的契约方法（不在 `WIRED_METHODS` 里，也不会出现在
+`core.info.capabilities` 中）：`responses.*`、`plugins.*`（`run_plugin` 同步返回完整结果，
+契约要 `jobId`）、`imports.*`、`assets.open/release`、`search.snapshot`、`jobs.nextWakeup`、
+`core.snapshot/close/setRuntimeState`。**核心已有实现的，桥面这一层还没包装**；没有实现的
+属于后面分片。`diary.*` 不在此列——这一片（含生成）已经全部接上。
 
 未接入的方法一律 `invalid_argument` + 已接入清单，**不静默成功、不假装支持**。
 
@@ -673,10 +688,10 @@ cargo +1.94.1 build -p diary_capi --release --target aarch64-unknown-linux-ohos
    `SKIP_ASR_LIBS=1` 构建）：`dlopen` 6 个符号、沙箱建库/落盘、ArkTS 包装、5 个一级入口、
    `diary.*` 读数与空态、任务中心二级入口都有逐页截图。**没有**验证的是两条模型链
    （no-asr 构建不能转写/语义）与大库性能；
-5. **方法子集**：只接了 50 条（§6.1；录音 5 条、`providers.*` 4 条、界面缺口 11 条、
-   `diary.*` 6 条、`settings.*` 2 条、`sources` 正文 4 条、`backups.*` 3 条、`core.events`
-   与回收站 4 条都是后续分片补的），其余仍是扩展点；回收站只剩 `captures.moveDay`
-   **核心已有入口、桥面没接**，styles 3 / 导出 1 共 4 条**核心还没有实现**（§6.2）；
+5. **方法子集**：接了 59 条（§6.1），`diary.*` 八条（含 `diary.generate`）已经齐了；
+   仍未包装的契约方法（`responses.*` / `plugins.*` / `imports.*` / `assets.*` /
+   `search.snapshot` / `jobs.nextWakeup` / `core.snapshot|close|setRuntimeState`）
+   见 §6.2；
 6. **性能**：没测吞吐、没测 JSON 序列化占比、没测大库（十万条记录）下的表现；
 7. **并发压力**：跨线程用例是 15 次循环的**正确性**验证，不是压测（没有 P50/P99）；
 8. **错误 message 的语言**：桥面判定的是中文，`serde_json` 的解析错误是英文
