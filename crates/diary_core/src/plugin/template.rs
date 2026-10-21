@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::error::{CoreError, Result};
-use crate::model::{PluginStyleProfile, PluginTemplate};
+use crate::model::{PluginTemplate, StyleProfile};
 
 use super::manifest::{MAX_TEMPLATE_BYTES, MAX_TEMPLATES};
 
@@ -157,7 +157,7 @@ pub(crate) fn render(body: &str, values: &HashMap<&str, String>) -> Result<Strin
 ///
 /// 返回的文本是**风格偏好**，不是产品指令；调用方要不要把它放进生成提示词由
 /// 生成路径决定，模板不会自己扩权。
-pub(crate) fn render_style(template: &PluginTemplate, profile: &PluginStyleProfile) -> Result<String> {
+pub(crate) fn render_style(template: &PluginTemplate, profile: &StyleProfile) -> Result<String> {
     let examples = profile.examples.join("；");
     let banned = profile.banned_expressions.join("；");
     let values: HashMap<&str, String> = HashMap::from([

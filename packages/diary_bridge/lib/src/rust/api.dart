@@ -134,6 +134,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 读取一条回应，契约 `responses.get`。还没生成时正文为空（如实，不编内容）。
   Future<AiResponse> getResponse({required String responseId});
 
+  /// 读一条风格的当前版本；不存在报 `not_found`。
+  Future<StyleProfile> getStyle({required String styleId});
+
   Future<ImportStatus> importStatus({required String importId});
 
   /// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
@@ -193,6 +196,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
   ///
   /// **不含密钥**：`credentialRef` 是凭据存储里的引用，只有「配没配」这个信息。
   Future<List<Provider>> listProviders();
+
+  /// 全部风格的当前版本；默认风格 `sty_default` 也在列表里。
+  Future<List<StyleProfile>> listStyles();
 
   /// 把 sourceRef + locator 解析成可打开的原件与可用性。
   Future<SourceLocation> locateSource({
@@ -420,6 +426,12 @@ abstract class BridgeSession implements RustOpaqueInterface {
   ///
   /// 协议/端点/模型变了会让上一次的连接测试结论作废——那是对旧配置的验证。
   Future<Provider> saveProvider({required Provider config, String? secret});
+
+  /// 新建/更新风格；带 `expectedRevision` 时是乐观锁（不符报 `revision_conflict`）。
+  Future<StyleProfile> saveStyle({
+    required StyleProfile profile,
+    PlatformInt64? expectedRevision,
+  });
 
   /// 翻页；`cursor` 为空表示接着当前进度。游标不属于这个会话报 `cursor_expired`。
   Future<SearchSnapshot> searchNextPage({

@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1988571965;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1353072827;
 
 // Section: executor
 
@@ -1176,6 +1176,57 @@ fn wire__crate__api__BridgeSession_get_response_impl(
         },
     )
 }
+fn wire__crate__api__BridgeSession_get_style_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_get_style",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_style_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::api::BridgeSession::get_style(&*api_that_guard, api_style_id)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__BridgeSession_import_status_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1805,6 +1856,55 @@ fn wire__crate__api__BridgeSession_list_providers_impl(
                     }
                     let api_that_guard = api_that_guard.unwrap();
                     let output_ok = crate::api::BridgeSession::list_providers(&*api_that_guard)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__BridgeSession_list_styles_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_list_styles",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::BridgeSession::list_styles(&*api_that_guard)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -3316,6 +3416,61 @@ fn wire__crate__api__BridgeSession_save_provider_impl(
                         &*api_that_guard,
                         api_config,
                         api_secret,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__BridgeSession_save_style_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_save_style",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_profile = <diary_core::model::StyleProfile>::sse_decode(&mut deserializer);
+            let api_expected_revision = <Option<i64>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::BridgeSession::save_style(
+                        &*api_that_guard,
+                        api_profile,
+                        api_expected_revision,
                     )?;
                     std::result::Result::Ok(output_ok)
                 })())
@@ -6073,7 +6228,7 @@ const _: fn() = || {
         let _: Vec<String> = PluginInvocation.selected_capture_ids;
         let _: Option<String> = PluginInvocation.from_day_key;
         let _: Option<String> = PluginInvocation.to_day_key;
-        let _: Option<diary_core::model::PluginStyleProfile> = PluginInvocation.style_profile;
+        let _: Option<diary_core::model::StyleProfile> = PluginInvocation.style_profile;
         let _: Option<String> = PluginInvocation.format;
         let _: Option<String> = PluginInvocation.input_text;
     }
@@ -6124,20 +6279,6 @@ const _: fn() = || {
         let _: String = PluginSourceRef.source_id;
         let _: Option<String> = PluginSourceRef.source_revision_id;
         let _: Option<String> = PluginSourceRef.locator_json;
-    }
-    {
-        let PluginStyleProfile = None::<diary_core::model::PluginStyleProfile>.unwrap();
-        let _: String = PluginStyleProfile.id;
-        let _: String = PluginStyleProfile.label;
-        let _: i64 = PluginStyleProfile.revision;
-        let _: chrono::DateTime<chrono::Utc> = PluginStyleProfile.updated_at;
-        let _: Option<String> = PluginStyleProfile.length_preference;
-        let _: Option<String> = PluginStyleProfile.person;
-        let _: Option<String> = PluginStyleProfile.tone;
-        let _: Option<String> = PluginStyleProfile.emotional_temperature;
-        let _: Option<String> = PluginStyleProfile.rhetoric_level;
-        let _: Vec<String> = PluginStyleProfile.examples;
-        let _: Vec<String> = PluginStyleProfile.banned_expressions;
     }
     {
         let PluginTemplate = None::<diary_core::model::PluginTemplate>.unwrap();
@@ -6332,6 +6473,20 @@ const _: fn() = || {
         let _: Option<String> = SourceRevision.asset_id;
         let _: diary_core::model::AuthorType = SourceRevision.author_type;
         let _: chrono::DateTime<chrono::Utc> = SourceRevision.occurred_at;
+    }
+    {
+        let StyleProfile = None::<diary_core::model::StyleProfile>.unwrap();
+        let _: String = StyleProfile.id;
+        let _: String = StyleProfile.label;
+        let _: i64 = StyleProfile.revision;
+        let _: chrono::DateTime<chrono::Utc> = StyleProfile.updated_at;
+        let _: Option<String> = StyleProfile.length_preference;
+        let _: Option<String> = StyleProfile.person;
+        let _: Option<String> = StyleProfile.tone;
+        let _: Option<String> = StyleProfile.emotional_temperature;
+        let _: Option<String> = StyleProfile.rhetoric_level;
+        let _: Vec<String> = StyleProfile.examples;
+        let _: Vec<String> = StyleProfile.banned_expressions;
     }
     {
         let TextRange = None::<diary_core::model::TextRange>.unwrap();
@@ -7650,6 +7805,18 @@ impl SseDecode for Vec<diary_core::model::SourceKind> {
     }
 }
 
+impl SseDecode for Vec<diary_core::model::StyleProfile> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<diary_core::model::StyleProfile>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<diary_core::model::TextRange> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -7963,19 +8130,6 @@ impl SseDecode for Option<diary_core::model::PluginEntryKind> {
     }
 }
 
-impl SseDecode for Option<diary_core::model::PluginStyleProfile> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        if (<bool>::sse_decode(deserializer)) {
-            return Some(<diary_core::model::PluginStyleProfile>::sse_decode(
-                deserializer,
-            ));
-        } else {
-            return None;
-        }
-    }
-}
-
 impl SseDecode for Option<diary_core::model::ProcessingStatus> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -8068,6 +8222,17 @@ impl SseDecode for Option<diary_core::model::SourceRevision> {
             return Some(<diary_core::model::SourceRevision>::sse_decode(
                 deserializer,
             ));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<diary_core::model::StyleProfile> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<diary_core::model::StyleProfile>::sse_decode(deserializer));
         } else {
             return None;
         }
@@ -8450,7 +8615,7 @@ impl SseDecode for diary_core::model::PluginInvocation {
         let mut var_fromDayKey = <Option<String>>::sse_decode(deserializer);
         let mut var_toDayKey = <Option<String>>::sse_decode(deserializer);
         let mut var_styleProfile =
-            <Option<diary_core::model::PluginStyleProfile>>::sse_decode(deserializer);
+            <Option<diary_core::model::StyleProfile>>::sse_decode(deserializer);
         let mut var_format = <Option<String>>::sse_decode(deserializer);
         let mut var_inputText = <Option<String>>::sse_decode(deserializer);
         return diary_core::model::PluginInvocation {
@@ -8570,36 +8735,6 @@ impl SseDecode for diary_core::model::PluginSourceRef {
             source_id: var_sourceId,
             source_revision_id: var_sourceRevisionId,
             locator_json: var_locatorJson,
-        };
-    }
-}
-
-impl SseDecode for diary_core::model::PluginStyleProfile {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_id = <String>::sse_decode(deserializer);
-        let mut var_label = <String>::sse_decode(deserializer);
-        let mut var_revision = <i64>::sse_decode(deserializer);
-        let mut var_updatedAt = <chrono::DateTime<chrono::Utc>>::sse_decode(deserializer);
-        let mut var_lengthPreference = <Option<String>>::sse_decode(deserializer);
-        let mut var_person = <Option<String>>::sse_decode(deserializer);
-        let mut var_tone = <Option<String>>::sse_decode(deserializer);
-        let mut var_emotionalTemperature = <Option<String>>::sse_decode(deserializer);
-        let mut var_rhetoricLevel = <Option<String>>::sse_decode(deserializer);
-        let mut var_examples = <Vec<String>>::sse_decode(deserializer);
-        let mut var_bannedExpressions = <Vec<String>>::sse_decode(deserializer);
-        return diary_core::model::PluginStyleProfile {
-            id: var_id,
-            label: var_label,
-            revision: var_revision,
-            updated_at: var_updatedAt,
-            length_preference: var_lengthPreference,
-            person: var_person,
-            tone: var_tone,
-            emotional_temperature: var_emotionalTemperature,
-            rhetoric_level: var_rhetoricLevel,
-            examples: var_examples,
-            banned_expressions: var_bannedExpressions,
         };
     }
 }
@@ -9174,6 +9309,36 @@ impl SseDecode for diary_core::model::SourceRevision {
     }
 }
 
+impl SseDecode for diary_core::model::StyleProfile {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_label = <String>::sse_decode(deserializer);
+        let mut var_revision = <i64>::sse_decode(deserializer);
+        let mut var_updatedAt = <chrono::DateTime<chrono::Utc>>::sse_decode(deserializer);
+        let mut var_lengthPreference = <Option<String>>::sse_decode(deserializer);
+        let mut var_person = <Option<String>>::sse_decode(deserializer);
+        let mut var_tone = <Option<String>>::sse_decode(deserializer);
+        let mut var_emotionalTemperature = <Option<String>>::sse_decode(deserializer);
+        let mut var_rhetoricLevel = <Option<String>>::sse_decode(deserializer);
+        let mut var_examples = <Vec<String>>::sse_decode(deserializer);
+        let mut var_bannedExpressions = <Vec<String>>::sse_decode(deserializer);
+        return diary_core::model::StyleProfile {
+            id: var_id,
+            label: var_label,
+            revision: var_revision,
+            updated_at: var_updatedAt,
+            length_preference: var_lengthPreference,
+            person: var_person,
+            tone: var_tone,
+            emotional_temperature: var_emotionalTemperature,
+            rhetoric_level: var_rhetoricLevel,
+            examples: var_examples,
+            banned_expressions: var_bannedExpressions,
+        };
+    }
+}
+
 impl SseDecode for diary_core::model::TextRange {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -9276,326 +9441,331 @@ fn pde_ffi_dispatcher_primary_impl(
         ),
         20 => wire__crate__api__BridgeSession_get_job_impl(port, ptr, rust_vec_len, data_len),
         21 => wire__crate__api__BridgeSession_get_response_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__BridgeSession_import_status_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__BridgeSession_index_status_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__BridgeSession_info_impl(port, ptr, rust_vec_len, data_len),
-        25 => {
+        22 => wire__crate__api__BridgeSession_get_style_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__BridgeSession_import_status_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__BridgeSession_index_status_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__BridgeSession_info_impl(port, ptr, rust_vec_len, data_len),
+        26 => {
             wire__crate__api__BridgeSession_inspect_backup_impl(port, ptr, rust_vec_len, data_len)
         }
-        26 => wire__crate__api__BridgeSession_inspect_plugin_package_impl(
+        27 => wire__crate__api__BridgeSession_inspect_plugin_package_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        27 => {
+        28 => {
             wire__crate__api__BridgeSession_install_plugin_impl(port, ptr, rust_vec_len, data_len)
         }
-        28 => wire__crate__api__BridgeSession_job_status_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__BridgeSession_list_captures_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__BridgeSession_list_diary_versions_impl(
+        29 => wire__crate__api__BridgeSession_job_status_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__BridgeSession_list_captures_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__BridgeSession_list_diary_versions_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        31 => wire__crate__api__BridgeSession_list_jobs_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__BridgeSession_list_plugins_impl(port, ptr, rust_vec_len, data_len),
-        33 => {
+        32 => wire__crate__api__BridgeSession_list_jobs_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__BridgeSession_list_plugins_impl(port, ptr, rust_vec_len, data_len),
+        34 => {
             wire__crate__api__BridgeSession_list_providers_impl(port, ptr, rust_vec_len, data_len)
         }
-        34 => wire__crate__api__BridgeSession_locate_source_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__BridgeSession_merge_diary_versions_impl(
+        35 => wire__crate__api__BridgeSession_list_styles_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__BridgeSession_locate_source_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__BridgeSession_merge_diary_versions_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        36 => wire__crate__api__BridgeSession_next_wakeup_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__BridgeSession_open_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__BridgeSession_open_asset_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__BridgeSession_organize_settings_impl(
-            port,
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        40 => {
-            wire__crate__api__BridgeSession_organize_status_impl(port, ptr, rust_vec_len, data_len)
-        }
-        41 => wire__crate__api__BridgeSession_organize_templates_impl(
+        38 => wire__crate__api__BridgeSession_next_wakeup_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__BridgeSession_open_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__BridgeSession_open_asset_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__BridgeSession_organize_settings_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
         42 => {
+            wire__crate__api__BridgeSession_organize_status_impl(port, ptr, rust_vec_len, data_len)
+        }
+        43 => wire__crate__api__BridgeSession_organize_templates_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        44 => {
             wire__crate__api__BridgeSession_plugin_templates_impl(port, ptr, rust_vec_len, data_len)
         }
-        43 => {
+        45 => {
             wire__crate__api__BridgeSession_prepare_import_impl(port, ptr, rust_vec_len, data_len)
         }
-        44 => wire__crate__api__BridgeSession_prepare_recording_impl(
+        46 => wire__crate__api__BridgeSession_prepare_recording_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        45 => wire__crate__api__BridgeSession_previous_source_revision_impl(
+        47 => wire__crate__api__BridgeSession_previous_source_revision_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        46 => {
+        48 => {
             wire__crate__api__BridgeSession_rebuild_indexes_impl(port, ptr, rust_vec_len, data_len)
         }
-        47 => wire__crate__api__BridgeSession_rebuild_semantic_index_impl(
+        49 => wire__crate__api__BridgeSession_rebuild_semantic_index_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        48 => wire__crate__api__BridgeSession_recover_recording_impl(
+        50 => wire__crate__api__BridgeSession_recover_recording_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        49 => {
+        51 => {
             wire__crate__api__BridgeSession_register_segment_impl(port, ptr, rust_vec_len, data_len)
         }
-        50 => wire__crate__api__BridgeSession_release_asset_impl(port, ptr, rust_vec_len, data_len),
-        51 => {
+        52 => wire__crate__api__BridgeSession_release_asset_impl(port, ptr, rust_vec_len, data_len),
+        53 => {
             wire__crate__api__BridgeSession_remove_provider_impl(port, ptr, rust_vec_len, data_len)
         }
-        52 => {
+        54 => {
             wire__crate__api__BridgeSession_request_response_impl(port, ptr, rust_vec_len, data_len)
         }
-        53 => {
+        55 => {
             wire__crate__api__BridgeSession_restore_backup_impl(port, ptr, rust_vec_len, data_len)
         }
-        54 => wire__crate__api__BridgeSession_restore_backup_job_impl(
+        56 => wire__crate__api__BridgeSession_restore_backup_job_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        55 => wire__crate__api__BridgeSession_retry_job_impl(port, ptr, rust_vec_len, data_len),
-        56 => wire__crate__api__BridgeSession_revise_text_impl(port, ptr, rust_vec_len, data_len),
-        57 => wire__crate__api__BridgeSession_run_due_jobs_impl(port, ptr, rust_vec_len, data_len),
-        58 => wire__crate__api__BridgeSession_run_plugin_impl(port, ptr, rust_vec_len, data_len),
-        59 => {
+        57 => wire__crate__api__BridgeSession_retry_job_impl(port, ptr, rust_vec_len, data_len),
+        58 => wire__crate__api__BridgeSession_revise_text_impl(port, ptr, rust_vec_len, data_len),
+        59 => wire__crate__api__BridgeSession_run_due_jobs_impl(port, ptr, rust_vec_len, data_len),
+        60 => wire__crate__api__BridgeSession_run_plugin_impl(port, ptr, rust_vec_len, data_len),
+        61 => {
             wire__crate__api__BridgeSession_save_diary_edit_impl(port, ptr, rust_vec_len, data_len)
         }
-        60 => wire__crate__api__BridgeSession_save_draft_impl(port, ptr, rust_vec_len, data_len),
-        61 => wire__crate__api__BridgeSession_save_provider_impl(port, ptr, rust_vec_len, data_len),
-        62 => {
+        62 => wire__crate__api__BridgeSession_save_draft_impl(port, ptr, rust_vec_len, data_len),
+        63 => wire__crate__api__BridgeSession_save_provider_impl(port, ptr, rust_vec_len, data_len),
+        64 => wire__crate__api__BridgeSession_save_style_impl(port, ptr, rust_vec_len, data_len),
+        65 => {
             wire__crate__api__BridgeSession_search_next_page_impl(port, ptr, rust_vec_len, data_len)
         }
-        63 => {
+        66 => {
             wire__crate__api__BridgeSession_search_snapshot_impl(port, ptr, rust_vec_len, data_len)
         }
-        64 => wire__crate__api__BridgeSession_set_diary_current_impl(
+        67 => wire__crate__api__BridgeSession_set_diary_current_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        65 => wire__crate__api__BridgeSession_set_plugin_enabled_impl(
+        68 => wire__crate__api__BridgeSession_set_plugin_enabled_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        66 => wire__crate__api__BridgeSession_start_search_impl(port, ptr, rust_vec_len, data_len),
-        67 => wire__crate__api__BridgeSession_test_provider_impl(port, ptr, rust_vec_len, data_len),
-        68 => {
+        69 => wire__crate__api__BridgeSession_start_search_impl(port, ptr, rust_vec_len, data_len),
+        70 => wire__crate__api__BridgeSession_test_provider_impl(port, ptr, rust_vec_len, data_len),
+        71 => {
             wire__crate__api__BridgeSession_uninstall_plugin_impl(port, ptr, rust_vec_len, data_len)
         }
-        69 => wire__crate__api__BridgeSession_update_organize_settings_impl(
+        72 => wire__crate__api__BridgeSession_update_organize_settings_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        70 => wire__crate__api__BridgeSession_update_recording_state_impl(
-            port,
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        71 => {
-            wire__crate__api__BridgeSession_upgrade_search_impl(port, ptr, rust_vec_len, data_len)
-        }
-        72 => wire__diary_core__model__asset_storage_state_from_wire_impl(
-            port,
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        73 => wire__diary_core__model__asset_storage_state_wire_impl(
+        73 => wire__crate__api__BridgeSession_update_recording_state_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
         74 => {
+            wire__crate__api__BridgeSession_upgrade_search_impl(port, ptr, rust_vec_len, data_len)
+        }
+        75 => wire__diary_core__model__asset_storage_state_from_wire_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        76 => wire__diary_core__model__asset_storage_state_wire_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        77 => {
             wire__diary_core__model__author_type_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        75 => wire__diary_core__model__author_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        76 => {
+        78 => wire__diary_core__model__author_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        79 => {
             wire__diary_core__model__capture_state_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        77 => wire__diary_core__model__capture_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        78 => wire__diary_core__model__coverage_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        79 => wire__diary_core__model__coverage_wire_impl(port, ptr, rust_vec_len, data_len),
-        80 => wire__diary_core__model__diary_generation_reason_from_wire_impl(
+        80 => wire__diary_core__model__capture_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        81 => wire__diary_core__model__coverage_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        82 => wire__diary_core__model__coverage_wire_impl(port, ptr, rust_vec_len, data_len),
+        83 => wire__diary_core__model__diary_generation_reason_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        81 => wire__diary_core__model__diary_generation_reason_is_organize_impl(
+        84 => wire__diary_core__model__diary_generation_reason_is_organize_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        82 => wire__diary_core__model__diary_generation_reason_wire_impl(
+        85 => wire__diary_core__model__diary_generation_reason_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        83 => wire__diary_core__model__diary_version_origin_from_wire_impl(
+        86 => wire__diary_core__model__diary_version_origin_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        84 => wire__diary_core__model__diary_version_origin_is_user_authored_impl(
+        87 => wire__diary_core__model__diary_version_origin_is_user_authored_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        85 => wire__diary_core__model__diary_version_origin_wire_impl(
+        88 => wire__diary_core__model__diary_version_origin_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        86 => wire__diary_core__model__event_type_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        87 => wire__diary_core__model__event_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        88 => {
+        89 => wire__diary_core__model__event_type_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        90 => wire__diary_core__model__event_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        91 => {
             wire__diary_core__model__import_origin_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        89 => wire__diary_core__model__import_origin_wire_impl(port, ptr, rust_vec_len, data_len),
-        90 => {
+        92 => wire__diary_core__model__import_origin_wire_impl(port, ptr, rust_vec_len, data_len),
+        93 => {
             wire__diary_core__model__import_state_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        91 => wire__diary_core__model__import_state_is_in_flight_impl(
+        94 => wire__diary_core__model__import_state_is_in_flight_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        92 => wire__diary_core__model__import_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        93 => wire__diary_core__model__job_priority_value_impl(port, ptr, rust_vec_len, data_len),
-        94 => wire__diary_core__model__job_state_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        95 => {
+        95 => wire__diary_core__model__import_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        96 => wire__diary_core__model__job_priority_value_impl(port, ptr, rust_vec_len, data_len),
+        97 => wire__diary_core__model__job_state_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        98 => {
             wire__diary_core__model__job_state_is_terminal_impl(port, ptr, rust_vec_len, data_len)
         }
-        96 => wire__diary_core__model__job_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        97 => {
+        99 => wire__diary_core__model__job_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        100 => {
             wire__diary_core__model__locator_type_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        98 => wire__diary_core__model__locator_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        99 => wire__diary_core__model__matched_by_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        100 => wire__diary_core__model__matched_by_wire_impl(port, ptr, rust_vec_len, data_len),
-        101 => {
+        101 => wire__diary_core__model__locator_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        102 => {
+            wire__diary_core__model__matched_by_from_wire_impl(port, ptr, rust_vec_len, data_len)
+        }
+        103 => wire__diary_core__model__matched_by_wire_impl(port, ptr, rust_vec_len, data_len),
+        104 => {
             wire__diary_core__model__material_counts_default_impl(port, ptr, rust_vec_len, data_len)
         }
-        102 => wire__diary_core__model__plugin_entry_kind_from_wire_impl(
+        105 => wire__diary_core__model__plugin_entry_kind_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        103 => {
+        106 => {
             wire__diary_core__model__plugin_entry_kind_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        104 => wire__diary_core__model__processing_status_from_wire_impl(
+        107 => wire__diary_core__model__processing_status_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        105 => {
+        108 => {
             wire__diary_core__model__processing_status_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        106 => wire__diary_core__model__processing_summary_default_impl(
+        109 => wire__diary_core__model__processing_summary_default_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        107 => wire__diary_core__model__provider_capability_from_wire_impl(
+        110 => wire__diary_core__model__provider_capability_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        108 => wire__diary_core__model__provider_capability_wire_impl(
+        111 => wire__diary_core__model__provider_capability_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        109 => wire__diary_core__model__provider_test_status_from_wire_impl(
+        112 => wire__diary_core__model__provider_test_status_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        110 => wire__diary_core__model__provider_test_status_wire_impl(
+        113 => wire__diary_core__model__provider_test_status_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        111 => wire__diary_core__model__recording_state_from_wire_impl(
+        114 => wire__diary_core__model__recording_state_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        112 => {
+        115 => {
             wire__diary_core__model__recording_state_is_open_impl(port, ptr, rust_vec_len, data_len)
         }
-        113 => {
+        116 => {
             wire__diary_core__model__recording_state_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        114 => {
+        117 => {
             wire__diary_core__model__search_filters_default_impl(port, ptr, rust_vec_len, data_len)
         }
-        115 => {
+        118 => {
             wire__diary_core__model__search_mode_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        116 => wire__diary_core__model__search_mode_wire_impl(port, ptr, rust_vec_len, data_len),
-        117 => {
+        119 => wire__diary_core__model__search_mode_wire_impl(port, ptr, rust_vec_len, data_len),
+        120 => {
             wire__diary_core__model__search_phase_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        118 => wire__diary_core__model__search_phase_wire_impl(port, ptr, rust_vec_len, data_len),
-        119 => {
+        121 => wire__diary_core__model__search_phase_wire_impl(port, ptr, rust_vec_len, data_len),
+        122 => {
             wire__diary_core__model__source_kind_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        120 => wire__diary_core__model__source_kind_wire_impl(port, ptr, rust_vec_len, data_len),
-        121 => {
+        123 => wire__diary_core__model__source_kind_wire_impl(port, ptr, rust_vec_len, data_len),
+        124 => {
             wire__diary_core__model__source_locator_document_impl(port, ptr, rust_vec_len, data_len)
         }
-        122 => wire__diary_core__model__source_locator_text_range_impl(
+        125 => wire__diary_core__model__source_locator_text_range_impl(
             port,
             ptr,
             rust_vec_len,
@@ -11221,36 +11391,6 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::PluginSourc
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::PluginStyleProfile> {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.0.id.into_into_dart().into_dart(),
-            self.0.label.into_into_dart().into_dart(),
-            self.0.revision.into_into_dart().into_dart(),
-            self.0.updated_at.into_into_dart().into_dart(),
-            self.0.length_preference.into_into_dart().into_dart(),
-            self.0.person.into_into_dart().into_dart(),
-            self.0.tone.into_into_dart().into_dart(),
-            self.0.emotional_temperature.into_into_dart().into_dart(),
-            self.0.rhetoric_level.into_into_dart().into_dart(),
-            self.0.examples.into_into_dart().into_dart(),
-            self.0.banned_expressions.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for FrbWrapper<diary_core::model::PluginStyleProfile>
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::PluginStyleProfile>>
-    for diary_core::model::PluginStyleProfile
-{
-    fn into_into_dart(self) -> FrbWrapper<diary_core::model::PluginStyleProfile> {
-        self.into()
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::PluginTemplate> {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -11948,6 +12088,36 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::SourceRevis
     for diary_core::model::SourceRevision
 {
     fn into_into_dart(self) -> FrbWrapper<diary_core::model::SourceRevision> {
+        self.into()
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::StyleProfile> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.0.id.into_into_dart().into_dart(),
+            self.0.label.into_into_dart().into_dart(),
+            self.0.revision.into_into_dart().into_dart(),
+            self.0.updated_at.into_into_dart().into_dart(),
+            self.0.length_preference.into_into_dart().into_dart(),
+            self.0.person.into_into_dart().into_dart(),
+            self.0.tone.into_into_dart().into_dart(),
+            self.0.emotional_temperature.into_into_dart().into_dart(),
+            self.0.rhetoric_level.into_into_dart().into_dart(),
+            self.0.examples.into_into_dart().into_dart(),
+            self.0.banned_expressions.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<diary_core::model::StyleProfile>
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<diary_core::model::StyleProfile>>
+    for diary_core::model::StyleProfile
+{
+    fn into_into_dart(self) -> FrbWrapper<diary_core::model::StyleProfile> {
         self.into()
     }
 }
@@ -12968,6 +13138,16 @@ impl SseEncode for Vec<diary_core::model::SourceKind> {
     }
 }
 
+impl SseEncode for Vec<diary_core::model::StyleProfile> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <diary_core::model::StyleProfile>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<diary_core::model::TextRange> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -13238,16 +13418,6 @@ impl SseEncode for Option<diary_core::model::PluginEntryKind> {
     }
 }
 
-impl SseEncode for Option<diary_core::model::PluginStyleProfile> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <bool>::sse_encode(self.is_some(), serializer);
-        if let Some(value) = self {
-            <diary_core::model::PluginStyleProfile>::sse_encode(value, serializer);
-        }
-    }
-}
-
 impl SseEncode for Option<diary_core::model::ProcessingStatus> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -13324,6 +13494,16 @@ impl SseEncode for Option<diary_core::model::SourceRevision> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <diary_core::model::SourceRevision>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<diary_core::model::StyleProfile> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <diary_core::model::StyleProfile>::sse_encode(value, serializer);
         }
     }
 }
@@ -13568,7 +13748,7 @@ impl SseEncode for diary_core::model::PluginInvocation {
         <Vec<String>>::sse_encode(self.selected_capture_ids, serializer);
         <Option<String>>::sse_encode(self.from_day_key, serializer);
         <Option<String>>::sse_encode(self.to_day_key, serializer);
-        <Option<diary_core::model::PluginStyleProfile>>::sse_encode(self.style_profile, serializer);
+        <Option<diary_core::model::StyleProfile>>::sse_encode(self.style_profile, serializer);
         <Option<String>>::sse_encode(self.format, serializer);
         <Option<String>>::sse_encode(self.input_text, serializer);
     }
@@ -13634,23 +13814,6 @@ impl SseEncode for diary_core::model::PluginSourceRef {
         <String>::sse_encode(self.source_id, serializer);
         <Option<String>>::sse_encode(self.source_revision_id, serializer);
         <Option<String>>::sse_encode(self.locator_json, serializer);
-    }
-}
-
-impl SseEncode for diary_core::model::PluginStyleProfile {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.id, serializer);
-        <String>::sse_encode(self.label, serializer);
-        <i64>::sse_encode(self.revision, serializer);
-        <chrono::DateTime<chrono::Utc>>::sse_encode(self.updated_at, serializer);
-        <Option<String>>::sse_encode(self.length_preference, serializer);
-        <Option<String>>::sse_encode(self.person, serializer);
-        <Option<String>>::sse_encode(self.tone, serializer);
-        <Option<String>>::sse_encode(self.emotional_temperature, serializer);
-        <Option<String>>::sse_encode(self.rhetoric_level, serializer);
-        <Vec<String>>::sse_encode(self.examples, serializer);
-        <Vec<String>>::sse_encode(self.banned_expressions, serializer);
     }
 }
 
@@ -14071,6 +14234,23 @@ impl SseEncode for diary_core::model::SourceRevision {
         <Option<String>>::sse_encode(self.asset_id, serializer);
         <diary_core::model::AuthorType>::sse_encode(self.author_type, serializer);
         <chrono::DateTime<chrono::Utc>>::sse_encode(self.occurred_at, serializer);
+    }
+}
+
+impl SseEncode for diary_core::model::StyleProfile {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.id, serializer);
+        <String>::sse_encode(self.label, serializer);
+        <i64>::sse_encode(self.revision, serializer);
+        <chrono::DateTime<chrono::Utc>>::sse_encode(self.updated_at, serializer);
+        <Option<String>>::sse_encode(self.length_preference, serializer);
+        <Option<String>>::sse_encode(self.person, serializer);
+        <Option<String>>::sse_encode(self.tone, serializer);
+        <Option<String>>::sse_encode(self.emotional_temperature, serializer);
+        <Option<String>>::sse_encode(self.rhetoric_level, serializer);
+        <Vec<String>>::sse_encode(self.examples, serializer);
+        <Vec<String>>::sse_encode(self.banned_expressions, serializer);
     }
 }
 
