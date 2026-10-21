@@ -53,8 +53,7 @@ import {
   ExpectedFile,
   sha256OfFile,
 } from '../recording/ModelDownload';
-import { PcmSegmentWriter } from '../recording/PcmSegmentWriter';
-import { readWavPcm } from '../recording/HapBothWav';
+import { injectWavAsRecording } from '../recording/RecordingInject';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryHap';
@@ -204,51 +203,23 @@ export class HapBothVerify {
    * 还是没录到声音。已知 PCM 把变量收敛成一个：引擎有没有出文本。
    */
   private static injectKnownWav(core: DiaryCore, filesDir: string): RecordingFinalizeResult {
+    // 链路本身与 `asr_inject` 共用（`RecordingInject.injectWavAsRecording`），这里只
+    // 保留本探针的 DIARY_HAP 日志口径，历史证据里的字段与值都不变。
     const wavPath = `${filesDir}/asr/sense-voice/zh.wav`;
-    const pcm = readWavPcm(wavPath);
+    const injected = injectWavAsRecording(core, wavPath, 'op-hapcfg-inject', 'hap_both_injected');
     hilog.info(DOMAIN, TAG, '%{public}s INJECT wav=%{public}s pcmBytes=%{public}d',
-      MARK, wavPath, pcm.length);
-
-    const nonce = `${Date.now()}`;
-    const capture = core.createDraft({
-      time_zone: 'Asia/Shanghai',
-      utc_offset_minutes: 480,
-      operation_id: `op-hapcfg-inject-draft-${nonce}`,
-    });
-    const ticket = core.prepareRecording({
-      capture_id: capture.id,
-      operation_id: `op-hapcfg-inject-prepare-${nonce}`,
-    });
-    const writer = new PcmSegmentWriter(ticket.staging_ticket, 0);
-    writer.open();
-    writer.writePcm(pcm.buffer as ArrayBuffer);
-    const file = writer.finish();
-    const receipt = core.registerSegment({
-      recording_id: ticket.recording_id,
-      segment_index: file.index,
-      segment: {
-        segment_id: file.segmentId,
-        relative_file_name: file.fileName,
-        duration_ms: file.durationMs,
-        sha256: file.sha256,
-        byte_size: file.byteSize,
-      },
-    });
+      MARK, injected.wavPath, injected.pcmBytes);
     hilog.info(DOMAIN, TAG,
       '%{public}s INJECT SEG index=%{public}d file=%{public}s bytes=%{public}d pcmMs=%{public}d sha256=%{public}s durable=%{public}s',
-      MARK, file.index, file.fileName, file.byteSize, file.durationMs,
-      file.sha256.substring(0, 16), receipt.durable ? 'true' : 'false');
-
-    const result = core.finalizeRecording({
-      recording_id: ticket.recording_id,
-      last_segment_index: file.index,
-      end_reason: 'hap_both_injected',
-    });
+      MARK, injected.segmentIndex, injected.segmentFileName, injected.segmentByteSize,
+      injected.segmentDurationMs, injected.segmentSha256.substring(0, 16),
+      injected.durable ? 'true' : 'false');
     hilog.info(DOMAIN, TAG,
       '%{public}s INJECT FINALIZE asset=%{public}s audioMs=%{public}d segments=%{public}d state=%{public}s queued=%{public}s',
-      MARK, result.asset_id, result.logical_duration_ms, result.segment_count,
-      result.state, result.transcription_queued ? 'true' : 'false');
-    return result;
+      MARK, injected.assetId, injected.finalize.logical_duration_ms,
+      injected.finalize.segment_count, injected.finalize.state,
+      injected.finalize.transcription_queued ? 'true' : 'false');
+    return injected.finalize;
   }
 
   // ---------------------------------------------------------------- 报告

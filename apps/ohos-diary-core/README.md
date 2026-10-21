@@ -387,9 +387,50 @@ DIARY_ASR jobs.report {"open_ms":4,"run_ms":3580,...,"processed":1,"succeeded":1
 > 真人口述的样本在上一轮（`db-after-zhhuman`）里是全对的：
 > 「我说这个游戏上不去分。」（`ext_01a14f1ec21072b38802aa616bed4ec1`）。
 
+### 已知 PCM 注入：把「转写准不准」从声学里摘出来（2026-10-21 夜）
+
+上一节已经说明「扬声器 → 麦克风」不能用来评价模型：`asr_record_play` 录回来的
+100 ms 帧 RMS 大多 < 50（少数 400–1800），转写是「小菠又系买小菠啦。」「应该流程没事，
+进去就打架。」——系统 AEC 把**设备自己正在播的声音**从麦克风输入里减掉了（它本来就
+在做这件事）。这不是产品 bug，是验证方法把声学变量混了进来。
+
+新增 **debug-only** 探针 `asr_inject`：不碰麦克风，直接把同一份 `zh.wav` 按平台层录音
+约定（`captures.createDraft` → `recordings.prepare` → 写 staging 片段（第 0 段带 44 B
+WAV 头）→ `registerSegment` → `finalize`）登记成录音；`jobs.runDue` 跑转写后从
+`extracted_contents` 读正文，与已知答案做**去标点/空白后的字符级相似度**比对
+（≥ 0.8 通过）。注入链路与 `hap_both` 共用 `recording/RecordingInject.ets`，没有第二份
+实现；只在 `DEBUG_BUILD` 下可达（`EntryAbility` 的统一闸门）。
+
+真机（`3QC0124C20001776` / HAD-W32）实跑：
+
+```text
+DIARY_ASR INJECT wav=/data/storage/el2/base/haps/entry/files/zh.wav wavBytes=178988 pcmBytes=178944 pcmMs=5592 rms=4330 peak=27611
+DIARY_ASR INJECT SEG index=0 file=segment-000000.wav bytes=178988 pcmMs=5592 sha256=9172ffdc7d09db01 durable=true
+DIARY_ASR INJECT FINALIZE capture=cap_01a15ebb23b07079b053e53697bf5a37 asset=asset_01a15ebb23b67072b5bb6fbcc507a874 audioMs=5592 segments=1 state=saved queued=true
+DIARY_ASR INJECT JOBS processed=1 succeeded=1 failed=0 retrying=0 dueBacklog=0
+DIARY_ASR INJECT JOB id=job_01a15ebb23c1747f99b9e4fd244405b7 state=succeeded attempt=1/5 error= progress=1/1 next=
+DIARY_ASR INJECT EXTRACT found=true source=src_01a15ebb23c073a0b43b4eed0ca05c54 extractor=local_transcription status=ready coverage=complete error= detail=0:src_01a15ebb23c073a0b43b4eed0ca05c54:local_transcription/ready/complete/len=14;
+DIARY_ASR INJECT_SIMILARITY expected=开饭时间早上9点至下午5点 actual=开饭时间早上9点至下午5点 distance=0 length=13 similarity=1.0000 threshold=0.80
+DIARY_ASR INJECT_TEXT text=开饭时间早上9点至下午5点。
+DIARY_ASR INJECT_RESULT ok=true similarity=1.00 text=开饭时间早上9点至下午5点。
+```
+
+| 自查项 | 实测 |
+|---|---|
+| 注入 PCM | 178,944 B（文件 178,988 B，差 44 B 头）/ 5,592 ms / RMS 4,330 / 峰值 27,611 |
+| `finalize.logical_duration_ms` | 5,592（与 PCM 一致） |
+| 转写任务 | `attempt_count=1/5`、`error_code` 空、`succeeded` |
+| `extracted_contents` | `local_transcription` / `ready` / `complete` / 14 字符 |
+| 相似度 | **1.0000**（distance=0）→ 通过 |
+
+同一构建里 `asr_test` 的 `providers.test` 仍是 `{"transcribe_audio":"ok"}`。
+signed HAP 32,300,003 B（unsigned 31,980,279 B）。
+
 ### 「没验到」的（别当成验过）
 
 - **真人现场口述**（这一轮没人在设备旁；验证用的是设备扬声器回放）；
+- **真实人声/噪声场景的准确率**：`asr_inject` 只钉死「同一份已知 PCM → 引擎输出」，
+  不覆盖口音、远场、噪声；`asr_record_play` 仍受 AEC 影响，不能用来量准确率；
 - **长音频**（>60 s）与多段拼接的转写耗时/内存；本机只有 5 s 一条的完整数字；
 - **release / 混淆构建**带 sherpa 的包（这轮只装 debug）；
 - **低内存机型**：592 MB PSS 增量在 31 GB 的 HAD-W32 上没问题，4–8 GB 手机未测；
