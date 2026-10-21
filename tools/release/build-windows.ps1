@@ -69,7 +69,16 @@ $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $App = Join-Path $Root 'apps\diary_app'
 $Dist = Join-Path $Root 'dist\windows'
-$Dll = Join-Path $Root 'target\x86_64-pc-windows-msvc\release\diary_bridge.dll'
+# 仓库规范要求每个工作树用自己的 CARGO_TARGET_DIR（共享 target 曾导致 58 个幻影错误）。
+# 设了它之后产物不在仓库根的 target\ 下，所以这里跟着 CARGO_TARGET_DIR 走；
+# 没设才用默认位置。否则使用者得自己造 junction 才能跑通脚本（#172 第 1 条）。
+$TargetRoot = if ($env:CARGO_TARGET_DIR) {
+  if ([System.IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)) { $env:CARGO_TARGET_DIR }
+  else { Join-Path $Root $env:CARGO_TARGET_DIR }
+} else {
+  Join-Path $Root 'target'
+}
+$Dll = Join-Path $TargetRoot 'x86_64-pc-windows-msvc\release\diary_bridge.dll'
 $Bundle = Join-Path $App 'build\windows\x64\runner\Release'
 
 function Fail([string]$Message) {
@@ -170,16 +179,34 @@ $installedTargets = (& rustup target list --installed) -join ' '
 if ($installedTargets -notmatch 'x86_64-pc-windows-msvc') {
   Fail '缺少 Rust target x86_64-pc-windows-msvc（rustup target add x86_64-pc-windows-msvc）。'
 }
-if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
-  Fail '找不到 cmake。安装 Visual Studio 2022 的“使用 C++ 的桌面开发”工作负载，或在 PATH 上提供 CMake 3.14+。'
-}
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+$vs = $null
 if (Test-Path $vswhere) {
-  $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) 2>$null
-  if (-not $vs) { Fail 'Visual Studio 已安装但没有 MSVC x64 C++ 工具链。' }
-  Write-Host "Visual Studio：$vs"
+  # **必须带 -prerelease**：vswhere 默认不列预发布版本。装的是 VS Insiders 时
+  # （例如 Community 2026 Insiders），不带这个开关会返回空，于是下面误报
+  # 「Visual Studio 已安装但没有 MSVC」——而实际上 flutter build 能正常出包。
+  $vs = (& $vswhere -latest -prerelease -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) 2>$null
+  if ($vs) { Write-Host "Visual Studio：$vs" }
+  else { Fail 'Visual Studio 已安装但没有 MSVC x64 C++ 工具链（含预发布版本也已检查）。' }
 } else {
   Write-Warning '没找到 vswhere，无法自动确认 MSVC 工具链；如果 flutter build 失败，请先装 Visual Studio C++ 工作负载。'
+}
+
+# cmake 优先用 PATH 上的；PATH 上没有时，VS 自带的 CMake/Ninja 通常在
+# <VS安装目录>\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin 下，
+# 直接 Fail 会让人以为“没装 CMake”，其实装了只是没进 PATH（#172 第 2 条）。
+if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+  $foundCmake = $null
+  if ($vs) {
+    $candidate = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+    if (Test-Path $candidate) { $foundCmake = $candidate }
+  }
+  if ($foundCmake) {
+    $env:PATH = (Split-Path $foundCmake) + ';' + $env:PATH
+    Write-Host "cmake 不在 PATH，已用 Visual Studio 自带的：$foundCmake"
+  } else {
+    Fail '找不到 cmake。安装 Visual Studio 的“使用 C++ 的桌面开发”工作负载，或把 CMake 3.14+ 放进 PATH（VS 自带的在 <VS>\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin）。'
+  }
 }
 
 if ($Sign) {
