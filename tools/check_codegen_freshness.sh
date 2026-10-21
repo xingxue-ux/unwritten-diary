@@ -59,10 +59,10 @@ else
 fi
 flutter_rust_bridge_codegen generate
 
-# `--exit-code --stat`：有差异时退出码为 1，并**先把统计打出来**——一眼能看出
-# 是「只动了几行注释」还是「签名/新增类型」。完整 diff 跟在后面。
+# 有差异时 `--quiet` 退出码为 1。哪个文件不同、各增删几行，下面用 `--numstat`
+# 摘成摘要；完整 diff 跟在后面。
 tracked_dirty=0
-if ! git diff --exit-code --stat -- "${GENERATED_PATHS[@]}"; then
+if ! git diff --quiet -- "${GENERATED_PATHS[@]}"; then
   tracked_dirty=1
 fi
 
@@ -75,12 +75,28 @@ if (( tracked_dirty == 0 )) && [[ -z "${untracked}" ]]; then
   exit 0
 fi
 
+# 失败信息先回答「哪个文件不同」：文件名与增删行数摘成一行（GitHub 的 error
+# 注解也用它），完整 diff 放在后面。以前要翻完整 diff 才知道是哪个文件。
+summary_files=()
+while IFS=$'\t' read -r added removed path; do
+  [[ -z "${path}" ]] && continue
+  summary_files+=("${path}（+${added} -${removed}）")
+done < <(git diff --numstat -- "${GENERATED_PATHS[@]}")
+while IFS= read -r path; do
+  [[ -z "${path}" ]] && continue
+  summary_files+=("${path}（未跟踪的新文件）")
+done <<< "${untracked}"
+summary_line="$(IFS='、'; echo "${summary_files[*]}")"
+
 if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-  echo "::error title=codegen 产物与源码不同步::改了 Rust 导出面却没重跑 codegen，见 job 日志里的 diff"
+  echo "::error title=codegen 产物与源码不同步::不同的文件：${summary_line}"
 fi
 
 echo
-echo "生成物与源码不同步。完整差异："
+echo "生成物与源码不同步（${#summary_files[@]} 个文件）："
+printf '  %s\n' "${summary_files[@]}"
+echo
+echo "完整差异："
 echo "------------------------------------------------------------------"
 git diff -- "${GENERATED_PATHS[@]}"
 if [[ -n "${untracked}" ]]; then
@@ -91,7 +107,7 @@ fi
 echo "------------------------------------------------------------------"
 cat <<'EOF'
 
-怎么修（约 1 分钟）：
+怎么修（这一步在 CI 上缓存命中约 1 分钟、未命中约 4 分钟）：
 
   flutter_rust_bridge_codegen generate          # 版本见上；本脚本已经跑过了，产物就在工作区
   git add crates/diary_bridge/src/frb_generated.rs packages/diary_bridge/lib/src/rust
