@@ -427,6 +427,51 @@ void main() {
       ),
     );
   });
+
+  test('风格 CRUD 与乐观锁经契约接口可用', () async {
+    await api.open();
+
+    // #114：默认风格是真实行；保存/读取/乐观锁都经适配层映射。
+    final styles = await api.listStyles();
+    expect(styles.map((profile) => profile.id), contains('sty_default'));
+    final saved = await api.saveStyle(
+      StyleProfile(
+        id: 'sty_adapter',
+        label: '适配层的风格',
+        revision: 0,
+        updatedAt: DateTime.now().toUtc(),
+        lengthPreference: '简短',
+        tone: '平静',
+        examples: const ['像跟朋友说话'],
+        bannedExpressions: const ['治愈一切'],
+      ),
+    );
+    expect(saved.revision, 1);
+    expect(saved.id, 'sty_adapter');
+    expect(saved.tone, '平静');
+    final fetched = await api.getStyle('sty_adapter');
+    expect(fetched, saved);
+
+    await expectLater(
+      api.saveStyle(
+        StyleProfile(
+          id: 'sty_adapter',
+          label: '适配层的风格',
+          revision: 0,
+          updatedAt: DateTime.now().toUtc(),
+        ),
+        expectedRevision: 0,
+      ),
+      throwsA(
+        isA<DiaryException>().having(
+          (error) => error.code,
+          'code',
+          DiaryErrorCode.revisionConflict,
+        ),
+      ),
+    );
+
+  });
 }
 
 String _defaultLibraryPath() {

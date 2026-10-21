@@ -3982,8 +3982,8 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
     );
     assert_eq!(
         diary_core::SCHEMA_VERSION,
-        16,
-        "本轮升到 16（v15 的列/索引 + v16 的回收站列）"
+        17,
+        "当前构建是 17（v15 的列/索引 + v16 的回收站列 + v17 的 styles 表）"
     );
     let counters = Arc::new(Counters::default());
     core.set_embedder(stub(&counters, vec![]));
@@ -4076,11 +4076,11 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
         let recorded: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
-                params![diary_core::SCHEMA_VERSION],
+params![diary_core::SCHEMA_VERSION],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(recorded, 1, "schema_migrations 记下当前版本");
+        assert_eq!(recorded, 1, "schema_migrations 记下最终版本");
     }
     drop(migrated);
 
@@ -4122,14 +4122,14 @@ fn a_v15_library_with_a_dropped_caliber_index_recreates_it_on_open() {
 
     {
         let conn = open(&path);
-        // 前提：库已经是当前版本且列在，只把索引删掉。
+        // 前提：库的最新版本里 v15 的列还在；把索引、styles 表与版本号都退回 v15 形状。
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(
             version,
             diary_core::SCHEMA_VERSION,
-            "前提：库已经是当前版本"
+            "前提：库是最新版本"
         );
         let column_count: i64 = conn
             .query_row(
@@ -4140,8 +4140,13 @@ fn a_v15_library_with_a_dropped_caliber_index_recreates_it_on_open() {
             )
             .unwrap();
         assert_eq!(column_count, 1, "前提：v15 的列已经在");
-        conn.execute_batch("DROP INDEX idx_chunk_vectors_caliber;")
-            .unwrap();
+        conn.execute_batch(
+            "DROP INDEX idx_chunk_vectors_caliber;
+             DROP TABLE styles;
+             UPDATE schema_migrations SET version = 15;
+             PRAGMA user_version = 15;",
+        )
+        .unwrap();
         let index_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' \
@@ -4155,10 +4160,7 @@ fn a_v15_library_with_a_dropped_caliber_index_recreates_it_on_open() {
 
     // 旧实现：`migrate` 在 `current == SCHEMA_VERSION` 时直接返回，索引仍然缺。
     let opened = Core::open(&path).unwrap();
-    assert_eq!(
-        opened.schema_version().unwrap(),
-        diary_core::SCHEMA_VERSION
-    );
+    assert_eq!(opened.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
 
     let conn = open(&path);
     // 1) `PRAGMA index_list` 真的能查到这条索引。
