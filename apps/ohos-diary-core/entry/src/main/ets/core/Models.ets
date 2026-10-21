@@ -427,6 +427,68 @@ export interface DiaryVersionPage {
   next_cursor: string | null;
 }
 
+// ---------------------------------------------------------------- 回收站（契约 4.1 / §8）
+//
+// 字段名与 `diary_core::model` 的 `PurgePreview` / `PurgeResult` serde 输出一致（snake_case）。
+// 契约文档里的 `derivedDiaryVersionIds` / `undeterminedDiaryVersionIds` / `previewToken`
+// 是 Dart 面的 camelCase 写法，线上是下面这些 snake_case 名字。
+
+/**
+ * `captures.previewPurge` 的结果：这次清理会删掉什么、会保留什么。
+ *
+ * 清单是**这次预览时**数据库里的真实行。`preview_token` 一次性、带过期、绑定
+ * `capture_id`，`purgeCapture` 必须原样带上；预览之后清单变了核心会拒绝，要求重新预览。
+ */
+export interface PurgePreview {
+  capture_id: string;
+  /** 一次性令牌（`purgeCapture.preview_token`）；默认 10 分钟过期。 */
+  preview_token: string;
+  /** 会被一起清理的原件（`assets.id`）。 */
+  asset_ids: string[];
+  /** 会被一起清理的派生内容（提取正文、片段与检索词项都在里面）。 */
+  derived_content_ids: string[];
+  /**
+   * 与这条记录**有可判定关联**的日记版本：`delete_diary_versions = true` 时删，
+   * 默认（`false`）保留。契约里叫「有可判定关联的版本」。
+   */
+  diary_versions_still_referencing: string[];
+  /** 会被一并清理的 AI 回应（请求文字与生成正文一起删）。 */
+  ai_response_ids: string[];
+  /**
+   * 清理后**仍保留**的输入快照：`body` 里可能仍含这条记录的正文（#161 方案 A）。
+   * 界面不能把永久清理说成「所有历史快照里的字节都消失」。
+   */
+  retained_source_snapshot_ids: string[];
+  /**
+   * 由上面那些版本派生/合并来的版本（`user_edit` / `merge`）：**一个都不删**，
+   * 但正文可能仍含这条记录的文字，必须如实告知用户「这些版本还在」。
+   */
+  derived_diary_version_ids: string[];
+  /** **归属判不出来**的版本：判不出来就不删，列出来由用户自己处置。 */
+  undetermined_diary_version_ids: string[];
+}
+
+/**
+ * `captures.purge` 的结果：`purged_*` 是真删掉的 id，`retained_*` 是如实保留的 id。
+ *
+ * `purged_diary_version_ids` / `retained_diary_version_ids` 按 `delete_diary_versions`
+ * 二选一；`derived_diary_version_ids` / `undetermined_diary_version_ids` 与那个选择
+ * **无关**（这两类一个都不删），与预览同名项一致。
+ */
+export interface PurgeResult {
+  capture_id: string;
+  purged_asset_ids: string[];
+  purged_derived_content_ids: string[];
+  purged_diary_version_ids: string[];
+  purged_ai_response_ids: string[];
+  retained_diary_version_ids: string[];
+  retained_source_snapshot_ids: string[];
+  derived_diary_version_ids: string[];
+  undetermined_diary_version_ids: string[];
+  /** 被清掉的该记录幂等回执数（`captures.purge` 自己的回执保留，供重放）。 */
+  cleaned_receipt_count: number;
+}
+
 // ---------------------------------------------------------------- 请求参数
 //
 // 字段名以核心 Rust 参数名为准（snake_case）；契约表里的 camelCase 写法 C ABI 也接受，
@@ -476,6 +538,33 @@ export interface ListCapturesParams {
   day_key?: string | null;
   cursor?: string | null;
   limit?: number;
+}
+
+/**
+ * `captures.trash` / `captures.restore` 的参数。
+ *
+ * `expected_revision` 是 `Capture.revision`（不是来源数、也不是日记的 revision）：
+ * 不符报 `revision_conflict`，核心零改动。`operation_id` 是幂等键，重放返回原结果。
+ */
+export interface TrashCaptureParams {
+  capture_id: string;
+  expected_revision: number;
+  operation_id: string;
+}
+
+/**
+ * `captures.purge` 的参数。
+ *
+ * `preview_token` **必填**：永久清理必须由一次明确的预览授权（`previewPurge` 发出的
+ * 一次性令牌）。`delete_diary_versions` 省略即 `false` = 保留仍引用这条记录的日记版本；
+ * `true` 也只删「有可判定关联」的 `generated` 版本。同一个 `operation_id` 换选择报
+ * `idempotency_conflict`。
+ */
+export interface PurgeCaptureParams {
+  capture_id: string;
+  preview_token: string;
+  delete_diary_versions?: boolean;
+  operation_id: string;
 }
 
 /** `sources.extract` 的参数：`source_ref` 可以是来源 id，也可以是修订 id。 */

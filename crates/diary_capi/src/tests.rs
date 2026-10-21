@@ -278,6 +278,70 @@ fn enqueue_for_test(handle: *mut Handle, kind: &str, target_ids: &[&str]) -> Str
     core.enqueue_job(job).expect("入队应当成功").id
 }
 
+/// 用核心自己的入口造一版「基于这一天材料生成」的日记，返回版本 id。
+///
+/// 为什么借核心入口：`diary.generate` 还没接到 C ABI（它要排 AI 任务，属于生成那一片），
+/// 但 `captures.previewPurge` 的**三类版本清单**必须有真数据才验得出来——空清单证明不了
+/// 「字段传对了」。传输层是 `ScriptedTransport`（回放，不联网），生成任务由核心队列真的
+/// 跑一遍；之后所有断言仍然只走 C ABI。
+fn seed_generated_diary(handle: *mut Handle, day_key: &str) -> String {
+    let core = debug_core(handle).expect("句柄必须在登记表里");
+    let mut core = core.lock().unwrap();
+    core.set_transport_for_test(Arc::new(diary_core::ScriptedTransport::ok(vec![
+        diary_core::HttpResponse::new(
+            200,
+            json!({
+                "model": "qwen-test",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "今天整理了房间，翻出一些旧东西，坐了很久。",
+                    }
+                }],
+            })
+            .to_string(),
+        ),
+    ])) as Arc<dyn diary_core::Transport>);
+    core.save_provider(
+        &diary_core::Provider {
+            id: "prv_capi_recycle".to_owned(),
+            label: "测试服务".to_owned(),
+            adapter_id: diary_core::OPENAI_COMPATIBLE.to_owned(),
+            endpoint: Some("http://127.0.0.1:11434/v1".to_owned()),
+            model: Some("qwen-test".to_owned()),
+            capabilities: [diary_core::ProviderCapability::GenerateText]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>(),
+            credential_ref: None,
+            enabled: true,
+            test_status: diary_core::ProviderTestStatus::Untested,
+        },
+        Some("sk-test-secret-0123456789"),
+    )
+    .expect("保存测试服务");
+    core.generate_diary(
+        day_key,
+        None,
+        diary_core::DiaryGenerationReason::Manual,
+        "op-capi-recycle-gen",
+    )
+    .expect("排生成任务");
+    let summary = core
+        .run_due_jobs(chrono::Utc::now(), 30_000, "test", 16)
+        .expect("跑一轮任务");
+    assert_eq!(summary.succeeded, 1, "生成任务应当成功：{summary:?}");
+    core.get_diary_day(day_key)
+        .expect("生成后应当能读到这一天")
+        .current_version_id
+        .expect("首次生成成为当前版本")
+}
+
+/// 把预览令牌的有效期改成 `seconds` 秒（`0` = 立刻过期，用来验过期路径）。
+fn set_purge_ttl(handle: *mut Handle, seconds: i64) {
+    let core = debug_core(handle).expect("句柄必须在登记表里");
+    core.lock().unwrap().set_purge_preview_ttl_for_test(seconds);
+}
+
 // ---------------------------------------------------------------- 测试
 
 /// 版本戳与 last-error 的生老病死。
@@ -2289,12 +2353,10 @@ fn capabilities_include_every_wired_method() {
         }
     }
 
-    // 核心还没有实现的 9 条**不能**出现在诚实的能力清单里。
+    // 核心还没有包装的 5 条**不能**出现在诚实的能力清单里。
+    // 回收站四条（trash / restore / previewPurge / purge）已经接上，所以这里只剩
+    // `captures.moveDay`（核心有、桥面没包）与风格/导出那几条。
     for name in [
-        "captures.trash",
-        "captures.restore",
-        "captures.previewPurge",
-        "captures.purge",
         "captures.moveDay",
         "styles.get",
         "styles.save",
@@ -3221,6 +3283,404 @@ fn settings_update_keeps_the_default_style_when_the_field_is_omitted() {
     );
     let after = expect_ok(&call(handle, "settings.get", Value::Null));
     assert_eq!(after, before, "非法参数必须零改动");
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+// ---------------------------------------------------------------- 回收站（契约 4.1 / §8）
+
+/// `captures.trash` / `restore` / `previewPurge` / `purge` 的整条链路。
+///
+/// 覆盖任务书点名的几条：trash → 列表/检索 → restore → 可见；`previewPurge` 的令牌与
+/// **三类版本清单**（会随 `deleteDiaryVersions` 删的 / 派生不删的 / 判不出来不删的）；
+/// `purge` 不带令牌报错、令牌过期报错、`deleteDiaryVersions` 默认 `false` 时版本保留。
+/// 幂等：同一个 `operationId` 重放返回同一份结果，换选择报 `idempotency_conflict`。
+#[test]
+fn recycle_trash_restore_preview_and_purge_are_wired() {
+    let (dir, _path, handle) = open_temp("recycle");
+    let day_key = "2026-10-17";
+    let capture_id = seed_capture_at(
+        handle,
+        "op-capi-recycle",
+        "2026-10-17T09:30:00Z",
+        "外婆的樟木箱里有旧照片，还有一张泛黄的车票。",
+    );
+
+    // 一版基于这条记录生成的日记（带输入快照 ⇒ 与记录**有可判定关联**），
+    // 再人工编辑出一版（`user_edit`、父版本是它 ⇒ **派生**版本）。
+    let generated = seed_generated_diary(handle, day_key);
+    let day = expect_ok(&call(handle, "diary.getDay", json!({"day_key": day_key})));
+    assert_eq!(day["current_version_id"], json!(generated));
+    let edited = expect_ok(&call(
+        handle,
+        "diary.saveEdit",
+        json!({
+            "base_version_id": generated,
+            "body": "外婆的樟木箱，我小时候也翻过。",
+            "expected_revision": day["revision"],
+            "operation_id": "op-capi-recycle-edit",
+        }),
+    ));
+    let edited_id = edited["id"].as_str().unwrap().to_owned();
+    assert_eq!(edited["origin"], json!("user_edit"));
+    assert_eq!(edited["parent_version_id"], json!(generated));
+
+    let capture = expect_ok(&call(
+        handle,
+        "captures.get",
+        json!({"capture_id": capture_id}),
+    ));
+    let revision = capture["revision"].as_i64().unwrap();
+
+    // ---------------------------------------------------------------- trash
+    let trashed = expect_ok(&call(
+        handle,
+        "captures.trash",
+        json!({
+            "capture_id": capture_id,
+            "expected_revision": revision,
+            "operation_id": "op-capi-trash",
+        }),
+    ));
+    assert_eq!(trashed["state"], json!("trashed"));
+    assert_eq!(trashed["revision"], json!(revision + 1));
+    assert_eq!(
+        trashed["draft_text"], capture["draft_text"],
+        "进回收站不改正文（只是状态推进）"
+    );
+
+    // 同一个 operationId 重放：同一份回执，不重复推进 revision。
+    let replay = expect_ok(&call(
+        handle,
+        "captures.trash",
+        json!({
+            "capture_id": capture_id,
+            "expected_revision": revision,
+            "operation_id": "op-capi-trash",
+        }),
+    ));
+    assert_eq!(replay, trashed, "幂等重放必须返回第一次的结果");
+
+    // 已经在回收站里再 trash：核心的 invalid_state，桥面不把它改写成成功。
+    let message = expect_error(
+        &call(
+            handle,
+            "captures.trash",
+            json!({
+                "capture_id": capture_id,
+                "expected_revision": trashed["revision"],
+                "operation_id": "op-capi-trash-again",
+            }),
+        ),
+        "invalid_state",
+    );
+    assert!(message.contains("已经在回收站里"), "{message}");
+
+    // 「不可见」的契约口径是**默认检索与后续 AI 输入**（§8），不是 `captures.list`：
+    // 核心的 `list_captures` 不按 state 过滤（回收站页面要靠 `state` 自己筛）。所以这里
+    // 两件事都断言——列表里这行还在、状态是 `trashed`；关键词检索已经搜不到它。
+    let page = expect_ok(&call(
+        handle,
+        "captures.list",
+        json!({"day_key": day_key}),
+    ));
+    let rows = page["captures"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{page}");
+    assert_eq!(rows[0]["id"], json!(capture_id));
+    assert_eq!(rows[0]["state"], json!("trashed"));
+    let hidden = expect_ok(&call(
+        handle,
+        "search.start",
+        json!({
+            "request": {"query": "樟木箱", "mode": "keyword"},
+            "query_revision": 1,
+        }),
+    ));
+    assert_eq!(
+        hidden["results"],
+        json!([]),
+        "回收站里的记录必须从默认检索里排除：{hidden}"
+    );
+
+    // ---------------------------------------------------------------- restore
+    let restored = expect_ok(&call(
+        handle,
+        "captures.restore",
+        json!({
+            "capture_id": capture_id,
+            "expected_revision": trashed["revision"],
+            "operation_id": "op-capi-restore",
+        }),
+    ));
+    assert_eq!(restored["state"], json!("committed"), "恢复回移入之前的状态");
+    assert_eq!(restored["revision"], json!(revision + 2));
+
+    let visible = expect_ok(&call(
+        handle,
+        "search.start",
+        json!({
+            "request": {"query": "樟木箱", "mode": "keyword"},
+            "query_revision": 1,
+        }),
+    ));
+    let hits = visible["results"].as_array().unwrap();
+    // 一条记录会命中两路（来源片段 + 记录文字），数量不是契约：只断言「搜得到、且都属于它」。
+    assert!(!hits.is_empty(), "恢复后必须重新搜得到：{visible}");
+    assert!(
+        hits.iter().all(|hit| hit["capture_id"] == json!(capture_id)),
+        "命中必须全部来自恢复的那条记录：{visible}"
+    );
+
+    // 不在回收站里：`previewPurge` 拒绝（清理只从回收站发起，桥面不替用户先 trash）。
+    let message = expect_error(
+        &call(
+            handle,
+            "captures.previewPurge",
+            json!({"capture_id": capture_id}),
+        ),
+        "invalid_state",
+    );
+    assert!(message.contains("不在回收站里"), "{message}");
+
+    // ---------------------------------------------------------------- 再进回收站，预览
+    let trashed_again = expect_ok(&call(
+        handle,
+        "captures.trash",
+        json!({
+            "capture_id": capture_id,
+            "expected_revision": restored["revision"],
+            "operation_id": "op-capi-trash-2",
+        }),
+    ));
+    let preview = expect_ok(&call(
+        handle,
+        "captures.previewPurge",
+        json!({"capture_id": capture_id}),
+    ));
+    assert_eq!(preview["capture_id"], json!(capture_id));
+    let token = preview["preview_token"]
+        .as_str()
+        .expect("预览必须给令牌")
+        .to_owned();
+    assert!(!token.is_empty(), "{preview}");
+
+    // 三类版本清单逐项对上：会删的那一版就是生成的、派生的是人工编辑那一版、
+    // 判不出来的为空（这条路径造不出「归属判不出来」的版本：由核心 recycle 用例覆盖）。
+    assert_eq!(
+        preview["diary_versions_still_referencing"],
+        json!([generated]),
+        "生成的那一版与这条记录有可判定关联：{preview}"
+    );
+    assert_eq!(
+        preview["derived_diary_version_ids"],
+        json!([edited_id]),
+        "人工编辑派生自它，不删但要列出来：{preview}"
+    );
+    assert_eq!(
+        preview["undetermined_diary_version_ids"],
+        json!([]),
+        "判不出归属的版本一个都没有：{preview}"
+    );
+    // 已发生的原子/派生内容与「清理后仍保留」的输入快照都要如实给出。
+    assert_eq!(
+        preview["derived_content_ids"].as_array().unwrap().len(),
+        1,
+        "文字来源的派生内容一条：{preview}"
+    );
+    assert_eq!(
+        preview["asset_ids"],
+        json!([]),
+        "这条记录没有导入原件：{preview}"
+    );
+    assert_eq!(
+        preview["retained_source_snapshot_ids"].as_array().unwrap().len(),
+        1,
+        "生成用的输入快照不删（快照 body 里可能仍有这条记录的正文）：{preview}"
+    );
+    assert_eq!(preview["ai_response_ids"], json!([]));
+
+    // ---------------------------------------------------------------- purge 的错误面
+    // 不带令牌：invalid_argument（不替调用方「先预览一次」）。
+    let message = expect_error(
+        &call(
+            handle,
+            "captures.purge",
+            json!({
+                "capture_id": capture_id,
+                "delete_diary_versions": false,
+                "operation_id": "op-capi-purge-no-token",
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(message.contains("preview_token"), "{message}");
+    // 令牌不认识：核心的 invalid_state，一条都不删。
+    let message = expect_error(
+        &call(
+            handle,
+            "captures.purge",
+            json!({
+                "capture_id": capture_id,
+                "preview_token": "forged-token",
+                "operation_id": "op-capi-purge-forged",
+            }),
+        ),
+        "invalid_state",
+    );
+    assert!(message.contains("令牌"), "{message}");
+
+    // 令牌过期：把有效期调成 0 秒，重新预览后立刻清理必须被拒。
+    set_purge_ttl(handle, 0);
+    let expired_preview = expect_ok(&call(
+        handle,
+        "captures.previewPurge",
+        json!({"capture_id": capture_id}),
+    ));
+    let message = expect_error(
+        &call(
+            handle,
+            "captures.purge",
+            json!({
+                "capture_id": capture_id,
+                "preview_token": expired_preview["preview_token"],
+                "operation_id": "op-capi-purge-expired",
+            }),
+        ),
+        "invalid_state",
+    );
+    assert!(message.contains("已过期"), "{message}");
+    set_purge_ttl(handle, 600);
+
+    // ---------------------------------------------------------------- purge（默认保留版本）
+    // 故意**省略** `delete_diary_versions`：默认 false，仍引用这条记录的版本要保留。
+    let purged = expect_ok(&call(
+        handle,
+        "captures.purge",
+        json!({
+            "capture_id": capture_id,
+            "preview_token": token,
+            "operation_id": "op-capi-purge",
+        }),
+    ));
+    assert_eq!(purged["capture_id"], json!(capture_id));
+    assert_eq!(
+        purged["purged_diary_version_ids"],
+        json!([]),
+        "默认不删日记版本：{purged}"
+    );
+    assert_eq!(
+        purged["retained_diary_version_ids"],
+        json!([generated]),
+        "保留的就是预览里「会删」那一版：{purged}"
+    );
+    assert_eq!(
+        purged["derived_diary_version_ids"],
+        json!([edited_id]),
+        "派生版本与 deleteDiaryVersions 无关，一个都不删：{purged}"
+    );
+    assert_eq!(purged["undetermined_diary_version_ids"], json!([]));
+    assert_eq!(
+        purged["retained_source_snapshot_ids"],
+        preview["retained_source_snapshot_ids"],
+        "快照照实保留并如实回填：{purged}"
+    );
+    assert_eq!(purged["purged_asset_ids"], json!([]));
+    assert_eq!(
+        purged["purged_derived_content_ids"],
+        preview["derived_content_ids"],
+        "派生内容逐项一致：{purged}"
+    );
+    assert!(
+        purged["cleaned_receipt_count"].as_i64().unwrap() > 0,
+        "这条记录的 trash/commit 回执里带正文，必须清掉：{purged}"
+    );
+
+    // 记录没了，但保留的版本仍逐字可读（「没删」要说出来，不能只是没报错）。
+    expect_error(
+        &call(
+            handle,
+            "captures.get",
+            json!({"capture_id": capture_id}),
+        ),
+        "not_found",
+    );
+    let kept = expect_ok(&call(
+        handle,
+        "diary.getVersion",
+        json!({"version_id": generated}),
+    ));
+    assert_eq!(kept["id"], json!(generated));
+    assert!(kept["body"].as_str().unwrap().contains("旧东西"), "{kept}");
+    let kept_edit = expect_ok(&call(
+        handle,
+        "diary.getVersion",
+        json!({"version_id": edited_id}),
+    ));
+    assert_eq!(kept_edit["origin"], json!("user_edit"));
+    // 这一天仍然有当前版本，指针没被清理弄坏。
+    let day = expect_ok(&call(handle, "diary.getDay", json!({"day_key": day_key})));
+    assert_eq!(day["current_version_id"], json!(edited_id));
+
+    // 记录、检索、列表都不再出现它。
+    let gone = expect_ok(&call(
+        handle,
+        "captures.list",
+        json!({"day_key": day_key}),
+    ));
+    assert_eq!(gone["captures"], json!([]), "清理后列表里不能再有它：{gone}");
+    let empty = expect_ok(&call(
+        handle,
+        "search.start",
+        json!({
+            "request": {"query": "樟木箱", "mode": "keyword"},
+            "query_revision": 1,
+        }),
+    ));
+    assert_eq!(empty["results"], json!([]), "清理后不再有命中：{empty}");
+
+    // 幂等：同一个 operationId + 同一份选择，重放返回同一份结果（purge 自己的回执保留，
+    // 里面只有 id 与计数）；换选择是 idempotency_conflict，不能悄悄按新选择再删一次。
+    let replayed = expect_ok(&call(
+        handle,
+        "captures.purge",
+        json!({
+            "capture_id": capture_id,
+            "preview_token": token,
+            "operation_id": "op-capi-purge",
+        }),
+    ));
+    assert_eq!(replayed, purged, "重放返回同一份清理结果");
+    expect_error(
+        &call(
+            handle,
+            "captures.purge",
+            json!({
+                "capture_id": capture_id,
+                "preview_token": token,
+                "delete_diary_versions": true,
+                "operation_id": "op-capi-purge",
+            }),
+        ),
+        "idempotency_conflict",
+    );
+
+    // 契约的 camelCase 别名（`id` / `expectedRevision` / `operationId`）也接受：
+    // 记录已经清理掉了，所以这里只验「别名解析通过」——错误是核心的 `not_found`，
+    // 不是参数不合法。
+    let message = expect_error(
+        &call(
+            handle,
+            "captures.trash",
+            json!({
+                "id": capture_id,
+                "expectedRevision": trashed_again["revision"],
+                "operationId": "op-capi-trash-alias",
+            }),
+        ),
+        "not_found",
+    );
+    assert!(message.contains(capture_id.as_str()), "{message}");
 
     assert_eq!(diary_close(handle), 0);
     std::fs::remove_dir_all(dir).unwrap();
