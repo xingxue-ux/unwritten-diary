@@ -14,6 +14,11 @@
 //   asr_inject  把 zh.wav 按平台层录音约定直接登记 → 跑转写 → 与已知答案比对
 //               输出 `DIARY_ASR INJECT_TEXT` / `INJECT_RESULT`（debug-only；
 //               `--ps base=<url>` 只用于缺 zh.wav 时下载，179 KB）
+//   gen_remote  从 `--ps base=<url>` 下载 deepseek.json → 造一条 waiting_configuration
+//               的 diary_generate（自动整理开关临时打开、随即恢复）→ providers.save/test
+//               （真出网）→ 第二轮 jobs.runDue 领取并生成 → diary.setCurrent 确认候选
+//               → diary.getDay/getVersion，打印生成正文。只用于真机验证，不是产品路径。
+//   gen_remove  删掉 `deepseek_gen`（清理探针保存的服务配置；不删任何日记）
 //
 // 为什么要有 `asr_setup` 这一步：设备的应用沙箱 `/data/app/el2/.../files` 是
 // `drwxrwx--- <app uid>`，`hdc file send`（shell uid）写不进去。模型只能由**应用
@@ -29,8 +34,22 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { audio } from '@kit.AudioKit';
 import { taskpool } from '@kit.ArkTS';
 import { DiaryCore } from '../core/DiaryCore';
-import { Capture, ExtractedContent, Job, JobPage, SearchParams, SearchSnapshot } from '../core/Models';
+import {
+  Capture,
+  DiaryDay,
+  DiaryDayPage,
+  DiaryVersion,
+  DiaryVersionPage,
+  ExtractedContent,
+  Job,
+  JobPage,
+  JobRunSummary,
+  SearchParams,
+  SearchSnapshot,
+  SetDiaryCurrentParams,
+} from '../core/Models';
 import { AsrJobsReport, runAsrJobs } from './AsrWorker';
+import { GenRemoteConfig, GenRemoteReport, runGenRemote } from './DiaryGenWorker';
 import { pcmPeak, pcmRms, readWavPcm } from './HapBothWav';
 import { downloadToFile, ExpectedFile } from './ModelDownload';
 import { injectWavAsRecording } from './RecordingInject';
@@ -39,6 +58,8 @@ import { RecordingVerify } from './RecordingVerify';
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryAsr';
 const MARK: string = 'DIARY_ASR';
+/** 生成链的机器可读前缀：判据按 `DIARY_GEN` 取日志。 */
+const GEN_MARK: string = 'DIARY_GEN';
 const CHUNK: number = 900;
 
 /** 探针保存的 provider id：与产品内置的 `builtin_local_asr` 分开，免得删配置时误删内置行。 */
@@ -96,6 +117,18 @@ const EXPECTED_ZH_WAV: ExpectedFile = {
 };
 
 /**
+ * `gen_remote` 从宿主机下载的远端服务配置（**只在探针期存在**）。
+ *
+ * 文件在 `/tmp/gen-test/deepseek.json`，由宿主 HTTP 服务经 rport 提供；内容含
+ * DeepSeek 密钥，所以**不提交**、测完即删。这里只钉住字节数与 sha256，
+ * 让 `ModelDownload` 的完整性校验照常生效（不是「大小未知就放行」）。
+ */
+const EXPECTED_DEEPSEEK_JSON: ExpectedFile = {
+  bytes: 139,
+  sha256: 'da23b80e23dc09da0eca5ab799b0ceba3b9b7d1cbb0bd72118438f822027e51c',
+};
+
+/**
  * `asr_inject` 的已知答案：README 里 2026-10-17 真机 `DIARY_HAP TRANSCRIPT` 的原文。
  *
  * 注入的 PCM 与那次完全相同的 `zh.wav`（同一份 178,988 B / sha256 钉死），所以
@@ -145,6 +178,10 @@ export class TranscriptionVerify {
         await TranscriptionVerify.downloadModels(filesDir, baseUrl);
       } else if (mode === 'asr_record_play') {
         await TranscriptionVerify.recordWithPlayback(context, filesDir, baseUrl);
+      } else if (mode === 'gen_remote') {
+        await TranscriptionVerify.generateRemote(filesDir, baseUrl);
+      } else if (mode === 'gen_remove') {
+        TranscriptionVerify.removeGenProvider(filesDir);
       } else if (mode === 'asr_inject') {
         await TranscriptionVerify.injectKnownWavAndCheck(filesDir, baseUrl);
       } else {
@@ -295,6 +332,207 @@ export class TranscriptionVerify {
       report.pss_before_kb, report.pss_after_kb, report.pss_after_kb - report.pss_before_kb,
       report.private_before_kb, report.private_after_kb,
       report.private_after_kb - report.private_before_kb, report.error);
+  }
+
+  // ---------------------------------------------------------------- 远端生成
+
+  /**
+   * `gen_remote`：远端生成链真机探针（转写材料 → provider → 队列生成 → 读回正文）。
+   *
+   * 本构建的 C ABI 还没有 `diary.generate`（见 methods.rs 的「还没接的」一节），
+   * 所以用产品自己的队列路径造等待任务并跑掉它：
+   *   1. 删掉旧的 `deepseek_gen`，临时打开自动整理（计划时刻 00:00），`runDue`
+   *      把「有材料、这份输入没冻结过」的日子排成 `waiting_configuration`；
+   *      随后立刻把自动整理恢复原值（默认关、22:30）；
+   *   2. `providers.save` 把密钥换成核心的 `credential_ref`，`providers.test`
+   *      真的发一次 HTTPS 请求（`max_tokens=1` 的 ping）；
+   *   3. 第二轮 `runDue` 领取等待任务并生成；自动整理的结果按 B4e 一律是候选，
+   *      这里再走产品的 `diary.setCurrent`（用户确认）把最新一版设为当前，然后
+   *      用 `diary.getDay` / `diary.getVersion` 读回 currentVersionId 与正文。
+   *
+   * 密钥只在内存里过一手：下载到的 JSON 不打印、worker 不打印、日志只出现
+   * `secret=<len=…>` 与 `credential_ref=<len=…>`。测完由 `gen_remove` 删 provider
+   * 和沙箱里的 `deepseek.json`。
+   */
+  static async generateRemote(filesDir: string, baseUrl: string): Promise<void> {
+    const dest = `${filesDir}/deepseek.json`;
+    await downloadToFile(`${baseUrl}/deepseek.json`, dest, EXPECTED_DEEPSEEK_JSON);
+    const text = fs.readTextSync(dest);
+    const config = JSON.parse(text) as GenRemoteConfig;
+    // 只打「密钥有多长」，绝不打内容（与核心/宿主的日志口径一致）。
+    hilog.info(DOMAIN, TAG,
+      '%{public}s CONFIG provider=%{public}s endpoint=%{public}s model=%{public}s secret=<len=%{public}d>',
+      MARK, config.provider_id, config.endpoint, config.model, config.secret.length);
+
+    const raw = await taskpool.execute(runGenRemote, `${filesDir}/library.sqlite`,
+      config.provider_id, config.endpoint, config.model, config.secret, 180000, 'gen_verify');
+    const report = JSON.parse(raw as string) as GenRemoteReport;
+
+    if (report.provider !== null) {
+      const ref = report.provider.credential_ref;
+      hilog.info(DOMAIN, TAG,
+        '%{public}s PROVIDER_SAVED id=%{public}s credential_ref=<len=%{public}d> enabled=%{public}s testStatus=%{public}s saveMs=%{public}d',
+        GEN_MARK, report.provider.id, ref === null ? 0 : ref.length,
+        report.provider.enabled ? 'true' : 'false', report.provider.test_status, report.save_ms);
+    } else {
+      hilog.error(DOMAIN, TAG,
+        '%{public}s PROVIDER_SAVED id=%{public}s error_code=%{public}s phase=%{public}s error=%{public}s',
+        GEN_MARK, config.provider_id, report.error_code, report.phase, report.error);
+    }
+
+    if (report.test !== null) {
+      hilog.info(DOMAIN, TAG,
+        '%{public}s TEST actual_call_made=%{public}s results=%{public}s testMs=%{public}d message=%{public}s',
+        GEN_MARK, report.test.actual_call_made ? 'true' : 'false',
+        JSON.stringify(report.test.results), report.test_ms,
+        report.test.message === null ? '' : report.test.message);
+    } else {
+      hilog.error(DOMAIN, TAG,
+        '%{public}s TEST actual_call_made=false results={} error_code=%{public}s phase=%{public}s error=%{public}s',
+        GEN_MARK, report.error_code, report.phase, report.error);
+    }
+
+    if (report.settings_original !== null) {
+      hilog.info(DOMAIN, TAG,
+        '%{public}s SETTINGS originalAutoOrganize=%{public}s originalTime=%{public}s restored=%{public}s settingsMs=%{public}d',
+        GEN_MARK, report.settings_original.auto_organize_enabled ? 'true' : 'false',
+        report.settings_original.auto_organize_time,
+        report.settings_restored ? 'true' : 'false', report.settings_ms);
+    }
+
+    logGenSummary('schedule', report.summary1, report.run1_ms, report);
+    for (let i = 0; i < report.jobs_before.length; i++) {
+      logGenJob('JOB_BEFORE', report.jobs_before[i]);
+    }
+    logGenSummary('generate', report.summary2, report.run2_ms, report);
+    for (let i = 0; i < report.jobs_after.length; i++) {
+      logGenJob('JOB', report.jobs_after[i]);
+    }
+    if (report.error.length > 0) {
+      hilog.error(DOMAIN, TAG,
+        '%{public}s FAILED phase=%{public}s error_code=%{public}s error=%{public}s',
+        GEN_MARK, report.phase, report.error_code, report.error);
+    }
+
+    // 读回结果：优先选「最新生成的版本」所在的那一天；若它还不是当前版本，
+    // 走产品的 `diary.setCurrent`（自动整理的结果按 B4e 一律是候选，用户确认才成为当前）。
+    const core = DiaryCore.openInDirectory(filesDir);
+    try {
+      const page: DiaryDayPage = core.listDiaryDays(null);
+      let targetDay = '';
+      let targetVersionId = '';
+      let targetCreated = '';
+      for (let i = 0; i < page.days.length; i++) {
+        const key = page.days[i].day_key;
+        const versions: DiaryVersionPage = core.listDiaryVersions({ day_key: key, limit: 5 });
+        if (versions.versions.length === 0) {
+          continue;
+        }
+        const latest = versions.versions[0];
+        if (latest.created_at > targetCreated) {
+          targetCreated = latest.created_at;
+          targetDay = key;
+          targetVersionId = latest.id;
+        }
+      }
+
+      if (targetDay.length === 0) {
+        hilog.error(DOMAIN, TAG, '%{public}s BODY_MISSING 库里没有任何日记版本', GEN_MARK);
+        return;
+      }
+
+      let day: DiaryDay = core.getDiaryDay({ day_key: targetDay });
+      if (day.current_version_id === null) {
+        const candidateId = day.candidate_version_ids.length > 0
+          ? day.candidate_version_ids[0] : targetVersionId;
+        const promote: SetDiaryCurrentParams = {
+          day_key: targetDay,
+          version_id: candidateId,
+          expected_revision: day.revision,
+        };
+        hilog.info(DOMAIN, TAG,
+          '%{public}s PROMOTE day_key=%{public}s version_id=%{public}s expectedRevision=%{public}d reason=自动整理结果按 B4e 一律候选，这里走 diary.setCurrent（用户确认）',
+          GEN_MARK, targetDay, candidateId, day.revision);
+        day = core.setDiaryCurrent(promote);
+        hilog.info(DOMAIN, TAG,
+          '%{public}s PROMOTE_DONE day_key=%{public}s currentVersionId=%{public}s revision=%{public}d',
+          GEN_MARK, day.day_key, day.current_version_id === null ? '' : day.current_version_id,
+          day.revision);
+      }
+
+      const currentId = day.current_version_id;
+      if (currentId === null) {
+        hilog.error(DOMAIN, TAG,
+          '%{public}s BODY_MISSING day_key=%{public}s 没有当前版本', GEN_MARK, targetDay);
+        return;
+      }
+      hilog.info(DOMAIN, TAG,
+        '%{public}s DAY day_key=%{public}s currentVersionId=%{public}s candidates=%{public}d captures=%{public}d processed=%{public}d pending=%{public}d',
+        GEN_MARK, day.day_key, currentId, day.candidate_version_ids.length,
+        day.material_counts.captures, day.material_counts.processed, day.material_counts.pending);
+      const current: DiaryVersion = core.getDiaryVersion({ version_id: currentId });
+      logGenBody('BODY', day.day_key, current);
+
+      // 其它天若有生成出来的候选版本，也把正文如实打出来（不设当前，只作证据）。
+      for (let i = 0; i < page.days.length; i++) {
+        const key = page.days[i].day_key;
+        if (key === targetDay) {
+          continue;
+        }
+        const other: DiaryDay = core.getDiaryDay({ day_key: key });
+        if (other.candidate_version_ids.length === 0) {
+          continue;
+        }
+        const candidate: DiaryVersion = core.getDiaryVersion({
+          version_id: other.candidate_version_ids[0],
+        });
+        hilog.info(DOMAIN, TAG,
+          '%{public}s CANDIDATE day_key=%{public}s versionId=%{public}s chars=%{public}d origin=%{public}s',
+          GEN_MARK, other.day_key, candidate.id, candidate.body.length, candidate.origin);
+        logGenBody('CANDIDATE_BODY', other.day_key, candidate);
+      }
+    } finally {
+      core.close();
+    }
+  }
+
+  /**
+   * `gen_remove`：删掉探针保存的远端服务行，并把下载到沙箱的明文配置删掉。
+   *
+   * 两件事必须一起做：`providers.remove` 让核心删掉 `credential_ref` 指向的密钥文件；
+   * `deepseek.json` 是**密钥明文的另一份拷贝**，不删就等于没清理。这里顺带把
+   * `secrets/` 目录的剩余文件数打出来，作为「密钥托管没有残留」的可核对证据。
+   */
+  static removeGenProvider(filesDir: string): void {
+    const core = DiaryCore.openInDirectory(filesDir);
+    try {
+      const params: ProviderIdParams = { provider_id: 'deepseek_gen' };
+      const removed = core.rawCall('providers.remove', params);
+      logJson('providers.remove', removed);
+      logJson('providers.list', core.rawCall('providers.list', null));
+      hilog.info(DOMAIN, TAG, '%{public}s GEN_PROVIDER_REMOVED id=deepseek_gen', GEN_MARK);
+    } finally {
+      core.close();
+    }
+
+    const keyFile = `${filesDir}/deepseek.json`;
+    removeFileIfExists(keyFile);
+    removeFileIfExists(`${keyFile}.part`);
+    hilog.info(DOMAIN, TAG, '%{public}s KEY_FILE_REMOVED path=%{public}s exists=%{public}s',
+      GEN_MARK, keyFile, fs.accessSync(keyFile) ? 'true' : 'false');
+
+    const secretsDir = `${filesDir}/secrets`;
+    let count = 0;
+    let names = '';
+    try {
+      const entries = fs.listFileSync(secretsDir);
+      count = entries.length;
+      names = entries.join(',');
+    } catch (e) {
+      count = 0;
+    }
+    hilog.info(DOMAIN, TAG, '%{public}s SECRETS_LEFT dir=%{public}s count=%{public}d names=%{public}s',
+      GEN_MARK, secretsDir, count, names);
   }
 
   // ---------------------------------------------------------------- 模型传输
@@ -680,6 +918,56 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** 建目录；已存在时不算错（`mkdirSync(.., true)` 在已存在时也会抛 File exists）。 */
+function logGenSummary(
+  phase: string,
+  summary: JobRunSummary | null,
+  runMs: number,
+  report: GenRemoteReport,
+): void {
+  if (summary === null) {
+    hilog.error(DOMAIN, TAG,
+      '%{public}s JOBS phase=%{public}s processed=0 succeeded=0 failed=0 run_ms=%{public}d error_code=%{public}s phase_failed=%{public}s error=%{public}s',
+      GEN_MARK, phase, runMs, report.error_code, report.phase, report.error);
+    return;
+  }
+  hilog.info(DOMAIN, TAG,
+    '%{public}s JOBS phase=%{public}s processed=%{public}d succeeded=%{public}d failed=%{public}d retrying=%{public}d backfilled=%{public}d recovered=%{public}d backlog=%{public}d waitingDependency=%{public}d dependencyFailed=%{public}d run_ms=%{public}d pssBeforeKb=%{public}d pssAfterKb=%{public}d pssDeltaKb=%{public}d',
+    GEN_MARK, phase, summary.processed, summary.succeeded, summary.failed, summary.retrying,
+    summary.backfilled, summary.recovered, summary.due_backlog, summary.waiting_dependency,
+    summary.dependency_failed, runMs, report.pss_before_kb, report.pss_after_kb,
+    report.pss_after_kb - report.pss_before_kb);
+}
+
+function logGenJob(label: string, job: Job): void {
+  hilog.info(DOMAIN, TAG,
+    '%{public}s %{public}s id=%{public}s kind=%{public}s state=%{public}s attempt_count=%{public}d maxAttempts=%{public}d error_code=%{public}s target=%{public}s createdAt=%{public}s updatedAt=%{public}s',
+    GEN_MARK, label, job.id, job.kind, job.state, job.attempt_count, job.max_attempts,
+    job.error_code === null ? '' : job.error_code, job.target_ids.join(','),
+    job.created_at, job.updated_at);
+}
+
+function logGenBody(label: string, dayKey: string, version: DiaryVersion): void {
+  hilog.info(DOMAIN, TAG, '%{public}s %{public}s day_key=%{public}s chars=%{public}d origin=%{public}s',
+    GEN_MARK, label, dayKey, version.body.length, version.origin);
+  hilog.info(DOMAIN, TAG, '%{public}s %{public}s %{public}s', GEN_MARK, label, version.body);
+  // hilog 单条有长度上限：再按 900 字符分片打一遍，保证「全文」可被完整取回。
+  const chunks = Math.max(1, Math.ceil(version.body.length / CHUNK));
+  for (let c = 0; c < chunks; c++) {
+    hilog.info(DOMAIN, TAG, '%{public}s %{public}s_CHUNK[%{public}d/%{public}d] %{public}s',
+      GEN_MARK, label, c + 1, chunks, version.body.substring(c * CHUNK, (c + 1) * CHUNK));
+  }
+}
+
+function removeFileIfExists(path: string): void {
+  try {
+    if (fs.accessSync(path)) {
+      fs.unlinkSync(path);
+    }
+  } catch (e) {
+    // 删不掉也要让调用方看到 exists=true 的日志，不静默吞掉「密钥还在」这件事。
+  }
+}
+
 function ensureDir(path: string): void {
   if (fs.accessSync(path)) {
     return;
