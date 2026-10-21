@@ -14,15 +14,17 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use chrono::{DateTime, Utc};
 use diary_core::{
-    AiResponse, AssetLease, BackupInspection, BackupReport, Capture, CapturePage, CommitResult,
-    Core, CoreError, DiaryDay, DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion,
-    DiaryVersionPage, DomainEvent, DraftSaveResult, ExtractedContent, ImportManifest, ImportOrigin,
-    ImportStatus, ImportTicket, IndexStatus, Job, JobRunSummary, JobState, JobStatus,
-    NativeRecordingStatus, OrganizeSettings, OrganizeStatus, OrganizeTemplate, PluginInspection,
-    PluginInstallation, PluginInvocation, PluginRunResult, PluginTemplate, Provider,
-    ProviderCapability, ProviderTestReport, RecordingFinalizeResult, RecordingRecovery,
+AiResponse, AssetLease, BackupInspection, BackupReport, Capture, CapturePage, CommitResult,
+    Core, CoreError, DiaryDay, DiaryDayPage, DiaryGenerationReason, DiaryGenerationTicket,
+    DiaryVersion, DiaryVersionPage, DomainEvent, DraftSaveResult, ExportRequest, ExportTicket,
+    ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job,
+    JobRunSummary, JobState, JobStatus, NativeRecordingStatus, OrganizeSettings, OrganizeStatus,
+    OrganizeTemplate, PluginInspection, PluginInstallation, PluginInvocation, PluginRunResult,
+    PluginTemplate, Provider, ProviderCapability, ProviderTestReport, RecordingFinalizeResult,
+    RecordingRecovery,
     RecordingSession, RecordingTicket, ResponseTicket, RestoreReport, SearchRequest,
     SearchSnapshot, SegmentManifest, SegmentReceipt, SourceLocation, SourceLocator, SourceRevision,
+    StyleProfile,
 };
 use flutter_rust_bridge::frb;
 
@@ -842,6 +844,64 @@ impl BridgeSession {
         )?)
     }
 
+    // ------------------------------------------------------------ 风格（#114）
+
+    /// 全部风格的当前版本；默认风格 `sty_default` 也在列表里。
+    pub fn list_styles(&self) -> Result<Vec<StyleProfile>, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.list_styles()?)
+    }
+
+    /// 读一条风格的当前版本；不存在报 `not_found`。
+    pub fn get_style(&self, style_id: String) -> Result<StyleProfile, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.get_style(&style_id)?)
+    }
+
+    /// 新建/更新风格；带 `expectedRevision` 时是乐观锁（不符报 `revision_conflict`）。
+    pub fn save_style(
+        &self,
+        profile: StyleProfile,
+        expected_revision: Option<i64>,
+    ) -> Result<StyleProfile, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.save_style(&profile, expected_revision)?)
+    }
+
+    // ------------------------------------------------------------ 阅读导出（#113）
+
+    /// 把日期范围内**当前日记正文**导成 Markdown / 纯文本，契约 `exports.create`。
+    ///
+    /// **同步完成**：返回的 `jobId` 指向一条 `state = succeeded` 的导出任务记录，
+    /// `packageTicket` 是核心管理的导出文件绝对路径。契约的 `ExportTicket` 只有
+    /// `jobId` / `packageTicket`，所以 Dart 适配层拿不到这里的 `byteSize`；桥接层
+    /// 直接暴露完整结果（`path` / `byteSize` / `restorable = false`）。
+    ///
+    /// **这不是备份**：`restorable` 恒为 false，不能用于恢复资料库。
+    pub fn create_export(&self, request: ExportRequest) -> Result<ExportTicket, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.create_export(&request)?)
+    }
+
+    // ------------------------------------------------------------ 天列表
+
+    /// 有哪些天、每天多少条材料（回收站不算），按 dayKey 倒序。
+    pub fn list_days(
+        &self,
+        from_day_key: Option<String>,
+        to_day_key: Option<String>,
+        cursor: Option<String>,
+        page_size: u32,
+    ) -> Result<DiaryDayPage, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.list_days(
+            from_day_key.as_deref(),
+            to_day_key.as_deref(),
+            cursor.as_deref(),
+            page_size as usize,
+        )?)
+    }
+
     // ------------------------------------------------------------ 整理与自动化（B4e）
 
     /// 全部可用的整理模板（现在只有三个核心内置的；声明式插件模板见 #88）。
@@ -1059,6 +1119,14 @@ fn wired_capabilities() -> Vec<String> {
         "diary.saveEdit",
         "diary.setCurrent",
         "diary.merge",
+        "diary.listDays",
+        // #114 风格管理：三种方法都走真实存储；生成时的风格快照已是版本行。
+        "styles.list",
+        "styles.get",
+        "styles.save",
+        // #113 阅读导出：同步生成文件 + 一条已完成的 export 任务记录。
+        // 与 `backups.*` 是不同入口，不能用于恢复。
+        "exports.create",
         "core.events",
         // B7：备份与恢复这一轮是**同步**入口（契约那三行返回 jobId，任务化见 #70）。
         // 名字照契约写，界面看到的仍是 Dart 适配层窄化过的清单。

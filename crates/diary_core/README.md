@@ -35,7 +35,7 @@
 ## 校验
 
 ```bash
-cargo test -p diary_core        # 154 项通过（另有 1 项 10 万片段量测默认忽略）
+cargo test -p diary_core --features ai-quality   # 495 项通过 / 8 项忽略（30 个 test result 行）
 cargo clippy -p diary_core --all-targets -- -D warnings
 ```
 
