@@ -27,12 +27,17 @@
 //! 出网，也不读 `SecretStore`。联网只发生在用户显式发起的 `providers.test`、
 //! `Core::list_provider_models` 与真被领取执行的 Provider 作业。
 
+use serde::Serialize;
+
 use crate::model::{Provider, ProviderCapability, ProviderTestStatus};
 
 use super::adapter::OPENAI_COMPATIBLE;
 
 /// 一个内置服务预设：只提供「怎么填」，不含任何密钥。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// 字段名照核心 serde 原样（没有 `rename_all`）：`adapter_id` / `docs_url` 都是
+/// snake_case，C ABI 的 `providers.presets` 直接序列化这份结构，不另造 DTO。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ProviderPreset {
     /// 稳定的预设标识（**不是** `providers.id`：保存后由核心另发一个 `prv_` 开头的 id）。
     pub id: &'static str,
@@ -149,9 +154,9 @@ static PRESETS: &[ProviderPreset] = &[
         verified: false,
         note: "请求构造已验证（单测钉住 http://127.0.0.1:11434/v1/chat/completions 与 \
                Authorization 头），**未对真实 Ollama 实例联调**。model 请填 `ollama list` \
-               里的名字（例如 qwen2.5:7b）。本机服务通常不校验密钥，但当前版本检测模型\
-               列表仍要求存在一条凭据：填一个非空占位即可（本机服务一般会忽略这个头，\
-               这一点也没有对真实实例联调过）。",
+               里的名字（例如 qwen2.5:7b）。本机（loopback）服务不校验密钥：凭据可以留空，\
+               核心不会因为「没有凭据」拒绝检测或试连；服务真返回 401 / 超时仍会如实报错。\
+               私有网段（10./172.16-31./192.168.）不算本机，仍要填凭据。",
     },
 ];
 

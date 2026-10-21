@@ -64,6 +64,8 @@ import {
   PrepareRecordingParams,
   ProviderConfig,
   ProviderIdParams,
+  ProviderModelInfo,
+  ProviderPreset,
   ProviderTestReport,
   PurgeCaptureParams,
   PurgePreview,
@@ -527,6 +529,26 @@ export class DiaryCore {
   /** `providers.list`：配置行（不包含核心自带的本机引擎内建行）。 */
   listProviders(): ProviderConfig[] {
     return this.invokeData('providers.list', null) as ProviderConfig[];
+  }
+
+  /**
+   * `providers.presets`：内置预设表（静态数据，不读库、不出网、不含密钥）。
+   *
+   * 预设只是「填表草稿」：endpoint / model 可能是空串（表示要用户自己填），
+   * `verified` 只认实测。保存仍然走 `saveProvider`，核心不会因为选了预设就建配置。
+   */
+  listProviderPresets(): ProviderPreset[] {
+    return this.invokeData('providers.presets', null) as ProviderPreset[];
+  }
+
+  /**
+   * `providers.models`：检测一条服务可用的模型列表（`GET {endpoint}/models`）。
+   *
+   * 只有这次显式调用才出网。本机（loopback）服务没有凭据也能检测；服务器返回
+   * 401 / 超时仍按真实错误抛出，不把失败装成成功。
+   */
+  listProviderModels(params: ProviderIdParams): ProviderModelInfo[] {
+    return this.invokeData('providers.models', params) as ProviderModelInfo[];
   }
 
   /** `providers.test`：对一条配置跑连接测试；本机引擎会真的加载模型并转写静音。 */

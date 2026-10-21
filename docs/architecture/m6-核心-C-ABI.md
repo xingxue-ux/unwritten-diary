@@ -168,7 +168,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 ## 6 方法映射表
 
-### 6.1 已接（56 条，`core.info.capabilities` 就是这份清单）
+### 6.1 已接（58 条，`core.info.capabilities` 就是这份清单）
 
 | 契约方法 | 核心调用 | `data` |
 |---|---|---|
@@ -209,7 +209,9 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `jobs.acknowledgeAttention` | `Core::acknowledge_attention` | `null` |
 | `providers.save` | `Core::save_provider` | `Provider` |
 | `providers.list` | `Core::list_providers` | `Provider[]` |
-| `providers.test` | `Core::test_provider` | `ProviderTestReport` |
+| `providers.presets` | `Core::list_provider_presets`（静态表，不读库、不出网、不含密钥） | `ProviderPreset[]` |
+| `providers.models` | `Core::list_provider_models`（`GET {endpoint}/models`，只有显式调用才出网；loopback 无凭据也照常请求） | `ProviderModelInfo[]` |
+| `providers.test` | `Core::test_provider`（loopback 无凭据也照常探针；服务器错误如实上报） | `ProviderTestReport` |
 | `providers.remove` | `Core::remove_provider` | `null` |
 | `settings.get` | `Core::get_settings` | `Settings`（与整理设置同一行；新库 `diary_time_zone = UTC`、自动整理默认关） |
 | `settings.update` | `Core::update_settings`（`settings` + `expected_revision`） | 更新后的 `Settings`；`revision_conflict` 时零改动 |
@@ -238,11 +240,19 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | 写法 | 类型 | 备注 |
 |---|---|---|
 | **camelCase** | `StyleProfile`、`ExportRequest`、`ExportTicket`、`DiaryDayPage`、`BackupCounts`、`PluginManifest`、`PluginInvocation`、`PluginSourceRef`；`RuntimeConfigReport` / `ConfigFileReport` / `SemanticConfigReport` / `TranscriptionConfigReport` | 前五个已接：`BackupCounts` 是 `BackupReport.counts` 那一格；`DiaryDayPage` **只有外层** `nextCursor`，`days` 里是 `DiaryDay`（snake_case）。四个配置报告都挂在 `core.info.runtime_config` 下（加性扩展）。插件三个**还没接**（`plugins.*` 不在能力清单里），列出来是给将来接线的人看的 |
-| **snake_case（多数）** | `Capture`、`CapturePage`、`DraftSaveResult`、`CommitResult`、`SourceRevision`、`ExtractedContent`、`SourceLocation`、`SearchSnapshot` / `SearchHit`、`Job` / `JobPage` / `JobRunSummary` / `JobStatus`、`Provider` / `ProviderTestReport`、`Settings`、`BackupReport` / `BackupInspection` / `RestoreReport`、`PurgePreview` / `PurgeResult`、`RecordingTicket` / `SegmentReceipt` / `RecordingSession` / `RecordingFinalizeResult` / `RecordingRecovery`、`DiaryDay` / `DiaryVersion` / `DiaryVersionPage` | `core.info` 的外层键也是这一套。嵌套时**逐层看**，别拿外层的写法推里层：`DiaryDayPage` 外层 camelCase、里层 snake_case；`BackupReport` 外层 snake_case、`counts` 里 camelCase |
+| **snake_case（多数）** | `Capture`、`CapturePage`、`DraftSaveResult`、`CommitResult`、`SourceRevision`、`ExtractedContent`、`SourceLocation`、`SearchSnapshot` / `SearchHit`、`Job` / `JobPage` / `JobRunSummary` / `JobStatus`、`Provider` / `ProviderTestReport`、`ProviderPreset` / `ProviderModelInfo`、`Settings`、`BackupReport` / `BackupInspection` / `RestoreReport`、`PurgePreview` / `PurgeResult`、`RecordingTicket` / `SegmentReceipt` / `RecordingSession` / `RecordingFinalizeResult` / `RecordingRecovery`、`DiaryDay` / `DiaryVersion` / `DiaryVersionPage` | `core.info` 的外层键也是这一套。嵌套时**逐层看**，别拿外层的写法推里层：`DiaryDayPage` 外层 camelCase、里层 snake_case；`BackupReport` 外层 snake_case、`counts` 里 camelCase。`ProviderPreset` 的 `adapter_id` / `docs_url`、`ProviderModelInfo` 的 `owned_by` 都照核心 serde 原样（都没有 `rename_all`） |
 
 **客户端按每个方法的实际字段名解析，不要按方法名前缀猜。** `captures.*` 是 snake_case
 不代表 `captures.*` 将来新增的方法也是，`styles.*` / `exports.*` 一上来就是 camelCase；
 `Models.ets` 里的接口就是照这张表声明的（`StyleProfile` 那几处还写了原因）。
+
+**`providers.presets` / `providers.models` 的字段名（2026-10-21 加性）**：两者都照核心 serde
+原样输出 snake_case——预设是 `id` / `label` / `adapter_id` / `endpoint` / `model` /
+`capabilities` / `docs_url` / `verified` / `note`（`endpoint` / `model` 的空串表示「要用户
+自己填」），模型是 `id` / `owned_by`（`owned_by` 缺失时是 `null`）。`providers.presets`
+不读库、不出网；`providers.models` 只有显式调用才出网，且本机（严格 loopback）服务
+没有凭据也照常发请求——服务器返回 401 / 超时仍原样透传 `authentication_failed` /
+`provider_timeout`，桥面不做「假绿」。
 
 `settings.get` 的 `data` 是完整设置对象，字段名与核心 serde 输出一致（snake_case）：
 `diary_time_zone` / `revision` / `updated_at` / `auto_organize_enabled` /
@@ -452,7 +462,7 @@ C ABI 没有回调/推送面，所以 `core.events` 不装成 Stream，而是把
 `core.snapshot/close/setRuntimeState` 也还没接。
 
 回收站五条、风格三条、`exports.create` 与 `diary.listDays` 都已在这一批接完（见 §6.1），
-**回收站与风格/导出不再有缺口**。已接的 56 条见上表：`providers.*` 四条、`sources` 五条
+**回收站与风格/导出不再有缺口**。已接的 58 条见上表：`providers.*` 六条、`sources` 五条
 （含正文与定位）、`backups.*` 三条、`core.events`、`diary.*` 七条、`captures.*` 十条
 （含回收站五条）、`styles.*` 三条、`exports.create` 一条，以及 `settings.get / update` 两条
 （与整理设置共用核心 `settings` 表的同一行）。
@@ -497,9 +507,9 @@ diary_call(h, json)
 ### 9.1 FFI 边界与生命周期用例（`crates/diary_capi/src/tests.rs`，CI 可跑、不联网）
 
 本批另加 `diary_day_and_versions_are_wired`（`diary.getDay` / `listVersions` 的读到与空态、
-写路径的参数/核心错误透传）；`cargo test -p diary_capi` 当前共 **32 条**。
+写路径的参数/核心错误透传）；`cargo test -p diary_capi` 当前共 **33 条**。
 
-回收站 / 风格 / 天列表 / 导出 / 归属日这一批另加 4 条（每条都真调，断言线上字段名与业务后果）：
+回收站 / 风格 / 天列表 / 导出 / 归属日 / 预设与模型列表这一批另加 5 条（每条都真调，断言线上字段名与业务后果）：
 
 | 用例 | 覆盖 |
 |---|---|
@@ -507,6 +517,7 @@ diary_call(h, json)
 | `diary_list_days_pages_and_rejects_bad_cursor` | 三天的真游标翻页（`page_size = 2` → 2 + 1 天、`nextCursor` 为空）、`fromDayKey`/`toDayKey` 闭区间、坏游标两种都是 `cursor_expired`、倒序范围 `invalid_argument`、省略参数与 `page_size = 0` 的夹取 |
 | `exports_create_writes_real_files_and_never_overwrites` | 产物真实存在（在 `<库>/exports/` 下、字节数一致）、`restorable == false`、`jobId` 指向 `succeeded` 的 `export` 任务、重名加 `-2` 后缀且第一次的文件一字节不变、`plain_text` 落 `.txt`、`includeAssets = true` / 未知格式 / 倒序范围 / 空范围 / 未知字段全部明确报错 |
 | `captures_move_day_updates_the_day_and_list_days_sees_it` | 改 `day_key` 后 `diary.listDays` 只看到新的一天、`occurred_at` 不变；同一天是无操作；旧 revision → `revision_conflict` 且归属日不变；坏 dayKey / 不存在 / 回收站里三种错误 |
+| `provider_presets_and_models_are_wired` | `providers.presets` 至少 3 条、`deepseek.verified == true`、`adapter_id` / `docs_url` / `capabilities` / `note` 字段照核心 serde；保存一条**无凭据的 loopback 服务**后 `providers.models` 用回放传输层真的发请求（`providerId` 与 `provider_id` 都认）、返回 `id` / `owned_by`；未知字段 `invalid_argument`、未知 id `not_found` |
 
 下表只列最初那 8 条 FFI 边界/生命周期用例。
 

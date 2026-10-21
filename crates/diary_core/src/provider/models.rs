@@ -12,6 +12,12 @@
 //! 明文只在拼 `Authorization: Bearer ...` 的那一刻从 `SecretStore` 取；错误消息与
 //! 返回值都过一遍擦除（`normalize::redact`）。响应体从不原样返回给上层。
 //!
+//! **本机（严格 loopback）服务不要求凭据**：`127.0.0.0/8` / `::1` / `localhost`
+//! 的 endpoint 没有密钥也照常发请求——有就带 `Authorization`，没有就不发这个头。
+//! 私有网段不算本机（见 `provider::endpoint` 的模块文档）。放行只针对我们自己的
+//! 前置检查：远端真返回 401 / 超时，仍如实报 `authentication_failed` /
+//! `provider_timeout`，不把服务器错误装成成功。
+//!
 //! # 只支持 OpenAI 兼容的格式
 //!
 //! 内置适配器里只有 `openai_compatible` 有「列模型」这件事：
@@ -24,6 +30,9 @@
 //! 连不上/5xx → `network_unavailable`、429 → `rate_limited`、
 //! 响应解析不了 → `model_unavailable`（消息里有可读的响应摘录）。
 //! 没配 endpoint / 没配凭据 → `provider_not_configured`，消息给可执行的下一步。
+//! （本机服务是「没配 endpoint」才报，凭据不再是前置条件。）
+
+use serde::Serialize;
 
 use crate::error::{CoreError, Result};
 use crate::model::Provider;
@@ -34,7 +43,9 @@ use super::normalize::{self, redact};
 use super::transport::{HttpRequest, HttpResponse};
 
 /// 一个可用的模型。字段只保留「列出模型」真正能给出的东西。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// 字段名照核心 serde 原样（没有 `rename_all`）：`id` / `owned_by`，snake_case。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProviderModelInfo {
     /// 模型名（原样来自远端；已经过密钥擦除）。
     pub id: String,
@@ -46,6 +57,7 @@ pub struct ProviderModelInfo {
 ///
 /// 端点：`GET {endpoint}/models`（endpoint 末尾的 `/` 不会拼成双斜杠）。
 /// 鉴权：`Authorization: Bearer <secret>`，密钥只在拼这一行时从 `SecretStore` 取。
+/// **本机（严格 loopback）服务没有密钥也照常请求**，此时不发鉴权头。
 ///
 /// 返回值按远端响应里的顺序给（不排序、不猜测）；条目缺 `id` 的会被跳过，
 /// 缺 `owned_by` 的只是 `None`——**可选字段缺失不算错误**。
@@ -76,30 +88,42 @@ pub fn list_models(core: &Core, provider_id: &str) -> Result<Vec<ProviderModelIn
     // 明文只在这一刻取出，之后只存在于请求头与错误擦除的比对里。
     let secret = super::provider_secret(core, &provider)?
         .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| CoreError::ProviderNotConfigured {
-            reason: format!(
-                "服务「{}」还没有可用的凭据。下一步：先保存一次密钥（明文只进 SecretStore，\
-                 配置里只留引用），再点「检测模型」；本机服务不校验密钥时填一个非空占位即可",
-                provider.label
-            ),
-        })?;
+        .filter(|value| !value.is_empty());
+
+    // 本机服务不校验密钥：凭据可留、可不填。没有就不发 `Authorization`；
+    // 非 loopback（包括私有网段）仍保持旧行为——缺凭据在发请求之前拒绝。
+    let secret = match secret {
+        Some(secret) => Some(secret),
+        None if super::endpoint::is_loopback_endpoint(endpoint) => None,
+        None => {
+            return Err(CoreError::ProviderNotConfigured {
+                reason: format!(
+                    "服务「{}」还没有可用的凭据。下一步：先保存一次密钥（明文只进 \
+                     SecretStore，配置里只留引用），再点「检测模型」；本机服务\
+                     （127.0.0.1 / localhost）不校验密钥，可以不填",
+                    provider.label
+                ),
+            })
+        }
+    };
 
     let url = format!("{}/models", endpoint.trim_end_matches('/'));
-    let request = HttpRequest::new("GET", url, PROBE_TIMEOUT_MS)
-        .header("Accept", "application/json")
-        .header("Authorization", format!("Bearer {secret}"));
+    let mut request = HttpRequest::new("GET", url, PROBE_TIMEOUT_MS)
+        .header("Accept", "application/json");
+    if let Some(secret) = secret.as_deref() {
+        request = request.header("Authorization", format!("Bearer {secret}"));
+    }
 
     // 唯一的出网点：与 `providers.test` 同一个 `Transport`。
     let outcome = core.transport().send(&request);
     let response = match outcome {
         Ok(response) => response,
-        Err(error) => return Err(normalize::transport_error(&error, Some(&secret))),
+        Err(error) => return Err(normalize::transport_error(&error, secret.as_deref())),
     };
     if !(200..300).contains(&response.status) {
-        return Err(normalize::http_error(&response, Some(&secret)));
+        return Err(normalize::http_error(&response, secret.as_deref()));
     }
-    parse_models(&response, &secret)
+    parse_models(&response, secret.as_deref())
 }
 
 /// 「这个适配器不支持列模型」的如实说法。本机引擎单独讲清楚：它没有远端可查。
@@ -132,8 +156,11 @@ fn unsupported_adapter_reason(provider: &Provider) -> String {
 ///
 /// 远端把密钥回显进 body 的极端情况下，`id` / `owned_by` 也会过一遍 `redact`：
 /// 返回值里不允许出现明文，这一条不依赖对远端行为的信任。
-fn parse_models(response: &HttpResponse, secret: &str) -> Result<Vec<ProviderModelInfo>> {
-    let excerpt = redact(&response.excerpt(), Some(secret));
+fn parse_models(
+    response: &HttpResponse,
+    secret: Option<&str>,
+) -> Result<Vec<ProviderModelInfo>> {
+    let excerpt = redact(&response.excerpt(), secret);
     let value: serde_json::Value =
         serde_json::from_slice(&response.body).map_err(|error| CoreError::ModelUnavailable {
             reason: format!("远端响应不是合法 JSON（{error}）：{excerpt}"),
@@ -164,9 +191,9 @@ fn parse_models(response: &HttpResponse, secret: &str) -> Result<Vec<ProviderMod
         let owned_by = entry
             .get("owned_by")
             .and_then(serde_json::Value::as_str)
-            .map(|owner| redact(owner, Some(secret)));
+            .map(|owner| redact(owner, secret));
         models.push(ProviderModelInfo {
-            id: redact(id, Some(secret)),
+            id: redact(id, secret),
             owned_by,
         });
     }
@@ -433,6 +460,65 @@ mod tests {
         assert!(text.contains("凭据"), "{text}");
         assert!(text.contains("下一步"), "{text}");
         assert_eq!(transport.call_count(), 0);
+    }
+
+    /// 本机（loopback）服务不要求凭据：没有密钥也要真的发请求，而且不发鉴权头。
+    #[test]
+    fn a_loopback_provider_without_credential_still_sends_the_request() {
+        let (core, transport) = core_with_provider(
+            Some("http://127.0.0.1:11434/v1"),
+            None,
+            vec![Ok(HttpResponse::new(
+                200,
+                r#"{"object":"list","data":[{"id":"qwen2.5:7b"}]}"#,
+            ))],
+        );
+
+        let models = core.list_provider_models("prv_models").unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "qwen2.5:7b");
+        assert_eq!(transport.call_count(), 1, "loopback 缺凭据不该被前置检查拦住");
+        assert_eq!(
+            transport.url_at(0).as_deref(),
+            Some("http://127.0.0.1:11434/v1/models")
+        );
+        assert_eq!(
+            transport.requests()[0].get_header("Authorization"),
+            None,
+            "没有凭据就不该发 Authorization 头"
+        );
+    }
+
+    /// 有凭据的 loopback 服务照常带 `Authorization`：放宽的是「缺凭据」，不是鉴权本身。
+    #[test]
+    fn a_loopback_provider_with_a_credential_still_sends_the_bearer_header() {
+        let (core, transport) = core_with_provider(
+            Some("http://localhost:1234/v1"),
+            Some(SECRET),
+            vec![Ok(HttpResponse::new(200, r#"{"data":[{"id":"m"}]}"#))],
+        );
+
+        core.list_provider_models("prv_models").unwrap();
+        let expected = format!("Bearer {SECRET}");
+        assert_eq!(
+            transport.requests()[0].get_header("Authorization"),
+            Some(expected.as_str())
+        );
+    }
+
+    /// **不许假绿**：loopback 只是免掉「缺凭据」的前置检查；服务器返回 401 仍要如实报。
+    #[test]
+    fn a_loopback_provider_that_returns_401_is_still_authentication_failed() {
+        let (core, transport) = core_with_provider(
+            Some("http://127.0.0.1:11434/v1"),
+            None,
+            vec![Ok(HttpResponse::new(401, r#"{"error":"invalid key"}"#))],
+        );
+
+        let error = core.list_provider_models("prv_models").unwrap_err();
+        assert_eq!(code_of(&error), "authentication_failed");
+        assert_eq!(transport.call_count(), 1, "请求确实发出去了");
+        assert!(error.to_string().contains("401"), "{error}");
     }
 
     #[test]

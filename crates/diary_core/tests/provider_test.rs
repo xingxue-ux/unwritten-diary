@@ -107,6 +107,25 @@ fn code_of(error: &CoreError) -> &'static str {
     error.code().wire()
 }
 
+/// 建一个装了回放传输层的内存库，并保存一个**没有凭据**的服务。
+///
+/// endpoint 由调用方给：loopback 的那几条验证「缺凭据也能发请求」，非 loopback 的
+/// 那一条验证旧行为还在（缺凭据 → `provider_not_configured`，零请求）。
+fn core_with_uncredentialed_provider(
+    dir: &Path,
+    endpoint: &str,
+    script: Vec<std::result::Result<HttpResponse, TransportError>>,
+) -> (Core, Arc<ScriptedTransport>, Provider) {
+    let transport = Arc::new(ScriptedTransport::new(script));
+    let mut core = new_core(dir);
+    core.set_transport_for_test(transport.clone() as Arc<dyn Transport>);
+    let mut config = provider_config("prv_nokey", &[ProviderCapability::GenerateText], true);
+    config.endpoint = Some(endpoint.to_owned());
+    let provider = core.save_provider(&config, None).unwrap();
+    assert!(provider.credential_ref.is_none());
+    (core, transport, provider)
+}
+
 // ------------------------------------------------------------------ 配置往返与脱敏
 
 /// 配置往返 + **密钥不进配置表**：库文件、`providers` 表的每一列、返回对象里
@@ -688,6 +707,90 @@ fn authentication_failure_has_its_own_code_and_reports_the_real_call() {
     assert!(!message.contains(secret), "错误消息不能泄漏密钥：{message}");
     assert!(message.contains("***"), "远端回显的密钥要被擦掉：{message}");
     assert_eq!(transport.call_count(), 1);
+}
+
+/// 本机（loopback）服务**没有凭据也照常测试**：真的发请求、不发鉴权头，报告不写
+/// 「认证通过」（这次没人验过认证）。
+#[test]
+fn a_loopback_provider_without_credential_is_tested_without_fake_auth() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, transport, provider) = core_with_uncredentialed_provider(
+        dir.path(),
+        "http://127.0.0.1:11434/v1",
+        vec![Ok(chat_probe_ok())],
+    );
+
+    let report = core
+        .test_provider(&provider.id, &[ProviderCapability::GenerateText])
+        .unwrap();
+    assert!(report.actual_call_made, "缺凭据不该拦下本机服务的探针");
+    assert_eq!(
+        report.results.get(&ProviderCapability::GenerateText),
+        Some(&ProviderTestStatus::Ok)
+    );
+    assert_eq!(transport.call_count(), 1);
+    assert_eq!(
+        transport.requests()[0].get_header("Authorization"),
+        None,
+        "没有凭据就不该发 Authorization 头"
+    );
+    let message = report.message.as_deref().unwrap();
+    assert!(message.contains("未发送凭据"), "{message}");
+    assert!(
+        !message.contains("认证通过"),
+        "没发凭据就不能说认证通过：{message}"
+    );
+    // 本机服务测通了，结论照常落库（能力闸门仍需密钥——那是生成路径的另一条规则）。
+    assert_eq!(
+        core.list_providers().unwrap().remove(0).test_status,
+        ProviderTestStatus::Ok
+    );
+}
+
+/// 非 loopback（含私有网段）没有凭据仍是 `provider_not_configured`，而且**零请求**。
+#[test]
+fn a_non_loopback_provider_without_credential_is_rejected_before_any_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, transport, provider) = core_with_uncredentialed_provider(
+        dir.path(),
+        "http://192.168.1.10:11434/v1",
+        vec![],
+    );
+
+    let error = core
+        .test_provider(&provider.id, &[ProviderCapability::GenerateText])
+        .unwrap_err();
+    assert_eq!(code_of(&error), "provider_not_configured");
+    let text = error.to_string();
+    assert!(text.contains("密钥"), "{text}");
+    assert!(text.contains("下一步"), "{text}");
+    assert_eq!(transport.call_count(), 0, "前置检查拒绝时一个请求都不该发");
+}
+
+/// **不许假绿**：loopback 缺凭据放行的是前置检查；服务器返回 401 仍如实报
+/// `authentication_failed`，并把失败结论落库。
+#[test]
+fn a_loopback_provider_without_credential_still_reports_a_real_401() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, transport, provider) = core_with_uncredentialed_provider(
+        dir.path(),
+        "http://127.0.0.1:11434/v1",
+        vec![Ok(HttpResponse::new(
+            401,
+            r#"{"error":{"message":"invalid api key"}}"#,
+        ))],
+    );
+
+    let error = core
+        .test_provider(&provider.id, &[ProviderCapability::GenerateText])
+        .unwrap_err();
+    assert_eq!(code_of(&error), "authentication_failed");
+    assert_eq!(transport.call_count(), 1, "请求真的发出去了");
+    assert!(error.to_string().contains("1 次真实请求"), "{error}");
+    assert_eq!(
+        core.list_providers().unwrap().remove(0).test_status,
+        ProviderTestStatus::Failed
+    );
 }
 
 /// 超时：`provider_timeout`，有限重试，消息里说明发生过调用。
