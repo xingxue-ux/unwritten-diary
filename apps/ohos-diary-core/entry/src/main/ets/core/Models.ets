@@ -342,6 +342,91 @@ export interface IndexStatus {
   reasons: string[];
 }
 
+// ---------------------------------------------------------------- 日记（契约 2.5 / 4.3）
+//
+// 字段名与 `diary_core::model` 的 serde 输出一致（snake_case）。
+// 「哪一版是当前、哪些是候选」只在 `DiaryDay` 里表达：`DiaryVersion` 本身没有状态字段。
+
+/** 当天的材料统计（数字都是真值，不是估计）。 */
+export interface MaterialCounts {
+  /** 当天的记录数（不含回收站）。 */
+  captures: number;
+  /** 已经有可用正文的材料数（用户的文字天然算「已处理」）。 */
+  processed: number;
+  /** 还在等提取的材料数。 */
+  pending: number;
+  /** 提取失败、暂无可读正文的材料数。 */
+  failed: number;
+}
+
+/**
+ * 某一天的日记聚合视图（`diary.getDay`）。
+ *
+ * **空的一天是 `not_found`，不是空对象**：核心只在「这一天既没有材料也没有版本」时
+ * 报 `not_found`，界面据此显示「今天还没有成篇日记」，不要把它当读取失败。
+ */
+export interface DiaryDay {
+  day_key: string;
+  /** 这一天的时区名；没有任何材料也没有生成过时是 `UTC`（缺省，不是推测）。 */
+  time_zone: string;
+  /** 当前版本；这一天还没有任何版本时为 null。 */
+  current_version_id: string | null;
+  /** 候选版本（除当前版本之外的全部版本），最新在前。 */
+  candidate_version_ids: string[];
+  /**
+   * 这一天的 revision：持久、单调递增的状态推进计数。
+   *
+   * `saveEdit` / `setCurrent` / `merge` 的 `expected_revision` 必须原样回传它
+   * （不是版本数：换当前版本不增加版本数）。
+   */
+  revision: number;
+  material_counts: MaterialCounts;
+  /** 覆盖程度：`complete` / `partial` / `metadata_only` / `unavailable`。 */
+  coverage: string;
+  updated_at: string;
+}
+
+/** 生成过程的审计信息（合并版本也会带这一格：`modelCalls = "0"`）。 */
+export interface GenerationInfo {
+  prompt_version: string;
+  provider_id: string | null;
+  model: string | null;
+  /** 生成选项：固定的协议参数与**如实记录的步数**（键值都是字符串）。 */
+  generation_options: Object;
+  covered_source_count: number;
+  unprocessed_source_count: number;
+}
+
+/** 正文与来源的关联；`body_range` 为 null 表示整段关联或位置不可靠（不伪造）。 */
+export interface ProvenanceLink {
+  source_id: string;
+  source_revision_id: string;
+  locator: SourceLocator;
+  body_range: TextRange | null;
+  note: string | null;
+}
+
+/** 一条日记版本（正文是自然段；来源关联在 `provenance_links`）。 */
+export interface DiaryVersion {
+  id: string;
+  day_key: string;
+  parent_version_id: string | null;
+  /** `generated` / `user_edit` / `merge`。 */
+  origin: string;
+  body: string;
+  created_at: string;
+  source_snapshot_id: string | null;
+  style_snapshot_id: string | null;
+  generation_info: GenerationInfo | null;
+  provenance_links: ProvenanceLink[];
+}
+
+/** `diary.listVersions` 的分页结果；`next_cursor` 不透明，原样回传。 */
+export interface DiaryVersionPage {
+  versions: DiaryVersion[];
+  next_cursor: string | null;
+}
+
 // ---------------------------------------------------------------- 请求参数
 //
 // 字段名以核心 Rust 参数名为准（snake_case）；契约表里的 camelCase 写法 C ABI 也接受，
@@ -542,6 +627,64 @@ export interface AcknowledgeAttentionParams {
   attention_key: string;
 }
 
+// ---------------------------------------------------------------- 日记请求参数（契约 4.3）
+
+/** `diary.getDay` 的参数。 */
+export interface DiaryDayParams {
+  /** `YYYY-MM-DD`（核心校验；形状不对报 `invalid_argument`）。 */
+  day_key: string;
+}
+
+/**
+ * `diary.listVersions` 的参数。
+ *
+ * `cursor` 原样回传上一页的 `next_cursor`；`limit` 默认 20，核心夹 1–100。
+ */
+export interface ListDiaryVersionsParams {
+  day_key: string;
+  cursor?: string | null;
+  limit?: number;
+}
+
+/** `diary.getVersion` 的参数。 */
+export interface DiaryVersionParams {
+  version_id: string;
+}
+
+/**
+ * `diary.saveEdit` 的参数：人工编辑写成**新版本**，基版一个字节都不动。
+ *
+ * `expected_revision` 是 `DiaryDay.revision`（不是版本数）；不符报
+ * `revision_conflict`，核心零改动。`operation_id` 是幂等键。
+ */
+export interface SaveDiaryEditParams {
+  base_version_id: string;
+  body: string;
+  expected_revision: number;
+  operation_id: string;
+}
+
+/**
+ * `diary.setCurrent` 的参数。
+ *
+ * 只能指向这一天自己的版本；`expected_revision` 是 `DiaryDay.revision`。
+ * 这一行契约没有 `operation_id`：按目标状态幂等。
+ */
+export interface SetDiaryCurrentParams {
+  day_key: string;
+  version_id: string;
+  expected_revision: number;
+}
+
+/** `diary.merge` 的参数：`body` 是用户确认后的正文（核心不调模型）。 */
+export interface MergeDiaryParams {
+  base_version_id: string;
+  candidate_version_ids: string[];
+  body: string;
+  expected_revision: number;
+  operation_id: string;
+}
+
 // ---------------------------------------------------------------- 录音（契约 4.2）
 
 /** `recordings.prepare` 的结果：平台层只能往 `staging_ticket` 这个目录里写片段。 */
@@ -591,6 +734,14 @@ export interface RecordingSession {
 /** `recordings.finalize` 的结果。转写任务与最终化同一个事务，`transcription_queued` 为 true。 */
 export interface RecordingFinalizeResult {
   recording_id: string;
+  /** 这条录音挂到的记录；恢复路径靠它拿回 capture id 才能提交。 */
+  capture_id: string;
+  /**
+   * finalize 完成后记录的权威 revision（就是这次递增后的值）。
+   *
+   * `captures.commit` 的 `expected_revision` 必须用它，**不要自己猜**。
+   */
+  capture_revision: number;
   asset_id: string;
   state: string;
   segment_count: number;

@@ -464,6 +464,9 @@ pub(crate) fn fail(
 ///
 /// 仍然受 `max_attempts` 约束：远端说等一小时也照样计入一次尝试，额度用完就进
 /// 「已放弃」等人工——「有限重试」不是「无限等下去」。
+///
+/// 额度耗尽时**不写 `attention_key`**（复审 #158：不替它编一个）：这类任务不能
+/// `acknowledge_attention`，出口只有人工重试或取消。`cancel` 对它们是开放的。
 pub(crate) fn fail_with_retry_after(
     core: &mut Core,
     job_id: &str,
@@ -616,6 +619,16 @@ pub(crate) fn retry_idempotent(core: &mut Core, job_id: &str, operation_id: &str
 }
 
 /// 取消任务。取消不删除任何原件。
+///
+/// **终态里唯一的例外是「没有 `attention_key` 的已放弃任务」**：`fail()` 用尽额度
+/// 与崩溃恢复的 `interrupted` 只置 `requires_user_action = 1`，不写 key，这类任务
+/// 无法 `acknowledge_attention`；如果再不许取消，「不再处理这件事」就没有出口，
+/// `needsAttention` 会永远挂着。取消就是它们的「不修了、别再提醒」：置
+/// `requires_user_action = 0` 并清掉 `attention_key`。
+///
+/// 取消本身也一律清掉这两个待处理标志（从 `waiting_configuration` 取消的任务
+/// 不该继续被摘要选中）；`attention_jobs` 另外排除 `cancelled`，兜住旧数据里
+/// 已经取消却没清标志的行。
 pub(crate) fn cancel(core: &mut Core, job_id: &str, operation_id: &str) -> Result<Job> {
     let fingerprint = support::fingerprint(&["jobs.cancel", job_id]);
     if let Some(json) = core.receipt("jobs.cancel", &fingerprint, operation_id)? {
@@ -623,7 +636,9 @@ pub(crate) fn cancel(core: &mut Core, job_id: &str, operation_id: &str) -> Resul
     }
 
     let job = load_job(&core.conn, job_id)?;
-    if job.state.is_terminal() {
+    let keyless_failed_escape =
+        job.state == JobState::Failed && job.requires_user_action && job.attention_key.is_none();
+    if job.state.is_terminal() && !keyless_failed_escape {
         return Err(CoreError::InvalidState {
             entity: "任务",
             id: job_id.to_owned(),
@@ -634,7 +649,8 @@ pub(crate) fn cancel(core: &mut Core, job_id: &str, operation_id: &str) -> Resul
     let now = support::to_iso(support::now());
     let tx = core.conn.transaction()?;
     tx.execute(
-        "UPDATE jobs SET state = 'cancelled', next_attempt_at = NULL, updated_at = ?1 WHERE id = ?2",
+        "UPDATE jobs SET state = 'cancelled', next_attempt_at = NULL, \
+         requires_user_action = 0, attention_key = NULL, updated_at = ?1 WHERE id = ?2",
         params![now, job_id],
     )?;
     tx.execute(

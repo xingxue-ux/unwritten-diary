@@ -45,12 +45,28 @@
 //! | `backups.inspect` | `Core::inspect_backup`（来源路径必须是沙箱内） | `BackupInspection` |
 //! | `backups.restore` | `Core::restore_backup`（来源与目标都必须是沙箱内） | `RestoreReport` |
 //! | `core.events` | `Core::events_page`（按序号轮询，一页一次 LIMIT） | `{events,next_sequence,truncated}` |
+//! | `diary.getDay` | `Core::get_diary_day` | `DiaryDay` |
+//! | `diary.listVersions` | `Core::list_diary_versions`（不透明游标） | `DiaryVersionPage` |
+//! | `diary.getVersion` | `Core::get_diary_version` | `DiaryVersion` |
+//! | `diary.saveEdit` | `Core::save_diary_edit` | `DiaryVersion` |
+//! | `diary.setCurrent` | `Core::set_diary_current` | `DiaryDay` |
+//! | `diary.merge` | `Core::merge_diary_versions` | `DiaryVersion` |
 //!
 //! `core.events` **不是**推送流：C ABI 只有请求/响应，所以它把核心持久事件表当游标读。
 //! 核心在**每次写事务里**就落了 `domain_events`（不是订阅后才产生），因此这一层不需要
 //! 建立订阅、也不需要进程内缓存：`from_sequence` 省略时从当前最新序号开始（只等下一条），
 //! 给了就从该序号之后补；`next_sequence` 原样回传给下一次调用。`limit` 默认 200、上限
 //! 1000，超出部分不返回并如实标 `truncated: true`（下一页从 `next_sequence` 继续）。
+//!
+//! 六条 `diary.*` 是「日记」一级入口的数据源（契约 §2.2）：没有它们，鸿蒙日记页
+//! 无数据可取。它们**只做转接**——候选/当前、revision 闸门、幂等与版本链都在核心
+//! （`diary::get_day` / `save_edit` / `set_current` / `merge_versions`），桥面不复制规则。
+//! 「没有任何材料、也没有版本」的一天在核心里是 `not_found`，这是**空态**不是错误，
+//! 界面据此显示「还没有成篇日记」。
+//!
+//! 还差的两条不在本题材里：`diary.listDays`（核心还没有按天枚举的入口）与
+//! `diary.generate`（核心有 `generate_diary`，但它要排 AI 任务，属于生成那一片）。
+//! 界面**不显示**这两条的按钮，只如实说明缺口。
 //!
 //! 两条「为什么在这里」的说明（本块的任务书只点名了另外六条）：
 //!
@@ -80,8 +96,10 @@
 //! - 检索：`search.snapshot`（`search.*` 只差它）；
 //! - 任务：`jobs.nextWakeup`；
 //! - 风格与导出：`styles.*` / `exports.create`——**核心还没有**风格落库与导出入口；
-//! - 其余：`core.snapshot` / `core.close` / `core.setRuntimeState`、`diary.*`、
-//!   `responses.*`、`plugins.*`——要么核心还没有对应实现，要么属于后面的块。
+//! - 日记：`diary.listDays`（核心还没有按天枚举入口）/ `diary.generate`（核心有
+//!   `generate_diary`，但要排 AI 任务，属于生成那一片）；
+//! - 其余：`core.snapshot` / `core.close` / `core.setRuntimeState`、`responses.*`、
+//!   `plugins.*`——要么核心还没有对应实现，要么属于后面的块。
 //!   （`settings.get` / `settings.update` 已接上，见 [`WIRED_METHODS`]。）
 //!
 //! 没接的方法一律报 `invalid_argument`，message 里点名「未接入」并附上已接入清单，
@@ -143,6 +161,12 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "backups.inspect",
     "backups.restore",
     "core.events",
+    "diary.getDay",
+    "diary.listVersions",
+    "diary.getVersion",
+    "diary.saveEdit",
+    "diary.setCurrent",
+    "diary.merge",
 ];
 
 /// 一轮 `jobs.runDue` 最多跑几条任务（防御性上限）。
@@ -502,6 +526,60 @@ pub(crate) fn dispatch(
         "core.events" => {
             let input: EventsParams = parse_optional(params)?;
             events_page(core, &input)
+        }
+        // ------------------------------------------------------------ 日记
+        // 契约 §2.2 的「日记」一级入口：按天读、读版本、人工编辑、切当前版本、合并。
+        // 这一组只透传核心的 `DiaryDay` / `DiaryVersion` / `DiaryVersionPage`：
+        // - 哪一版是当前、哪些是候选由 `DiaryDay.current_version_id` /
+        //   `candidate_version_ids` 表达（`DiaryVersion` 本身没有状态字段）；
+        // - 写路径的 `expected_revision` 取自 `DiaryDay.revision`，语义与冲突闸门全在核心；
+        // - `not_found` 原样透传：空的一天对界面是空态，不是「读取失败」。
+        "diary.getDay" => {
+            let input: DiaryDayParams = parse(params)?;
+            to_value(core.get_diary_day(&input.day_key)?)
+        }
+        "diary.listVersions" => {
+            let input: ListDiaryVersionsParams = parse(params)?;
+            let page = core.list_diary_versions(
+                &input.day_key,
+                input.cursor.as_deref(),
+                input.limit.unwrap_or(DEFAULT_PAGE_SIZE),
+            )?;
+            to_value(page)
+        }
+        "diary.getVersion" => {
+            let input: DiaryVersionParams = parse(params)?;
+            to_value(core.get_diary_version(&input.version_id)?)
+        }
+        "diary.saveEdit" => {
+            let input: SaveDiaryEditParams = parse(params)?;
+            let version = core.save_diary_edit(
+                &input.base_version_id,
+                &input.body,
+                input.expected_revision,
+                &input.operation_id,
+            )?;
+            to_value(version)
+        }
+        "diary.setCurrent" => {
+            let input: SetDiaryCurrentParams = parse(params)?;
+            let day = core.set_diary_current(
+                &input.day_key,
+                &input.version_id,
+                input.expected_revision,
+            )?;
+            to_value(day)
+        }
+        "diary.merge" => {
+            let input: MergeDiaryParams = parse(params)?;
+            let version = core.merge_diary_versions(
+                &input.base_version_id,
+                &input.candidate_version_ids,
+                &input.body,
+                input.expected_revision,
+                &input.operation_id,
+            )?;
+            to_value(version)
         }
         // ------------------------------------------------------------ 测试钩子
         // 只在 `cargo test` 的构建里存在：证明「核心 panic 不会穿过 FFI」。
@@ -1307,4 +1385,94 @@ struct EventsParams {
     #[serde(alias = "fromSequence")]
     from_sequence: Option<i64>,
     limit: Option<usize>,
+}
+
+// ---------------------------------------------------------------- 日记（契约 4.3 / 2.5）
+
+/// `diary.getDay`：`day_key` 必填，形状是 `YYYY-MM-DD`（核心校验，桥面不放宽）。
+///
+/// 契约的 Dart 形状是位置参数 `getDay(String dayKey)`，C ABI 用对象承载；
+/// `dayKey` 别名一并接受。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiaryDayParams {
+    #[serde(alias = "dayKey")]
+    day_key: String,
+}
+
+/// `diary.listVersions`：`day_key` 必填；`cursor` 原样回传上一页的 `next_cursor`；
+/// `limit` 默认 [`DEFAULT_PAGE_SIZE`]，核心夹 1–100。
+///
+/// 与 `captures.list` / `jobs.list` 同一口径：游标是核心的**不透明 token**，
+/// 桥面不解析、不自己拼；格式不对由核心报 `invalid_state`。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListDiaryVersionsParams {
+    #[serde(alias = "dayKey")]
+    day_key: String,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// `diary.getVersion`：`version_id` 必填。
+///
+/// 契约的 Dart 形状是 `getVersion(String versionId)`；`id` / `versionId` 也收，
+/// 与 `captures.get` / `jobs.get` 的别名口径一致。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiaryVersionParams {
+    #[serde(alias = "versionId", alias = "id")]
+    version_id: String,
+}
+
+/// `diary.saveEdit`：把人工编辑写成**新版本**（基版一个字节都不动）。
+///
+/// `expected_revision` 是 `DiaryDay.revision`（不是版本数）：不符报
+/// `revision_conflict`，核心零改动。`operation_id` 是幂等键，重放返回原版本。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SaveDiaryEditParams {
+    #[serde(alias = "baseVersionId")]
+    base_version_id: String,
+    body: String,
+    #[serde(alias = "expectedRevision")]
+    expected_revision: i64,
+    #[serde(alias = "operationId")]
+    operation_id: String,
+}
+
+/// `diary.setCurrent`：在一天的版本之间指定当前版本。
+///
+/// 契约这一行没有 `operationId`：它**不产生任何东西**（重复指定同一个当前版本是
+/// 无操作，不推进 revision），按目标状态幂等。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetDiaryCurrentParams {
+    #[serde(alias = "dayKey")]
+    day_key: String,
+    #[serde(alias = "versionId")]
+    version_id: String,
+    #[serde(alias = "expectedRevision")]
+    expected_revision: i64,
+}
+
+/// `diary.merge`：把两版（或多版）合成一条新的 `merge` 版本。
+///
+/// `body` 是**用户确认后的正文**（核心不替用户合并、不调模型）；候选列表为空、
+/// 有重复、含基版自己、跨天都是 `invalid_argument`。`expected_revision` 与
+/// `operation_id` 的语义同 `diary.saveEdit`。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MergeDiaryParams {
+    #[serde(alias = "baseVersionId")]
+    base_version_id: String,
+    #[serde(alias = "candidateVersionIds")]
+    candidate_version_ids: Vec<String>,
+    body: String,
+    #[serde(alias = "expectedRevision")]
+    expected_revision: i64,
+    #[serde(alias = "operationId")]
+    operation_id: String,
 }

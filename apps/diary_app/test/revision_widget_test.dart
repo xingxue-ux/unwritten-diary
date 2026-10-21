@@ -3,6 +3,7 @@ import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:unwritten_diary/main.dart';
+import 'package:unwritten_diary/src/ui_strings.dart';
 
 class RevisionWidgetApi extends MockDiaryApi {
   String body = '今天遇见旧朋友。';
@@ -78,6 +79,11 @@ class RevisionWidgetApi extends MockDiaryApi {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
+    await uiStrings.load();
+  });
+
   testWidgets('committed text can be revised and its old text is read only', (
     tester,
   ) async {
