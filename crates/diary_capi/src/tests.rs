@@ -2009,7 +2009,7 @@ fn capabilities_include_every_wired_method() {
     assert_eq!(
         info["api_version"],
         json!("1.1"),
-        "加方法不升 apiVersion（1.1 是必填字段升的，与本块的方法数无关）"
+        "备份清单的 apiVersion 必须与核心同源，不许自造（1.1 是必填字段升的，与本块的方法数无关）"
     );
 
     let capabilities: Vec<&str> = info["capabilities"]
@@ -2474,8 +2474,8 @@ fn backups_create_inspect_and_restore_round_trip() {
     assert_eq!(created["package_path"], json!(package_text));
     assert_eq!(
         created["api_version"],
-        json!("1.0"),
-        "加方法不升 apiVersion"
+        json!(API_VERSION),
+        "备份清单的 apiVersion 必须与核心同源，不许自造"
     );
     assert!(package.is_file(), "备份包必须真的落在目标路径");
     assert!(created["counts"]["captures"].as_i64().unwrap() >= 1);
@@ -2488,7 +2488,7 @@ fn backups_create_inspect_and_restore_round_trip() {
         json!({"package_path": package_text}),
     ));
     assert_eq!(inspect["package_path"], json!(package_text));
-    assert_eq!(inspect["api_version"], json!("1.0"));
+    assert_eq!(inspect["api_version"], json!(API_VERSION));
     assert_eq!(inspect["compatible"], json!(true));
     assert_eq!(inspect["hashes_verified"], json!(true));
     assert_eq!(inspect["issues"], json!([]));
@@ -2506,7 +2506,7 @@ fn backups_create_inspect_and_restore_round_trip() {
     ));
     let library_path = restored["library_path"].as_str().unwrap().to_owned();
     assert!(Path::new(&library_path).is_file(), "恢复出来的库必须存在");
-    assert_eq!(restored["api_version"], json!("1.0"));
+    assert_eq!(restored["api_version"], json!(API_VERSION));
     assert!(restored["counts"]["captures"].as_i64().unwrap() >= 1);
     assert_eq!(restored["counts"], created["counts"]);
 
