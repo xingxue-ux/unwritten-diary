@@ -6733,15 +6733,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RecordingFinalizeResult dco_decode_recording_finalize_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return RecordingFinalizeResult(
       recordingId: dco_decode_String(arr[0]),
-      assetId: dco_decode_String(arr[1]),
-      state: dco_decode_recording_state(arr[2]),
-      segmentCount: dco_decode_i_64(arr[3]),
-      transcriptionQueued: dco_decode_bool(arr[4]),
-      logicalDurationMs: dco_decode_i_64(arr[5]),
+      captureId: dco_decode_String(arr[1]),
+      captureRevision: dco_decode_i_64(arr[2]),
+      assetId: dco_decode_String(arr[3]),
+      state: dco_decode_recording_state(arr[4]),
+      segmentCount: dco_decode_i_64(arr[5]),
+      transcriptionQueued: dco_decode_bool(arr[6]),
+      logicalDurationMs: dco_decode_i_64(arr[7]),
     );
   }
 
@@ -6866,21 +6868,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SearchHit dco_decode_search_hit(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
     return SearchHit(
       hitId: dco_decode_String(arr[0]),
       groupId: dco_decode_String(arr[1]),
-      sourceKind: dco_decode_source_kind(arr[2]),
-      matchedBy: dco_decode_list_matched_by(arr[3]),
-      coverage: dco_decode_coverage(arr[4]),
-      sourceId: dco_decode_opt_String(arr[5]),
-      revisionId: dco_decode_opt_String(arr[6]),
-      dayKey: dco_decode_opt_String(arr[7]),
-      title: dco_decode_opt_String(arr[8]),
-      snippet: dco_decode_opt_String(arr[9]),
-      highlights: dco_decode_list_text_range(arr[10]),
-      locator: dco_decode_opt_box_autoadd_source_locator(arr[11]),
+      captureId: dco_decode_String(arr[2]),
+      sourceKind: dco_decode_source_kind(arr[3]),
+      matchedBy: dco_decode_list_matched_by(arr[4]),
+      coverage: dco_decode_coverage(arr[5]),
+      sourceId: dco_decode_opt_String(arr[6]),
+      revisionId: dco_decode_opt_String(arr[7]),
+      dayKey: dco_decode_opt_String(arr[8]),
+      title: dco_decode_opt_String(arr[9]),
+      snippet: dco_decode_opt_String(arr[10]),
+      highlights: dco_decode_list_text_range(arr[11]),
+      locator: dco_decode_opt_box_autoadd_source_locator(arr[12]),
     );
   }
 
@@ -9573,6 +9576,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_recordingId = sse_decode_String(deserializer);
+    var var_captureId = sse_decode_String(deserializer);
+    var var_captureRevision = sse_decode_i_64(deserializer);
     var var_assetId = sse_decode_String(deserializer);
     var var_state = sse_decode_recording_state(deserializer);
     var var_segmentCount = sse_decode_i_64(deserializer);
@@ -9580,6 +9585,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_logicalDurationMs = sse_decode_i_64(deserializer);
     return RecordingFinalizeResult(
       recordingId: var_recordingId,
+      captureId: var_captureId,
+      captureRevision: var_captureRevision,
       assetId: var_assetId,
       state: var_state,
       segmentCount: var_segmentCount,
@@ -9732,6 +9739,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_hitId = sse_decode_String(deserializer);
     var var_groupId = sse_decode_String(deserializer);
+    var var_captureId = sse_decode_String(deserializer);
     var var_sourceKind = sse_decode_source_kind(deserializer);
     var var_matchedBy = sse_decode_list_matched_by(deserializer);
     var var_coverage = sse_decode_coverage(deserializer);
@@ -9745,6 +9753,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return SearchHit(
       hitId: var_hitId,
       groupId: var_groupId,
+      captureId: var_captureId,
       sourceKind: var_sourceKind,
       matchedBy: var_matchedBy,
       coverage: var_coverage,
@@ -12088,6 +12097,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.recordingId, serializer);
+    sse_encode_String(self.captureId, serializer);
+    sse_encode_i_64(self.captureRevision, serializer);
     sse_encode_String(self.assetId, serializer);
     sse_encode_recording_state(self.state, serializer);
     sse_encode_i_64(self.segmentCount, serializer);
@@ -12200,6 +12211,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.hitId, serializer);
     sse_encode_String(self.groupId, serializer);
+    sse_encode_String(self.captureId, serializer);
     sse_encode_source_kind(self.sourceKind, serializer);
     sse_encode_list_matched_by(self.matchedBy, serializer);
     sse_encode_coverage(self.coverage, serializer);

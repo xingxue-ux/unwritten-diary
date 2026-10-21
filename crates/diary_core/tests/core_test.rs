@@ -198,7 +198,7 @@ fn events_are_emitted_in_order_on_every_write() {
     core.save_draft(&id, "内容", 1, "op-save").unwrap();
     core.commit(&id, 2, "op-commit").unwrap();
 
-    let events = core.events_since(0).unwrap();
+    let events = core.events_page(0, 1000).unwrap().events;
     assert!(events.len() >= 3, "创建、保存、提交都应留下事件");
     let mut previous = 0;
     for event in &events {
@@ -208,7 +208,10 @@ fn events_are_emitted_in_order_on_every_write() {
         assert_eq!(event.event_type.wire(), "capture.changed");
     }
     // 游标之后的读取不能重复给出旧事件。
-    let tail = core.events_since(events[1].sequence).unwrap();
+    let tail = core
+        .events_page(events[1].sequence, 1000)
+        .unwrap()
+        .events;
     assert_eq!(tail.len(), events.len() - 2);
 }
 
@@ -272,7 +275,7 @@ fn committed_data_survives_reopening_the_library() {
     assert_eq!(capture.draft_text, "关机前写下的内容");
     assert_eq!(capture.ordered_source_ids.len(), 1);
 
-    let events = core.events_since(0).unwrap();
+    let events = core.events_page(0, 1000).unwrap().events;
     assert!(events.len() >= 3, "事件也要留下来");
 }
 

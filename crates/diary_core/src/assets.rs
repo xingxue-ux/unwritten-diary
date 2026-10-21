@@ -59,7 +59,7 @@ pub(crate) struct LeaseRecord {
 pub(crate) fn prepare(core: &mut Core, request: ImportRequest<'_>) -> Result<ImportTicket> {
     let root = core.root_dir()?.to_path_buf();
     // 记录不存在就不该开票：否则会出现没人认领的暂存文件。
-    let _ = crate::load_capture(&core.conn, request.capture_id)?;
+    let _ = crate::load_capture_raw(&core.conn, request.capture_id)?;
 
     let fingerprint = support::fingerprint(&[
         "imports.prepare",
@@ -242,7 +242,7 @@ pub(crate) fn finish(
     )?;
 
     // 记录本身也要推进 revision：导入的材料是这条记录的一部分。
-    let capture = crate::load_capture(&tx, &session.capture_id)?;
+    let capture = crate::load_capture_raw(&tx, &session.capture_id)?;
     let new_revision = capture.revision + 1;
     tx.execute(
         "UPDATE captures SET revision = ?1, updated_at = ?2 WHERE id = ?3",

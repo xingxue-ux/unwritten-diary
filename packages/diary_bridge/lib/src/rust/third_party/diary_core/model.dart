@@ -3036,6 +3036,18 @@ enum ProviderTestStatus {
 /// 最终化结果。转写不阻塞完成。
 class RecordingFinalizeResult {
   final String recordingId;
+
+  /// 这条录音挂到的记录。
+  ///
+  /// 正常停止时平台层本来就知道 capture id；恢复路径（`recover` 后按已封闭序号
+  /// `finalize`）只知道 recording id，必须靠这里拿回 capture 才能提交。
+  final String captureId;
+
+  /// `finalize` 完成后记录的**权威** revision（等于这次递增后的值）。
+  ///
+  /// `captures.commit` 需要 `expected_revision`，而这个值客户端**不该猜**：
+  /// 猜小了会撞乐观锁，猜大了会把「记录已经被别处改过」掩盖过去。
+  final PlatformInt64 captureRevision;
   final String assetId;
   final RecordingState state;
   final PlatformInt64 segmentCount;
@@ -3044,6 +3056,8 @@ class RecordingFinalizeResult {
 
   const RecordingFinalizeResult({
     required this.recordingId,
+    required this.captureId,
+    required this.captureRevision,
     required this.assetId,
     required this.state,
     required this.segmentCount,
@@ -3054,6 +3068,8 @@ class RecordingFinalizeResult {
   @override
   int get hashCode =>
       recordingId.hashCode ^
+      captureId.hashCode ^
+      captureRevision.hashCode ^
       assetId.hashCode ^
       state.hashCode ^
       segmentCount.hashCode ^
@@ -3066,6 +3082,8 @@ class RecordingFinalizeResult {
       other is RecordingFinalizeResult &&
           runtimeType == other.runtimeType &&
           recordingId == other.recordingId &&
+          captureId == other.captureId &&
+          captureRevision == other.captureRevision &&
           assetId == other.assetId &&
           state == other.state &&
           segmentCount == other.segmentCount &&
@@ -3370,7 +3388,16 @@ class SearchHit {
   final String hitId;
 
   /// 同一来源的命中归到一组，避免一份长材料占满结果。
+  ///
+  /// **不是**「这一条属于哪篇记录」：片段命中时它是 `source_id`，记录文字命中时
+  /// 才是 `capture_id`。要跳到记录详情页请用 [`SearchHit::capture_id`]。
   final String groupId;
+
+  /// 这一条命中属于哪篇记录（`captures.id`）。
+  ///
+  /// **与 `group_id` 不是一回事**：`group_id` 只是折叠/归组用的键，片段命中时
+  /// 是 `source_id`；`capture_id` 才是「这一条属于哪篇记录」，两种命中都一定有。
+  final String captureId;
   final SourceKind sourceKind;
   final List<MatchedBy> matchedBy;
   final Coverage coverage;
@@ -3391,6 +3418,7 @@ class SearchHit {
   const SearchHit({
     required this.hitId,
     required this.groupId,
+    required this.captureId,
     required this.sourceKind,
     required this.matchedBy,
     required this.coverage,
@@ -3407,6 +3435,7 @@ class SearchHit {
   int get hashCode =>
       hitId.hashCode ^
       groupId.hashCode ^
+      captureId.hashCode ^
       sourceKind.hashCode ^
       matchedBy.hashCode ^
       coverage.hashCode ^
@@ -3425,6 +3454,7 @@ class SearchHit {
           runtimeType == other.runtimeType &&
           hitId == other.hitId &&
           groupId == other.groupId &&
+          captureId == other.captureId &&
           sourceKind == other.sourceKind &&
           matchedBy == other.matchedBy &&
           coverage == other.coverage &&

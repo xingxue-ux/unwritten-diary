@@ -6000,6 +6000,8 @@ const _: fn() = || {
     {
         let RecordingFinalizeResult = None::<diary_core::model::RecordingFinalizeResult>.unwrap();
         let _: String = RecordingFinalizeResult.recording_id;
+        let _: String = RecordingFinalizeResult.capture_id;
+        let _: i64 = RecordingFinalizeResult.capture_revision;
         let _: String = RecordingFinalizeResult.asset_id;
         let _: diary_core::model::RecordingState = RecordingFinalizeResult.state;
         let _: i64 = RecordingFinalizeResult.segment_count;
@@ -6065,6 +6067,7 @@ const _: fn() = || {
         let SearchHit = None::<diary_core::model::SearchHit>.unwrap();
         let _: String = SearchHit.hit_id;
         let _: String = SearchHit.group_id;
+        let _: String = SearchHit.capture_id;
         let _: diary_core::model::SourceKind = SearchHit.source_kind;
         let _: Vec<diary_core::model::MatchedBy> = SearchHit.matched_by;
         let _: diary_core::model::Coverage = SearchHit.coverage;
@@ -8554,6 +8557,8 @@ impl SseDecode for diary_core::model::RecordingFinalizeResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_recordingId = <String>::sse_decode(deserializer);
+        let mut var_captureId = <String>::sse_decode(deserializer);
+        let mut var_captureRevision = <i64>::sse_decode(deserializer);
         let mut var_assetId = <String>::sse_decode(deserializer);
         let mut var_state = <diary_core::model::RecordingState>::sse_decode(deserializer);
         let mut var_segmentCount = <i64>::sse_decode(deserializer);
@@ -8561,6 +8566,8 @@ impl SseDecode for diary_core::model::RecordingFinalizeResult {
         let mut var_logicalDurationMs = <i64>::sse_decode(deserializer);
         return diary_core::model::RecordingFinalizeResult {
             recording_id: var_recordingId,
+            capture_id: var_captureId,
+            capture_revision: var_captureRevision,
             asset_id: var_assetId,
             state: var_state,
             segment_count: var_segmentCount,
@@ -8732,6 +8739,7 @@ impl SseDecode for diary_core::model::SearchHit {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_hitId = <String>::sse_decode(deserializer);
         let mut var_groupId = <String>::sse_decode(deserializer);
+        let mut var_captureId = <String>::sse_decode(deserializer);
         let mut var_sourceKind = <diary_core::model::SourceKind>::sse_decode(deserializer);
         let mut var_matchedBy = <Vec<diary_core::model::MatchedBy>>::sse_decode(deserializer);
         let mut var_coverage = <diary_core::model::Coverage>::sse_decode(deserializer);
@@ -8745,6 +8753,7 @@ impl SseDecode for diary_core::model::SearchHit {
         return diary_core::model::SearchHit {
             hit_id: var_hitId,
             group_id: var_groupId,
+            capture_id: var_captureId,
             source_kind: var_sourceKind,
             matched_by: var_matchedBy,
             coverage: var_coverage,
@@ -11165,6 +11174,8 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::RecordingFi
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.0.recording_id.into_into_dart().into_dart(),
+            self.0.capture_id.into_into_dart().into_dart(),
+            self.0.capture_revision.into_into_dart().into_dart(),
             self.0.asset_id.into_into_dart().into_dart(),
             self.0.state.into_into_dart().into_dart(),
             self.0.segment_count.into_into_dart().into_dart(),
@@ -11393,6 +11404,7 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::SearchHit> 
         [
             self.0.hit_id.into_into_dart().into_dart(),
             self.0.group_id.into_into_dart().into_dart(),
+            self.0.capture_id.into_into_dart().into_dart(),
             self.0.source_kind.into_into_dart().into_dart(),
             self.0.matched_by.into_into_dart().into_dart(),
             self.0.coverage.into_into_dart().into_dart(),
@@ -13519,6 +13531,8 @@ impl SseEncode for diary_core::model::RecordingFinalizeResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.recording_id, serializer);
+        <String>::sse_encode(self.capture_id, serializer);
+        <i64>::sse_encode(self.capture_revision, serializer);
         <String>::sse_encode(self.asset_id, serializer);
         <diary_core::model::RecordingState>::sse_encode(self.state, serializer);
         <i64>::sse_encode(self.segment_count, serializer);
@@ -13638,6 +13652,7 @@ impl SseEncode for diary_core::model::SearchHit {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.hit_id, serializer);
         <String>::sse_encode(self.group_id, serializer);
+        <String>::sse_encode(self.capture_id, serializer);
         <diary_core::model::SourceKind>::sse_encode(self.source_kind, serializer);
         <Vec<diary_core::model::MatchedBy>>::sse_encode(self.matched_by, serializer);
         <diary_core::model::Coverage>::sse_encode(self.coverage, serializer);
