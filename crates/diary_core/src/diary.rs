@@ -45,13 +45,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{DateTime, NaiveDate, Utc};
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{CoreError, Result};
 use crate::model::{
-    Coverage, DiaryDay, DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion,
+    Coverage, DiaryDay, DiaryDayPage, DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion,
     DiaryVersionOrigin, DiaryVersionPage, GenerationInfo, Job, JobPriority, JobState, LocatorType,
     MaterialCounts, NewJob, ProvenanceLink, Provider, ProviderCapability, SourceLocator,
     StyleProfile,
@@ -297,14 +297,14 @@ fn raw_source_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSource> {
 ///   只算一份（提交时会把草稿复制成一条 text 修订，两份都喂进去就是把同一段话说两遍）；
 /// - 原件型修订（有 `asset_id`）的材料正文来自它的派生内容：提取好且有正文才算「已处理」；
 /// - 没提取 / 提取失败 / 提取出来是空的，都**如实记成未处理**并写清原因。
-fn collect_materials(core: &Core, day_key: &str) -> Result<DayMaterials> {
+fn collect_materials(conn: &Connection, day_key: &str) -> Result<DayMaterials> {
     let captures: Vec<(String, String, String, String, i64)> = {
         let sql = format!(
             "SELECT id, draft_text, occurred_at, time_zone, utc_offset_minutes FROM captures \
              WHERE day_key = ?1 AND {} ORDER BY occurred_at, id",
             crate::model::capture_not_trashed(None)
         );
-        let mut statement = core.conn.prepare(&sql)?;
+        let mut statement = conn.prepare(&sql)?;
         let rows = statement
             .query_map(params![day_key], |row| {
                 Ok((
@@ -333,7 +333,7 @@ fn collect_materials(core: &Core, day_key: &str) -> Result<DayMaterials> {
             occurred.push(at);
         }
         let sources: Vec<RawSource> = {
-            let mut statement = core.conn.prepare(
+            let mut statement = conn.prepare(
                 "SELECT i.source_id, i.kind, i.current_revision_id, r.text, r.asset_id, \
                  COALESCE(r.author_type, 'user'), COALESCE(r.occurred_at, ?2) \
                  FROM source_items i LEFT JOIN source_revisions r \
@@ -391,7 +391,7 @@ fn collect_materials(core: &Core, day_key: &str) -> Result<DayMaterials> {
             match source.asset_id.as_deref() {
                 // 原件型修订：正文来自派生内容，提取状态决定它是不是「已处理」。
                 Some(asset_id) => {
-                    materials.push(asset_material(core, capture_id, source, asset_id)?)
+                    materials.push(asset_material(conn, capture_id, source, asset_id)?)
                 }
                 // 文字修订：与记录文字重复的已经挂在上面那份材料上了，这里只补不同的那些。
                 None => {
@@ -474,15 +474,14 @@ fn collect_materials(core: &Core, day_key: &str) -> Result<DayMaterials> {
 
 /// 一份原件型材料：正文取自它的派生内容，覆盖范围如实照抄。
 fn asset_material(
-    core: &Core,
+    conn: &Connection,
     capture_id: &str,
     source: &RawSource,
     asset_id: &str,
 ) -> Result<SnapshotMaterial> {
     let revision_id = source.revision_id.as_deref();
     let extracted: Option<(String, String, String, String)> = match revision_id {
-        Some(revision_id) => core
-            .conn
+        Some(revision_id) => conn
             .query_row(
                 "SELECT extractor_id, extractor_version, text, coverage \
                  FROM extracted_contents WHERE source_revision_id = ?1 \
@@ -539,7 +538,7 @@ fn asset_material(
             }
         }
         None => {
-            let waiting = live_extract_job(core, revision_id)?;
+            let waiting = live_extract_job(conn, revision_id)?;
             Ok(base(
                 String::new(),
                 None,
@@ -556,11 +555,11 @@ fn asset_material(
 }
 
 /// 队列里还有没有瞄着这个修订的活着的提取任务。只影响「未处理原因」的措辞，不改变处理结果。
-fn live_extract_job(core: &Core, revision_id: Option<&str>) -> Result<bool> {
+fn live_extract_job(conn: &Connection, revision_id: Option<&str>) -> Result<bool> {
     let Some(revision_id) = revision_id else {
         return Ok(false);
     };
-    let count: i64 = core.conn.query_row(
+    let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM jobs WHERE kind = 'extract' \
          AND state NOT IN ('succeeded', 'failed', 'cancelled') \
          AND EXISTS (SELECT 1 FROM json_each(jobs.target_ids) WHERE value = ?1)",
@@ -1345,7 +1344,7 @@ pub(crate) fn inspect_day(
     freeze: &OrganizeFreeze,
 ) -> Result<PlannedInput> {
     parse_day_key(day_key)?;
-    let day_materials = collect_materials(core, day_key)?;
+    let day_materials = collect_materials(&core.conn, day_key)?;
     // 自动整理走默认风格；用户点名风格的入口是 `request_generation`。
     let style = crate::styles::resolve(core, None)?;
     let body = canonical_body(&day_materials, Some(&style), Some(freeze));
@@ -1433,7 +1432,7 @@ pub(crate) fn request_generation(
     // 不静默用默认风格糊弄过去。生成把版本行的 snapshot_id 冻进快照（见 `canonical_body`）。
     let style = crate::styles::resolve(core, style_id)?;
 
-    let day_materials = collect_materials(core, day_key)?;
+    let day_materials = collect_materials(&core.conn, day_key)?;
     if day_materials.is_empty() {
         return Err(CoreError::InvalidArgument {
             reason: format!("{day_key} 这一天没有任何材料，不生成空日记"),
@@ -2247,11 +2246,11 @@ fn attach_material_links(provenance: &mut Vec<ProvenanceLink>, snapshot: &Snapsh
 ///
 /// 空日（既没有材料也没有版本）报 `not_found`：那儿没有任何东西，
 /// 编一个 `updatedAt` 出来才是假话。
-pub(crate) fn get_day(core: &Core, day_key: &str) -> Result<DiaryDay> {
+pub(crate) fn get_day(conn: &Connection, day_key: &str) -> Result<DiaryDay> {
     parse_day_key(day_key)?;
-    let day_materials = collect_materials(core, day_key)?;
-    let versions = version_ids(core, day_key)?;
-    let current = current_version_id(&core.conn, day_key)?;
+    let day_materials = collect_materials(conn, day_key)?;
+    let versions = version_ids(conn, day_key)?;
+    let current = current_version_id(conn, day_key)?;
     if let Some(current) = &current {
         if !versions.contains(current) {
             return Err(CoreError::CorruptedData {
@@ -2260,8 +2259,7 @@ pub(crate) fn get_day(core: &Core, day_key: &str) -> Result<DiaryDay> {
         }
     }
 
-    let stored: Option<(String, String, i64)> = core
-        .conn
+    let stored: Option<(String, String, i64)> = conn
         .query_row(
             "SELECT time_zone, updated_at, revision FROM diary_days WHERE day_key = ?1",
             params![day_key],
@@ -2273,13 +2271,11 @@ pub(crate) fn get_day(core: &Core, day_key: &str) -> Result<DiaryDay> {
         "SELECT MAX(updated_at) FROM captures WHERE day_key = ?1 AND {}",
         crate::model::capture_not_trashed(None)
     );
-    let latest_capture: Option<String> = core
-        .conn
+    let latest_capture: Option<String> = conn
         .query_row(&latest_capture_sql, params![day_key], |row| row.get(0))
         .optional()?
         .flatten();
-    let latest_version: Option<String> = core
-        .conn
+    let latest_version: Option<String> = conn
         .query_row(
             "SELECT MAX(created_at) FROM diary_versions WHERE day_key = ?1",
             params![day_key],
@@ -2332,8 +2328,107 @@ pub(crate) fn get_day(core: &Core, day_key: &str) -> Result<DiaryDay> {
     })
 }
 
-fn version_ids(core: &Core, day_key: &str) -> Result<Vec<String>> {
-    let mut statement = core.conn.prepare(
+/// `diary.listDays`：有哪些天、每天多少条材料，契约第 4.3 节。
+///
+/// 口径与 `getDay` / `captures.list` 一致：**回收站不算**（`state != 'trashed'`），
+/// 按 `day_key` 倒序；`fromDayKey` / `toDayKey` 是闭区间。游标是不透明字符串
+/// （内部编码是 `day:<dayKey>`），翻页时原样回传即可；坏游标报 `cursor_expired`，
+/// 不猜、不从头静默重来。
+pub(crate) fn list_days(
+    core: &Core,
+    from_day_key: Option<&str>,
+    to_day_key: Option<&str>,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<DiaryDayPage> {
+    // 接受非零填充（`2026-10-5`）的输入，但**一律按规范形绑定/比较**：
+    // SQLite 的 `day_key >= ?` 是字符串比较，`2026-10-05 < 2026-10-5`，
+    // 直接绑原始输入会静默排除 10 月 1–19 日。
+    let canonical = |value: &str| -> Result<String> {
+        Ok(parse_day_key(value)?.format("%Y-%m-%d").to_string())
+    };
+    let from = from_day_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(canonical)
+        .transpose()?;
+    let to = to_day_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(canonical)
+        .transpose()?;
+    if let (Some(from), Some(to)) = (&from, &to) {
+        if from > to {
+            return Err(CoreError::InvalidArgument {
+                reason: format!("fromDayKey {from} 晚于 toDayKey {to}"),
+            });
+        }
+    }
+    let cursor_day = match cursor {
+        Some(cursor) => {
+            let day = cursor.strip_prefix("day:").ok_or_else(|| CoreError::CursorExpired {
+                reason: format!("日记天列表游标不属于本接口：{cursor}"),
+            })?;
+            let day = parse_day_key(day)
+                .map_err(|_| CoreError::CursorExpired {
+                    reason: format!("日记天列表游标里的 dayKey 不合法：{cursor}"),
+                })?
+                .format("%Y-%m-%d")
+                .to_string();
+            Some(day)
+        }
+        None => None,
+    };
+    let limit = limit.clamp(1, 100);
+
+    // 先按 captures 分组拿 dayKey：`getDay` 再逐天算当前/候选、材料计数与覆盖，
+    // 两边口径因此不会分叉（同一条 `state != 'trashed'` 过滤）。
+    let keys_sql = format!(
+        "SELECT day_key FROM captures \
+         WHERE {} \
+           AND (?1 IS NULL OR day_key >= ?1) \
+           AND (?2 IS NULL OR day_key <= ?2) \
+           AND (?3 IS NULL OR day_key < ?3) \
+         GROUP BY day_key \
+         ORDER BY day_key DESC \
+         LIMIT ?4",
+        crate::model::capture_not_trashed(None)
+    );
+    // 键列表与逐天详情必须在**同一个读事务**里：分页键与本页详情来自同一快照。
+    // 否则「查键」与「开事务」之间另一连接把当天最后一条记录挪走（回收站 / 清理），
+    // 分页键里还留着这一天，`get_day` 却已经报 not_found，**整页失败**（#168 复审）。
+    let tx = core.conn.unchecked_transaction()?;
+    let keys = {
+        let mut statement = tx.prepare(&keys_sql)?;
+        let rows = statement
+            .query_map(
+                params![from, to, cursor_day.as_deref(), (limit + 1) as i64],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    let has_more = keys.len() > limit;
+    let mut days = Vec::with_capacity(limit.min(keys.len()));
+    // 一次读事务把本页所有天的 `getDay` 放进同一个快照：既避免「翻到一半库被写、
+    // 各天看到的不是同一时刻」，也把 N 天的多组查询收在一个事务里。逐天查询的次数
+    // 仍是 O(N)（`getDay` 的口径与单天入口完全一致，不另写一套批量聚合）。
+    for key in keys.iter().take(limit) {
+        days.push(get_day(&tx, key)?);
+    }
+    tx.commit()?;
+    let next_cursor = if has_more {
+        days.last()
+            .map(|day| format!("day:{}", day.day_key))
+    } else {
+        None
+    };
+    Ok(DiaryDayPage { days, next_cursor })
+}
+
+fn version_ids(conn: &Connection, day_key: &str) -> Result<Vec<String>> {
+    let mut statement = conn.prepare(
         "SELECT id FROM diary_versions WHERE day_key = ?1 ORDER BY created_at DESC, id DESC",
     )?;
     let ids = statement
@@ -2450,7 +2545,7 @@ fn day_time_zone(core: &Core, day_key: &str) -> Result<String> {
         .optional()?;
     Ok(match stored {
         Some(zone) => zone,
-        None => collect_materials(core, day_key)?.window.time_zone,
+        None => collect_materials(&core.conn, day_key)?.window.time_zone,
     })
 }
 
@@ -2581,7 +2676,7 @@ pub(crate) fn set_current(
         finish_day_write(&tx, day_key, true)?;
     }
     tx.commit()?;
-    get_day(core, day_key)
+    get_day(&core.conn, day_key)
 }
 
 /// 合并版本的审计信息：**由哪几版合成**，以及「没有模型参与」这两件事。

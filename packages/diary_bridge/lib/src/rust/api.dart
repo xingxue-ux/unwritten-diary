@@ -161,6 +161,14 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required int limit,
   });
 
+  /// 有哪些天、每天多少条材料（回收站不算），按 dayKey 倒序。
+  Future<DiaryDayPage> listDays({
+    String? fromDayKey,
+    String? toDayKey,
+    String? cursor,
+    required int pageSize,
+  });
+
   /// 分页读某一天的日记版本，契约 `diary.listVersions`。最新在前。
   Future<DiaryVersionPage> listDiaryVersions({
     required String dayKey,

@@ -216,6 +216,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DiaryDay dco_decode_diary_day(dynamic raw);
 
   @protected
+  DiaryDayPage dco_decode_diary_day_page(dynamic raw);
+
+  @protected
   DiaryGenerationReason dco_decode_diary_generation_reason(dynamic raw);
 
   @protected
@@ -313,6 +316,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Capture> dco_decode_list_capture(dynamic raw);
+
+  @protected
+  List<DiaryDay> dco_decode_list_diary_day(dynamic raw);
 
   @protected
   List<DiaryVersion> dco_decode_list_diary_version(dynamic raw);
@@ -932,6 +938,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DiaryDay sse_decode_diary_day(SseDeserializer deserializer);
 
   @protected
+  DiaryDayPage sse_decode_diary_day_page(SseDeserializer deserializer);
+
+  @protected
   DiaryGenerationReason sse_decode_diary_generation_reason(
     SseDeserializer deserializer,
   );
@@ -1035,6 +1044,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Capture> sse_decode_list_capture(SseDeserializer deserializer);
+
+  @protected
+  List<DiaryDay> sse_decode_list_diary_day(SseDeserializer deserializer);
 
   @protected
   List<DiaryVersion> sse_decode_list_diary_version(
@@ -1818,6 +1830,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_diary_day(DiaryDay self, SseSerializer serializer);
 
   @protected
+  void sse_encode_diary_day_page(DiaryDayPage self, SseSerializer serializer);
+
+  @protected
   void sse_encode_diary_generation_reason(
     DiaryGenerationReason self,
     SseSerializer serializer,
@@ -1945,6 +1960,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_capture(List<Capture> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_diary_day(List<DiaryDay> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_diary_version(

@@ -76,7 +76,8 @@ void main() {
     expect(info.capabilities, contains('styles.list'));
     expect(info.capabilities, contains('styles.get'));
     expect(info.capabilities, contains('styles.save'));
-    // #113：阅读导出（同步完成，job 已是 succeeded）。
+    // #113：天列表与阅读导出（同步完成，job 已是 succeeded）。
+    expect(info.capabilities, contains('diary.listDays'));
     expect(info.capabilities, contains('exports.create'));
     expect(info.recovery.pendingJobs, 0);
   });

@@ -1,9 +1,9 @@
-//! #114 风格 / #113 阅读导出的集成测试。
+//! #114 风格 / #113 阅读导出 / `diary.listDays` 的集成测试。
 //!
 //! 全部走真实核心路径（开库、迁移、写表、生成、落盘），不 mock 存储层：
 //! - 风格：CRUD 往返、乐观锁、历史版本不可变、生成时 `styleSnapshotId` 指对版本；
-//! - 导出：Markdown / 纯文本、正文逐段一致、回收站不出现、重名不覆盖、沙箱外拒绝、
-//!   非零填充 dayKey 按日期解析后绑定。
+//! - 导出：Markdown / 纯文本、正文逐段一致、回收站不出现、重名不覆盖、沙箱外拒绝；
+//! - 天列表：与 `captures` 分组计数一致、回收站不算、倒序、游标分页。
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -519,4 +519,207 @@ fn export_rejects_bad_arguments_and_paths_outside_the_sandbox() {
         .unwrap_err();
     assert_eq!(error.code(), ErrorCode::PermissionDenied);
     assert!(!dir.path().join("exports").exists(), "拒绝时不能先建目录");
+}
+
+// ------------------------------------------------------------------ 天列表
+
+#[test]
+fn list_days_matches_capture_counts_excludes_trash_and_paginates() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    capture_on(&mut core, "2026-10-05", "五号一条。", "op-05");
+    capture_on(&mut core, "2026-10-14", "十四号一条。", "op-14");
+    let trash_me = capture_on(&mut core, "2026-10-15", "十五号会被回收的一条。", "op-15a");
+    capture_on(&mut core, "2026-10-15", "十五号保留的一条。", "op-15b");
+    capture_on(&mut core, "2026-10-16", "十六号一条。", "op-16");
+    Connection::open(dir.path().join("library.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE captures SET state = 'trashed' WHERE id = ?1",
+            rusqlite::params![trash_me],
+        )
+        .unwrap();
+
+    let page = core.list_days(None, None, None, 20).unwrap();
+    assert_eq!(
+        page.days
+            .iter()
+            .map(|day| day.day_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["2026-10-16", "2026-10-15", "2026-10-14", "2026-10-05"],
+        "倒序、回收站里的记录不计数"
+    );
+    assert_eq!(page.days[1].material_counts.captures, 1);
+    assert_eq!(page.days[0].material_counts.captures, 1);
+    assert_eq!(page.next_cursor, None);
+
+    // 与 captures 表按 day 分组的计数逐天一致。
+    let conn = Connection::open(dir.path().join("library.sqlite")).unwrap();
+    let sql_counts: Vec<(String, i64)> = {
+        let mut statement = conn
+            .prepare(
+                "SELECT day_key, COUNT(*) FROM captures WHERE state != 'trashed' \
+                 GROUP BY day_key ORDER BY day_key DESC",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(sql_counts.len(), page.days.len());
+    for (day, (key, count)) in page.days.iter().zip(sql_counts) {
+        assert_eq!(day.day_key, key);
+        assert_eq!(day.material_counts.captures, count);
+    }
+
+    // 分页：pageSize = 1，游标原样回传能翻完，最后没有 nextCursor。
+    let first = core.list_days(None, None, None, 1).unwrap();
+    assert_eq!(first.days.len(), 1);
+    assert_eq!(first.days[0].day_key, "2026-10-16");
+    let cursor = first.next_cursor.expect("还有下一页");
+    let second = core.list_days(None, None, Some(&cursor), 1).unwrap();
+    assert_eq!(second.days[0].day_key, "2026-10-15");
+    let third = core
+        .list_days(None, None, second.next_cursor.as_deref(), 1)
+        .unwrap();
+    assert_eq!(third.days[0].day_key, "2026-10-14");
+    let fourth = core
+        .list_days(None, None, third.next_cursor.as_deref(), 1)
+        .unwrap();
+    assert_eq!(fourth.days[0].day_key, "2026-10-05");
+    assert_eq!(fourth.next_cursor, None);
+
+    // 闭区间过滤。
+    let only_15 = core
+        .list_days(Some("2026-10-15"), Some("2026-10-15"), None, 20)
+        .unwrap();
+    assert_eq!(only_15.days.len(), 1);
+    assert_eq!(only_15.days[0].day_key, "2026-10-15");
+
+    // 非零填充的 dayKey：解析成功就要按规范形比较/绑定，不能按原始字符串的
+    // 字典序把范围悄悄缩小（`2026-10-05` < `2026-10-5`）。
+    let padded = core
+        .list_days(Some("2026-10-5"), Some("2026-10-15"), None, 20)
+        .expect("非零填充的 fromDayKey 必须按日期解析");
+    assert_eq!(
+        padded
+            .days
+            .iter()
+            .map(|day| day.day_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["2026-10-15", "2026-10-14", "2026-10-05"],
+        "非零填充的起点不能静默排除 10 月 1–19 日"
+    );
+
+    // 单日范围也用非零填充：解析后两边相等，不是 invalid_argument。
+    let single = core
+        .list_days(Some("2026-10-5"), Some("2026-10-5"), None, 20)
+        .unwrap();
+    assert_eq!(single.days.len(), 1);
+    assert_eq!(single.days[0].day_key, "2026-10-05");
+
+    // 坏参数：游标过期码；from > to 是 invalid_argument。
+    assert_eq!(
+        core.list_days(None, None, Some("not-a-cursor"), 20)
+            .unwrap_err()
+            .code(),
+        ErrorCode::CursorExpired
+    );
+    assert_eq!(
+        core.list_days(Some("2026-10-16"), Some("2026-10-14"), None, 20)
+            .unwrap_err()
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+}
+
+/// #168 复审的回归：**键列表与逐天详情必须来自同一个读事务（同一快照）**。
+///
+/// 双连接并发：读连接在 `list_days` 里先查 `day_key` 列表，再逐天 `get_day`；写连接
+/// 在这两步之间把某天最后一条材料挪进回收站。本分支还没有 `trash_capture` 入口
+/// （回收站是 #155 那条线），所以这里按上面那条测试的同一口径，用一个真库连接
+/// `UPDATE captures SET state = 'trashed'`。
+///
+/// 未修版本里两步分属两个快照：写连接的提交只要落在中间，键列表里仍留着这一天，
+/// 而 `get_day` 会报 `not_found`（这一天既没有材料也没有版本）——**整页失败**，
+/// 也就是「键有、详情没」。修好之后键与详情同快照：这一天要么带着那 1 条材料出现，
+/// 要么整天空缺，绝不会出现「在键列表里、详情却是空的」。
+#[test]
+fn list_days_keys_and_details_come_from_one_snapshot_under_concurrent_trash() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    // 目标天：只有一条材料、没有 `diary_days` 行、也没有版本——材料被挪走的那一瞬间，
+    // 这一天在 `get_day` 眼里正好是「既没有材料也没有版本」，也就是 not_found 的条件。
+    let only = capture_on(&mut core, "2026-10-19", "十九号唯一一条。", "op-19");
+    // 搭出上下文天：让这一页不止一天，翻页键也不止一个。
+    capture_on(&mut core, "2026-10-18", "十八号一条。", "op-18");
+    capture_on(&mut core, "2026-10-17", "十七号一条。", "op-17");
+
+    let path = dir.path().join("library.sqlite");
+    let writer = std::thread::spawn({
+        let path = path.clone();
+        move || {
+            let conn = Connection::open(&path).unwrap();
+            // 读连接在 WAL 下不挡写，写字这边只可能自己撞上检查点；给足等待时间，
+            // 别让测试因为 `database is locked` 而假红。
+            conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+            let original: String = conn
+                .query_row(
+                    "SELECT state FROM captures WHERE id = ?1",
+                    rusqlite::params![only],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut flips = 0_u32;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            // 一进一出各一次提交：任何一次提交落在「查键之后、取详情之前」的窗口里，
+            // 未修版本都会把这一天带进键列表、又在取详情时找不到。
+            while std::time::Instant::now() < deadline {
+                for state in ["trashed", original.as_str()] {
+                    conn.execute(
+                        "UPDATE captures SET state = ?1 WHERE id = ?2",
+                        rusqlite::params![state, only],
+                    )
+                    .unwrap();
+                    flips += 1;
+                }
+            }
+            flips
+        }
+    });
+
+    let mut reads = 0_u32;
+    let mut saw_target = 0_u32;
+    while !writer.is_finished() {
+        let page = core
+            .list_days(None, None, None, 50)
+            .expect("并发写不该让整页失败：键列表与逐天详情必须来自同一快照");
+        for day in &page.days {
+            let counts = &day.material_counts;
+            assert!(
+                counts.captures + counts.processed + counts.pending + counts.failed >= 1,
+                "{} 出现在键列表里，详情却是空的（键有、详情没）",
+                day.day_key
+            );
+            if day.day_key == "2026-10-19" {
+                saw_target += 1;
+                assert_eq!(
+                    counts.captures, 1,
+                    "这一页的键与详情必须来自同一快照：这一天只有那一条材料"
+                );
+            }
+        }
+        reads += 1;
+    }
+    let flips = writer.join().unwrap();
+    assert!(
+        reads > 0 && flips > 0,
+        "读写两侧都要真的跑起来（reads={reads}, flips={flips}）"
+    );
+    assert!(
+        saw_target > 0,
+        "目标天至少要带着详情出现过一次，这条测试才不是空转"
+    );
 }

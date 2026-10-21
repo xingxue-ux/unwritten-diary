@@ -1519,6 +1519,15 @@ pub struct DiaryDay {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 分页的日记天列表，契约 `DiaryDayPage`（`diary.listDays`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiaryDayPage {
+    pub days: Vec<DiaryDay>,
+    /// 还有下一页时是本次最后一天的游标；没有更多时为 `None`。调用方不要解析它。
+    pub next_cursor: Option<String>,
+}
+
 /// 生成过程的审计信息，契约 2.5 节。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GenerationInfo {
