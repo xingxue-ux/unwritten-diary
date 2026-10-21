@@ -1087,6 +1087,30 @@ export interface TestProviderParams {
   scope: string[];
 }
 
+/**
+ * `providers.presets` 的一条预设：**填表草稿**，不含密钥、不写库、不出网。
+ *
+ * 字段名照核心 `ProviderPreset` 的 serde 原样（snake_case，没有 `rename_all`）。
+ * `endpoint` / `model` 的空串表示「这一项要用户自己填」；`verified` 只认实测。
+ */
+export interface ProviderPreset {
+  id: string;
+  label: string;
+  adapter_id: string;
+  endpoint: string;
+  model: string;
+  capabilities: string[];
+  docs_url: string;
+  verified: boolean;
+  note: string;
+}
+
+/** `providers.models` 返回的一个模型；`owned_by` 是可选字段，缺失时为 null。 */
+export interface ProviderModelInfo {
+  id: string;
+  owned_by: string | null;
+}
+
 /** `providers.remove` 的参数。 */
 export interface ProviderIdParams {
   provider_id: string;

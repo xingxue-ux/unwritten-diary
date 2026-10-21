@@ -17,6 +17,7 @@
 //!    都不含明文。
 
 pub mod adapter;
+pub mod endpoint;
 pub mod local_engine;
 pub mod models;
 pub mod normalize;
@@ -1070,6 +1071,14 @@ fn blocked_code(last_error: Option<&str>) -> &'static str {
 ///   **一次调用都没发时不说「可达 / 认证通过 / 模型可用」**——那三项没人验过，报告
 ///   如实写「未发起调用、都未验证」（#96）。
 ///
+/// # 本机服务不要求凭据
+///
+/// endpoint 是严格 loopback（`127.0.0.0/8` / `::1` / `localhost`，见
+/// `provider::endpoint`）时，**没有凭据也照常测试**：没有就不发 `Authorization` 头，
+/// 有就照常发。非 loopback（含私有网段）缺凭据仍在发请求前报
+/// `provider_not_configured`。放行只针对「我们自己的前置检查」：服务器真返回 401 /
+/// 超时，仍按 `authentication_failed` / `provider_timeout` 如实上报。
+///
 /// 认证失败、超时这类**拿到了明确失败原因**的情况按契约走错误码（可区分的
 /// `authentication_failed` / `provider_timeout` …），错误消息里同样写明「本次
 /// 测试已发起 N 次真实请求」。数据库里的 `test_status` / `last_error_code` 也会
@@ -1122,11 +1131,26 @@ pub(crate) fn test(
         .ok_or_else(|| CoreError::ProviderNotConfigured {
             reason: format!("服务「{}」还没有配置 endpoint", provider.label),
         })?;
-    let secret = provider_secret(core, &provider)?.ok_or_else(|| {
-        CoreError::ProviderNotConfigured {
-            reason: format!("服务「{}」还没有可用的密钥", provider.label),
+    // 本机（严格 loopback）服务不校验密钥：凭据可以留、也可以不填。没有凭据时传空串，
+    // 适配器不会发 `Authorization` 头。**私有网段不算本机**（见 `provider::endpoint`），
+    // 缺凭据仍在发请求之前拒绝——那是「局域网里另一台机器」，风险不同。
+    let secret = match provider_secret(core, &provider)?
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        Some(secret) => secret,
+        None if endpoint::is_loopback_endpoint(endpoint) => String::new(),
+        None => {
+            return Err(CoreError::ProviderNotConfigured {
+                reason: format!(
+                    "服务「{}」还没有可用的密钥。下一步：先保存一次密钥（明文只进 \
+                     SecretStore，配置里只留引用），再点「连接测试」；本机服务\
+                     （127.0.0.1 / localhost）不校验密钥，可以不填",
+                    provider.label
+                ),
+            })
         }
-    })?;
+    };
 
     let mut results = std::collections::HashMap::new();
     let mut notes: Vec<String> = Vec::new();
@@ -1220,8 +1244,15 @@ pub(crate) fn test(
              实际验证通过的能力集：{verified_text}"
         )
     } else {
+        // 本机服务没有凭据时**不能**写「认证通过」：这次根本没发 Authorization 头，
+        // 没有任何人验过认证。如实写「未发送凭据」比一句假绿重要。
+        let auth_text = if secret.trim().is_empty() {
+            "本机服务按设计未发送凭据（核心未因缺凭据拦截；认证未验证）"
+        } else {
+            "认证通过"
+        };
         format!(
-            "端点 {endpoint}（{}）可达；认证通过；模型 {} 可用；实际能力集：{verified_text}；\
+            "端点 {endpoint}（{}）可达；{auth_text}；模型 {} 可用；实际能力集：{verified_text}；\
              本次测试发起了 {calls} 次真实请求（可能计费）",
             endpoint_scope(endpoint),
             provider.model.as_deref().unwrap_or("<未配置>"),

@@ -6,7 +6,7 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 
 代码在 `crates/diary_core/src/provider/`（`mod.rs` 配置与门控、`secret.rs` 密钥托管、
 `transport.rs` 传输层、`adapter.rs` 协议适配器、`normalize.rs` 错误归一化、
-`presets.rs` 内置服务预设、`models.rs` 模型列表检测），
+`endpoint.rs` 本机 endpoint 判定、`presets.rs` 内置服务预设、`models.rs` 模型列表检测），
 契约形状见 [共享接口契约](../development/01-共享接口契约.md) 第 2.7、4.3、4.4、7 节。
 队列语义见 [M4 · 任务调度与补做](m4-任务调度与补做.md)。
 
@@ -24,6 +24,8 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 | 没有配置/启用任何服务时**一个请求都不发** | 排任务入口先过能力闸门；队列在领取前再过一次 | 排一条注定失败的任务既费流量又骗用户 |
 | 内置服务预设**只是填表草稿** | `presets.rs` 的静态表：endpoint / model / 能力 / 文档链接 + `verified`；不含密钥、不写库、不出网 | 让用户少抄错一个 endpoint，但不替用户做「保存 / 启用 / 先测一次」的决定；未验证的预设如实标 `verified = false` |
 | 模型列表检测**只对 `openai_compatible`** | `GET {endpoint}/models`，解析 `{"data":[{"id":"..."}]}`；别的适配器如实报「不支持列举模型」 | 内置适配器里只有它有这样的接口；本地引擎的 `model` 是目录，没有远端可查。猜格式比报错更糟 |
+| **本机服务免密钥校验（2026-10-21 产品决定）** | 严格 loopback（`127.0.0.0/8` / `::1` / `localhost`）的 endpoint：`providers.test` 与模型检测不要求凭据；有就带 `Authorization`，没有就不发。私有网段不算本机 | 本机服务通常不校验密钥，凭据可以形式上保留。放行只针对我们自己的前置检查；服务器返回 401 / 超时仍如实报错，不假绿 |
+| **不做「保存前试连 / 临时凭据」入口** | 保持「先 `providers.save` 再 `providers.test`」；未保存草稿 + 临时凭据不做 | 临时凭据要多一条密钥生命周期（内存里传、何时擦除、能否被日志抓到）；填错 endpoint 的代价只是「保存 → 测失败 → 改 → 再保存」 |
 
 ## 配置模型
 
@@ -227,21 +229,28 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 | 项 | 口径 |
 |---|---|
 | 方法/端点 | `GET {endpoint}/models`（endpoint 末尾 `/` 不会拼成双斜杠；endpoint 只填到服务根地址，不要带 `/chat/completions`） |
-| 鉴权 | `Authorization: Bearer <secret>`；明文只在拼这一行时从 `SecretStore` 取，错误与返回值都过 `redact` |
+| 鉴权 | 有凭据时发 `Authorization: Bearer <secret>`；明文只在拼这一行时从 `SecretStore` 取，错误与返回值都过 `redact`。**严格 loopback 服务没有凭据就不发这个头**，不因缺凭据拒绝 |
 | 超时 | 与连接测试同一个 `PROBE_TIMEOUT_MS`（20 秒）：都是用户等着看的动作 |
 | 响应 | `{"object":"list","data":[{"id":"...","owned_by":"..."}]}`；`data` 必须存在且是数组 |
 | 容错 | 条目缺 `id` / `id` 为空 → 跳过该条；缺 `owned_by` → `None`（**可选字段缺失不是错误**）；`data: []` → 空列表 |
 | 不支持 | `adapter_id != openai_compatible` → `provider_not_configured` +「不支持列举模型」；本地引擎额外说明「model 是模型目录，没有远端可查」。**不发请求** |
-| 没配 endpoint/凭据 | `provider_not_configured`，消息里给可执行的下一步 |
+| 没配 endpoint | `provider_not_configured`，消息里给可执行的下一步 |
+| 没配凭据 | **非 loopback** 才报 `provider_not_configured`（消息里给下一步）；loopback 照常请求 |
 
 错误映射沿用上面的归一化表：401/403 → `authentication_failed`、超时 →
 `provider_timeout`、连不上/5xx → `network_unavailable`、429 → `rate_limited`、
 响应解析不了（非 JSON / 缺 `data` / `data` 不是数组）→ `model_unavailable`，
 消息里带 200 字响应摘录（已过密钥擦除）。
 
-本机服务（例如 Ollama）通常不校验密钥，但这一版**仍要求存在一条凭据**才能检测
-（`providers.test` 也是这个口径：拿不到密钥直接 `provider_not_configured`）。本机服务一般会
-忽略这个头，填一个非空占位即可——这条没有对真实 Ollama 实例联调过，记在「没有做到的」里。
+**本机服务免凭据（2026-10-21 产品决定）**：endpoint 是严格 loopback（`127.0.0.0/8` /
+`::1` / `localhost`，含端口、路径、scheme 大小写，见 `provider::endpoint::is_loopback_endpoint`）
+时，`list_provider_models` 与 `providers.test` **都不要求存在凭据**：有就照常发
+`Authorization`，没有就不发这个头。放行只针对**我们自己的前置检查**——服务器真返回
+401 / 超时，仍如实报 `authentication_failed` / `provider_timeout`，不把服务器错误装成成功。
+
+**私有网段（`10.` / `172.16-31.` / `192.168.`）刻意不算本机**：那是「局域网里的另一台
+机器」，放宽到那里会让「没配密钥」在别人的服务器上悄悄通过，风险与 loopback 不同；
+这类服务仍要填一条凭据（服务端忽略不忽略是它的事）。
 
 **真实联调**：`crates/diary_core/tests/provider_models_live_test.rs` 是一个 `#[ignore]` 用例，
 密钥只从环境变量 `DEEPSEEK_KEY` 读，没有就跳过；断言 DeepSeek 的 `/models` 返回
@@ -387,11 +396,13 @@ python3 tools/check_docs.py
 - **模型列表检测只支持 `openai_compatible`**：别的适配器（含 `sherpa_onnx`）如实报
   「不支持列举模型」。没有分页、没有缓存、没有排序（按远端返回顺序给）；`owned_by`
   只解析与返回，界面还没用上；
-- **无鉴权的本机服务仍要一条占位凭据**：Ollama 这类服务通常不校验密钥，但当前
-  `list_provider_models` 与 `providers.test` 都要求「存在一条凭据」；`ollama_local`
-  预设因此 `verified = false`，也没有对真实 Ollama 实例联调过；
-- **预设还没到界面**：这一轮只做 Rust 核心；`Core::list_provider_presets()` 还没有
-  经 C ABI / 桥接暴露，界面上也还没有「选预设 → 填表 → 试连 → 保存」这条流程；
+- **生成作业仍要求凭据**：本轮按任务只放宽 `providers.test` 与 `list_provider_models` 两条
+  用户显式检测入口；`capability_gate_for` 对 HTTP 服务仍要求 `credential_ref`，所以本机服务
+  要跑生成（`respond` / `diary.generate`）仍得填一条占位凭据。要不要把免凭据扩到生成路径，
+  是另一条决定（会改排任务语义）；
+- **预设还没到界面**：`Core::list_provider_presets()` 已经经 C ABI 的 `providers.presets`
+  暴露（`providers.models` 同理），但 Flutter 桥接与界面还没有「选预设 → 填表 → 试连 →
+  保存」这条流程；
 - **没有跟随重定向、没有自定义 CA**：自签证书的局域网服务现在连不上（rustls 只认打包的根集合）；
 - **响应不可解析归到了 `model_unavailable`**：v1 没有更贴切的码。若要更精确，需要新增
   `provider_response_invalid` / `provider_server_error` 之类的码（契约 + Dart 枚举变更）；
@@ -429,8 +440,18 @@ python3 tools/check_docs.py
    之类的码？新增码等于改契约与 Dart 枚举，得两边一起动。
 6. **`ai_responses` 的状态**。契约的 `AiResponse` 没有状态字段，「还没生成」与「生成出空串」在对象上
    不可区分。B4b 做正文与版本语义时要不要加 `state`？
-7. **「保存前就能试连」要不要做**。现在试连（`providers.test`）与模型列表检测都要求**先保存配置**
-   （密钥要先落 `SecretStore`、endpoint 要先过 `providers.save` 的校验）。用户填错一个 endpoint
-   时的实际路径是「保存 → 试连失败 → 回来改 → 再保存」，多绕一圈；预设也只解决了「填什么」，没解决
-   「填得对不对」。要做需要一个「未保存草稿 + 临时凭据」的入口（不落库、内存里用完即弃），
-   涉及密钥生命周期与契约方法，得单独拍板。
+
+## 已决
+
+**「保存前就能试连」：不做（2026-10-21 产品决定）**。
+
+> 2026-10-21 产品决定：**保持「先保存再试连」**，不做未保存草稿 + 临时凭据入口。理由：
+> 临时凭据要多一条密钥生命周期（内存里传、何时擦除、能否被日志抓到），而填错 endpoint
+> 的代价只是「保存→测失败→改→再保存」。
+>
+> 同次决定：**本机（loopback）服务不校验密钥**——凭据形式上可以留、也可以不填；核心
+> 不因缺凭据拒绝，但仍如实上报服务器返回的错误。
+
+落地范围：`providers.test` 与 `list_provider_models` 两条用户显式检测入口（严格 loopback：
+`127.0.0.0/8` / `::1` / `localhost`）。私有网段不算本机，仍要凭据；生成作业的能力闸门
+本轮没有放宽（见「没有做到的」）。

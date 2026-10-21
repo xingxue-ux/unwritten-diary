@@ -1475,6 +1475,158 @@ fn providers_crud_contract_shapes_and_validation() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// `providers.presets` / `providers.models` 两条新方法：真调用，真字段名。
+///
+/// 模型列表用回放传输层（不联网）：保存一条**没有凭据**的 loopback 服务，证明
+/// 「本机服务免凭据」这条口径真的过了 C ABI，而不是只写在核心注释里。
+#[test]
+fn provider_presets_and_models_are_wired() {
+    let (dir, _path, handle) = open_temp("provider-lists");
+
+    // 预设：静态表，至少三条；DeepSeek 是实测过的，必须 verified = true。
+    let presets = expect_ok(&call(handle, "providers.presets", json!(null)));
+    let rows = presets.as_array().expect("presets 应返回数组");
+    assert!(rows.len() >= 3, "至少三条预设，实际 {}", rows.len());
+    let deepseek = rows
+        .iter()
+        .find(|preset| preset["id"] == json!("deepseek"))
+        .expect("要有 deepseek 预设");
+    assert_eq!(deepseek["verified"], json!(true));
+    assert_eq!(deepseek["adapter_id"], json!("openai_compatible"));
+    assert_eq!(deepseek["docs_url"], json!("https://api-docs.deepseek.com/"));
+    assert_eq!(
+        deepseek["capabilities"],
+        json!(["generate_text"]),
+        "能力集合按核心 serde 原样输出"
+    );
+    assert!(
+        deepseek["note"].as_str().unwrap_or_default().contains("deepseek-flash"),
+        "note 要带实测结论：{deepseek}"
+    );
+    // 字段名是核心 serde 原样（snake_case），一个都不能少。
+    for field in [
+        "id",
+        "label",
+        "adapter_id",
+        "endpoint",
+        "model",
+        "capabilities",
+        "docs_url",
+        "verified",
+        "note",
+    ] {
+        assert!(
+            deepseek.get(field).is_some(),
+            "预设缺少字段 `{field}`：{deepseek}"
+        );
+    }
+    let ollama = rows
+        .iter()
+        .find(|preset| preset["id"] == json!("ollama_local"))
+        .expect("要有 ollama_local 预设");
+    assert_eq!(ollama["verified"], json!(false), "没联调过的预设不能标已验证");
+    assert_eq!(ollama["endpoint"], json!("http://127.0.0.1:11434/v1"));
+
+    // 保存一条 loopback 服务，**不给密钥**：核心不该在模型检测时拦。
+    let saved = expect_ok(&call(
+        handle,
+        "providers.save",
+        json!({
+            "config": {
+                "id": "prv_capi_models",
+                "label": "C ABI 本机模型列表",
+                "adapter_id": "openai_compatible",
+                "endpoint": "http://127.0.0.1:11434/v1",
+                "model": "qwen-test",
+                "capabilities": ["generate_text"],
+                "credential_ref": null,
+                "enabled": true,
+                "test_status": "untested"
+            },
+            "secret": null
+        }),
+    ));
+    assert_eq!(saved["credential_ref"], json!(null));
+
+    // 回放一次 `GET /v1/models`：请求真的会发出去（核心的前置检查没有拦）。
+    {
+        let core = debug_core(handle).expect("句柄必须在登记表里");
+        let mut core = core.lock().unwrap();
+        core.set_transport_for_test(Arc::new(diary_core::ScriptedTransport::new(vec![
+            Ok(diary_core::HttpResponse::new(
+                200,
+                json!({
+                    "object": "list",
+                    "data": [
+                        {"id": "deepseek-flash", "owned_by": "deepseek"},
+                        {"id": "deepseek-v4-pro"}
+                    ]
+                })
+                .to_string(),
+            )),
+            // 第二次调用（验证 snake_case 别名）再回放一份同样的响应。
+            Ok(diary_core::HttpResponse::new(
+                200,
+                json!({
+                    "object": "list",
+                    "data": [
+                        {"id": "deepseek-flash", "owned_by": "deepseek"},
+                        {"id": "deepseek-v4-pro"}
+                    ]
+                })
+                .to_string(),
+            )),
+        ])) as Arc<dyn diary_core::Transport>);
+    }
+
+    // 入参同时接受 snake_case 与契约的 camelCase 别名。
+    let models = expect_ok(&call(
+        handle,
+        "providers.models",
+        json!({"providerId": "prv_capi_models"}),
+    ));
+    assert_eq!(
+        models,
+        json!([
+            {"id": "deepseek-flash", "owned_by": "deepseek"},
+            {"id": "deepseek-v4-pro", "owned_by": null}
+        ]),
+        "模型列表字段照核心 serde 原样（snake_case）"
+    );
+    // snake_case 也认。
+    let models_again = expect_ok(&call(
+        handle,
+        "providers.models",
+        json!({"provider_id": "prv_capi_models"}),
+    ));
+    assert_eq!(models_again, models);
+
+    // 参数面：拼错字段与未知 id 都如实报错。
+    expect_error(
+        &call(
+            handle,
+            "providers.models",
+            json!({"provider_id": "prv_capi_models", "extra": 1}),
+        ),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(
+            handle,
+            "providers.models",
+            json!({"provider_id": "prv_missing"}),
+        ),
+        "not_found",
+    );
+    expect_error(
+        &call(handle, "providers.presets", json!({"unexpected": true})),
+        "invalid_argument",
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// 第 1 组：`captures.get` / `captures.list`——「看今天」、历史列表、条目详情的
 /// 数据源，游标必须是**真游标**（第二页接得上、不重不漏）。
 #[test]

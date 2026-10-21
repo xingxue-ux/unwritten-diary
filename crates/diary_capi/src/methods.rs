@@ -44,6 +44,8 @@
 //! | `jobs.acknowledgeAttention` | `Core::acknowledge_attention` | `null` |
 //! | `providers.save` | `Core::save_provider` | `Provider` |
 //! | `providers.list` | `Core::list_providers` | `Provider[]` |
+//! | `providers.presets` | `Core::list_provider_presets`（静态表，不出网） | `ProviderPreset[]` |
+//! | `providers.models` | `Core::list_provider_models`（`GET {endpoint}/models`） | `ProviderModelInfo[]` |
 //! | `providers.test` | `Core::test_provider` | `ProviderTestReport` |
 //! | `providers.remove` | `Core::remove_provider` | `null` |
 //! | `backups.create` | `Core::create_backup`（目标路径必须是沙箱内） | `BackupReport` |
@@ -212,6 +214,8 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "jobs.acknowledgeAttention",
     "providers.save",
     "providers.list",
+    "providers.presets",
+    "providers.models",
     "providers.test",
     "providers.remove",
     "settings.get",
@@ -562,6 +566,18 @@ pub(crate) fn dispatch(
         "providers.list" => {
             no_params(method, params)?;
             to_value(core.list_providers()?)
+        }
+        // 静态预设表：不读库、不出网、不含密钥。字段名照核心 `ProviderPreset`
+        // 的 serde 原样（没有 rename_all）：`adapter_id` / `docs_url` 是 snake_case。
+        "providers.presets" => {
+            no_params(method, params)?;
+            to_value(core.list_provider_presets())
+        }
+        // 模型列表检测：只有这次显式调用才出网。loopback 服务没有凭据也照常请求
+        // （核心的规则，桥面不复制）；服务器返回的错误原样透传。
+        "providers.models" => {
+            let input: ProviderIdParams = parse(params)?;
+            to_value(core.list_provider_models(&input.provider_id)?)
         }
         "providers.test" => {
             let input: TestProviderParams = parse(params)?;
