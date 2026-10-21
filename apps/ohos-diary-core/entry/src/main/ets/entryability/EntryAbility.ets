@@ -54,6 +54,9 @@ const DEBUG_BUILD: boolean = BuildProfile.DEBUG;
  *   --ps verify_mode asr_download  经 hdc rport 从宿主机下载模型/词表到沙箱
  *       可加 --ps base=http://127.0.0.1:8001 指向另一个宿主端口（默认 8000）；
  *       验证「Content-Length / sha256 不对时保留旧文件并报错」时用它避免挤占 8000。
+ *   --ps verify_mode gen_remote --ps base=http://127.0.0.1:8001  下载 deepseek.json →
+ *       保存/测试远端服务 → 跑 jobs.runDue 生成日记 → 打印正文（debug-only）
+ *   --ps verify_mode gen_remove    删除 `deepseek_gen` 服务配置与沙箱里的密钥文件（清理用）
  *   --ps verify_mode asr_inject    把沙箱里的 zh.wav 按平台层录音约定注入成录音，
  *       跑转写并与已知答案比对（DIARY_ASR INJECT_TEXT / INJECT_RESULT）；
  *       绕开「扬声器→麦克风」的系统 AEC，量的是引擎准确率，不是回声消除效果。
@@ -121,7 +124,7 @@ export default class EntryAbility extends UIAbility {
         hilog.error(DOMAIN, TAG, '%{public}s HAP_BOTH failed %{public}s',
           MARK, JSON.stringify(err));
       });
-    } else if (this.mode.startsWith('asr_')) {
+    } else if (this.mode.startsWith('asr_') || this.mode === 'gen_remote' || this.mode === 'gen_remove') {
       TranscriptionVerify.run(this.mode, this.context, filesDir, this.query, this.baseUrl).catch((err: Object) => {
         hilog.error(DOMAIN, TAG, '%{public}s ASR_VERIFY failed %{public}s',
           MARK, JSON.stringify(err));
@@ -138,6 +141,17 @@ export default class EntryAbility extends UIAbility {
       this.runSmokeWithMetrics(filesDir);
     } else {
       DeviceVerify.run(this.mode, filesDir);
+    }
+
+    // gen_* 探针**不加载产品界面**：`pages/Index.onPageShow` 会顺手跑一轮
+    // `jobs.runDue`（budget 1500 ms），与探针自己那一轮抢同两条任务——第一次真机
+    // 验证时它把 waiting_configuration 的任务抢先跑掉，探针的摘要成了 processed=0。
+    // 探针不需要界面；不加载页面也就没有前台驱动，队列只由探针自己推进。
+    if (DEBUG_BUILD && (this.mode === 'gen_remote' || this.mode === 'gen_remove')) {
+      hilog.info(DOMAIN, TAG,
+        '%{public}s PROBE_NO_UI mode=%{public}s（gen_* 探针不加载 pages/Index，避免前台 runDue 抢任务）',
+        MARK, this.mode);
+      return;
     }
 
     const t0 = Date.now();
