@@ -5,9 +5,10 @@
 //!
 //! # 三条不可动摇的口径
 //!
-//! 1. **默认不联网**：出网只发生在两个地方——用户显式发起的 `providers.test`，
-//!    与真被领取执行的 Provider 作业（`respond`）。没有「启动探测」「后台预热」
-//!    「悄悄试一下」这类路径。没有已配置且启用的服务时，核心连一个请求都不发；
+//! 1. **默认不联网**：出网只发生在三个地方——用户显式发起的 `providers.test`、
+//!    用户显式发起的模型列表检测（`list_provider_models`），与真被领取执行的
+//!    Provider 作业（`respond`）。没有「启动探测」「后台预热」「悄悄试一下」这类
+//!    路径。没有已配置且启用的服务时，核心连一个请求都不发；
 //! 2. **能力不成立就不排任务**：能不能用某个能力，由「配置声明 + 适配器实现 +
 //!    连接测试验证」三者共同决定（见 `capability_gate_for`）。不满足时排任务入口
 //!    直接拒绝，理由是给用户看的、下一步是可执行的；
@@ -17,7 +18,9 @@
 
 pub mod adapter;
 pub mod local_engine;
+pub mod models;
 pub mod normalize;
+pub mod presets;
 pub mod secret;
 pub mod transport;
 
