@@ -30,7 +30,9 @@ import {
   CommitResult,
   CreateBackupParams,
   CreateDraftParams,
+  CreateExportParams,
   DiaryDay,
+  DiaryDayPage,
   DiaryDayParams,
   DiaryVersion,
   DiaryVersionPage,
@@ -38,6 +40,7 @@ import {
   DomainEventPage,
   DraftSaveResult,
   EventsParams,
+  ExportTicket,
   ExtractedContent,
   ExtractParams,
   FinalizeRecordingParams,
@@ -51,10 +54,12 @@ import {
   JobStatus,
   LibraryInfo,
   ListCapturesParams,
+  ListDiaryDaysParams,
   ListDiaryVersionsParams,
   ListJobsParams,
   LocateSourceParams,
   MergeDiaryParams,
+  MoveDayParams,
   NativeRecordingStatusParams,
   PrepareRecordingParams,
   ProviderConfig,
@@ -79,6 +84,7 @@ import {
   SaveDiaryEditParams,
   SaveDraftParams,
   SaveProviderParams,
+  SaveStyleParams,
   SearchNextPageParams,
   SearchParams,
   SearchSessionParams,
@@ -89,6 +95,8 @@ import {
   SourceIdParams,
   SourceLocation,
   SourceRevision,
+  StyleIdParams,
+  StyleProfile,
   TestProviderParams,
   TrashCaptureParams,
   UpdateSettingsParams,
@@ -303,6 +311,19 @@ export class DiaryCore {
    */
   purgeCapture(params: PurgeCaptureParams): PurgeResult {
     return this.invokeData('captures.purge', params) as PurgeResult;
+  }
+
+  /**
+   * `captures.moveDay`：把一条记录挪到另一天（只改归属日）。
+   *
+   * `occurred_at` 一个字节都不动（调整不改录音时间戳），但旧日与新日的文本块会在核心的
+   * 同一个事务里重打包，所以 `listDiaryDays` 与检索立刻按新的一天命中。
+   *
+   * 同一天再调是**无操作**（不推进 revision、不发事件）；在回收站里是 `invalid_state`
+   * （先 `restoreCapture` 再改）；`expected_revision` 不符报 `revision_conflict`、零改动。
+   */
+  moveDay(params: MoveDayParams): Capture {
+    return this.invokeData('captures.moveDay', params) as Capture;
   }
 
   // ---------------------------------------------------------------- 录音（契约 4.2）
@@ -599,6 +620,17 @@ export class DiaryCore {
   }
 
   /**
+   * `diary.listDays`：有哪些天、每天多少条材料（回收站不算），按 dayKey 倒序。
+   *
+   * 四个参数全可省（省略 = 全库第一页）。`cursor` 原样回传上一页的 `nextCursor`
+   * （不透明、不要解析）；坏游标报 `cursor_expired`。注意响应外层的游标是
+   * **`nextCursor`**（core 的 `DiaryDayPage` 是 camelCase），`days` 里的天仍是 snake_case。
+   */
+  listDiaryDays(params: ListDiaryDaysParams | null = null): DiaryDayPage {
+    return this.invokeData('diary.listDays', params) as DiaryDayPage;
+  }
+
+  /**
    * `diary.listVersions`：分页读某一天的版本，最新在前。
    *
    * `cursor` 原样回传上一页的 `next_cursor`（不透明）；没有版本时是空页，不是错误。
@@ -640,6 +672,51 @@ export class DiaryCore {
    */
   mergeDiary(params: MergeDiaryParams): DiaryVersion {
     return this.invokeData('diary.merge', params) as DiaryVersion;
+  }
+
+  // ---------------------------------------------------------------- 风格与阅读导出（契约 4.3 / 4.4）
+
+  /**
+   * `styles.list`：全部风格的**当前版本**，按展示名、id 固定排序。
+   *
+   * 默认风格 `sty_default` 也在里面（内容全空、`revision = 1`）——它是「没有偏好」的
+   * 真实配置，不是查不出来的魔法值，也不是「界面该藏起来」的那一条。
+   */
+  listStyles(): StyleProfile[] {
+    return this.invokeData('styles.list', null) as StyleProfile[];
+  }
+
+  /**
+   * `styles.get`：读一条风格的当前版本。
+   *
+   * 不存在报 `not_found`——**不会静默回退默认风格**（回退会让界面以为用户设过偏好）。
+   */
+  getStyle(params: StyleIdParams): StyleProfile {
+    return this.invokeData('styles.get', params) as StyleProfile;
+  }
+
+  /**
+   * `styles.save`：新建/更新一条风格，**每次保存落一个新的不可变版本**（`revision` +1）。
+   *
+   * 带 `expected_revision` 时是乐观锁：不符报 `revision_conflict` 且零改动；省略表示
+   * 明确接受覆盖当前版本。`revision` / `updatedAt` 由核心盖章（传了也不生效）。
+   * 偏好变更**不自动重写历史日记**：历史版本的 `styleSnapshotId` 仍指向当时那一版。
+   */
+  saveStyle(params: SaveStyleParams): StyleProfile {
+    return this.invokeData('styles.save', params) as StyleProfile;
+  }
+
+  /**
+   * `exports.create`：把日期范围内的**当前日记正文**导成 Markdown / 纯文本。
+   *
+   * 同步完成：返回的 `jobId` 指向一条**已经 `succeeded`** 的任务记录，不是排队中的任务。
+   * 产物落在资料库自己的 `exports/` 下（契约不给路径、这一层也不接受路径），重名自动加
+   * 后缀、绝不覆盖。`restorable` 恒为 `false`——**这不是备份**，不能用于恢复资料库。
+   *
+   * `includeAssets = true` 会被核心明确拒绝（本构建只写正文，不随附原件）。
+   */
+  createExport(params: CreateExportParams): ExportTicket {
+    return this.invokeData('exports.create', params) as ExportTicket;
   }
 
   // ---------------------------------------------------------------- 逃生口

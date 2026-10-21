@@ -427,6 +427,124 @@ export interface DiaryVersionPage {
   next_cursor: string | null;
 }
 
+/**
+ * `diary.listDays` 的结果：有哪些天、每天多少条材料（回收站不算），按 dayKey 倒序。
+ *
+ * ⚠️ 这一格是 **camelCase**：核心的 `DiaryDayPage` 带 `#[serde(rename_all = "camelCase")]`，
+ * 所以线上的键是 `nextCursor`（不是 `next_cursor`）；而 `days` 里每一天的字段仍是
+ * snake_case（`DiaryDay` 没有 rename）。C ABI 的口号是「核心 serde 原样、不做二次翻译」，
+ * 所以两套写法在同一个对象里并存——照实声明，别按文件名猜。
+ *
+ * `nextCursor` 不透明：原样回传给下一次 `diary.listDays`，不要解析、不要自己拼；
+ * `null` 表示没有下一页。坏游标报 `cursor_expired`。
+ */
+export interface DiaryDayPage {
+  days: DiaryDay[];
+  nextCursor: string | null;
+}
+
+// ---------------------------------------------------------------- 风格与阅读导出（契约 4.3 / 4.4）
+//
+// ⚠️ 这一节是**例外**：核心的 `StyleProfile` / `ExportRequest` / `ExportTicket` 都带
+// `#[serde(rename_all = "camelCase")]`，所以线上字段名是 camelCase（`lengthPreference` /
+// `fromDayKey` / `jobId` …）。这与 `Capture` / `PurgePreview` 那类 snake_case 模型不同，
+// 但同样是「核心 serde 原样」——C ABI 不另造 DTO、不做二次翻译。
+//
+// 入参两种写法 C ABI 都收（snake_case 与 camelCase 是别名关系）；ArkTS 这一层只用
+// camelCase 一种，与响应类型同名同形，避免同一个对象出现两套字段名。
+
+/**
+ * 一条风格偏好的**当前版本**（`styles.list` / `styles.get` / `styles.save` 的返回值）。
+ *
+ * `revision` 是这条风格的修订号：每次保存落一个新的不可变版本就 +1。历史日记的
+ * `styleSnapshotId` 指向当时那一版，风格后来改了也不影响它（没有删除入口）。
+ */
+export interface StyleProfile {
+  id: string;
+  /** 界面上的展示名。 */
+  label: string;
+  revision: number;
+  /** RFC 3339（UTC），由核心盖章。 */
+  updatedAt: string;
+  /** 长度偏好（例如「短」「中」「长」）；`null` = 没有这个偏好。 */
+  lengthPreference: string | null;
+  /** 叙述人称。 */
+  person: string | null;
+  tone: string | null;
+  /** 情绪温度。 */
+  emotionalTemperature: string | null;
+  /** 允许的修辞程度。 */
+  rhetoricLevel: string | null;
+  /** 可选示例（每条都进 system 消息，受核心的字符上限约束）。 */
+  examples: string[];
+  /** 明确禁用表达。 */
+  bannedExpressions: string[];
+}
+
+/**
+ * `styles.save` 的 `profile` 入参。
+ *
+ * 与 `StyleProfile` 的区别只有一处：`revision` / `updatedAt` 可以省略——它们由核心盖章，
+ * 调用方传了也不生效（「读出来改一改再存回去」时原样带上即可）。`id` / `label` 必填，
+ * `label` 空串报 `invalid_argument`。
+ */
+export interface StyleProfileInput {
+  id: string;
+  label: string;
+  revision?: number;
+  updatedAt?: string;
+  lengthPreference?: string | null;
+  person?: string | null;
+  tone?: string | null;
+  emotionalTemperature?: string | null;
+  rhetoricLevel?: string | null;
+  examples?: string[];
+  bannedExpressions?: string[];
+}
+
+/**
+ * `exports.create` 的请求（契约 `ExportRequest`）。
+ *
+ * **没有输出路径字段**：产物固定落在资料库自己的 `exports/` 下，重名自动加后缀、
+ * 绝不覆盖；契约本来就不给调用方选路径。`format` 省略 = `markdown`，
+ * `includeAssets` 省略 = `false`；`includeAssets = true` 会被核心明确拒绝
+ * （本构建只写正文，不随附原件，不静默忽略这个开关）。
+ */
+export interface ExportRequest {
+  /** 闭区间起点，`YYYY-MM-DD`。 */
+  fromDayKey: string;
+  /** 闭区间终点，`YYYY-MM-DD`。 */
+  toDayKey: string;
+  /** `markdown` / `plain_text`。 */
+  format?: string;
+  includeAssets?: boolean;
+}
+
+/**
+ * `exports.create` 的结果（契约 `ExportTicket`，核心字段更多，这里全列）。
+ *
+ * **这不是备份**：`restorable` 恒为 `false`，文件里只有当前日记正文（没有数据库、
+ * 没有原件、没有索引），不能用于恢复资料库——要恢复请走 `backups.*`。
+ * `jobId` 指向一条**已经 `succeeded`** 的导出任务记录（同步完成，不是排队中）。
+ */
+export interface ExportTicket {
+  jobId: string;
+  /** 平台保存层可用的句柄；本构建里就是 `path`（同一个绝对路径）。 */
+  packageTicket: string | null;
+  /** 导出文件最终落盘位置（重名时已加后缀）。 */
+  path: string;
+  byteSize: number;
+  /** `markdown` / `plain_text`。 */
+  format: string;
+  /** 实际写进文件的天，按 dayKey 升序。 */
+  dayKeys: string[];
+  dayCount: number;
+  /** RFC 3339（UTC）。 */
+  createdAt: string;
+  /** 恒为 `false`。 */
+  restorable: boolean;
+}
+
 // ---------------------------------------------------------------- 回收站（契约 4.1 / §8）
 //
 // 字段名与 `diary_core::model` 的 `PurgePreview` / `PurgeResult` serde 输出一致（snake_case）。
@@ -550,6 +668,26 @@ export interface TrashCaptureParams {
   capture_id: string;
   expected_revision: number;
   operation_id: string;
+}
+
+/**
+ * `captures.moveDay` 的参数：把一条记录挪到另一天。
+ *
+ * 只改归属日、**不动 `occurred_at`**（调整不改录音时间戳）；旧日与新日的文本块在核心的
+ * 同一个事务里重打包，所以 `listDiaryDays` 与检索立刻按新的一天命中。同一天再调是
+ * **无操作**（不推进 revision、不发事件）；在回收站里是 `invalid_state`（先恢复再改）。
+ * `expected_revision` 是 `Capture.revision`，不符报 `revision_conflict`、零改动。
+ */
+export interface MoveDayParams {
+  capture_id: string;
+  /** 目标归属日，`YYYY-MM-DD`（核心校验形状）。 */
+  target_day_key: string;
+  expected_revision: number;
+}
+
+/** `styles.get` 的参数：不存在的 id 报 `not_found`（不回退默认风格）。 */
+export interface StyleIdParams {
+  style_id: string;
 }
 
 /**
@@ -735,6 +873,17 @@ export interface ListDiaryVersionsParams {
   limit?: number;
 }
 
+/** `diary.listDays` 的参数（四个字段全可省 = 全库第一页）。 */
+export interface ListDiaryDaysParams {
+  /** `YYYY-MM-DD`，闭区间。 */
+  from_day_key?: string;
+  to_day_key?: string;
+  /** 原样回传上一页的 `nextCursor`；不要解析。 */
+  cursor?: string;
+  /** 默认 20，核心夹 1–100。 */
+  page_size?: number;
+}
+
 /** `diary.getVersion` 的参数。 */
 export interface DiaryVersionParams {
   version_id: string;
@@ -772,6 +921,24 @@ export interface MergeDiaryParams {
   body: string;
   expected_revision: number;
   operation_id: string;
+}
+
+// ---------------------------------------------------------------- 风格与阅读导出请求参数（契约 4.3 / 4.4）
+
+/**
+ * `styles.save` 的参数：`profile` + 可选 `expected_revision`（乐观锁）。
+ *
+ * `expected_revision` 省略 = **明确接受覆盖当前版本**；给了就必须等于当前 `revision`，
+ * 否则 `revision_conflict` 且零改动。新 id 的当前 revision 按 0 算。
+ */
+export interface SaveStyleParams {
+  profile: StyleProfileInput;
+  expected_revision?: number;
+}
+
+/** `exports.create` 的参数：与核心签名同形（一个 `request`）。 */
+export interface CreateExportParams {
+  request: ExportRequest;
 }
 
 // ---------------------------------------------------------------- 录音（契约 4.2）

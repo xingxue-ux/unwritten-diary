@@ -17,6 +17,7 @@
 //! | `captures.restore` | `Core::restore_capture` | `Capture`（恢复回移入前的状态） |
 //! | `captures.previewPurge` | `Core::preview_purge` | `PurgePreview` |
 //! | `captures.purge` | `Core::purge_capture`（必须带 `preview_token`） | `PurgeResult` |
+//! | `captures.moveDay` | `Core::move_day`（只改 `day_key`，`expected_revision` 乐观锁） | `Capture` |
 //! | `recordings.prepare` | `Core::prepare_recording` | `RecordingTicket` |
 //! | `recordings.registerSegment` | `Core::register_segment` | `SegmentReceipt` |
 //! | `recordings.updateState` | `Core::update_recording_state` | `RecordingSession` |
@@ -50,11 +51,16 @@
 //! | `backups.restore` | `Core::restore_backup`（来源与目标都必须是沙箱内） | `RestoreReport` |
 //! | `core.events` | `Core::events_page`（按序号轮询，一页一次 LIMIT） | `{events,next_sequence,truncated}` |
 //! | `diary.getDay` | `Core::get_diary_day` | `DiaryDay` |
+//! | `diary.listDays` | `Core::list_days`（范围 + 不透明游标） | `DiaryDayPage` |
 //! | `diary.listVersions` | `Core::list_diary_versions`（不透明游标） | `DiaryVersionPage` |
 //! | `diary.getVersion` | `Core::get_diary_version` | `DiaryVersion` |
 //! | `diary.saveEdit` | `Core::save_diary_edit` | `DiaryVersion` |
 //! | `diary.setCurrent` | `Core::set_diary_current` | `DiaryDay` |
 //! | `diary.merge` | `Core::merge_diary_versions` | `DiaryVersion` |
+//! | `styles.list` | `Core::list_styles` | `StyleProfile[]` |
+//! | `styles.get` | `Core::get_style`（不存在 `not_found`，不回退默认风格） | `StyleProfile` |
+//! | `styles.save` | `Core::save_style`（每次落新版本；可选 `expected_revision` 乐观锁） | `StyleProfile` |
+//! | `exports.create` | `Core::create_export`（同步生成；产物在资料库 `exports/` 下） | `ExportTicket` |
 //!
 //! `core.events` **不是**推送流：C ABI 只有请求/响应，所以它把核心持久事件表当游标读。
 //! 核心在**每次写事务里**就落了 `domain_events`（不是订阅后才产生），因此这一层不需要
@@ -62,16 +68,20 @@
 //! 给了就从该序号之后补；`next_sequence` 原样回传给下一次调用。`limit` 默认 200、上限
 //! 1000，超出部分不返回并如实标 `truncated: true`（下一页从 `next_sequence` 继续）。
 //!
-//! 六条 `diary.*` 是「日记」一级入口的数据源（契约 §2.2）：没有它们，鸿蒙日记页
+//! 七条 `diary.*` 是「日记」一级入口的数据源（契约 §2.2）：没有它们，鸿蒙日记页
 //! 无数据可取。它们**只做转接**——候选/当前、revision 闸门、幂等与版本链都在核心
 //! （`diary::get_day` / `save_edit` / `set_current` / `merge_versions`），桥面不复制规则。
 //! 「没有任何材料、也没有版本」的一天在核心里是 `not_found`，这是**空态**不是错误，
 //! 界面据此显示「还没有成篇日记」。
 //!
-//! 还差的两条不在本题材里：`diary.listDays`（核心已加 `list_days`，#168 合入 main；
-//! C ABI 这一层还没包装）与 `diary.generate`（核心有 `generate_diary`，但它要排 AI
-//! 任务，属于生成那一片）。
-//! 界面**不显示**这两条的按钮，只如实说明缺口。
+//! `diary.listDays` 是第七条（#168 的核心入口，C ABI 这一层最后补上）：它回答「库里
+//! 有哪些天、每天多少条材料」（回收站不算），按 dayKey 倒序；游标不透明、坏游标
+//! `cursor_expired`。响应是 `DiaryDayPage`：`days` 里每一天的字段是 snake_case（核心
+//! `DiaryDay` 没有 rename），外层的 `next_cursor` 是 **camelCase `nextCursor`**（核心
+//! `DiaryDayPage` 有 `#[serde(rename_all = "camelCase")]`）——照核心 serde 原样，不翻译。
+//!
+//! 还差的一条不在本题材里：`diary.generate`（核心有 `generate_diary`，但它要排 AI
+//! 任务，属于生成那一片）。界面**不显示**这条的按钮，只如实说明缺口。
 //!
 //! 两条「为什么在这里」的说明（本块的任务书只点名了另外六条）：
 //!
@@ -97,6 +107,31 @@
 //! - `previewPurge` 只接受回收站里的记录（`purge` 不可逆，产品路径是先 trash 再决定），
 //!   不在回收站里是核心的 `invalid_state`，桥面不改写成别的码。
 //!
+//! `captures.moveDay` 是同一条回收站链路的第五个入口（调整归属日）：只改 `day_key`、
+//! **不动 `occurred_at`**（调整不改录音时间戳），旧日/新日的文本块在核心的同一个事务里
+//! 重打包，所以 `diary.listDays` 与检索立刻按新的一天命中。同一天再调是**无操作**
+//! （不推进 revision、不发事件）；在回收站里是 `invalid_state`（先恢复再改归属日）。
+//!
+//! 风格三条（`styles.list/get/save`）与导出一条（`exports.create`）照核心 `styles.rs` /
+//! `export.rs` 转接，桥面不复制规则：
+//!
+//! - 响应是核心 serde 原样，**这三条与 `diary.listDays` 的外层是 camelCase**：
+//!   `StyleProfile` 与 `ExportTicket` 在核心都带 `#[serde(rename_all = "camelCase")]`
+//!   （`lengthPreference` / `emotionalTemperature` / `bannedExpressions`、`jobId` /
+//!   `packageTicket` / `byteSize` / `dayKeys` / `dayCount` / `createdAt` / `restorable`）。
+//!   契约表里的 `styleId` / `fromDayKey` 与这是同一套写法；**桥面不另造 DTO、不做二次翻译**
+//!   （「响应 snake_case」那条口径说的是 `Capture` / `PurgePreview` 这类没有 rename 的
+//!   模型；某个类型到底用哪套写法，以核心的 serde 属性为准）；
+//! - `styles.get` 对不存在的 id **报 `not_found`，不静默回退默认风格**；
+//! - `styles.save` 每次落一个新的不可变版本行、`revision` 由核心 +1；给了
+//!   `expected_revision` 就是乐观锁（不符 `revision_conflict`、零改动），省略则按
+//!   「明确接受覆盖当前版本」；`revision` / `updatedAt` 即使传了也**不转发**（核心盖章）；
+//! - `exports.create` **同步**生成文件（返回的 `jobId` 指向一条 `succeeded` 的任务记录，
+//!   不是排队任务），产物固定落在资料库自己的 `exports/` 下——契约的 `ExportRequest`
+//!   **没有路径字段**，桥面也不接受调用方路径；重名自动加后缀、绝不覆盖。`restorable`
+//!   恒为 `false`（这不是备份，不能用于恢复）。`include_assets = true` 会被核心
+//!   `invalid_argument` 明确拒绝（本构建只写正文，不静默忽略）。
+//!
 //! # 扩展点：再加一个方法要动哪里
 //!
 //! 1. 在 [`dispatch`] 的 `match` 里加一条分支，并在上面的表里加一行（表与代码在同一个文件，
@@ -109,25 +144,23 @@
 //!
 //! ## 还没接的（按契约第 4 节分组，TODO(#108)）
 //!
-//! - 回收站：只剩 `captures.moveDay`——**核心已有（#155 已合入 main），C ABI 这一层还
-//!   没包装**，不是核心缺实现（另外四条 `trash` / `restore` / `previewPurge` / `purge`
-//!   已接上，见 [`WIRED_METHODS`]）；
 //! - 文件：`imports.*`、`assets.open` / `assets.release`；
 //! - 检索：`search.snapshot`（`search.*` 只差它）；
 //! - 任务：`jobs.nextWakeup`；
-//! - 风格与导出：`styles.list/get/save`（核心 `styles.rs` 已有，#166）与
-//!   `exports.create`（核心 `export.rs` 已有，#167）——核心有实现，C ABI 还没包装；
-//! - 日记：`diary.listDays`（核心有 `list_days`，C ABI 还没包装）/ `diary.generate`
-//!   （核心有 `generate_diary`，但要排 AI 任务，属于生成那一片）；
+//! - 日记：只剩 `diary.generate`（核心有 `generate_diary`，但要排 AI 任务，属于生成
+//!   那一片）——`diary.listDays` 已接上，见 [`WIRED_METHODS`]；
 //! - 其余：`core.snapshot` / `core.close` / `core.setRuntimeState`、`responses.*`、
 //!   `plugins.*`——要么核心还没有对应实现，要么属于后面的块。
-//!   （`settings.get` / `settings.update` 已接上，见 [`WIRED_METHODS`]。）
+//!   （回收站五条、风格三条、导出一条都已接上，见 [`WIRED_METHODS`]。）
 //!
 //! 没接的方法一律报 `invalid_argument`，message 里点名「未接入」并附上已接入清单，
 //! **不会**静默成功、也不会假装支持。
 
 use chrono::Utc;
-use diary_core::model::{NativeRecordingStatus, RecordingState, SegmentManifest, SourceLocator};
+use diary_core::model::{
+    ExportRequest, NativeRecordingStatus, RecordingState, SegmentManifest, SourceLocator,
+    StyleProfile,
+};
 use diary_core::provider::local_engine::is_ohos_app_data_path;
 use diary_core::{
     Core, CoreError, CreateDraftInput, JobState, Provider, ProviderCapability, SearchFilters,
@@ -152,6 +185,7 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "captures.restore",
     "captures.previewPurge",
     "captures.purge",
+    "captures.moveDay",
     "recordings.prepare",
     "recordings.registerSegment",
     "recordings.updateState",
@@ -187,11 +221,16 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "backups.restore",
     "core.events",
     "diary.getDay",
+    "diary.listDays",
     "diary.listVersions",
     "diary.getVersion",
     "diary.saveEdit",
     "diary.setCurrent",
     "diary.merge",
+    "styles.list",
+    "styles.get",
+    "styles.save",
+    "exports.create",
 ];
 
 /// 一轮 `jobs.runDue` 最多跑几条任务（防御性上限）。
@@ -314,6 +353,17 @@ pub(crate) fn dispatch(
                 &input.operation_id,
             )?;
             to_value(result)
+        }
+        // 归属日调整（契约 4.1）：只改 `day_key`、不动 `occurred_at`；旧日与新日的文本块
+        // 在核心的同一个事务里重打包，所以 `diary.listDays` 与检索按新的一天命中。
+        // 同一天再调是**无操作**（不推进 revision、不发事件），在回收站里是 `invalid_state`。
+        "captures.moveDay" => {
+            let input: MoveDayParams = parse(params)?;
+            to_value(core.move_day(
+                &input.capture_id,
+                &input.target_day_key,
+                input.expected_revision,
+            )?)
         }
         // ------------------------------------------------------------ 录音
         "recordings.prepare" => {
@@ -611,6 +661,17 @@ pub(crate) fn dispatch(
             let input: DiaryDayParams = parse(params)?;
             to_value(core.get_diary_day(&input.day_key)?)
         }
+        // 有哪些天：按 dayKey 倒序、回收站不算。游标是核心的不透明 `day:<key>`，
+        // 原样回传；坏游标由核心报 `cursor_expired`，桥面不自己解析或拼。
+        "diary.listDays" => {
+            let input: ListDiaryDaysParams = parse_optional(params)?;
+            to_value(core.list_days(
+                input.from_day_key.as_deref(),
+                input.to_day_key.as_deref(),
+                input.cursor.as_deref(),
+                input.page_size.unwrap_or(DEFAULT_PAGE_SIZE),
+            )?)
+        }
         "diary.listVersions" => {
             let input: ListDiaryVersionsParams = parse(params)?;
             let page = core.list_diary_versions(
@@ -653,6 +714,33 @@ pub(crate) fn dispatch(
                 &input.operation_id,
             )?;
             to_value(version)
+        }
+        // ------------------------------------------------------------ 风格（契约 4.3 / 2.5）
+        // 三条只做转接：默认风格 `sty_default` 是库里真实的一行（不是查不出来的魔法值）；
+        // `styles.get` 对不存在的 id **不静默回退默认风格**（核心 `not_found` 原样透传）。
+        "styles.list" => {
+            no_params(method, params)?;
+            to_value(core.list_styles()?)
+        }
+        "styles.get" => {
+            let input: StyleIdParams = parse(params)?;
+            to_value(core.get_style(&input.style_id)?)
+        }
+        // 每次保存落一个新的不可变版本行（`revision` 由核心 +1），旧版本仍可按 id 取；
+        // `expected_revision` 有值时是乐观锁（不符 `revision_conflict`、零改动）。
+        // `revision` / `updated_at` 传了也不转发：核心盖章。
+        "styles.save" => {
+            let input: SaveStyleParams = parse(params)?;
+            let profile = input.profile.into_profile();
+            to_value(core.save_style(&profile, input.expected_revision)?)
+        }
+        // ------------------------------------------------------------ 阅读导出（契约 4.4）
+        // 同步生成 + 一条 `succeeded` 的任务记录；产物固定落在资料库的 `exports/` 下，
+        // 契约的 `ExportRequest` 本来就没有路径字段，桥面也不接受调用方路径。
+        "exports.create" => {
+            let input: CreateExportParams = parse(params)?;
+            let request = input.request.into_request();
+            to_value(core.create_export(&request)?)
         }
         // ------------------------------------------------------------ 测试钩子
         // 只在 `cargo test` 的构建里存在：证明「核心 panic 不会穿过 FFI」。
@@ -1621,4 +1709,157 @@ struct MergeDiaryParams {
     expected_revision: i64,
     #[serde(alias = "operationId")]
     operation_id: String,
+}
+
+/// `captures.moveDay`：契约 4.1 节的 `id、目标 dayKey、expectedRevision`。
+///
+/// 只改归属日、**不改 `occurred_at`**（调整不改录音时间戳）；旧日与新日的文本块在核心的
+/// 同一个事务里重打包，所以 `diary.listDays` 与检索都按新的一天命中。同一天再调是
+/// **无操作**（不推进 revision、不发事件）；在回收站里是 `invalid_state`（先恢复再改）。
+/// `expected_revision` 不符是 `revision_conflict`，零改动。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MoveDayParams {
+    #[serde(alias = "id", alias = "captureId")]
+    capture_id: String,
+    #[serde(alias = "targetDayKey")]
+    target_day_key: String,
+    #[serde(alias = "expectedRevision")]
+    expected_revision: i64,
+}
+
+/// `diary.listDays`：范围 + 游标 + 页长（契约 4.3 节）。
+///
+/// 四个字段全可省（省略 `params` 或空对象 = 全库、第一页）。`page_size` 默认 20
+/// （与 `DEFAULT_PAGE_SIZE` 同口径），核心夹 1–100；游标是核心的不透明 `day:<key>`，
+/// 原样回传，坏游标由核心报 `cursor_expired`——桥面不解析、不自己拼。
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListDiaryDaysParams {
+    #[serde(default, alias = "fromDayKey")]
+    from_day_key: Option<String>,
+    #[serde(default, alias = "toDayKey")]
+    to_day_key: Option<String>,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default, alias = "pageSize")]
+    page_size: Option<usize>,
+}
+
+/// `styles.get`：契约 4.3 节的 `styleId`。
+///
+/// 不存在的 id 是 `not_found`——**不静默回退默认风格**（要默认风格就显式点 `sty_default`，
+/// 它在 `styles.list` 里是真实的一行，不是查不出来的魔法值）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StyleIdParams {
+    #[serde(alias = "styleId", alias = "id")]
+    style_id: String,
+}
+
+/// `styles.save` 的入参：`profile` + 可选的 `expected_revision`（与核心签名同形）。
+///
+/// `expected_revision` 省略 = **明确接受覆盖当前版本**（契约允许）；给了就必须等于当前
+/// `revision`，否则 `revision_conflict` 且零改动。新 id 的当前 revision 按 0 算。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SaveStyleParams {
+    profile: StyleProfileParams,
+    #[serde(default, alias = "expectedRevision")]
+    expected_revision: Option<i64>,
+}
+
+/// `StyleProfile` 的入参形态。
+///
+/// **为什么不直接反序列化成核心的 `StyleProfile`**：那个结构体的 serde 是 camelCase
+/// （`lengthPreference` / `emotionalTemperature` / `bannedExpressions`），而 C ABI 的入参
+/// 约定是「核心 Rust 字段名 snake_case 为主、契约 camelCase 为别名」。直接用它会让
+/// snake_case 的调用方**静默丢字段**——它没有 `deny_unknown_fields`，`tone` 会被当成未知
+/// 字段忽略，比报错更难查。所以这里显式列字段、两种写法都收，再组装成核心的
+/// `StyleProfile`（这不是「二次翻译响应」，响应仍然原样透传）。
+///
+/// `revision` / `updated_at` 只收下、不转发：核心每次都自己盖章（新版本的 `revision` 与
+/// 真实写入时刻）。允许它们出现，是因为「读出来改一改再存回去」会把这两个字段原样带回来；
+/// 调用方伪造不了它们。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StyleProfileParams {
+    #[serde(alias = "styleId")]
+    id: String,
+    label: String,
+    #[serde(default)]
+    revision: Option<i64>,
+    #[serde(default, alias = "updatedAt")]
+    updated_at: Option<chrono::DateTime<Utc>>,
+    #[serde(default, alias = "lengthPreference")]
+    length_preference: Option<String>,
+    #[serde(default)]
+    person: Option<String>,
+    #[serde(default)]
+    tone: Option<String>,
+    #[serde(default, alias = "emotionalTemperature")]
+    emotional_temperature: Option<String>,
+    #[serde(default, alias = "rhetoricLevel")]
+    rhetoric_level: Option<String>,
+    #[serde(default)]
+    examples: Vec<String>,
+    #[serde(default, alias = "bannedExpressions")]
+    banned_expressions: Vec<String>,
+}
+
+impl StyleProfileParams {
+    fn into_profile(self) -> StyleProfile {
+        StyleProfile {
+            id: self.id,
+            label: self.label,
+            // 这两个值核心会覆盖（见上面的说明），这里只负责把结构体填满。
+            revision: self.revision.unwrap_or(0),
+            updated_at: self.updated_at.unwrap_or_else(Utc::now),
+            length_preference: self.length_preference,
+            person: self.person,
+            tone: self.tone,
+            emotional_temperature: self.emotional_temperature,
+            rhetoric_level: self.rhetoric_level,
+            examples: self.examples,
+            banned_expressions: self.banned_expressions,
+        }
+    }
+}
+
+/// `exports.create` 的入参：契约 `ExportRequest`，与核心签名同形（一个 `request`）。
+///
+/// **没有输出路径字段**：契约的 `ExportRequest` 本来就没有，核心也只往资料库自己的
+/// `exports/` 下写（重名加后缀、绝不覆盖）。`format` 省略 = `markdown`、
+/// `include_assets` 省略 = `false`，与 Dart 契约 `ExportRequest` 的默认值一致；
+/// `include_assets = true` 会被核心 `invalid_argument` 明确拒绝（本构建只写正文，
+/// 不随附原件，也不静默忽略这个开关）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateExportParams {
+    request: ExportRequestParams,
+}
+
+/// `ExportRequest` 的入参形态（字段名以核心 Rust 字段名为主，camelCase 为别名）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportRequestParams {
+    #[serde(alias = "fromDayKey")]
+    from_day_key: String,
+    #[serde(alias = "toDayKey")]
+    to_day_key: String,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default, alias = "includeAssets")]
+    include_assets: bool,
+}
+
+impl ExportRequestParams {
+    fn into_request(self) -> ExportRequest {
+        ExportRequest {
+            from_day_key: self.from_day_key,
+            to_day_key: self.to_day_key,
+            format: self.format.unwrap_or_else(|| "markdown".to_owned()),
+            include_assets: self.include_assets,
+        }
+    }
 }
