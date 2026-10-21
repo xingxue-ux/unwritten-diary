@@ -3982,8 +3982,8 @@ fn a_v14_library_migrates_to_v15_preserving_vectors_and_adding_the_marker() {
     );
     assert_eq!(
         diary_core::SCHEMA_VERSION,
-        17,
-        "当前构建是 17（v15 的列/索引 + v16 的回收站列 + v17 的 styles 表）"
+        18,
+        "本轮升到 18（v15 的列/索引 + v16 回收站列 + v17 styles + v18 settings）"
     );
     let counters = Arc::new(Counters::default());
     core.set_embedder(stub(&counters, vec![]));

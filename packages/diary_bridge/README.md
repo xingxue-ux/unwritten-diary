@@ -69,8 +69,8 @@ dart pub get && dart test                    # 全套，跑完整读写链路
 
 ## 现状与未验证
 
-已验证（本机 WSL + Rust 1.94.1）：`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（579 通过 / 0 失败 / 8 忽略）、`dart analyze --fatal-infos`；`dart test` 的端到端链路由 CI 的 `bridge` 任务跑（本机未跑，不在这里报数字）。`BridgeSession` 全链路读写、`CoreError` → 契约第 7 节错误码映射、能力清单、中文与 emoji 往返。
+已验证（本机 WSL + Rust 1.94.1）：`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（593 通过 / 0 失败 / 8 忽略）、`dart analyze --fatal-infos`；`dart test` 的端到端链路由 CI 的 `bridge` 任务跑（本机未跑，不在这里报数字）。`BridgeSession` 全链路读写、`CoreError` → 契约第 7 节错误码映射、能力清单、中文与 emoji 往返。
 
-**没接的就是 `LibraryInfo.capabilities` 里没列的**（最近一次核对的差集，12 条）：备份三条（`backups.create` / `inspectBackup` / `restoreBackup`——契约收 `PlatformHost` 限域票据，票据解析协议待另立；本轮只有路径专用入口）、回收站五条（`captures.moveDay/trash/restore/previewPurge/purge`；#155 已在 main，适配层还没接）、`setRuntimeState`（核心没有资源调度入口）、`getSettings` / `updateSettings`（设置线在做）、`invokePlugin`（核心同步返回完整结果且没有结果读取入口，硬套 `jobId` 会造出「有 id 没结果」的假票据）。**已经接上**的是上面的 64 条：记录与导入、提取与来源定位、检索与索引、Provider 配置与回应、日记的生成与版本（含编辑/指定当前/合并）、风格（`styles.*`）、天列表（`diary.listDays`）、阅读导出（`exports.create`）与队列驱动。
+**没接的就是 `LibraryInfo.capabilities` 里没列的**（最近一次核对的差集，12 条）：备份三条（`backups.create` / `inspectBackup` / `restoreBackup`——契约收 `PlatformHost` 限域票据，票据解析协议待另立；本轮只有路径专用入口）、回收站五条（`captures.moveDay/trash/restore/previewPurge/purge`；#155 已在 main，适配层还没接）、`setRuntimeState`（核心没有资源调度入口）、`getSettings` / `updateSettings`（#162 只接到核心 / C ABI / ArkTS，Dart 适配层这一轮不碰）、`invokePlugin`（核心同步返回完整结果且没有结果读取入口，硬套 `jobId` 会造出「有 id 没结果」的假票据）。**已经接上**的是上面的 64 条：记录与导入、提取与来源定位、检索与索引、Provider 配置与回应、日记的生成与版本（含编辑/指定当前/合并）、风格（`styles.*`）、天列表（`diary.listDays`）、阅读导出（`exports.create`）与队列驱动。
 
 未验证：Windows/Android 真机上的新增入口（本机只跑了 Linux WSL）、调用取消、后台运行入口、Android arm64 真机。

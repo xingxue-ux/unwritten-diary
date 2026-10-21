@@ -44,14 +44,14 @@ fn committed_capture(core: &mut Core, text: &str) -> String {
 }
 
 #[test]
-fn empty_library_lands_on_the_latest_version_with_the_v16_column() {
+fn empty_library_lands_on_v18_with_the_v16_column() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("library.sqlite");
     let core = new_core(dir.path());
     assert_eq!(core.schema_version().unwrap(), SCHEMA_VERSION);
     assert_eq!(
-        SCHEMA_VERSION, 17,
-        "当前构建是 17；v16 的回收站列在这里仍必须建出来（v17 只加 styles）"
+        SCHEMA_VERSION, 18,
+        "本构建到 18：v16 回收站列 + v17 styles + v18 settings"
     );
     assert_eq!(column_count(&path, "captures", "trashed_from_state"), 1);
     drop(core);

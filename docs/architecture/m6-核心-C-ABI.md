@@ -168,7 +168,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 ## 6 方法映射表
 
-### 6.1 已接（44 条，`core.info.capabilities` 就是这份清单）
+### 6.1 已接（46 条，`core.info.capabilities` 就是这份清单）
 
 | 契约方法 | 核心调用 | `data` |
 |---|---|---|
@@ -206,6 +206,8 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `providers.list` | `Core::list_providers` | `Provider[]` |
 | `providers.test` | `Core::test_provider` | `ProviderTestReport` |
 | `providers.remove` | `Core::remove_provider` | `null` |
+| `settings.get` | `Core::get_settings` | `Settings`（与整理设置同一行；新库 `diary_time_zone = UTC`、自动整理默认关） |
+| `settings.update` | `Core::update_settings`（`settings` + `expected_revision`） | 更新后的 `Settings`；`revision_conflict` 时零改动 |
 | `backups.create` | `Core::create_backup`（同步入口；目标路径必须是沙箱内，已存在则拒绝覆盖） | `BackupReport` |
 | `backups.inspect` | `Core::inspect_backup`（同步入口；逐条目重算哈希，问题进 `issues`、不抛错） | `BackupInspection` |
 | `backups.restore` | `Core::restore_backup`（同步入口；只恢复到新库，来源/目标都必须沙箱内） | `RestoreReport` |
@@ -216,6 +218,12 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `diary.saveEdit` | `Core::save_diary_edit`（写新版本，基版不动） | `DiaryVersion` |
 | `diary.setCurrent` | `Core::set_diary_current` | `DiaryDay` |
 | `diary.merge` | `Core::merge_diary_versions`（不调模型，`modelCalls = 0`） | `DiaryVersion` |
+
+`settings.get` 的 `data` 是完整设置对象，字段名与核心 serde 输出一致（snake_case）：
+`diary_time_zone` / `revision` / `updated_at` / `auto_organize_enabled` /
+`auto_organize_time` / `default_style_id`。`settings.update` 的 `settings` 入参同时接受
+契约的 camelCase 写法（`diaryTimeZone` 等）；`revision` / `updated_at` 是只读结论，核心
+忽略，冲突保护只认外层的 `expected_revision`。
 
 `search.start` 的 `request` 里只有 `query` 必填，`mode`（默认 `keyword`；`semantic` 是
 语义那一路）、`filters`（全字段可选）、`page_size`（默认 20，与 `bridge_diary_api.dart`
@@ -355,13 +363,14 @@ C ABI 没有回调/推送面，所以 `core.events` 不装成 Stream，而是把
 
 **还没接的（按契约第 4 节分组，代码里带 `TODO(#108)`）**：`captures.moveDay/trash/
 restore/previewPurge/purge`（核心已有回收站状态机，#155 已合入 main）、`styles.list/get/save`
-（核心 `styles.rs` 已有，#166）、`diary.listDays` / `diary.generate`（核心有 `list_days` /
-`generate_diary`，后者要排 AI 任务）、`exports.create`（核心有 `create_export`，要模型生成正文）、
-`responses.*`、`settings.*`（核心只有 `OrganizeSettings`）、`plugins.*`（`run_plugin` 同步返回，
-契约要 `jobId`）——**核心已有实现，但 C ABI 这一层还没包装**。另外 `imports.*`、
-`assets.open/release`、`search.snapshot`、`jobs.nextWakeup`、`core.snapshot/close/setRuntimeState`
-也还没接。已接的 44 条见上表：`providers.*` 四条、`sources` 五条（含正文与定位）、`backups.*`
-三条、`core.events`、`diary.*` 六条都在里面。
+（核心 `styles.rs` 已有，#166）、`diary.listDays`（核心有 `list_days`）/ `diary.generate`
+（核心有 `generate_diary`，后者要排 AI 任务）、`exports.create`（核心有 `create_export`，要模型
+生成正文）、`responses.*`、`plugins.*`（`run_plugin` 同步返回完整结果，契约要 `jobId`）——
+**核心已有实现，但 C ABI 这一层还没包装**。另外 `imports.*`、`assets.open/release`、
+`search.snapshot`、`jobs.nextWakeup`、`core.snapshot/close/setRuntimeState` 也还没接。
+已接的 46 条见上表：`providers.*` 四条、`sources` 五条（含正文与定位）、`backups.*` 三条、
+`core.events`、`diary.*` 六条、`settings.get / update` 两条都在里面（settings 两条与整理设置
+共用核心 `settings` 表的同一行）。
 
 未接入的方法一律 `invalid_argument` + 已接入清单，**不静默成功、不假装支持**。
 
@@ -558,9 +567,10 @@ cargo +1.94.1 build -p diary_capi --release --target aarch64-unknown-linux-ohos
    `SKIP_ASR_LIBS=1` 构建）：`dlopen` 6 个符号、沙箱建库/落盘、ArkTS 包装、5 个一级入口、
    `diary.*` 读数与空态、任务中心二级入口都有逐页截图。**没有**验证的是两条模型链
    （no-asr 构建不能转写/语义）与大库性能；
-5. **方法子集**：只接了 44 条（§6.1；录音 5 条、`providers.*` 4 条、界面缺口 11 条、
-   `diary.*` 6 条、`sources` 正文 4 条、`backups.*` 3 条与 `core.events` 都是后续分片补的），
-   其余仍是扩展点；回收站 5 / styles 3 / 导出 1 共 9 条**核心还没有实现**（§6.2）；
+5. **方法子集**：只接了 46 条（§6.1；录音 5 条、`providers.*` 4 条、界面缺口 11 条、
+   `diary.*` 6 条、`settings.*` 2 条、`sources` 正文 4 条、`backups.*` 3 条与 `core.events`
+   都是后续分片补的），其余仍是扩展点；回收站 5 条**核心已有入口、桥面还没接**，
+   styles 3 / 导出 1 共 4 条**核心还没有实现**（§6.2）；
 6. **性能**：没测吞吐、没测 JSON 序列化占比、没测大库（十万条记录）下的表现；
 7. **并发压力**：跨线程用例是 15 次循环的**正确性**验证，不是压测（没有 P50/P99）；
 8. **错误 message 的语言**：桥面判定的是中文，`serde_json` 的解析错误是英文

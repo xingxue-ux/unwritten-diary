@@ -1088,7 +1088,7 @@ fn v10_library_migrates_to_latest_with_revision_backfilled() {
         conn.execute_batch(
             "ALTER TABLE diary_days DROP COLUMN revision;
              DROP TABLE diary_model_calls;
-             DROP TABLE organize_settings;
+             DROP TABLE settings;
              UPDATE schema_migrations SET version = 10;
              PRAGMA user_version = 10;",
         )
@@ -1105,9 +1105,10 @@ fn v10_library_migrates_to_latest_with_revision_backfilled() {
     assert_eq!(core.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
     assert_eq!(
         diary_core::SCHEMA_VERSION,
-17,
-        "11（整理表）+ 12（revision 列）合并成 13，B6 插件表 14，\
-         #128 的标记 + 口径索引 15；16 回收站加列（trashed_from_state）；styles 表在 17"
+        18,
+        "11（整理表）+ 12（revision 列）合并成 13，B6 插件表抬到 14，\
+         #128 复审的自动重建标记 + 口径索引抬到 15；16（回收站列）/ 17（styles 表）\
+         与 18（settings 表）三段都由本支一并带上"
     );
     // 两段迁移都跑了：v11 的两张表在，v12 的列在（下面用行为断言 revision）。
     {
@@ -1115,7 +1116,7 @@ fn v10_library_migrates_to_latest_with_revision_backfilled() {
         let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
-                 AND name IN ('organize_settings', 'diary_model_calls')",
+                 AND name IN ('settings', 'diary_model_calls')",
                 [],
                 |row| row.get(0),
             )

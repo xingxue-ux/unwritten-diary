@@ -64,8 +64,9 @@
 //! 「没有任何材料、也没有版本」的一天在核心里是 `not_found`，这是**空态**不是错误，
 //! 界面据此显示「还没有成篇日记」。
 //!
-//! 还差的两条不在本题材里：`diary.listDays`（核心还没有按天枚举的入口）与
-//! `diary.generate`（核心有 `generate_diary`，但它要排 AI 任务，属于生成那一片）。
+//! 还差的两条不在本题材里：`diary.listDays`（核心已加 `list_days`，#168 合入 main；
+//! C ABI 这一层还没包装）与 `diary.generate`（核心有 `generate_diary`，但它要排 AI
+//! 任务，属于生成那一片）。
 //! 界面**不显示**这两条的按钮，只如实说明缺口。
 //!
 //! 两条「为什么在这里」的说明（本块的任务书只点名了另外六条）：
@@ -90,16 +91,18 @@
 //! ## 还没接的（按契约第 4 节分组，TODO(#108)）
 //!
 //! - 回收站：`captures.moveDay` / `captures.trash` / `captures.restore` /
-//!   `captures.previewPurge` / `captures.purge`——**核心还没有对应入口**（没有
-//!   `trash_capture` / `preview_purge` / `purge_capture` / `move_day`），不是桥面漏接；
+//!   `captures.previewPurge` / `captures.purge`——**核心已有回收站状态机（#155 已合入
+//!   main），C ABI 这一层还没包装**，不是核心缺实现；
 //! - 文件：`imports.*`、`assets.open` / `assets.release`；
 //! - 检索：`search.snapshot`（`search.*` 只差它）；
 //! - 任务：`jobs.nextWakeup`；
-//! - 风格与导出：`styles.*` / `exports.create`——**核心还没有**风格落库与导出入口；
-//! - 日记：`diary.listDays`（核心还没有按天枚举入口）/ `diary.generate`（核心有
-//!   `generate_diary`，但要排 AI 任务，属于生成那一片）；
+//! - 风格与导出：`styles.list/get/save`（核心 `styles.rs` 已有，#166）与
+//!   `exports.create`（核心 `export.rs` 已有，#167）——核心有实现，C ABI 还没包装；
+//! - 日记：`diary.listDays`（核心有 `list_days`，C ABI 还没包装）/ `diary.generate`
+//!   （核心有 `generate_diary`，但要排 AI 任务，属于生成那一片）；
 //! - 其余：`core.snapshot` / `core.close` / `core.setRuntimeState`、`responses.*`、
-//!   `settings.*`、`plugins.*`——要么核心还没有对应实现，要么属于后面的块。
+//!   `plugins.*`——要么核心还没有对应实现，要么属于后面的块。
+//!   （`settings.get` / `settings.update` 已接上，见 [`WIRED_METHODS`]。）
 //!
 //! 没接的方法一律报 `invalid_argument`，message 里点名「未接入」并附上已接入清单，
 //! **不会**静默成功、也不会假装支持。
@@ -109,7 +112,7 @@ use diary_core::model::{NativeRecordingStatus, RecordingState, SegmentManifest, 
 use diary_core::provider::local_engine::is_ohos_app_data_path;
 use diary_core::{
     Core, CoreError, CreateDraftInput, JobState, Provider, ProviderCapability, SearchFilters,
-    SearchMode, SearchRequest,
+    SearchMode, SearchRequest, Settings,
 };
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -154,6 +157,8 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "providers.list",
     "providers.test",
     "providers.remove",
+    "settings.get",
+    "settings.update",
     "backups.create",
     "backups.inspect",
     "backups.restore",
@@ -455,6 +460,27 @@ pub(crate) fn dispatch(
             let input: ProviderIdParams = parse(params)?;
             core.remove_provider(&input.provider_id)?;
             Ok(Value::Null)
+        }
+        // ------------------------------------------------------------ 设置（契约 4.4）
+        // 完整设置对象与整理设置共用核心 `settings` 表的同一行；这里不拼业务规则，
+        // 只做「JSON ↔ 核心对象」的搬运与参数形状校验。
+        "settings.get" => {
+            no_params(method, params)?;
+            to_value(core.get_settings()?)
+        }
+        "settings.update" => {
+            let input: UpdateSettingsParams = parse(params)?;
+            // `defaultStyleId` 的三态在这里落成最终值：**省略 = 不动**（读当前值原样
+            // 带上），显式 `null` = 清空，显式值 = 设成它。放在这里而不是核心，是因为
+            // 「字段缺没缺」只有解析 JSON 的这一层知道；核心拿到的始终是完整对象。
+            // 先读后写的并发安全由 `expected_revision` 的乐观锁保证：读完到写之间
+            // 有人改过，`update_settings` 会报 `revision_conflict` 而不是拿旧值覆盖。
+            let default_style_id = match &input.settings.default_style_id {
+                Some(value) => value.clone(),
+                None => core.get_settings()?.default_style_id,
+            };
+            let settings = input.settings.to_settings(default_style_id);
+            to_value(core.update_settings(&settings, input.expected_revision)?)
         }
         // ------------------------------------------------------------ 备份与恢复
         // 核心这三个是**同步**入口（契约那三行返回 jobId 的任务化是 #70，不在本块）。
@@ -1229,6 +1255,87 @@ struct TestProviderParams {
     scope: Vec<ProviderCapability>,
 }
 
+/// `settings.update`：完整设置对象 + `expectedRevision`（契约第 4.4 节）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateSettingsParams {
+    settings: SettingsInput,
+    #[serde(alias = "expectedRevision")]
+    expected_revision: i64,
+}
+
+/// `Settings` 的入参形态。
+///
+/// 字段名与响应一样以核心的 snake_case 为准，同时接受契约里的 camelCase。
+/// `revision` / `updated_at` 是**只读结论**：调用方给不给都不影响写入（核心忽略它们，
+/// 冲突保护只认外层的 `expected_revision`），所以这里允许省略——首次设置不必先伪造
+/// 一个时间戳。
+///
+/// `diaryTimeZone` / `autoOrganizeEnabled` / `autoOrganizeTime` 三个可写字段必填，
+/// 拼错或漏掉都是 `invalid_argument`。`defaultStyleId` 是**三态**（见
+/// [`deserialize_present`]）：字段**缺失** = 不改已经设好的默认风格，显式 `null` =
+/// 清空，显式值 = 设成它。
+///
+/// 为什么不做成「四字段全必填」：契约的 `Settings.defaultStyleId` 本来就是可空字段，
+/// 而 C ABI 的入参只承载可写的那几个字段（`settings.update` 在核心是「改这四个可写
+/// 字段、模板与上限原样不动」的部分更新）。把 `defaultStyleId` 定成必填会让一个
+/// **不认识这个新字段**的旧客户端无法更新时区/开关——它只能瞎传一个值；而如果单独用
+/// `#[serde(default)]`（复审指出的写法），省略又会被当成 `null`，把用户已经设好的默认
+/// 风格**静默清空**。三态是唯一能同时保住「旧客户端能更新」与「不静默丢设置」的写法。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsInput {
+    #[serde(alias = "diaryTimeZone")]
+    diary_time_zone: String,
+    #[serde(default, alias = "revision")]
+    revision: i64,
+    #[serde(default, alias = "updatedAt")]
+    updated_at: Option<chrono::DateTime<Utc>>,
+    #[serde(alias = "autoOrganizeEnabled")]
+    auto_organize_enabled: bool,
+    #[serde(alias = "autoOrganizeTime")]
+    auto_organize_time: String,
+    #[serde(
+        default,
+        alias = "defaultStyleId",
+        deserialize_with = "deserialize_present"
+    )]
+    default_style_id: Option<Option<String>>,
+}
+
+/// 区分「字段缺失」「显式 `null`」「显式值」的三态反序列化适配器。
+///
+/// `Option<Option<T>>` 直接反序列化时，`null` 与字段缺失都会得到外层的 `None`，两种
+/// 语义就分不开了。这里只反序列化**内层** `Option<T>`，再包一层 `Some`：
+///
+/// - 字段缺失 → `#[serde(default)]` 给 `None`（外层）；
+/// - 显式 `null` → `Some(None)`；
+/// - 显式值 → `Some(Some(value))`。
+fn deserialize_present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+impl SettingsInput {
+    /// 转成核心对象。`revision` / `updated_at` 会被 `update_settings` 忽略，这里给 0 /
+    /// 当前时间只是为了满足结构体的形状，不参与任何判断。
+    ///
+    /// `default_style_id` 由调用方先解析好三态再传进来（缺失时取当前值），这里不再
+    /// 关心「省略」——到这一步已经是最终要写入的值。
+    fn to_settings(&self, default_style_id: Option<String>) -> Settings {
+        Settings {
+            diary_time_zone: self.diary_time_zone.clone(),
+            revision: self.revision,
+            updated_at: self.updated_at.unwrap_or_else(Utc::now),
+            auto_organize_enabled: self.auto_organize_enabled,
+            auto_organize_time: self.auto_organize_time.clone(),
+            default_style_id,
+        }
+    }
+}
 // ---------------------------------------------------------------- 备份与恢复
 
 /// `backups.create`：目标路径 + 是否含原件。

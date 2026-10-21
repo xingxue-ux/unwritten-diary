@@ -1790,6 +1790,36 @@ pub struct OrganizeSettings {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 可编辑设置（契约第 4.4 节 `settings.get / update`）。
+///
+/// 这是**完整设置对象**的落地。它与 [`OrganizeSettings`] **共用 `settings` 表的同一行**：
+/// - `auto_organize_enabled` 就是整理设置的 `enabled`；
+/// - `auto_organize_time` 就是整理设置的 `auto_organize_time`；
+/// - `revision` / `updated_at` 是**整行**的乐观锁与修改时间，两个入口看到的是同一个数。
+///
+/// 整理设置里还有模板、参数与各项上限，它们不在契约的 `Settings` 对象里（契约不新增
+/// 字段），但仍在同一行上，由 [`OrganizeSettings`] 读写。`settings.update` **只改**
+/// 这里列出的字段，不碰模板与上限；`update_organize_settings` 反过来只改整理那一段，
+/// 不碰 `diary_time_zone` / `default_style_id`。两个入口不是两套存储。
+///
+/// `diary_time_zone` 的初始值是 **`UTC`**：核心不知道设备时区，平台层在首次启动时用
+/// 设备时区调用一次 `settings.update` 写入（见 `docs/architecture/m4-整理与自动化.md`）。
+/// 在平台层写入之前，核心不会猜一个时区。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    /// IANA 时区名（例如 `Asia/Shanghai`）。只影响新材料的默认归属；已有日记不搬动。
+    pub diary_time_zone: String,
+    /// 整行设置的版本（乐观锁；每次真的改动 +1）。
+    pub revision: i64,
+    pub updated_at: DateTime<Utc>,
+    /// 自动整理开关。**默认 `false`**：没有用户显式开启，核心不会自动调用任何服务。
+    pub auto_organize_enabled: bool,
+    /// 计划触发时间 `HH:mm`。是计划时刻，不是完成承诺。
+    pub auto_organize_time: String,
+    /// 新建日记默认使用的风格 id。风格表尚未在本构建落地，这里按不透明字符串存。
+    pub default_style_id: Option<String>,
+}
+
 /// 自动整理的配额与用量现状。数字都来自**真实的调用账本**，不是估算。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OrganizeQuota {

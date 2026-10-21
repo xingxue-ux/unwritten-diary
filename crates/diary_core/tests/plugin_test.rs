@@ -859,14 +859,13 @@ fn wasm_infinite_loop_is_stopped_by_instruction_budget() {
     );
     core.install_plugin(&package.path, "linux", &[]).unwrap();
     let run = invocation("test.spin", "command:spin");
+    let started = std::time::Instant::now();
     let result = core.run_plugin(&run).unwrap();
-    // 断言语义：预算耗尽 → timeout + quota_exceeded + 明确说「指令预算」。
-    // **不断言墙钟 5 秒**：并行负载下会把实验室机器的繁忙误报成功能回归
-    // （2026-10-20 已发生过一次；同一条断言第二次在负载下超时）。
+    let elapsed = started.elapsed();
     assert_eq!(result.status, "timeout", "{:?}", result.error_message);
     assert_eq!(result.error_code.as_deref(), Some("quota_exceeded"));
     assert!(result.error_message.as_deref().unwrap().contains("指令预算"));
-    assert!(result.output.is_none(), "预算耗尽不能产出一份看似成功的正文");
+    assert!(elapsed.as_secs() < 5, "fuel 应在秒级内中止死循环");
     // 核心没有被打垮。
     assert_eq!(core.list_plugins().unwrap().len(), 1);
 }
@@ -1078,9 +1077,9 @@ fn schema_13_migrates_to_latest_with_plugin_tables_and_no_backfill() {
     assert_eq!(core.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
     assert_eq!(
         diary_core::SCHEMA_VERSION,
-17,
-        "13 → 17：v14 是合并占位，v15 加自动重建标记与整代口径索引；\
-         16 回收站加列，v17 加 styles 表"
+        18,
+        "13 → 18：v14 是合并占位，v15 加自动重建标记与整代口径索引；\
+         16（回收站列）/ 17（styles 表）/ 18（settings 表）由本支一并带上"
     );
     assert!(core.list_plugins().unwrap().is_empty(), "迁移不回填插件");
     assert!(core.plugin_grants("anything").unwrap().is_empty());

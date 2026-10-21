@@ -108,4 +108,4 @@ cd packages/diary_bridge && dart test
 
 **能力清单**：适配层只报 `_wiredMethods` 与桥接 `wired_capabilities` 的交集；这 12 条都不在里面（包括备份三条）。#166 接上了风格三条（`styles.list` / `styles.get` / `styles.save`），#167 又接上了 `diary.listDays` 与 `exports.create`，所以它们从上面的差集里移除了；覆盖数 59/76 → 62/76 → **64/76**。
 
-**验证层级**：本机 Linux（WSL2 x86_64、Rust 1.94.1）真 cdylib + 真 SQLite；`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（572 通过 / 0 失败 / 8 忽略）、`dart analyze --fatal-infos` 都实跑；`dart test`（端到端）由 CI 的 `bridge` 任务跑，本机未跑。Windows/Android 真机未跑。
+**验证层级**：本机 Linux（WSL2 x86_64、Rust 1.94.1）真 cdylib + 真 SQLite；`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（593 通过 / 0 失败 / 8 忽略）、`dart analyze --fatal-infos` 都实跑；`dart test`（端到端）由 CI 的 `bridge` 任务跑，本机未跑。Windows/Android 真机未跑。

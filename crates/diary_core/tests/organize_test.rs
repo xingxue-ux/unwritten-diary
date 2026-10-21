@@ -1295,14 +1295,14 @@ fn v10_library_migrates_to_latest_with_both_migrations() {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "DROP TABLE diary_model_calls;
-             DROP TABLE organize_settings;
+             DROP TABLE settings;
              ALTER TABLE diary_days DROP COLUMN revision;
              UPDATE schema_migrations SET version = 10;
              PRAGMA user_version = 10;",
         )
         .unwrap();
         assert!(conn
-            .query_row("SELECT COUNT(*) FROM organize_settings", [], |row| row
+            .query_row("SELECT COUNT(*) FROM settings", [], |row| row
                 .get::<_, i64>(0))
             .is_err());
         assert!(conn
@@ -1315,12 +1315,13 @@ fn v10_library_migrates_to_latest_with_both_migrations() {
     assert_eq!(core.schema_version().unwrap(), diary_core::SCHEMA_VERSION);
     assert_eq!(
         diary_core::SCHEMA_VERSION,
-17,
-        "11（整理表）+ 12（revision 列）合并成 13，B6 插件表 14，\
-         #128 的标记 + 口径索引 15；16 回收站加列（trashed_from_state）；styles 表在 17"
+        18,
+        "11（整理表）+ 12（revision 列）合并成 13，B6 插件表抬到 14，\
+         #128 复审的自动重建标记 + 口径索引抬到 15；16（回收站列）/ 17（styles 表）\
+         与 18（settings 表）三段都由本支一并带上"
     );
     // v11 的两张表都在（迁移真的跑了两段，而不是只跑一段）：
-    // `diary_model_calls` 能查、`organize_settings` 有一行默认值。
+    // `diary_model_calls` 能查、`settings` 有一行默认值。
     assert_eq!(call_rows(&core, None), 0);
     let settings = core.organize_settings().unwrap();
     assert!(!settings.enabled, "升级绝不替用户打开自动整理");
@@ -1333,7 +1334,7 @@ fn v10_library_migrates_to_latest_with_both_migrations() {
         let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
-                 AND name IN ('organize_settings', 'diary_model_calls')",
+                 AND name IN ('settings', 'diary_model_calls')",
                 [],
                 |row| row.get(0),
             )
@@ -1402,7 +1403,7 @@ fn a_b4c_only_library_gets_the_v11_tables_without_resetting_revision() {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "DROP TABLE diary_model_calls;
-             DROP TABLE organize_settings;
+             DROP TABLE settings;
              UPDATE schema_migrations SET version = 12;
              PRAGMA user_version = 12;",
         )

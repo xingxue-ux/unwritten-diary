@@ -3016,3 +3016,212 @@ fn backup_paths_are_confined_to_the_ohos_sandbox_when_enforced() {
         crate::methods::validate_sandbox_path_with("target_path", "/tmp/backup.zip", false).is_ok()
     );
 }
+
+/// `settings.get / settings.update`（契约 4.4）走 C ABI 的 JSON 面：
+/// 默认值、往返、`revision_conflict` 零改动，以及 **capabilities 真的把它们列出来**。
+#[test]
+fn settings_get_and_update_roundtrip_through_the_c_abi() {
+    let (dir, _path, handle) = open_temp("settings");
+    let info = expect_ok(&call(handle, "core.info", Value::Null));
+    let capabilities = info["capabilities"].as_array().unwrap();
+    assert!(capabilities.iter().any(|name| name == "settings.get"));
+    assert!(capabilities.iter().any(|name| name == "settings.update"));
+
+    let initial = expect_ok(&call(handle, "settings.get", Value::Null));
+    assert_eq!(initial["diary_time_zone"], json!("UTC"));
+    assert_eq!(initial["revision"], json!(1));
+    assert_eq!(initial["auto_organize_enabled"], json!(false));
+    assert_eq!(initial["auto_organize_time"], json!("22:30"));
+    assert!(initial["default_style_id"].is_null());
+
+    // 入参用契约的 camelCase 也接受（C ABI 同时接受 snake_case 与 camelCase）。
+    let updated = expect_ok(&call(
+        handle,
+        "settings.update",
+        json!({
+            "settings": {
+                "diaryTimeZone": "Asia/Shanghai",
+                "autoOrganizeEnabled": true,
+                "autoOrganizeTime": "23:15",
+                "defaultStyleId": "sty_default",
+            },
+            "expectedRevision": 1,
+        }),
+    ));
+    assert_eq!(updated["revision"], json!(2));
+    assert_eq!(updated["diary_time_zone"], json!("Asia/Shanghai"));
+    assert_eq!(updated["auto_organize_enabled"], json!(true));
+    assert_eq!(updated["auto_organize_time"], json!("23:15"));
+    assert_eq!(updated["default_style_id"], json!("sty_default"));
+
+    let reread = expect_ok(&call(handle, "settings.get", Value::Null));
+    assert_eq!(reread, updated, "update 之后 get 必须一致");
+
+    // 过期 revision：错误码是 revision_conflict，且一个字节不改。
+    let before_conflict = expect_ok(&call(handle, "settings.get", Value::Null));
+    let error = expect_error(
+        &call(
+            handle,
+            "settings.update",
+            json!({
+                "settings": {
+                    "diary_time_zone": "Europe/Berlin",
+                    "auto_organize_enabled": false,
+                    "auto_organize_time": "08:00",
+                    "default_style_id": null,
+                },
+                "expected_revision": 1,
+            }),
+        ),
+        "revision_conflict",
+    );
+    assert!(error.contains("重新读取设置"), "{error}");
+    let after_conflict = expect_ok(&call(handle, "settings.get", Value::Null));
+    assert_eq!(after_conflict, before_conflict, "冲突必须零改动");
+
+    // 参数拼错 / 时区非法都是 invalid_argument（不静默回落 UTC）。
+    expect_error(
+        &call(
+            handle,
+            "settings.update",
+            json!({
+                "settings": {
+                    "diary_time_zone": "Asia / Shanghai",
+                    "auto_organize_enabled": true,
+                    "auto_organize_time": "23:15",
+                },
+                "expected_revision": 2,
+            }),
+        ),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(
+            handle,
+            "settings.update",
+            json!({
+                "settings": {
+                    "diary_time_zone": "Asia/Shanghai",
+                    "auto_organize_enabled": true,
+                    "auto_organize_time": "23:15",
+                    "diaryTimeZone": "UTC",
+                },
+                "expected_revision": 2,
+            }),
+        ),
+        "invalid_argument",
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 复审第 4 条：`settings.update` 的 `defaultStyleId` **省略 ≠ 显式 null**。
+///
+/// - **省略** = 不改（`settings.update` 在这一层是部分更新：只改传了的可写字段；
+///   一个不认识 `defaultStyleId` 的旧客户端更新时区/开关时，不能顺手把用户设好的
+///   默认风格清成 NULL）；
+/// - **显式 `null`** = 清空（契约的 `Settings.defaultStyleId` 本来就是可空字段）；
+/// - 空对象 / 缺必填字段 / 字段拼错都是 `invalid_argument`，**不静默补默认值**。
+#[test]
+fn settings_update_keeps_the_default_style_when_the_field_is_omitted() {
+    let (dir, _path, handle) = open_temp("settings-default-style");
+
+    // 先把默认风格设上（revision 1 → 2）。
+    let set = expect_ok(&call(
+        handle,
+        "settings.update",
+        json!({
+            "settings": {
+                "diary_time_zone": "Asia/Shanghai",
+                "auto_organize_enabled": true,
+                "auto_organize_time": "23:15",
+                "defaultStyleId": "sty_default",
+            },
+            "expected_revision": 1,
+        }),
+    ));
+    assert_eq!(set["default_style_id"], json!("sty_default"));
+    assert_eq!(set["revision"], json!(2));
+
+    // 省略 `defaultStyleId`：只改计划时间，默认风格必须原样保留（revision 2 → 3）。
+    let omitted = expect_ok(&call(
+        handle,
+        "settings.update",
+        json!({
+            "settings": {
+                "diary_time_zone": "Asia/Shanghai",
+                "auto_organize_enabled": true,
+                "auto_organize_time": "06:30",
+            },
+            "expected_revision": 2,
+        }),
+    ));
+    assert_eq!(omitted["auto_organize_time"], json!("06:30"));
+    assert_eq!(omitted["revision"], json!(3));
+    assert_eq!(
+        omitted["default_style_id"],
+        json!("sty_default"),
+        "省略 defaultStyleId 不能清空已经设好的默认风格"
+    );
+    let reread = expect_ok(&call(handle, "settings.get", Value::Null));
+    assert_eq!(
+        reread["default_style_id"],
+        json!("sty_default"),
+        "重新读出来仍然是已设的风格"
+    );
+
+    // 显式 null 才是清空（revision 3 → 4）。
+    let cleared = expect_ok(&call(
+        handle,
+        "settings.update",
+        json!({
+            "settings": {
+                "diary_time_zone": "Asia/Shanghai",
+                "auto_organize_enabled": true,
+                "auto_organize_time": "06:30",
+                "defaultStyleId": null,
+            },
+            "expected_revision": 3,
+        }),
+    ));
+    assert!(
+        cleared["default_style_id"].is_null(),
+        "显式 null 才是清空：{cleared}"
+    );
+    assert_eq!(cleared["revision"], json!(4));
+
+    // 空参数 / 缺 settings / 缺必填字段：全部 invalid_argument，一个字节不改。
+    let before = expect_ok(&call(handle, "settings.get", Value::Null));
+    expect_error(
+        &call(handle, "settings.update", json!({})),
+        "invalid_argument",
+    );
+    expect_error(
+        &call(handle, "settings.update", json!({"settings": {}})),
+        "invalid_argument",
+    );
+    let missing = expect_error(
+        &call(
+            handle,
+            "settings.update",
+            json!({
+                "settings": {
+                    "diary_time_zone": "Asia/Shanghai",
+                    "auto_organize_enabled": true,
+                },
+                "expected_revision": 4,
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(
+        missing.contains("auto_organize_time"),
+        "缺必填字段要指名道姓：{missing}"
+    );
+    let after = expect_ok(&call(handle, "settings.get", Value::Null));
+    assert_eq!(after, before, "非法参数必须零改动");
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
