@@ -121,6 +121,11 @@ E ArkCompiler: [ecmascript] export objects of native so is undefined …
 ```
 
 `CLOSED handles=0` 是句柄泄漏自检（`openHandleCount()` 来自 shim 的登记表）。
+注意：这只覆盖「直接 `open`/`close`」的链路（Smoke、DeviceVerify、录音主线程会话）。
+页面走的 `CoreGateway` 会按资料库路径缓存 worker 会话（`preview_token` 等内存态必须
+跨调用存活），所以**用过页面之后**进程里会常驻句柄：每个 taskpool 线程最多 1 个
+（真机实测 4 线程池 ⇒ 4 个）。`CoreWorker.closeAll()` 只清执行它的那条线程；其余
+线程的句柄随进程退出回收，**不能保证调用后归零**。这不是泄漏。
 
 ## 用临时 bundleName 做真机验证
 
