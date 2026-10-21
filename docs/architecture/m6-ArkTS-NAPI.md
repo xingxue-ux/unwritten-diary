@@ -297,11 +297,19 @@ CARGO_BUILD_JOBS=4 ./scripts/build-native.sh
 # 3. HAP：ohpm install + hvigorw assembleHap
 ./scripts/build-hap.sh
 
-# 4. 契约静态核对 + 文档检查
+# 4. 契约静态核对 + ArkTS 语法/作用域 + 文档检查
 cd ../..
 python3 tools/check_arkts_capi_contract.py
+python3 tools/check_arkts_scope.py     # pages/ 与 ui/ 除外，需 tsc
 python3 tools/check_docs.py
 ```
+
+`check_arkts_scope.py` 与 CI 的 `arkts` job 跑的是同一个脚本：把 `.ets` 当 `.ts`
+交给 `tsc --noEmit`，抓**语法错误**（少个 `}` 就让整个 HAP 编不出来）与**作用域
+错误**（重复粘贴的代码块引用别处的变量）。`pages/`、`ui/` 用 ArkUI 尾随闭包语法，
+`tsc` 解析不了，脚本会排除——**这两处只有 `build-hap.sh` 能验**，见
+`CONTRIBUTING.md` §10.1.2。鸿蒙 SDK 闭源且约 6 GB，装不进 CI，所以编译本身
+**永远进不了 CI**，这是刻意的取舍而不是遗漏。
 
 复现单步：
 
