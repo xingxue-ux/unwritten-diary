@@ -13,6 +13,11 @@ import 'third_party/diary_core/model.dart';
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>>
 abstract class BridgeSession implements RustOpaqueInterface {
+  /// 记录一个需要用户处理的问题已经展示/处理过，契约 `jobs.acknowledgeAttention`。
+  ///
+  /// 只是把确认写进库，不改变任务状态、不删除任何东西；重复确认是幂等的。
+  Future<void> acknowledgeAttention({required String attentionKey});
+
   Future<void> cancelImport({required String importId});
 
   /// User cancellation keeps captured material and version history intact.
@@ -45,6 +50,14 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// `backups.create` 列进能力清单（能力是窄化过的，见 `wired_capabilities`）。
   Future<BackupReport> createBackup({required String targetPath});
 
+  /// 创建备份 + 写一条 `succeeded` 的 `backup` 任务记录，契约 `backups.create` 的
+  /// `jobId` 入口。
+  ///
+  /// **同步完成**：jobId 指向已经完成的记录，不是排队任务。返回的 `Job.targetIds`
+  /// 是备份包路径，`get_job` 读得到。目标已存在/源库有原件不可用等错误与
+  /// `create_backup` 一致，且失败时不留包、不留假任务。
+  Future<Job> createBackupJob({required String targetPath});
+
   /// 创建草稿，契约第 4.1 节 `captures.createDraft`。
   Future<Capture> createDraft({
     DateTime? occurredAt,
@@ -53,18 +66,23 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
-  /// 把日期范围内**当前日记正文**导成 Markdown / 纯文本，契约 `exports.create`。
-  ///
-  /// **同步完成**：返回的 `jobId` 指向一条 `state = succeeded` 的导出任务记录，
-  /// `packageTicket` 是核心管理的导出文件绝对路径。契约的 `ExportTicket` 只有
-  /// `jobId` / `packageTicket`，所以 Dart 适配层拿不到这里的 `byteSize`；桥接层
-  /// 直接暴露完整结果（`path` / `byteSize` / `restorable = false`）。
-  ///
-  /// **这不是备份**：`restorable` 恒为 false，不能用于恢复资料库。
-  Future<ExportTicket> createExport({required ExportRequest request});
-
   /// 从某个序号之后读取持久业务事件。
+  ///
+  /// 核心按**分页**读（`Core::events_page`，SQL 带 `LIMIT`）；这一层为了保持 Dart
+  /// 面「一次拿全」的语义循环取页，但每次查询只取 `EVENTS_PAGE` 条，不会把整张
+  /// 事件表一次性 materialize 进 SQLite → Rust 的中间列表。真正的有界读取在
+  /// **C ABI** 那一路（`core.events` 直接透传 `limit`/`truncated`）；这里仍是
+  /// 「全部事件」的返回形状，调用方自己管好游标。
   Future<List<DomainEvent>> eventsSince({required PlatformInt64 fromSequence});
+
+  /// 从某个序号之后读取**一批**持久业务事件（最多 `limit` 条）。
+  ///
+  /// 适配层的 `events` 流用它分页轮询：从 0 订阅一个很大的库时也只读一批，
+  /// 不会把整张事件表一次搬进 Dart 堆。`limit` 由核心夹在 1..=1000。
+  Future<List<DomainEvent>> eventsSincePage({
+    required PlatformInt64 fromSequence,
+    required int limit,
+  });
 
   /// 对某个来源（来源 id 或修订 id 都行）跑一次提取。
   Future<ExtractedContent> extractSource({required String sourceRef});
@@ -161,14 +179,6 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required int limit,
   });
 
-  /// 有哪些天、每天多少条材料（回收站不算），按 dayKey 倒序。
-  Future<DiaryDayPage> listDays({
-    String? fromDayKey,
-    String? toDayKey,
-    String? cursor,
-    required int pageSize,
-  });
-
   /// 分页读某一天的日记版本，契约 `diary.listVersions`。最新在前。
   Future<DiaryVersionPage> listDiaryVersions({
     required String dayKey,
@@ -214,6 +224,16 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 打开（或创建）资料库。
   static Future<BridgeSession> open({required String libraryPath}) =>
       RustLib.instance.api.crateApiBridgeSessionOpen(libraryPath: libraryPath);
+
+  /// 打开只读资产租约，契约 `assets.open`。
+  ///
+  /// 核心只接受 `preview` / `play` / `export` 三种用途，并校验资产处于 `ready`、
+  /// 文件真的在磁盘上；租约是**限域**的（只有这个句柄，不是任意路径），默认 10 分钟
+  /// 过期。返回的 `handle` 是资料库私有目录里的绝对路径，交给平台层打开/播放。
+  Future<AssetLease> openAsset({
+    required String assetId,
+    required String usage,
+  });
 
   /// 整理设置：开关（**默认关**）、模板与参数、各项上限与计划触发时间。
   ///
@@ -306,6 +326,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required SegmentManifest segment,
   });
 
+  /// 释放资产租约，契约 `assets.release`。租约不存在报 `not_found`，重复释放不静默成功。
+  Future<void> releaseAsset({required String leaseId});
+
   /// 移除服务配置，契约 `providers.remove`。**不删除日记**，也不删除已经生成的回应。
   Future<void> removeProvider({required String providerId});
 
@@ -327,6 +350,16 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 版本高于本核心 ⇒ `incompatible_backup`。返回的 `library_path` 直接交给
   /// `BridgeSession.open` 就能打开恢复出来的库。
   Future<RestoreReport> restoreBackup({
+    required String packagePath,
+    required String targetDir,
+  });
+
+  /// 恢复到新库 + 写一条 `succeeded` 的 `restore` 任务记录，契约 `backups.restore`
+  /// 的 `jobId` 入口。
+  ///
+  /// **同步完成**；`Job.targetIds = [libraryPath, rootDir]`，调用方据此打开新库。
+  /// 目标非空/损坏包/版本不兼容会在写任务行之前拒绝，当前库零改动。
+  Future<Job> restoreBackupJob({
     required String packagePath,
     required String targetDir,
   });

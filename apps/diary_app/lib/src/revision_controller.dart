@@ -1,6 +1,8 @@
 import 'package:diary_api/diary_api.dart';
 import 'package:flutter/foundation.dart';
 
+import 'ui_strings.dart';
+
 enum RevisionSaveResult { saved, unchanged, failed }
 
 /// Keeps the durable revision and its parent together while a source is open.
@@ -187,7 +189,16 @@ class RevisionController extends ChangeNotifier {
             (failure.code == DiaryErrorCode.revisionConflict ||
                 failure.code == DiaryErrorCode.idempotencyConflict)) {
           _requiresReopen = true;
-          error = '记录版本发生冲突。文字仍在编辑框中，请先复制，再返回重新打开这条记录。';
+          error =
+              '${uiStrings.t('error.revision_conflict')}。'
+              '${uiStrings.t('error.revision_conflict.hint')}'
+              '文字仍在编辑框中，请先复制，再返回重新打开这条记录。';
+        } else if (failure is DiaryException &&
+            failure.code == DiaryErrorCode.invalidState) {
+          _requiresReopen = true;
+          error =
+              '${uiStrings.t('error.invalid_state')}。'
+              '${uiStrings.t('error.invalid_state.hint')}';
         } else {
           error = '保存结果尚未确认。保持文字不变重试会沿用同一次操作；若要修改文字，请先复制，再返回重新打开这条记录。';
         }

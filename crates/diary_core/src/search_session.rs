@@ -1344,6 +1344,9 @@ fn keyword_hits(
                 SearchHit {
                     hit_id: row.segment_id.clone(),
                     group_id: row.source_id.clone(),
+                    // 片段命中：`group_id` 是 source_id（折叠用），跳记录详情页要用
+                    // 它所属记录的 capture_id。
+                    capture_id: row.capture_id,
                     source_kind: SourceKind::from_wire(&row.kind),
                     matched_by: vec![MatchedBy::Keyword],
                     coverage: row.coverage,
@@ -1365,6 +1368,9 @@ fn keyword_hits(
                 *doc,
                 SearchHit {
                     hit_id: format!("cap_{}", row.capture_id),
+                    // 记录文字命中：一段文字天然自成一个组，group_id 与 capture_id
+                    // 在这里恰好相同；两种命中都以 capture_id 为准。
+                    capture_id: row.capture_id.clone(),
                     group_id: row.capture_id,
                     source_kind: SourceKind::Text,
                     matched_by: vec![MatchedBy::Keyword],

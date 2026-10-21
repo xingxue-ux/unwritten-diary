@@ -96,13 +96,17 @@ class LibraryCareApi extends MockDiaryApi {
     assetIds: const ['asset-1'],
   );
 
+  bool? lastDeleteDiaryVersions;
+
   @override
   Future<PurgeResult> purgeCapture({
     required String id,
     required String previewToken,
+    bool deleteDiaryVersions = false,
     required String operationId,
   }) async {
     purgeCalls += 1;
+    lastDeleteDiaryVersions = deleteDiaryVersions;
     expect(previewToken, 'single-use-token');
     return PurgeResult(captureId: id, purgedAssetIds: const ['asset-1']);
   }
@@ -179,5 +183,21 @@ void main() {
     expect(preview?.assetIds, const ['asset-1']);
     expect(await controller.purge(preview!), isTrue);
     expect(api.purgeCalls, 1);
+    expect(api.lastDeleteDiaryVersions, isFalse, reason: '默认保留日记版本');
+  });
+
+  test('purge passes the diary-version choice explicitly', () async {
+    final api = LibraryCareApi();
+    final controller = LibraryCareController(
+      api,
+      capabilities: const {'captures.previewPurge', 'captures.purge'},
+      captureCount: 1,
+    );
+    addTearDown(controller.dispose);
+
+    final preview = await controller.previewPurge(api.trashedCapture);
+    expect(preview, isNotNull);
+    expect(await controller.purge(preview!, deleteDiaryVersions: true), isTrue);
+    expect(api.lastDeleteDiaryVersions, isTrue);
   });
 }

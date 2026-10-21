@@ -14,13 +14,14 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use chrono::{DateTime, Utc};
 use diary_core::{
-    AiResponse, BackupInspection, BackupReport, Capture, CapturePage, CommitResult, Core,
-    CoreError, DiaryDay, DiaryDayPage, DiaryGenerationReason, DiaryGenerationTicket, DiaryVersion,
-    DiaryVersionPage, DomainEvent, DraftSaveResult, ExportRequest, ExportTicket, ExtractedContent,
-    ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job, JobRunSummary,
-    JobState, JobStatus, NativeRecordingStatus, OrganizeSettings, OrganizeStatus, OrganizeTemplate,
-    PluginInspection, PluginInstallation, PluginInvocation, PluginRunResult, PluginTemplate,
-    Provider, ProviderCapability, ProviderTestReport, RecordingFinalizeResult, RecordingRecovery,
+    AiResponse, AssetLease, BackupInspection, BackupReport, Capture, CapturePage, CommitResult,
+    Core, CoreError, DiaryDay, DiaryDayPage, DiaryGenerationReason, DiaryGenerationTicket,
+    DiaryVersion, DiaryVersionPage, DomainEvent, DraftSaveResult, ExportRequest, ExportTicket,
+    ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job,
+    JobRunSummary, JobState, JobStatus, NativeRecordingStatus, OrganizeSettings, OrganizeStatus,
+    OrganizeTemplate, PluginInspection, PluginInstallation, PluginInvocation, PluginRunResult,
+    PluginTemplate, Provider, ProviderCapability, ProviderTestReport, RecordingFinalizeResult,
+    RecordingRecovery,
     RecordingSession, RecordingTicket, ResponseTicket, RestoreReport, SearchRequest,
     SearchSnapshot, SegmentManifest, SegmentReceipt, SourceLocation, SourceLocator, SourceRevision,
     StyleProfile,
@@ -115,6 +116,11 @@ fn library_key(path: &Path) -> Result<PathBuf, BridgeError> {
 /// 长尾，它挡的是「队列很长 + 多条短任务」把一轮拖成没完没了。没跑上的任务留在
 /// 队列里、如实计入摘要的 `dueBacklog`，下一轮接着跑——不会丢。
 const RUN_DUE_MAX_JOBS: usize = 64;
+
+/// `events_since` 每次从核心读多少条：只影响**单次 SQL** 的中间列表，不改变返回形状。
+///
+/// 取 1000 与 C ABI 的 `MAX_EVENTS_LIMIT` 同量级：一次查询的峰值内存由它兜住。
+const EVENTS_PAGE: usize = 1000;
 
 impl BridgeSession {
     /// 打开（或创建）资料库。
@@ -309,6 +315,31 @@ impl BridgeSession {
         Ok(core.restore_backup(&package_path, &target_dir)?)
     }
 
+    /// 创建备份 + 写一条 `succeeded` 的 `backup` 任务记录，契约 `backups.create` 的
+    /// `jobId` 入口。
+    ///
+    /// **同步完成**：jobId 指向已经完成的记录，不是排队任务。返回的 `Job.targetIds`
+    /// 是备份包路径，`get_job` 读得到。目标已存在/源库有原件不可用等错误与
+    /// `create_backup` 一致，且失败时不留包、不留假任务。
+    pub fn create_backup_job(&self, target_path: String) -> Result<Job, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.create_backup_job(&target_path)?)
+    }
+
+    /// 恢复到新库 + 写一条 `succeeded` 的 `restore` 任务记录，契约 `backups.restore`
+    /// 的 `jobId` 入口。
+    ///
+    /// **同步完成**；`Job.targetIds = [libraryPath, rootDir]`，调用方据此打开新库。
+    /// 目标非空/损坏包/版本不兼容会在写任务行之前拒绝，当前库零改动。
+    pub fn restore_backup_job(
+        &self,
+        package_path: String,
+        target_dir: String,
+    ) -> Result<Job, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.restore_backup_job(&package_path, &target_dir)?)
+    }
+
     pub fn cancel_import(&self, import_id: String) -> Result<(), BridgeError> {
         let mut core = self.lock()?;
         Ok(core.cancel_import(&import_id)?)
@@ -415,6 +446,24 @@ impl BridgeSession {
     ) -> Result<SourceLocation, BridgeError> {
         let core = self.lock()?;
         Ok(core.locate_source(&source_ref, locator)?)
+    }
+
+    // ------------------------------------------------------------ 资产租约
+
+    /// 打开只读资产租约，契约 `assets.open`。
+    ///
+    /// 核心只接受 `preview` / `play` / `export` 三种用途，并校验资产处于 `ready`、
+    /// 文件真的在磁盘上；租约是**限域**的（只有这个句柄，不是任意路径），默认 10 分钟
+    /// 过期。返回的 `handle` 是资料库私有目录里的绝对路径，交给平台层打开/播放。
+    pub fn open_asset(&self, asset_id: String, usage: String) -> Result<AssetLease, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.open_asset(&asset_id, &usage)?)
+    }
+
+    /// 释放资产租约，契约 `assets.release`。租约不存在报 `not_found`，重复释放不静默成功。
+    pub fn release_asset(&self, lease_id: String) -> Result<(), BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.release_asset(&lease_id)?)
     }
 
     // ------------------------------------------------------------ 关键词索引
@@ -550,6 +599,14 @@ impl BridgeSession {
         Ok(core.job_status()?)
     }
 
+    /// 记录一个需要用户处理的问题已经展示/处理过，契约 `jobs.acknowledgeAttention`。
+    ///
+    /// 只是把确认写进库，不改变任务状态、不删除任何东西；重复确认是幂等的。
+    pub fn acknowledge_attention(&self, attention_key: String) -> Result<(), BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.acknowledge_attention(&attention_key)?)
+    }
+
     /// **跑一轮到期任务**（驱动），返回本轮摘要：跑了几条、成功/失败各几条、其中多少条是
     /// **补做**（本轮领取时排期已过期）、还有多少到期未跑（被预算/条数截住）、有多少在等
     /// 依赖、下一个唤醒时刻，以及本次的唤醒来源。
@@ -577,9 +634,42 @@ impl BridgeSession {
     }
 
     /// 从某个序号之后读取持久业务事件。
+    ///
+    /// 核心按**分页**读（`Core::events_page`，SQL 带 `LIMIT`）；这一层为了保持 Dart
+    /// 面「一次拿全」的语义循环取页，但每次查询只取 `EVENTS_PAGE` 条，不会把整张
+    /// 事件表一次性 materialize 进 SQLite → Rust 的中间列表。真正的有界读取在
+    /// **C ABI** 那一路（`core.events` 直接透传 `limit`/`truncated`）；这里仍是
+    /// 「全部事件」的返回形状，调用方自己管好游标。
     pub fn events_since(&self, from_sequence: i64) -> Result<Vec<DomainEvent>, BridgeError> {
         let core = self.lock()?;
-        Ok(core.events_since(from_sequence)?)
+        let mut events = Vec::new();
+        let mut cursor = from_sequence;
+        loop {
+            let page = core.events_page(cursor, EVENTS_PAGE)?;
+            if page.events.is_empty() {
+                break;
+            }
+            cursor = page.next_sequence;
+            let done = !page.truncated;
+            events.extend(page.events);
+            if done {
+                break;
+            }
+        }
+        Ok(events)
+    }
+
+    /// 从某个序号之后读取**一批**持久业务事件（最多 `limit` 条）。
+    ///
+    /// 适配层的 `events` 流用它分页轮询：从 0 订阅一个很大的库时也只读一批，
+    /// 不会把整张事件表一次搬进 Dart 堆。`limit` 由核心夹在 1..=1000。
+    pub fn events_since_page(
+        &self,
+        from_sequence: i64,
+        limit: u32,
+    ) -> Result<Vec<DomainEvent>, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.events_since_page(from_sequence, limit as usize)?)
     }
 
     // ------------------------------------------------------------ 服务配置与主动回应（B4a）
@@ -998,6 +1088,8 @@ fn wired_capabilities() -> Vec<String> {
         "sources.reviseText",
         "sources.previousRevision",
         "sources.locate",
+        "assets.open",
+        "assets.release",
         "indexes.status",
         "indexes.rebuild",
         "indexes.rebuildSemantic",
@@ -1013,6 +1105,7 @@ fn wired_capabilities() -> Vec<String> {
         "jobs.status",
         "jobs.runDue",
         "jobs.nextWakeup",
+        "jobs.acknowledgeAttention",
         "providers.list",
         "providers.save",
         "providers.remove",

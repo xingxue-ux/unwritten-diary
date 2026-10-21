@@ -17,6 +17,7 @@ import { process, taskpool } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import BuildProfile from 'BuildProfile';
 import { DiaryCore } from '../core/DiaryCore';
+import { DiaryError } from '../core/DiaryError';
 import { RecordingFinalizeResult, RecordingRecovery } from '../core/Models';
 import { ensureMicrophonePermission } from './MicPermission';
 import { RecorderOptions, VoiceRecorder, describeError, nowUptimeMs } from './VoiceRecorder';
@@ -125,6 +126,27 @@ export class RecordingVerify {
             end_reason: 'recovered_on_startup',
           });
           logJson('recover.finalize', result);
+          // 恢复路径也必须提交，否则救回来的录音仍停在 draft：
+          // finalize 只保证「音频已保存」，记录成篇是另一步。
+          try {
+            const committed = core.commit({
+              capture_id: result.capture_id,
+              expected_revision: result.capture_revision,
+              operation_id: `op-ohos-commit-${result.recording_id}`,
+            });
+            hilog.info(DOMAIN, TAG, '%{public}s RECOVER_COMMIT ok=true capture=%{public}s state=%{public}s revisionBefore=%{public}d revisionAfter=%{public}d',
+              MARK, result.capture_id, committed.capture.state, result.capture_revision,
+              committed.capture.revision);
+          } catch (e) {
+            const err = DiaryError.fromThrown(e as Object);
+            if (err.code === 'invalid_state') {
+              hilog.warn(DOMAIN, TAG, '%{public}s RECOVER_COMMIT skipped capture=%{public}s reason=invalid_state assume_already_committed',
+                MARK, result.capture_id);
+            } else {
+              hilog.error(DOMAIN, TAG, '%{public}s RECOVER_COMMIT failed capture=%{public}s audioSaved=true recordStillDraft=true error=%{public}s',
+                MARK, result.capture_id, err.toLogLine());
+            }
+          }
           // 恢复出的音频时长必须等于「已登记片段之和」，不是「已收到」。
           hilog.info(DOMAIN, TAG, '%{public}s RECOVER_FINALIZE audioMs=%{public}d receivedMs=%{public}d persistedMs=%{public}d unregisteredTailMs=%{public}d segments=%{public}d',
             MARK, result.logical_duration_ms, item.received_ms, item.persisted_ms,
@@ -214,6 +236,12 @@ export class RecordingVerify {
 
       if (result !== null) {
         logJson('finalize', result);
+        // 提交结果单独打：finalize 成功但 commit 失败时，音频在、记录仍是 draft。
+        const commit = recorder.commitResult();
+        logJson('commit', commit);
+        hilog.info(DOMAIN, TAG, '%{public}s COMMIT_RESULT state=%{public}s capture=%{public}s revisionBefore=%{public}d revisionAfter=%{public}d error=%{public}s',
+          MARK, commit.state, commit.capture_id, commit.revision_before,
+          commit.revision_after, commit.error);
         logFiles(filesDir);
         // 转写会同步加载 228 MiB 模型并推理，放主线程会 AppFreeze；交给 TaskPool。
         // 句柄可跨线程调用（DeviceVerify 的并发项已验），worker 重新 open 同一个库。

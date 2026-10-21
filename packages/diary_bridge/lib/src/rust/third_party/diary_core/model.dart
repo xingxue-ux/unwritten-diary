@@ -7,8 +7,8 @@ import '../../frb_generated.dart';
 import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AssetLease`, `Asset`, `JobPage`, `NewJob`, `OrganizePlanSummary`, `PluginProviderFailure`, `SourceItem`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`, `partial_cmp`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Asset`, `JobPage`, `NewJob`, `OrganizePlanSummary`, `PluginProviderFailure`, `PurgePreview`, `PurgeResult`, `SourceItem`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`, `partial_cmp`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
 
 /// 独立保存的 AI 回应，契约第 4.3 节 `responses.get`。
@@ -56,6 +56,46 @@ class AiResponse {
           captureIds == other.captureIds &&
           providerId == other.providerId &&
           model == other.model;
+}
+
+/// 只读资产租约。`handle` 是应用私有目录里的绝对路径，不是外部来源路径。
+class AssetLease {
+  final String leaseId;
+  final String assetId;
+  final String usage;
+  final String handle;
+  final DateTime expiresAt;
+  final PlatformInt64 byteSize;
+
+  const AssetLease({
+    required this.leaseId,
+    required this.assetId,
+    required this.usage,
+    required this.handle,
+    required this.expiresAt,
+    required this.byteSize,
+  });
+
+  @override
+  int get hashCode =>
+      leaseId.hashCode ^
+      assetId.hashCode ^
+      usage.hashCode ^
+      handle.hashCode ^
+      expiresAt.hashCode ^
+      byteSize.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AssetLease &&
+          runtimeType == other.runtimeType &&
+          leaseId == other.leaseId &&
+          assetId == other.assetId &&
+          usage == other.usage &&
+          handle == other.handle &&
+          expiresAt == other.expiresAt &&
+          byteSize == other.byteSize;
 }
 
 /// 资产在文件库中的状态，契约第 2.3 节。
@@ -419,6 +459,9 @@ enum CaptureState {
 }
 
 /// 提交结果：记录本身与提交时创建的原始文字版本。
+///
+/// `capture.processing_summary` 是**提交那一刻**的快照（事务里算的，回执里也是它）；
+/// 之后的读取走 `get_capture` / `list_captures` 的当下值。
 class CommitResult {
   final Capture capture;
   final SourceRevision? originalTextRevision;
@@ -513,27 +556,6 @@ class DiaryDay {
           materialCounts == other.materialCounts &&
           coverage == other.coverage &&
           updatedAt == other.updatedAt;
-}
-
-/// 分页的日记天列表，契约 `DiaryDayPage`（`diary.listDays`）。
-class DiaryDayPage {
-  final List<DiaryDay> days;
-
-  /// 还有下一页时是本次最后一天的游标；没有更多时为 `None`。调用方不要解析它。
-  final String? nextCursor;
-
-  const DiaryDayPage({required this.days, this.nextCursor});
-
-  @override
-  int get hashCode => days.hashCode ^ nextCursor.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DiaryDayPage &&
-          runtimeType == other.runtimeType &&
-          days == other.days &&
-          nextCursor == other.nextCursor;
 }
 
 /// 生成日记的原因，契约 4.3 节 `diary.generate` 的入参。
@@ -762,10 +784,21 @@ class DraftSaveResult {
 
 /// 持久业务事件类型，契约第 6 节的完整清单。
 ///
-/// 现在实际会发的是 capture.changed、asset.changed 与 job.changed；
+/// 现在实际会发的是 capture.changed、asset.changed、job.changed，以及回收站的
+/// capture.trashed / capture.restored / capture.movedDay / capture.purged；
 /// 其余几种等对应的切片接上（日记、索引、插件）。
+///
+/// 回收站四件事各自一个类型，不共用 capture.changed：前端订阅时只需要按类型决定
+/// 要不要刷新回收站/检索结果，不用再读一遍正文判断「这次改的是什么」。命名沿用
+/// 既有的 `<实体>.<事件>`：单词事件全小写（`capture.changed`），多词事件第二个词
+/// 起用 camelCase（`diary.versionCreated`、`index.coverageChanged`），所以是
+/// `capture.movedDay` 而不是 `capture.moved_day`。
 enum EventType {
   captureChanged,
+  captureTrashed,
+  captureRestored,
+  captureMovedDay,
+  capturePurged,
   assetChanged,
   diaryVersionCreated,
   diaryCurrentChanged,
@@ -778,124 +811,6 @@ enum EventType {
 
   Future<void> wire() =>
       RustLib.instance.api.diaryCoreModelEventTypeWire(that: this);
-}
-
-/// 可阅读导出请求（#113），字段逐项对齐契约 `ExportRequest`。
-///
-/// 契约里**没有输出路径**：产物由核心落在自己管理的导出目录里，调用方只拿
-/// `ExportTicket.packageTicket`。这是刻意的——核心不接受任意绝对路径，避免把
-/// 「导出」变成可写穿沙箱的入口。
-class ExportRequest {
-  /// 闭区间起点，`YYYY-MM-DD`。
-  final String fromDayKey;
-
-  /// 闭区间终点，`YYYY-MM-DD`。
-  final String toDayKey;
-
-  /// `markdown` / `plain_text`。
-  final String format;
-
-  /// 契约字段。本构建的阅读导出只写正文，**不随附原件**；传 `true` 会明确拒绝，
-  /// 不静默忽略。
-  final bool includeAssets;
-
-  const ExportRequest({
-    required this.fromDayKey,
-    required this.toDayKey,
-    required this.format,
-    required this.includeAssets,
-  });
-
-  @override
-  int get hashCode =>
-      fromDayKey.hashCode ^
-      toDayKey.hashCode ^
-      format.hashCode ^
-      includeAssets.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ExportRequest &&
-          runtimeType == other.runtimeType &&
-          fromDayKey == other.fromDayKey &&
-          toDayKey == other.toDayKey &&
-          format == other.format &&
-          includeAssets == other.includeAssets;
-}
-
-/// 可阅读导出的结果（#113）。
-///
-/// **这不是备份**：`restorable` 恒为 `false`。导出物只有当前日记正文，没有数据库、
-/// 没有原件、没有索引；它不能用于恢复资料库，迁移请走 `backups.*`。
-///
-/// 契约的 `ExportTicket` 只有 `jobId` / `packageTicket` 两个字段（Dart 侧不改契约），
-/// 所以桥接层会把这里更完整的字段一并交出去：`path` 与 `byteSize` 是落盘后的事实，
-/// `packageTicket` 指向同一个文件、交给平台保存层使用。
-class ExportTicket {
-  /// 这次导出对应的本地任务记录（同步完成；`jobs.get` 能读到 `succeeded`）。
-  final String jobId;
-
-  /// 平台保存层可用的文件句柄。**本构建里就是导出文件的绝对路径**。
-  final String? packageTicket;
-
-  /// 导出文件最终落盘位置（重名时已加后缀，不是调用方传进来的原始路径）。
-  final String path;
-
-  /// 导出文件的字节数（UTF-8 编码后）。
-  final PlatformInt64 byteSize;
-
-  /// `markdown` / `plain_text`。
-  final String format;
-
-  /// 实际写进文件的天，按 dayKey 升序；没有可导出的正文时不会产出文件。
-  final List<String> dayKeys;
-
-  /// 写进文件的天数（等于 `day_keys.len()`）。
-  final PlatformInt64 dayCount;
-  final DateTime createdAt;
-
-  /// 恒为 `false`：阅读导出不能用于恢复资料库。需要恢复请用 `backups.create`。
-  final bool restorable;
-
-  const ExportTicket({
-    required this.jobId,
-    this.packageTicket,
-    required this.path,
-    required this.byteSize,
-    required this.format,
-    required this.dayKeys,
-    required this.dayCount,
-    required this.createdAt,
-    required this.restorable,
-  });
-
-  @override
-  int get hashCode =>
-      jobId.hashCode ^
-      packageTicket.hashCode ^
-      path.hashCode ^
-      byteSize.hashCode ^
-      format.hashCode ^
-      dayKeys.hashCode ^
-      dayCount.hashCode ^
-      createdAt.hashCode ^
-      restorable.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ExportTicket &&
-          runtimeType == other.runtimeType &&
-          jobId == other.jobId &&
-          packageTicket == other.packageTicket &&
-          path == other.path &&
-          byteSize == other.byteSize &&
-          format == other.format &&
-          dayKeys == other.dayKeys &&
-          dayCount == other.dayCount &&
-          createdAt == other.createdAt &&
-          restorable == other.restorable;
 }
 
 /// 可重建的派生内容，与原件分开保存，契约第 2.4 节。
@@ -2947,9 +2862,16 @@ enum ProcessingStatus {
       RustLib.instance.api.diaryCoreModelProcessingStatusWire(that: this);
 }
 
-/// 未处理 / 处理中 / 可检索 / 需关注的数量。
+/// 未处理 / 处理中 / 可检索 / 需关注的数量（#146）。
 ///
-/// B1a 还没有提取与索引，所以这些数字现在恒为 0；等 B1b/B2 接上后再算。
+/// 每次读 `Capture` 都按库里的真实状态重算（`processing` 模块是唯一写入路径），
+/// 不是快照、不是累计。四个数字的口径（含失败任务落哪个桶）写在
+/// `docs/development/01-共享接口契约.md` 2.1 节，必须与 `processing.rs` 一起改。
+///
+/// 只有**还没有来源**的记录才全为 0：刚创建的草稿，以及没有任何来源的空白提交
+/// （空正文不会建文字来源；若之前导入过材料，来源仍在，摘要就不是全 0）。
+/// **已经提交、但提交时正文为空且没有材料**的记录也是全 0，不能反过来把它当成
+/// 「刚建草稿」的同义词（复审 #158 指出的旧注释错误）。
 class ProcessingSummary {
   final int unprocessed;
   final int processing;
@@ -3175,6 +3097,18 @@ enum ProviderTestStatus {
 /// 最终化结果。转写不阻塞完成。
 class RecordingFinalizeResult {
   final String recordingId;
+
+  /// 这条录音挂到的记录。
+  ///
+  /// 正常停止时平台层本来就知道 capture id；恢复路径（`recover` 后按已封闭序号
+  /// `finalize`）只知道 recording id，必须靠这里拿回 capture 才能提交。
+  final String captureId;
+
+  /// `finalize` 完成后记录的**权威** revision（等于这次递增后的值）。
+  ///
+  /// `captures.commit` 需要 `expected_revision`，而这个值客户端**不该猜**：
+  /// 猜小了会撞乐观锁，猜大了会把「记录已经被别处改过」掩盖过去。
+  final PlatformInt64 captureRevision;
   final String assetId;
   final RecordingState state;
   final PlatformInt64 segmentCount;
@@ -3183,6 +3117,8 @@ class RecordingFinalizeResult {
 
   const RecordingFinalizeResult({
     required this.recordingId,
+    required this.captureId,
+    required this.captureRevision,
     required this.assetId,
     required this.state,
     required this.segmentCount,
@@ -3193,6 +3129,8 @@ class RecordingFinalizeResult {
   @override
   int get hashCode =>
       recordingId.hashCode ^
+      captureId.hashCode ^
+      captureRevision.hashCode ^
       assetId.hashCode ^
       state.hashCode ^
       segmentCount.hashCode ^
@@ -3205,6 +3143,8 @@ class RecordingFinalizeResult {
       other is RecordingFinalizeResult &&
           runtimeType == other.runtimeType &&
           recordingId == other.recordingId &&
+          captureId == other.captureId &&
+          captureRevision == other.captureRevision &&
           assetId == other.assetId &&
           state == other.state &&
           segmentCount == other.segmentCount &&
@@ -3509,7 +3449,16 @@ class SearchHit {
   final String hitId;
 
   /// 同一来源的命中归到一组，避免一份长材料占满结果。
+  ///
+  /// **不是**「这一条属于哪篇记录」：片段命中时它是 `source_id`，记录文字命中时
+  /// 才是 `capture_id`。要跳到记录详情页请用 [`SearchHit::capture_id`]。
   final String groupId;
+
+  /// 这一条命中属于哪篇记录（`captures.id`）。
+  ///
+  /// **与 `group_id` 不是一回事**：`group_id` 只是折叠/归组用的键，片段命中时
+  /// 是 `source_id`；`capture_id` 才是「这一条属于哪篇记录」，两种命中都一定有。
+  final String captureId;
   final SourceKind sourceKind;
   final List<MatchedBy> matchedBy;
   final Coverage coverage;
@@ -3530,6 +3479,7 @@ class SearchHit {
   const SearchHit({
     required this.hitId,
     required this.groupId,
+    required this.captureId,
     required this.sourceKind,
     required this.matchedBy,
     required this.coverage,
@@ -3546,6 +3496,7 @@ class SearchHit {
   int get hashCode =>
       hitId.hashCode ^
       groupId.hashCode ^
+      captureId.hashCode ^
       sourceKind.hashCode ^
       matchedBy.hashCode ^
       coverage.hashCode ^
@@ -3564,6 +3515,7 @@ class SearchHit {
           runtimeType == other.runtimeType &&
           hitId == other.hitId &&
           groupId == other.groupId &&
+          captureId == other.captureId &&
           sourceKind == other.sourceKind &&
           matchedBy == other.matchedBy &&
           coverage == other.coverage &&

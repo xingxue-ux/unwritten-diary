@@ -20,19 +20,30 @@ import { DiaryError, NATIVE_UNAVAILABLE } from './DiaryError';
 import { buildRequest, unwrapEnvelope } from './Envelope';
 import {
   AcknowledgeAttentionParams,
+  BackupInspection,
+  BackupReport,
   CancelJobParams,
   Capture,
   CaptureIdParams,
   CapturePage,
   CommitParams,
   CommitResult,
+  CreateBackupParams,
   CreateDraftParams,
+  DiaryDay,
+  DiaryDayParams,
+  DiaryVersion,
+  DiaryVersionPage,
+  DiaryVersionParams,
+  DomainEventPage,
   DraftSaveResult,
+  EventsParams,
   ExtractedContent,
   ExtractParams,
   FinalizeRecordingParams,
   IndexStatus,
   IndexStatusParams,
+  InspectBackupParams,
   Job,
   JobIdParams,
   JobPage,
@@ -40,7 +51,10 @@ import {
   JobStatus,
   LibraryInfo,
   ListCapturesParams,
+  ListDiaryVersionsParams,
   ListJobsParams,
+  LocateSourceParams,
+  MergeDiaryParams,
   NativeRecordingStatusParams,
   PrepareRecordingParams,
   ProviderConfig,
@@ -54,8 +68,12 @@ import {
   RecordingSession,
   RecordingTicket,
   RegisterSegmentParams,
+  RestoreBackupParams,
+  RestoreReport,
   RetryJobParams,
+  ReviseTextParams,
   RunDueParams,
+  SaveDiaryEditParams,
   SaveDraftParams,
   SaveProviderParams,
   SearchNextPageParams,
@@ -63,6 +81,10 @@ import {
   SearchSessionParams,
   SearchSnapshot,
   SegmentReceipt,
+  SetDiaryCurrentParams,
+  SourceIdParams,
+  SourceLocation,
+  SourceRevision,
   TestProviderParams,
 } from './Models';
 
@@ -152,7 +174,7 @@ export class DiaryCore {
 
   // ---------------------------------------------------------------- 静态诊断
 
-  /** 核心 C ABI 的版本戳（`diary_capi_version()`），例如 `diary_capi/0.1.0 apiVersion=1.0`。 */
+  /** 核心 C ABI 的版本戳（`diary_capi_version()`），例如 `diary_capi/0.1.0 apiVersion=1.1`。 */
   static version(): string {
     try {
       return diaryNapi.version();
@@ -171,7 +193,7 @@ export class DiaryCore {
     return diaryNapi.openHandleCount();
   }
 
-  // ---------------------------------------------------------------- 契约方法（30 条）
+  // ---------------------------------------------------------------- 契约方法（44 条）
   //
   // 一一对应 `crates/diary_capi/src/methods.rs` 的 `WIRED_METHODS`。方法名与方法体里的
   // 字符串必须一致；`tools/check_arkts_capi_contract.py` 会核对。
@@ -196,7 +218,13 @@ export class DiaryCore {
     return this.invokeData('captures.saveDraft', params) as DraftSaveResult;
   }
 
-  /** `captures.commit`：草稿转正式记录，并生成原文修订（之后才能 `extract` / 检索到）。 */
+  /**
+   * `captures.commit`：草稿转正式记录（`state='committed'`），有正文时生成原文修订。
+   *
+   * **不产生来源、也不产生检索内容**：文字来源是 commit 从 `draft_text` 复制出来的；
+   * 录音的音频来源在 `recordings.finalize` 时就已经建好，转写/关键词索引也在那时
+   * 或由 finalize 排的任务负责。commit 对录音只做「记录成篇」这一步，不会重复排队。
+   */
   commit(params: CommitParams): CommitResult {
     return this.invokeData('captures.commit', params) as CommitResult;
   }
@@ -256,6 +284,45 @@ export class DiaryCore {
   /** `sources.extract`：抽取正文；`source_ref` 可以是来源 id 或修订 id。 */
   extract(params: ExtractParams): ExtractedContent {
     return this.invokeData('sources.extract', params) as ExtractedContent;
+  }
+
+  /**
+   * `sources.extractedContent`：当前修订的提取结果；**还没提取过时返回 null**
+   * （正常结果，不是错误）。
+   *
+   * 这是可空返回，所以走 `invokeNullable`——不能用 `invokeData`（它把 null 当信封坏了）。
+   */
+  extractedContent(params: SourceIdParams): ExtractedContent | null {
+    return this.invokeNullable('sources.extractedContent', params) as ExtractedContent | null;
+  }
+
+  /**
+   * `sources.previousRevision`：当前修订的上一版正文，供「看原正文/对比」用。
+   *
+   * 只有一版时返回 null（首次提交没有上一版）。
+   */
+  previousRevision(params: SourceIdParams): SourceRevision | null {
+    return this.invokeNullable('sources.previousRevision', params) as SourceRevision | null;
+  }
+
+  /**
+   * `sources.reviseText`：改原始正文，创建**新修订**，不覆盖旧内容。
+   *
+   * `expected_revision` 不符抛 `revision_conflict`；同一个 `operation_id` 重放返回
+   * 同一条修订。
+   */
+  reviseText(params: ReviseTextParams): SourceRevision {
+    return this.invokeData('sources.reviseText', params) as SourceRevision;
+  }
+
+  /**
+   * `sources.locate`：把定位信息解析成前端可打开的原件位置。
+   *
+   * 纯文字/原件不在文件库时 `available === false` 并在 `reason` 里说明原因——
+   * 这不是异常，界面应展示原因而不是报「出错了」。
+   */
+  locateSource(params: LocateSourceParams): SourceLocation {
+    return this.invokeData('sources.locate', params) as SourceLocation;
   }
 
   /** `search.start`：发起一次检索，返回**当前页的完整快照**。 */
@@ -390,6 +457,107 @@ export class DiaryCore {
     this.rawCall('providers.remove', params);
   }
 
+  // ---------------------------------------------------------------- 备份与恢复（契约 4.5）
+  //
+  // 核心这三个是**同步**入口（契约那三行返回 jobId 的任务化是 #70，不在本块）。
+  // `target_path` / `package_path` / `target_dir` 在 OHOS 上必须是应用沙箱内路径，
+  // 否则 C ABI 报 `invalid_argument`（见 `crates/diary_capi/src/methods.rs`）。
+
+  /** `backups.create`：生成可完整恢复的备份包（含原件，自校验通过才落地）。 */
+  createBackup(params: CreateBackupParams): BackupReport {
+    return this.invokeData('backups.create', params) as BackupReport;
+  }
+
+  /** `backups.inspect`：逐条目校验备份包；坏在哪就列在 `issues`，不抛错。 */
+  inspectBackup(params: InspectBackupParams): BackupInspection {
+    return this.invokeData('backups.inspect', params) as BackupInspection;
+  }
+
+  /**
+   * `backups.restore`：恢复到**新的空目录**，绝不覆盖当前库。
+   *
+   * 返回的 `library_path` 直接交给 `DiaryCore.open()` 打开新库。
+   */
+  restoreBackup(params: RestoreBackupParams): RestoreReport {
+    return this.invokeData('backups.restore', params) as RestoreReport;
+  }
+
+  // ---------------------------------------------------------------- 事件（契约第 6 节）
+
+  /**
+   * `core.events`：按序号**轮询**持久业务事件（C ABI 不是推送流）。
+   *
+   * 用法：省略 `from_sequence` 先拿到当前 `next_sequence`，之后每轮把上次的
+   * `next_sequence` 原样传回来；`truncated === true` 时立刻再拉一页。
+   *
+   * 核心在每次写事务里就持久化了事件，所以**不需要**先订阅；本方法不建会话、
+   * 不缓存，读到的就是库里真实的事件。
+   */
+  events(params: EventsParams | null = null): DomainEventPage {
+    return this.invokeData('core.events', params) as DomainEventPage;
+  }
+  // ---------------------------------------------------------------- 日记（契约 4.3 / 2.5）
+  //
+  // 「日记」一级入口的数据源。这一组只透传核心的 `DiaryDay` / `DiaryVersion`：
+  // 哪一版是当前、哪些是候选看 `DiaryDay`；版本本身没有状态字段。
+  //
+  // 空的一天核心报 `not_found`（这一天既没有材料也没有版本）——那是**空态**，
+  // 界面显示「还没有成篇日记」，不要把它当读取失败。
+
+  /**
+   * `diary.getDay`：某一天的当前/候选与材料覆盖。
+   *
+   * 返回值的 `revision` 是 `saveDiaryEdit` / `setDiaryCurrent` / `mergeDiary` 的
+   * `expected_revision`（原样回传，不猜）。
+   */
+  getDiaryDay(params: DiaryDayParams): DiaryDay {
+    return this.invokeData('diary.getDay', params) as DiaryDay;
+  }
+
+  /**
+   * `diary.listVersions`：分页读某一天的版本，最新在前。
+   *
+   * `cursor` 原样回传上一页的 `next_cursor`（不透明）；没有版本时是空页，不是错误。
+   */
+  listDiaryVersions(params: ListDiaryVersionsParams): DiaryVersionPage {
+    return this.invokeData('diary.listVersions', params) as DiaryVersionPage;
+  }
+
+  /** `diary.getVersion`：读一条完整版本（含正文、生成信息与来源关联）。 */
+  getDiaryVersion(params: DiaryVersionParams): DiaryVersion {
+    return this.invokeData('diary.getVersion', params) as DiaryVersion;
+  }
+
+  /**
+   * `diary.saveEdit`：人工编辑写成**新版本**（基版一个字节都不动），新版本成为当前。
+   *
+   * `expected_revision` 不符报 `revision_conflict`，核心零改动；空正文报
+   * `invalid_argument`。同一条 `operation_id` 重放返回原版本。
+   */
+  saveDiaryEdit(params: SaveDiaryEditParams): DiaryVersion {
+    return this.invokeData('diary.saveEdit', params) as DiaryVersion;
+  }
+
+  /**
+   * `diary.setCurrent`：在一天的版本之间指定当前版本（例如退回上一版）。
+   *
+   * 旧当前版变候选、不删除；切到已经是当前的版本是无操作。`expected_revision`
+   * 不符报 `revision_conflict`。
+   */
+  setDiaryCurrent(params: SetDiaryCurrentParams): DiaryDay {
+    return this.invokeData('diary.setCurrent', params) as DiaryDay;
+  }
+
+  /**
+   * `diary.merge`：把两版（或多版）合成一条新的 `merge` 版本。
+   *
+   * `body` 是**用户确认后的正文**：核心不替用户合并、不调模型（`modelCalls = 0`）。
+   * 参与合并的版本全部保留，随时可取回。
+   */
+  mergeDiary(params: MergeDiaryParams): DiaryVersion {
+    return this.invokeData('diary.merge', params) as DiaryVersion;
+  }
+
   // ---------------------------------------------------------------- 逃生口
 
   /**
@@ -430,6 +598,14 @@ export class DiaryCore {
     if (this.closed) {
       throw new DiaryError('invalid_state', '资料库已关闭（DiaryCore.close 之后不能再调用）');
     }
+  }
+
+  /**
+   * 可空返回（`Option<T>` → `null`）用：`ok:true` + `data:null` 是正常结果，
+   * 不能像 [`invokeData`] 那样当成「信封形状变了」。
+   */
+  private invokeNullable(method: string, params: Object | null): Object | null {
+    return this.rawCall(method, params);
   }
 
   private invokeData(method: string, params: Object | null): Object {
