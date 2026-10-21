@@ -82,6 +82,40 @@ jobs:
             exit 1
           fi
 
+  arkts:
+    name: arkts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@v4
+        with:
+          # 装 tsc 只为解析 ArkTS；钉大版本免得随上游漂移。
+          node-version: "20"
+      - name: 安装 TypeScript
+        run: npm install -g typescript@5
+      # 为什么 ArkTS 要单独一个 job：
+      #
+      # 鸿蒙 SDK 是闭源的、约 6 GB、要华为账号与许可协议，**拿不到 GitHub runner 上**，
+      # 所以 hvigorw 编译进不了 CI。而 `check_arkts_capi_contract.py` 只核对方法名/
+      # 条数/错误码，`cargo test` 与 `flutter test` 根本不碰 ArkTS ⇒ 三绿也拦不住
+      # 下面这两类事故（2026-10-21 都真实发生过）：
+      #
+      #   - `core/DiaryCore.ets` 少一个 `}`：后面的方法被解析进上一个方法体，
+      #     整个 HAP 编译失败，评审靠逐字符数括号才发现；
+      #   - `recording/VoiceRecorder.ets` 里重复粘了一段 finalize，引用**内层作用域**
+      #     的变量，ArkTS 报 4 个错，main 上一个 HAP 都编不出来。
+      #
+      # ArkTS 是 TypeScript 的超集，把 `.ets` 当 `.ts` 丢给 `tsc --noEmit` 就能抓出
+      # 「语法错误」与「作用域错误」。`pages/`、`ui/` 用 ArkUI 尾随闭包语法，tsc 解析
+      # 不了，脚本会排除（那部分仍需本地 `hvigorw` 把关，见 CONTRIBUTING §10.1.2）。
+      - name: 自测（证明两类错误都会红、DSL 目录会跳过）
+        run: python3 tools/test_check_arkts_scope.py
+      - name: 校验 ArkTS 语法与作用域（pages/ui 除外）
+        run: python3 tools/check_arkts_scope.py
+
+
   dart:
     name: dart
     runs-on: ubuntu-latest

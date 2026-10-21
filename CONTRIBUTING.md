@@ -63,14 +63,23 @@
 
 `main` 上现在有两道门禁，PR 必须同时通过：
 
-1. **必过检查 6 项**（都在 `.github/workflows/check.yml`，PR 上必须全绿）：
+1. **必过检查 7 项**（都在 `.github/workflows/check.yml`，PR 上必须全绿）：
    - `docs`：关键文件存在、Markdown 相对链接有效、`.github` 下的 YAML 可解析、共用场景 JSON 合法；
+   - `arkts`：把 `.ets` 当 `.ts` 交给 `tsc --noEmit`，抓**语法错误**（少个 `}` 就让 HAP 编不出来）与**作用域错误**（重复粘贴的代码块引用别处的变量）。`pages/`、`ui/` 用 ArkUI 尾随闭包语法，`tsc` 解析不了，脚本会排除——**改这两个目录仍要本地 `hvigorw`，见 §10.1.2**；
    - `dart`：`packages/diary_api` 静态分析（`--fatal-infos`）与单元测试；纯 Dart 的 `packages/diary_mock` 也在这里跑（它随 F0 一起进来）；
    - `rust`：`clippy --workspace --all-targets -- -D warnings` 与全 workspace 测试；
    - `bridge`：构建桥接产物、`packages/diary_bridge` 静态分析与端到端调用测试；
    - `flutter`：`apps/diary_app` 的静态分析（`--fatal-infos`）与组件测试；
    - `probe`：插件运行时预算与权限、插件代码的 Android arm64 编译检查、中文短词检索的结论断言。
-2. **必过审查 1 人**：GitHub 不允许作者批准自己的 PR，所以"必须 1 人批准"天然等于"必须对方批准"。已开启 `dismiss_stale_reviews`（批准后又推新提交，批准作废需重审）和 `required_conversation_resolution`（未解决的评论必须先处理才能合）。
+2. **审查：2026-10-21 起不再强制**（`required_approving_review_count = 0`）。GitHub 不允许作者批准自己的 PR，而带 AI 干活时作者常常就是唯一能推的人，强制 1 人批准会把整条链堵在一个人身上（当天 `main` 红了 8 小时，就因为解 red 的 13 行 PR 没人批）。
+
+   代价是**错误更容易进来**，所以补了两条机器门禁：
+   - `required_status_checks.strict = true`：分支必须追上 `main` 才允许合并，**检查跑的是真实的合并结果**，而不是「各自的绿」（2026-10-20 两次「两个各自绿的 PR 合起来 `main` 变红」就是这么来的）；
+   - `enforce_admins = false`：只在 `main` 已经红了、需要立刻回滚时用管理员直推（第 9 节）。**普通合并一律走 PR 等检查**，不许拿它跳过门禁。
+
+   > 评审仍然有价值：**静态可判的问题（并发顺序、迁移收敛、空断言、作用域）对方几乎总是对的**，该改就改；**运行时/设备相关的问题**要拉到真机上验证再下结论。
+
+   **别再点 "Update branch"**：`strict = false` 时它毫无必要，而每次 update 都会推一个 merge commit，把已有的批准作废（2026-10-21 `#155`、`#163` 就这样各白丢一轮批准）。只有在 PR 真的 `CONFLICTING` 时才更新。
 
 审查要真的看 diff。带着 AI 干活时，橡皮图章式批准比不审查更危险——它制造了"已经有人看过"的假象。跨层的改动除了点批准，还要在 PR 里写清「需要对方接入的内容」。
 
@@ -186,6 +195,31 @@ revert 救不了的两类事故：
 2. **只在 Linux 验证**（`core.autocrlf=true` 会把文本变 CRLF，而哈希按字节算）⇒ 所以要有**根 `.gitattributes`**，以及在真 Windows runner 上跑一次。
 3. **只验证快乐路径**（ORT 的 CI job 在「未配置」时直接红；诊断包只验了错误码的**格式**而不是**白名单**）⇒ **缺失/未配置/损坏也要有一条可断言的路**，并且**跳过要如实说「没跑」而不是显示绿**。
 4. **只验证干净库**（大库改成默认 int8 后，存量 f32 库「显示已就绪、搜出来是空」）⇒ **状态接口要检查全部口径字段**，口径不一致时如实报「需重建」。
+
+#### 10.1.2 ArkTS 改动：CI 只覆盖一半，另一半靠本地 `hvigorw`
+
+鸿蒙 SDK 闭源、约 6 GB、要账号与许可协议，**装不进 GitHub runner**，所以 `hvigorw` 编译无法进 CI。于是 ArkTS 的保障分两半：
+
+| 范围 | 谁把关 | 能抓什么 |
+|---|---|---|
+| `core/`、`recording/`、`entryability/`、`verify/` 等**非 UI** 目录 | CI 的 `arkts` job（`tsc --noEmit`，把 `.ets` 当 `.ts`） | 语法错误（少 `}`）、作用域错误（变量出作用域） |
+| **`pages/`、`ui/`**（ArkUI 尾随闭包 `Column({...}) { ... }`） | **只有本地 `hvigorw`** | 同上，加上 ArkTS 类型系统、装饰器、`$r()` 资源引用 |
+
+**规矩：凡改 `apps/ohos-diary-core/**/*.ets`，合并前本地跑一次**
+
+```bash
+cd apps/ohos-diary-core
+OHOS_BUNDLE_NAME=com.example.myapplication SKIP_ASR_LIBS=1 bash scripts/build-hap.sh
+```
+
+出 `BUILD SUCCESSFUL` 即可，**不需要设备、不需要签名**（产物是 `entry-default-unsigned.hap`，约 14–15 MB）。`SKIP_ASR_LIBS=1` 跳过 ASR 原生库，第一次编译约 2 分钟，之后十几秒。
+
+**不跑会怎样（2026-10-21 两次真实事故）**：
+
+1. `core/DiaryCore.ets` 的 `updateSettings` 少一个 `}` ⇒ 后面的 `createBackup` / `inspectBackup` 被解析进 `updateSettings` 的方法体 ⇒ **整个 HAP 编译失败**，评审只能靠逐字符数括号（`{` 77 / `}` 76）发现；
+2. `recording/VoiceRecorder.ets` 里重复粘了一段 finalize，引用**内层作用域**的变量 ⇒ ArkTS 报 4 个错 ⇒ **`main` 上一个 HAP 都编不出来**，而 CI 8/8 全绿、`cargo test` 593 通过、`dart test` 全过。
+
+两次的共同点：**`cargo` / `dart` / `flutter` 三套检查都不碰 ArkTS**。`check_arkts_capi_contract.py` 只核对方法名、条数、错误码的一致性——它管不了语法与作用域。
 
 **写 PR 时的规矩**：正文里「验证」一节要**分层写**，每层给可复现命令或 run URL；**没跑的那层明确写「未验」**，不要用「已测试」这种笼统说法覆盖四层。
 
