@@ -45,9 +45,14 @@ jobs:
     steps:
       - name: 检出仓库
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # 装 PyYAML 才能真的解析 `.github/**/*.yml`。`--require-yaml` 让「没装
+      # PyYAML 就跳过」在 CI 里直接红：跳过 ≠ 通过，不能一边跳过一边打印
+      # 「.github YAML 均正常」（2026-10-22 之前就是这个假绿）。
+      - name: 安装 PyYAML
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
       - name: 校验关键文件、Markdown 链接、.github YAML 与共用场景
         run: |
-          python3 tools/check_docs.py
+          python3 tools/check_docs.py --require-yaml
           python3 tools/test_check_docs.py
           # 先跑检查器自测：证明「4 入口会红、5 入口会绿、缺 key 会红、缺壳跳过」。
           # 这样真实检查红/跳过时，都能看出脚本本身没坏。
@@ -95,11 +100,18 @@ jobs:
           node-version: "20"
       - name: 安装 TypeScript
         run: npm install -g typescript@5
-      # 为什么 ArkTS 要单独一个 job：
+      # 契约核对：DiaryCore.ets ↔ WIRED_METHODS（59 条）、错误码、C 符号、
+      # JS 函数、打包三件套。**2026-10-22 之前这一条从未进过 CI**：只在注释里
+      # 被提到，实际只有下面的 scope 检查在跑。于是「改了 C ABI / ArkTS 包装 /
+      # m6 文档却不一致」「改了 ArkTS 包装忘了重跑 codegen」的 PR 一路绿灯，
+      # 评审只能靠本地手跑引用「59 = 59」。
+      - name: 校验 ArkTS 包装与 C ABI 契约（方法名/条数、错误码、C 符号、JS 函数、三件套）
+        run: python3 tools/check_arkts_capi_contract.py
+      # 为什么 ArkTS 还要跑 tsc：
       #
       # 鸿蒙 SDK 是闭源的、约 6 GB、要华为账号与许可协议，**拿不到 GitHub runner 上**，
-      # 所以 hvigorw 编译进不了 CI。而 `check_arkts_capi_contract.py` 只核对方法名/
-      # 条数/错误码，`cargo test` 与 `flutter test` 根本不碰 ArkTS ⇒ 三绿也拦不住
+      # 所以 hvigorw 编译进不了 CI。而上面那条契约检查只核对方法名/条数/错误码，
+      # `cargo test` 与 `flutter test` 根本不碰 ArkTS ⇒ 三绿也拦不住
       # 下面这两类事故（2026-10-21 都真实发生过）：
       #
       #   - `core/DiaryCore.ets` 少一个 `}`：后面的方法被解析进上一个方法体，
@@ -112,8 +124,11 @@ jobs:
       # 不了，脚本会排除（那部分仍需本地 `hvigorw` 把关，见 CONTRIBUTING §10.1.2）。
       - name: 自测（证明两类错误都会红、DSL 目录会跳过）
         run: python3 tools/test_check_arkts_scope.py
-      - name: 校验 ArkTS 语法与作用域（pages/ui 除外）
-        run: python3 tools/check_arkts_scope.py
+      # `--require-tsc`：本地没装 Node 时检查器「跳过且 exit 0」（输出明确写未验证），
+      # 但 CI 必须真的跑过 tsc 才算这个 job 绿。装不上 tsc 就红，
+      # 不能把「跳过」当「通过」。
+      - name: 校验 ArkTS 语法与作用域（pages/ui 除外，CI 不允许跳过）
+        run: python3 tools/check_arkts_scope.py --require-tsc
 
 
   dart:

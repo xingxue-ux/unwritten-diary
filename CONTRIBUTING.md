@@ -63,9 +63,11 @@
 
 `main` 上现在有两道门禁，PR 必须同时通过：
 
-1. **必过检查 7 项**（都在 `.github/workflows/check.yml`，PR 上必须全绿）：
-   - `docs`：关键文件存在、Markdown 相对链接有效、`.github` 下的 YAML 可解析、共用场景 JSON 合法；
-   - `arkts`：把 `.ets` 当 `.ts` 交给 `tsc --noEmit`，抓**语法错误**（少个 `}` 就让 HAP 编不出来）与**作用域错误**（重复粘贴的代码块引用别处的变量）。`pages/`、`ui/` 用 ArkUI 尾随闭包语法，`tsc` 解析不了，脚本会排除——**改这两个目录仍要本地 `hvigorw`，见 §10.1.2**；
+1. **必过检查 8 项**（都在 `.github/workflows/check.yml`，PR 上必须全绿）：
+   - `docs`：关键文件存在、Markdown 相对链接有效、`.github` 下的 YAML 可解析、共用场景 JSON 合法。CI 里先装 PyYAML 并用 `--require-yaml` 跑，**装不上就红**——不允许「跳过 YAML 校验」还报通过；
+   - `arkts`：**两条检查**，缺一不可：
+     1. `tools/check_arkts_capi_contract.py`（**2026-10-22 之前从未在 CI 跑过**）：核对 ArkTS 包装与 C ABI 的**方法名与条数**（`DiaryCore.ets` ↔ `WIRED_METHODS`，当前 59 条）、**错误码**（`DiaryError.ets` ↔ `ErrorCode::wire`，同序）、**C 符号**（shim 的 `dlsym` ↔ `lib.rs` 导出）、**JS 函数**（`index.d.ts` ↔ `napi_define_properties`）、以及 types 包的**三件套**（`.so` 依赖 → `index.d.ts` → `oh-package.json5` 的 `name`/`types`）。改了 `crates/diary_capi`、`DiaryCore.ets`、`Models.ets`、`m6-核心-C-ABI.md` 任何一处，其余几处必须同步；
+     2. `tools/check_arkts_scope.py`：把 `.ets` 当 `.ts` 交给 `tsc --noEmit`，抓**语法错误**（少个 `}` 就让 HAP 编不出来）与**作用域错误**（重复粘贴的代码块引用别处的变量）。CI 用 `--require-tsc` 跑：**拿不到 tsc 就红**，不允许把「跳过」当「通过」。`pages/`、`ui/` 用 ArkUI 尾随闭包语法，`tsc` 解析不了，脚本会排除——**改这两个目录仍要本地 `hvigorw`，见 §10.1.2**；
    - `dart`：`packages/diary_api` 静态分析（`--fatal-infos`）与单元测试；纯 Dart 的 `packages/diary_mock` 也在这里跑（它随 F0 一起进来）；
    - `rust`：`clippy --workspace --all-targets -- -D warnings` 与全 workspace 测试；
    - `bridge`：构建桥接产物、`packages/diary_bridge` 静态分析与端到端调用测试；
