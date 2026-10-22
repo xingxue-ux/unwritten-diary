@@ -339,8 +339,8 @@ export class TranscriptionVerify {
   /**
    * `gen_remote`：远端生成链真机探针（转写材料 → provider → 队列生成 → 读回正文）。
    *
-   * 本构建的 C ABI 还没有 `diary.generate`（见 methods.rs 的「还没接的」一节），
-   * 所以用产品自己的队列路径造等待任务并跑掉它：
+   * `diary.generate` 已经接进 C ABI；本探针要验的是**自动整理**那条队列路径
+   * （provider → 队列 → 生成），所以不走它，而是用产品自己的队列造等待任务并跑掉它：
    *   1. 删掉旧的 `deepseek_gen`，临时打开自动整理（计划时刻 00:00），`runDue`
    *      把「有材料、这份输入没冻结过」的日子排成 `waiting_configuration`；
    *      随后立刻把自动整理恢复原值（默认关、22:30）；

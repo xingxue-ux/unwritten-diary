@@ -1,7 +1,7 @@
 // 核心调用的 TaskPool worker（**所有页面共用的唯一通道**）。
 //
 // 为什么需要：
-// - `DiaryCore` 的 30 个方法都是**同步阻塞**的（SQLite / 模型加载 / 推理），
+// - `DiaryCore` 的 59 个方法都是**同步阻塞**的（SQLite / 模型加载 / 推理），
 //   在主线程调会卡帧、甚至 AppFreeze；
 // - `DiaryCore` 句柄不能跨线程传（私有字段、TaskPool 只传可序列化值），
 //   所以 worker 里按同一个资料库路径重新 `open`，拿到的是同一个核心

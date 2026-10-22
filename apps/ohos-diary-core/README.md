@@ -23,7 +23,7 @@ apps/ohos-diary-core/
 │       ├── index.d.ts
 │       └── oh-package.json5
 ├── entry/src/main/ets/
-│   ├── core/DiaryCore.ets                  # 薄封装：46 条契约方法 + rawCall/rawEnvelope
+│   ├── core/DiaryCore.ets                  # 薄封装：59 条契约方法 + rawCall/rawEnvelope
 │   ├── core/DiaryError.ets                 # 21 个核心码 + native_unavailable
 │   ├── core/Envelope.ets                   # 请求拼装 / 响应拆封
 │   ├── core/Models.ets                     # data 与参数的 ArkTS 类型（snake_case）
@@ -725,7 +725,7 @@ rc=0
 
 `DiaryCore.ets` 的 `import diaryNapi from 'libdiary_napi.so'` 在设备上拿到的是可用对象，
 不是 `undefined`：`version()`、`selfDir()`、`open()`、`call()`、`close()`、`lastError()`、
-`openHandleCount()` 都被真实调用；`DiaryCore` 的 9 条契约方法（当时）全部返回了核心 JSON；录音这一片又补了 5 条，共 14 条（#143 之后是 30 条）。
+`openHandleCount()` 都被真实调用；`DiaryCore` 的 9 条契约方法（当时）全部返回了核心 JSON；录音这一片又补了 5 条，共 14 条（#143 之后是 30 条，现在是 59 条）。
 没有出现探针 §24.1 那种「export objects of native so is undefined」。
 
 ### 第 5 项：`libc++_shared` 随包
@@ -887,13 +887,15 @@ C ABI 的 `OPEN_LIBRARIES` 是进程内静态，这个行为符合文档；产�
 
 1. shim 的 `ERR_DIARY_OPEN` message 是 `ERR_DIARY_OPEN: {完整信封}`，而
    `DiaryError.fromThrown` 只按「message 以 `{` 开头」解析；
-2. C ABI 的 `diary_last_error()` 实际返回完整失败信封
+2. C ABI 的 `diary_last_error()` 当时返回完整失败信封
    `{apiVersion,ok:false,error:{code,...}}`，而 C ABI 文档写的是「与信封里的 error 同形」
    （`{code,message,retryable}`）。
 
 已在 `DiaryError.ets` 做兼容解析（同时接受两种形状 + `: {` 前缀），设备复测后
 `open-missing-parent` / `open-corrupt-file` 都恢复成核心码 `invalid_state`，message 不再带前缀。
-C ABI 文档与实现的形状不一致仍建议后续统一（见问题清单 P2）。
+**2026-10-22 已把实现改成与文档一致**：`diary_last_error()` 顶层就是
+`{code,message,retryable}`，不再带 `apiVersion` / `ok` / `error`；`DiaryError.ets`
+的两种形状兼容解析保留（旧 `.so` 仍能工作）。
 
 ### 第 11 项：release / 混淆
 
@@ -976,7 +978,7 @@ openHandleCount/init`）都是 `Guarded()` 的薄包装，异常统一兜底成*
 | **BLOCKING** | **无**：未发现崩溃、并发 panic/死锁、错误路径崩溃或已触发的 ANR | — |
 | P1 | 主线程同步链路：Smoke 268 ms（17 帧）、`jobs.runDue` 687 ms、大 `extract` 305 ms；产品直接在主线程调用会卡 UI，大库可能 AppFreeze | 示例可接受；**产品接入前必须挪到 TaskPool/worker** |
 | P1 | `open` 失败时核心错误码被降级成 `native_unavailable` | **已修**（`DiaryError.ets` 兼容完整信封与 `: {` 前缀），设备复测通过 |
-| P2 | C ABI 文档说 `diary_last_error` 与 `error` 同形，实现却返回完整失败信封 | 已在 ArkTS 侧兼容；建议后续统一 C ABI 文档或实现 |
+| P2 | C ABI 文档说 `diary_last_error` 与 `error` 同形，实现却返回完整失败信封 | **已修**：实现改为只返回 `{code,message,retryable}`（与文档一致）；ArkTS 侧两种形状仍兼容 |
 | P2 | shim 的 C++ OOM 无兜底 | **已修（#133）**：`Guarded()` 把 `bad_alloc` 兜底成 `ERR_DIARY_CALL`；host 注入 8/8 入口通过，设备 OOM 未注入 |
 | P2 | `jobs.runDue` 单轮 687 ms（40 条 + 512 KiB 正文的索引重建） | 与 P1 同源；评估预算/异步/分段 |
 | P3 | release 包 hilog 默认被系统过滤，排障需先 `hilog -b D` | 运维注意事项，不是代码 bug |

@@ -347,6 +347,69 @@ fn version_and_last_error_travel_through_the_c_api() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// `diary_last_error()` 的形状：**顶层就是 `error` 对象**，不是整条失败信封。
+///
+/// 三处对外文档（`m6-核心-C-ABI.md` §4.1、`lib.rs` 的 `diary_last_error` 注释、
+/// `napi/index.d.ts`）都承诺「与信封里的 `error` 同形」。这里两条失败路径都钉住：
+/// - `diary_call` 失败（有句柄）；
+/// - `diary_open` 失败（返回 NULL，只能靠 last-error 带原因）。
+///
+/// 断言顶层有 `code` / `message` / `retryable`，且**没有**整条信封的 `ok` /
+/// `apiVersion` / `error` 三个键——只判断 `contains("code")` 的话，整条信封也能过。
+#[test]
+fn last_error_is_the_error_object_not_the_envelope() {
+    fn assert_error_body(recorded: &str, entry: &str) {
+        let body: Value = serde_json::from_str(recorded).unwrap_or_else(|error| {
+            panic!("{entry} 的 last-error 必须是 JSON：{error}：{recorded}")
+        });
+        assert!(
+            body.get("code")
+                .and_then(Value::as_str)
+                .is_some_and(|code| !code.is_empty()),
+            "{entry} 的 last-error 顶层要有非空 code：{body}"
+        );
+        assert!(
+            body.get("message").and_then(Value::as_str).is_some(),
+            "{entry} 的 last-error 顶层要有 message：{body}"
+        );
+        assert!(
+            body.get("retryable").and_then(Value::as_bool).is_some(),
+            "{entry} 的 last-error 顶层要有布尔 retryable：{body}"
+        );
+        for envelope_key in ["ok", "apiVersion", "error"] {
+            assert!(
+                body.get(envelope_key).is_none(),
+                "{entry} 的 last-error 不应是整条失败信封（多出 {envelope_key}）：{body}"
+            );
+        }
+    }
+
+    let (dir, _path, handle) = open_temp("last-error-shape");
+    let _ = call_text(handle, "这不是 JSON");
+    assert_error_body(
+        &last_error().expect("diary_call 失败后必须有 last-error"),
+        "diary_call",
+    );
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+
+    let missing_dir = std::env::temp_dir().join(format!(
+        "diary-capi-last-error-{}-不存在的目录",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let c_path = CString::new(missing_dir.join("x.sqlite").to_string_lossy().into_owned()).unwrap();
+    // SAFETY: 路径合法；父目录不存在时 `diary_open` 应当返回 NULL。
+    let failed = unsafe { diary_open(c_path.as_ptr()) };
+    assert!(failed.is_null());
+    assert_error_body(
+        &last_error().expect("diary_open 失败后必须有 last-error"),
+        "diary_open",
+    );
+}
+
 /// 空指针、野指针、非法 UTF-8、非法 JSON、未知方法、拼错的参数：全都是一条错误，不是崩溃。
 #[test]
 fn bad_input_never_crashes_and_always_reports_an_error() {
@@ -2622,6 +2685,54 @@ fn jobs_retry_cancel_and_acknowledge_attention() {
             json!({"job_id": job_id, "operation_id": "op", "extra": 1}),
         ),
         "invalid_argument",
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `search.start` 省略 `mode` 时默认 **`hybrid`**（共享契约 §2.6 与 Dart 侧同一口径）。
+///
+/// 光看「有命中」区分不出 keyword 与 hybrid（hybrid 首屏本来就只算关键词那一路）。
+/// 这里用两个只有 hybrid 才会出现的观察点钉住：
+/// - 没有语义索引时，hybrid 首屏退化并在 `warnings` 里写明「混合检索退化为关键词」；
+/// - hybrid 首屏的 `phase` 恒为 `keyword_ready`，而 keyword 路径在没有下一页时是 `done`。
+#[test]
+fn search_start_defaults_to_hybrid_mode() {
+    let (dir, _path, handle) = open_temp("search-default-mode");
+    seed_capture_at(
+        handle,
+        "op-capi-search-default-mode",
+        "2026-10-17T01:00:00Z",
+        "省略检索模式时应当是混合检索：鹅掌楸。",
+    );
+
+    let snapshot = expect_ok(&call(
+        handle,
+        "search.start",
+        json!({
+            // 刻意不传 mode：默认值必须由 C ABI 补成 hybrid。
+            "request": {"query": "鹅掌楸"},
+            "query_revision": 1,
+        }),
+    ));
+    assert_eq!(
+        snapshot["phase"],
+        json!("keyword_ready"),
+        "hybrid 首屏应当停在 keyword_ready（keyword 路径在小结果集上是 done）：{snapshot}"
+    );
+    let warnings = snapshot["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("warnings 必须是数组：{snapshot}"));
+    assert!(
+        warnings.iter().any(|warning| warning
+            .as_str()
+            .is_some_and(|text| text.starts_with("混合检索退化为关键词"))),
+        "省略 mode 必须走到 hybrid 的退化路径，warnings 要如实说明：{snapshot}"
+    );
+    assert!(
+        !snapshot["results"].as_array().unwrap().is_empty(),
+        "退化后仍要有关键词命中：{snapshot}"
     );
 
     assert_eq!(diary_close(handle), 0);

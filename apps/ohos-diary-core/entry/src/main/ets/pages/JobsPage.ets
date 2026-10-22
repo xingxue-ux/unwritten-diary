@@ -250,7 +250,7 @@ export struct JobsPage {
       return;
     }
     if (job.kind === 'respond') {
-      toast('AI 服务配置入口还没有接进 C ABI；当前只能查看任务状态。');
+      toast('AI 服务配置页面还没做（providers.* / settings.* 的 C ABI 已就绪）；当前只能查看任务状态。');
       return;
     }
     // semantic_index / index / extract：都去设置页看模型与索引状态。
