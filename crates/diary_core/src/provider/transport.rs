@@ -126,11 +126,16 @@ impl HttpResponse {
         String::from_utf8_lossy(&self.body).into_owned()
     }
 
-    /// JSON 响应体短摘录：最长 200 个字符，换行折成空格。
+    /// JSON 响应体短摘录：**先擦密钥、再截断**成最长 200 个字符，换行折成空格。
     ///
-    /// 只用于错误消息，且调用方会再过一遍密钥擦除（`redact`）。
-    pub fn excerpt(&self) -> String {
-        let text = self.body_text().replace(['\n', '\r'], " ");
+    /// 顺序不能反：密钥可能比 200 个字符还长，先截断的话 `redact` 就匹配不到完整
+    /// 密钥，明文前缀会留在摘录里。擦除与截断都在这里做，调用方不必也不能自己
+    /// 「先截断再擦」。
+    ///
+    /// 只用于错误消息；响应体本身从不原样返回给上层。
+    pub fn excerpt(&self, secret: Option<&str>) -> String {
+        let text =
+            super::normalize::redact(&self.body_text(), secret).replace(['\n', '\r'], " ");
         let mut excerpt: String = text.chars().take(200).collect();
         if text.chars().count() > 200 {
             excerpt.push('…');
@@ -213,10 +218,10 @@ impl Transport for UreqTransport {
         };
 
         match outcome {
-            Ok(response) => Ok(http_response(response)),
+            Ok(response) => http_response(response),
             // ureq 把「有响应的错误状态」也走 Err 分支：先把响应捞出来，
             // 让 4xx/5xx 走归一化（那才是能给出可执行下一步的地方）。
-            Err(ureq::Error::Status(_, response)) => Ok(http_response(response)),
+            Err(ureq::Error::Status(_, response)) => http_response(response),
             Err(ureq::Error::Transport(transport)) => {
                 let message = transport.to_string();
                 let text = message.to_ascii_lowercase();
@@ -230,9 +235,9 @@ impl Transport for UreqTransport {
     }
 }
 
-fn http_response(response: ureq::Response) -> HttpResponse {
+fn http_response(response: ureq::Response) -> std::result::Result<HttpResponse, TransportError> {
     let status = response.status();
-    let headers = response
+    let headers: Vec<(String, String)> = response
         .headers_names()
         .into_iter()
         .filter_map(|name| {
@@ -241,14 +246,69 @@ fn http_response(response: ureq::Response) -> HttpResponse {
                 .map(|value| (name.clone(), value.to_owned()))
         })
         .collect();
+    let declared = declared_body_length(&headers);
     let mut body = Vec::new();
-    // 读失败按空体处理：状态码已经拿到，能不能解析由归一化那一步裁决。
-    let _ = response.into_reader().read_to_end(&mut body);
-    HttpResponse {
+    // 读失败**不能吞**：读超时是 `provider_timeout`（可重试），别的 IO 错误是
+    // `network_unavailable`。把残体交给上层会变成「JSON 解析失败」→
+    // `model_unavailable`（不可重试），语义正好反了。
+    response
+        .into_reader()
+        .read_to_end(&mut body)
+        .map_err(|error| {
+            let message = format!("读取响应体失败：{error}");
+            if is_timeout(&error) {
+                TransportError::Timeout { message }
+            } else {
+                TransportError::Other { message }
+            }
+        })?;
+    // `Content-Length` 是远端自己的声明：短读说明响应体被截断（连接断开、代理超时），
+    // 绝不能当成合法的短体/空体。分块传输下这个头不权威，`declared_body_length`
+    // 已经跳过了那种情况。
+    if let Some(expected) = declared {
+        let actual = body.len() as u64;
+        if actual < expected {
+            return Err(TransportError::Other {
+                message: format!(
+                    "响应体被截断：Content-Length 声明 {expected} 字节，实际只读到 {actual} 字节"
+                ),
+            });
+        }
+    }
+    Ok(HttpResponse {
         status,
         headers,
         body,
+    })
+}
+
+/// `Content-Length` 声明的响应体长度（没有、解析不了、或分块传输时为 `None`）。
+///
+/// 有 `Transfer-Encoding` 时按 RFC 9112 忽略 `Content-Length`：那种响应体的边界由
+/// 分块格式决定，拿长度去校验会误报。
+fn declared_body_length(headers: &[(String, String)]) -> Option<u64> {
+    let chunked = headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("transfer-encoding"));
+    if chunked {
+        return None;
     }
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.trim().parse().ok())
+}
+
+/// 这个 IO 错误是不是超时。ureq 会把 socket 的 `WouldBlock` 归一成 `TimedOut`，
+/// 这里两种都认（不同平台/不同 reader 的实现会给出不同的 kind）。
+fn is_timeout(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    ) || error
+        .to_string()
+        .to_ascii_lowercase()
+        .contains("timed out")
 }
 
 /// 回放替身：按脚本回响应，并把每一次请求记下来。
@@ -385,5 +445,101 @@ impl Transport for CountingTransport {
 impl PanicTransport {
     pub fn new() -> Self {
         Self {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::normalize::transport_error;
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// 起一个只服务一次的本地 HTTP 服务：读掉请求头，写回固定响应。
+    ///
+    /// `hold_ms > 0` 时写完不关连接——客户端会卡在「Content-Length 还没读满」
+    /// 上直到自己的读超时；`hold_ms == 0` 时立刻关闭，模拟响应体被截断。
+    fn serve_once(payload: &'static [u8], hold_ms: u64) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("绑定 loopback 端口");
+        let port = listener.local_addr().expect("取本地地址").port();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("接受连接");
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request);
+            socket.write_all(payload).expect("写回响应头与残体");
+            socket.flush().expect("flush 响应");
+            if hold_ms > 0 {
+                std::thread::sleep(Duration::from_millis(hold_ms));
+            }
+        });
+        port
+    }
+
+    /// 读超时**不能**被吞成空体：否则上层把残体当 JSON 解析失败，
+    /// 归成不可重试的 `model_unavailable`，与契约「读写超时 → provider_timeout，
+    /// 可重试」正好相反。
+    #[test]
+    fn a_body_read_timeout_is_a_retryable_provider_timeout() {
+        // 200 + Content-Length:1000，只写 9 字节，然后挂着连接不关。
+        let port = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n123456789",
+            2_000,
+        );
+        let request = HttpRequest::new(
+            "GET",
+            format!("http://127.0.0.1:{port}/v1/models"),
+            300,
+        );
+
+        let error = match UreqTransport::new().send(&request) {
+            Err(error) => error,
+            Ok(response) => panic!(
+                "读超时被吞成了响应（status {}，body {} 字节）",
+                response.status,
+                response.body.len()
+            ),
+        };
+        assert!(
+            matches!(error, TransportError::Timeout { .. }),
+            "读超时应该归到 Timeout，实际 {error}"
+        );
+        let normalized = transport_error(&error, None);
+        assert_eq!(
+            normalized.code().wire(),
+            "provider_timeout",
+            "契约要求读写超时可重试：{normalized}"
+        );
+        assert!(normalized.retryable(), "读超时必须可重试：{normalized}");
+        assert_ne!(normalized.code().wire(), "model_unavailable");
+    }
+
+    /// `Content-Length` 声明 1000、实际只读到 9 字节（连接提前关闭）：这是响应体
+    /// 被截断，不是「合法的空体」，更不能当 JSON 解析失败。
+    #[test]
+    fn a_body_shorter_than_content_length_is_a_transport_error() {
+        let port = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n123456789",
+            0,
+        );
+        let request = HttpRequest::new(
+            "GET",
+            format!("http://127.0.0.1:{port}/v1/models"),
+            5_000,
+        );
+
+        let error = match UreqTransport::new().send(&request) {
+            Err(error) => error,
+            Ok(response) => panic!(
+                "短读被当成了合法响应（body {} 字节）",
+                response.body.len()
+            ),
+        };
+        assert!(
+            matches!(error, TransportError::Other { .. }),
+            "截断应该归到 Other，实际 {error}"
+        );
+        let normalized = transport_error(&error, None);
+        assert_eq!(normalized.code().wire(), "network_unavailable");
+        assert!(normalized.retryable(), "截断是暂时性的，应该可重试");
     }
 }
