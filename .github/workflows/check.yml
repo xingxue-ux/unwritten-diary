@@ -48,8 +48,15 @@ jobs:
       # 装 PyYAML 才能真的解析 `.github/**/*.yml`。`--require-yaml` 让「没装
       # PyYAML 就跳过」在 CI 里直接红：跳过 ≠ 通过，不能一边跳过一边打印
       # 「.github YAML 均正常」（2026-10-22 之前就是这个假绿）。
-      - name: 安装 PyYAML
-        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
+      #
+      # 用独立 venv：ubuntu-24.04 的系统 Python 带 PEP 668 的
+      # `EXTERNALLY-MANAGED`，`pip install` 到系统环境会直接报
+      # `externally-managed-environment`（actions/runner-images#10781）。
+      - name: 安装 PyYAML（独立 venv）
+        run: |
+          python3 -m venv /tmp/pyyaml-venv
+          /tmp/pyyaml-venv/bin/pip install --quiet --disable-pip-version-check pyyaml
+          echo "/tmp/pyyaml-venv/bin" >> "$GITHUB_PATH"
       - name: 校验关键文件、Markdown 链接、.github YAML 与共用场景
         run: |
           python3 tools/check_docs.py --require-yaml
