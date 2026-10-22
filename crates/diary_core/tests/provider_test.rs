@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use diary_core::provider::endpoint_scope;
+use diary_core::provider::local_engine::{EngineConfig, ModelKind};
 use diary_core::{
     Core, CoreError, CreateDraftInput, ErrorCode, HttpRequest, HttpResponse, JobState,
     PanicTransport, Provider, ProviderCapability, ProviderTestStatus, ScriptedTransport,
@@ -536,6 +537,64 @@ fn queued_work_waits_for_configuration_instead_of_hammering_the_provider() {
     assert_eq!(core.get_job(&ticket.job_id).unwrap().state, JobState::Succeeded);
 }
 
+/// P0 的端到端回归：远端 200 且把密钥回显进 `content` / `model` 时，落库的回应
+/// （`ai_responses.body` / `model`）里不许有明文——这条链路的下游还有日记正文与插件。
+#[test]
+fn an_echoed_secret_never_reaches_the_stored_response() {
+    const SECRET: &str = "sk-echoed-secret-0123456789";
+    let dir = tempfile::tempdir().unwrap();
+    let echoed = HttpResponse::new(
+        200,
+        serde_json::json!({
+            "model": format!("mirror-{SECRET}"),
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": format!("网关回显了 {SECRET}"),
+                }
+            }],
+        })
+        .to_string(),
+    );
+    let transport = Arc::new(ScriptedTransport::ok(vec![echoed]));
+    let mut core = new_core(dir.path());
+    core.set_transport_for_test(transport.clone() as Arc<dyn Transport>);
+    let provider = core
+        .save_provider(
+            &provider_config("prv_echo", &[ProviderCapability::GenerateText], true),
+            Some(SECRET),
+        )
+        .unwrap();
+    let capture_id = capture_with_text(&mut core, "来源。", "op1");
+    let ticket = core
+        .request_response(&[capture_id], "说一句", Some(&provider.id))
+        .unwrap();
+    core.run_due_jobs(chrono::Utc::now(), 60_000, "test", 8)
+        .unwrap();
+
+    let response = core
+        .get_response(ticket.response_id.as_deref().unwrap())
+        .unwrap();
+    assert!(
+        !response.body.contains(SECRET),
+        "落库的回应正文泄漏了密钥：{}",
+        response.body
+    );
+    assert!(
+        response.body.contains("***"),
+        "应该留下擦除痕迹：{}",
+        response.body
+    );
+    let model = response.model.expect("远端回显了模型名");
+    assert!(!model.contains(SECRET), "落库的模型名泄漏了密钥：{model}");
+    assert!(model.contains("***"), "模型名也应该擦：{model}");
+    assert_eq!(
+        core.get_job(&ticket.job_id).unwrap().state,
+        JobState::Succeeded
+    );
+    assert_eq!(transport.call_count(), 1);
+}
+
 /// **跨 kind 一把尺**（#96 合 main 时暴露的真不一致）：`waiting_configuration` 无论由
 /// 哪条 kind、由哪条路落进来，对「要不要用户动手」必须给**同一个答案**。
 ///
@@ -932,11 +991,18 @@ fn file_core_with_provider(
 
 /// 直接读验证四列：闸门只看结论，想验「有没有被清掉」就得自己开一个连接看库。
 fn verdict_columns(path: &Path) -> (String, String, Option<String>, Option<String>) {
+    verdict_columns_for(path, "prv_a")
+}
+
+fn verdict_columns_for(
+    path: &Path,
+    provider_id: &str,
+) -> (String, String, Option<String>, Option<String>) {
     let conn = rusqlite::Connection::open(path).unwrap();
     conn.query_row(
         "SELECT test_status, verified_capabilities, last_error_code, last_tested_at \
          FROM providers WHERE id = ?1",
-        rusqlite::params!["prv_a"],
+        rusqlite::params![provider_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )
     .unwrap()
@@ -1133,6 +1199,88 @@ fn changing_endpoint_or_model_invalidates_the_old_verdict() {
         .provider_capability_gate(ProviderCapability::GenerateText)
         .unwrap();
     assert!(gate.ready, "{}", gate.reason);
+}
+
+// ------------------------------------------------------------------ 本机引擎的验证结论（P1）
+
+/// 一份本机引擎配置。`model` 是模型目录（不是远端模型名），留空表示用随包/环境解析。
+fn local_provider_config(id: &str, model: Option<&str>) -> Provider {
+    Provider {
+        id: id.to_owned(),
+        label: "本机引擎测试服务".to_owned(),
+        adapter_id: diary_core::provider::local_engine::SHERPA_ONNX.to_owned(),
+        endpoint: None,
+        model: model.map(str::to_owned),
+        capabilities: [ProviderCapability::TranscribeAudio].into_iter().collect(),
+        credential_ref: None,
+        enabled: true,
+        test_status: ProviderTestStatus::Untested,
+    }
+}
+
+/// 回归（P1）：本机引擎「原样重存」不得把 `failed` 洗成 `untested`。
+///
+/// 洗掉的后果很具体：闸门对 `untested` 跳过「验过没有」这一条，而本机分支只看
+/// `readiness`（只 stat 文件、不试加载）。于是「引擎库不是有效 ELF / 模型文件损坏」
+/// 时，用户点一次保存（一个字段都没改）就能让闸门重新放行，任务注定失败。
+#[test]
+fn resaving_an_unchanged_local_engine_keeps_the_failed_verdict() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = Core::open(&path).unwrap();
+    // 钉死一个不存在的模型目录：探针在「模型文件不在」这一步失败，与这台机器上
+    // 有没有真的引擎库/模型无关（CI 上也能稳定复现），也不会真的加载原生库。
+    core.set_asr_engine_config_for_test(EngineConfig {
+        engine_lib: None,
+        model_dir: dir.path().join("missing-model"),
+        model_file: None,
+        kind: ModelKind::SenseVoice,
+        language: None,
+        num_threads: 1,
+        itn: false,
+    });
+
+    let provider = core
+        .save_provider(&local_provider_config("prv_local", None), None)
+        .unwrap();
+    let error = core
+        .test_provider(&provider.id, &[ProviderCapability::TranscribeAudio])
+        .unwrap_err();
+    assert_eq!(code_of(&error), "provider_not_configured");
+    let (status, verified, last_error, tested_at) = verdict_columns_for(&path, "prv_local");
+    assert_eq!(status, "failed");
+    assert_eq!(verified, "[]");
+    assert!(last_error.is_some(), "失败码要落库");
+    assert!(tested_at.is_some(), "跑过测试就该有时间");
+
+    // 原样重存：一个字段都没改。
+    let saved = core
+        .save_provider(&local_provider_config("prv_local", None), None)
+        .unwrap();
+    assert_eq!(saved.test_status, ProviderTestStatus::Failed);
+    let (status, verified, last_error_after, tested_at_after) =
+        verdict_columns_for(&path, "prv_local");
+    assert_eq!(status, "failed", "原样重存把失败结论洗成了 untested");
+    assert_eq!(verified, "[]");
+    assert_eq!(last_error_after, last_error, "失败码要原样保留");
+    assert_eq!(tested_at_after, tested_at, "测试时间要原样保留");
+
+    let gate = core
+        .provider_capability_gate(ProviderCapability::TranscribeAudio)
+        .unwrap();
+    assert!(!gate.ready, "失败结论还在，闸门必须继续拒绝：{}", gate.reason);
+
+    // 真的改了功能参数（换模型目录）才重置：旧结论是对旧目录的验证。
+    core.save_provider(
+        &local_provider_config("prv_local", Some("/tmp/another-model")),
+        None,
+    )
+    .unwrap();
+    let (status, verified, last_error, tested_at) = verdict_columns_for(&path, "prv_local");
+    assert_eq!(status, "untested", "换了模型目录，旧结论要作废");
+    assert_eq!(verified, "[]");
+    assert_eq!(last_error, None);
+    assert_eq!(tested_at, None);
 }
 
 // ------------------------------------------------------------------ 错误归一化（走真实作业路径）
@@ -1382,6 +1530,42 @@ fn provider_config_validation_rejects_junk_clearly() {
         code_of(&core.save_provider(&empty_label, None).unwrap_err()),
         "invalid_argument"
     );
+
+    // userinfo（`user:pass@host`）不是「擦掉再用」，是**拒绝**：URL 里的密码没有
+    // 可靠的生命周期管理，且一定会出现在配置列表/测试报告/错误消息里。静默剥离
+    // 会让用户以为配上了、实际没配。
+    for endpoint in ["http://u:p@h/v1", "http://only-user@h/v1"] {
+        let mut userinfo =
+            provider_config("prv_userinfo", &[ProviderCapability::GenerateText], true);
+        userinfo.endpoint = Some(endpoint.to_owned());
+        let error = core.save_provider(&userinfo, None).unwrap_err();
+        assert_eq!(code_of(&error), "invalid_argument", "{endpoint}");
+        let text = error.to_string();
+        assert!(text.contains("secret/credentialRef"), "{text}");
+        assert!(text.contains("不要写进 URL"), "{text}");
+        let credentials = endpoint
+            .split("://")
+            .nth(1)
+            .unwrap()
+            .split('@')
+            .next()
+            .unwrap();
+        assert!(
+            !text.contains(credentials),
+            "拒绝消息不该回显 URL 里的凭据：{text}"
+        );
+        assert_eq!(
+            core.list_providers().unwrap().len(),
+            0,
+            "被拒绝的 endpoint 不能入库"
+        );
+    }
+
+    // 正常地址仍然通过，而且原样规范化。
+    let mut https = provider_config("prv_https", &[ProviderCapability::GenerateText], true);
+    https.endpoint = Some("https://api.deepseek.com".to_owned());
+    let saved = core.save_provider(&https, None).unwrap();
+    assert_eq!(saved.endpoint.as_deref(), Some("https://api.deepseek.com"));
 
     // 保存合法配置后：空测试范围、未知服务都报明确错误。
     let saved = core

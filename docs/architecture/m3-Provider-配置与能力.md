@@ -36,7 +36,7 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 | `id` | 不透明 ID（`prv_` + 32 位十六进制），由核心生成 |
 | `label` | 显示名 |
 | `adapter_id` | 协议适配器（当前只有 `openai_compatible`） |
-| `endpoint` | 服务地址，含 API 版本前缀（例如 `http://127.0.0.1:11434/v1`）。只接受 `http` / `https` |
+| `endpoint` | 服务地址，含 API 版本前缀（例如 `http://127.0.0.1:11434/v1`）。只接受 `http` / `https`；**不接受 userinfo**（`http://user:pass@host/v1` 会被拒绝），凭据走 `credentialRef` |
 | `model` | 模型名（生成/转写各自一个服务配置）。**本地引擎这条路上它是「模型目录」**（见 [M3 · 转写链](m3-转写链.md)），留空表示用随包/环境变量解析出的默认目录 |
 | `declared_capabilities` | 配置里声明的能力（JSON 数组，wire 名） |
 | `verified_capabilities` | 连接测试**验过**的能力（JSON 数组；部分范围的测试按能力并集保留，被测失败的那一项会被摘掉） |
