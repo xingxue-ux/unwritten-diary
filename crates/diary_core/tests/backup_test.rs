@@ -1220,6 +1220,362 @@ fn concurrent_finalize_keeps_the_manifest_equal_to_the_package() {
     );
 }
 
+// ------------------------------------------------------------------ ① 已最终化的录音
+
+/// 开一段录音，按给定段序号各写一个片段并登记。返回 `(capture_id, recording_id)`。
+fn recording_with_segments(core: &mut Core, op: &str, segments: &[(i64, &str)]) -> (String, String) {
+    let capture = draft(core, &format!("{op}-create"));
+    let ticket = core
+        .prepare_recording(&capture, &format!("{op}-prepare"))
+        .expect("录音票据");
+    for (index, name) in segments {
+        let bytes = format!("{op} segment {index}").into_bytes();
+        let path = Path::new(&ticket.staging_ticket).join(name);
+        fs::write(&path, &bytes).expect("写片段");
+        core.register_segment(
+            &ticket.recording_id,
+            *index,
+            diary_core::SegmentManifest {
+                segment_id: format!("{op}-seg{index}"),
+                relative_file_name: (*name).to_owned(),
+                duration_ms: 1000,
+                sha256: sha_of(&bytes),
+                byte_size: bytes.len() as i64,
+                closed_at: None,
+            },
+        )
+        .expect("登记片段");
+    }
+    (capture, ticket.recording_id)
+}
+
+/// ①：成功最终化之后再备份，**不该**再把这段录音说成「未收尾片段没随包」。
+///
+/// `finalize` 只删暂存目录，`recording_segments` 的行永远留着（全仓没有 DELETE）。
+/// 片段清单若按整表扫，每次备份都会把「文件不在暂存目录」误读成「有未收尾片段没随包」，
+/// 于是一份报告同时说三件事：`openRecordings=0`、`transientClipCount=0`、
+/// 「有 N 个未收尾录音的片段没有随包…恢复后仍显示未收尾」——后一句还是假话：
+/// 快照里 `state='saved'`，逻辑音频已经在 `blobs/` 里。
+#[test]
+fn finalized_recording_is_not_reported_as_an_unfinished_clip() {
+    let root = tempfile::tempdir().expect("临时目录");
+    let root_path = root.path();
+    let mut core = new_core(root_path);
+    let (_, recording_id) =
+        recording_with_segments(&mut core, "finalized", &[(0, "seg-0.bin"), (1, "seg-1.bin")]);
+
+    let finalized = core
+        .finalize_recording(&recording_id, 1, "finalized")
+        .expect("最终化");
+    assert_eq!(finalized.state, diary_core::RecordingState::Saved);
+    assert!(
+        !root_path.join("staging").join(&recording_id).exists(),
+        "最终化会删掉暂存目录；片段行却留在 recording_segments 里"
+    );
+
+    let package = root_path.join("finalized.diarybak");
+    let report = core.create_backup(package.to_str().unwrap()).expect("备份");
+    assert_eq!(
+        report.counts.open_recordings,
+        Some(0),
+        "最终化之后没有未收尾录音"
+    );
+    assert_eq!(report.transient_clip_count, 0);
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("没有随包")),
+        "已最终化的录音没有「片段没随包」这回事：{:?}",
+        report.warnings
+    );
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("未收尾")),
+        "更不该把已 saved 的录音说成未收尾：{:?}",
+        report.warnings
+    );
+
+    // 清单里也不该有 transientClips：这些片段已经被拼进逻辑音频（blobs/）了。
+    let parts = read_package(&package);
+    assert_eq!(
+        parts.manifest["transientClips"]
+            .as_array()
+            .expect("清单必须有 transientClips"),
+        &Vec::<serde_json::Value>::new(),
+        "已最终化录音的片段不该作为随行片段进包"
+    );
+
+    // 恢复出来如实是 saved（不是「仍显示未收尾」）。
+    let restored_dir = root_path.join("restored-finalized");
+    let restore = core
+        .restore_backup(package.to_str().unwrap(), restored_dir.to_str().unwrap())
+        .expect("恢复");
+    assert!(
+        !restore
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("未收尾") || warning.contains("没收尾")),
+        "恢复报告也不该把这段录音说成没完成：{:?}",
+        restore.warnings
+    );
+    let restored = Core::open(&restore.library_path).expect("打开恢复出来的库");
+    let session = restored.recording_session(&recording_id).expect("会话还在");
+    assert_eq!(session.state, diary_core::RecordingState::Saved);
+}
+
+/// ①的同族：带缺口最终化（`recoverable` + `ended_at` 已写）也会删暂存目录。
+/// 这种会话仍然算「没收尾的录音」（`openRecordings=1`），但它的片段同样已经被拼进
+/// 逻辑音频了——备份不能再说「这些片段没随包」。
+#[test]
+fn finalized_recording_with_gaps_is_not_reported_as_an_unfinished_clip() {
+    let root = tempfile::tempdir().expect("临时目录");
+    let root_path = root.path();
+    let mut core = new_core(root_path);
+    // 缺第 1 段：最终化的结果是 recoverable，不是 saved。
+    let (_, recording_id) =
+        recording_with_segments(&mut core, "gapped", &[(0, "gap-0.bin"), (2, "gap-2.bin")]);
+    let finalized = core
+        .finalize_recording(&recording_id, 2, "gapped")
+        .expect("最终化");
+    assert_eq!(finalized.state, diary_core::RecordingState::Recoverable);
+
+    let package = root_path.join("gapped.diarybak");
+    let report = core.create_backup(package.to_str().unwrap()).expect("备份");
+    // 有缺口就是没收尾：这条计数如实保留。
+    assert_eq!(report.counts.open_recordings, Some(1));
+    // 但片段已经被最终化用掉了，不该再谎报「没随包」。
+    assert_eq!(report.transient_clip_count, 0);
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("没有随包")),
+        "带缺口但已最终化的录音，片段同样已经进了逻辑音频：{:?}",
+        report.warnings
+    );
+    // 「没收尾」这件事仍要如实说（boundary warning），只是不能把已用的片段算进去。
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("没收尾的录音")),
+        "有缺口的录音仍然要如实说没完成：{:?}",
+        report.warnings
+    );
+}
+
+// ------------------------------------------------------------------ ② 恢复路径命名空间
+
+/// ②：一条 `transientClips` 的 `path` 写成 `library.sqlite`，恢复时会覆盖已核过哈希的
+/// 快照（包内路径 `db/library.sqlite` 与 `library.sqlite` 不算冲突）。
+///
+/// 这种包的每一条**自己**的清单哈希都验得过，`inspect` 会「全绿」；危险正是它：
+/// 解包按条目顺序用 `File::create` 落到同一个 `staging/library.sqlite`，后写的片段
+/// 整份替换掉快照。要求：恢复路径必须唯一，冲突包被拒绝，且报告不能再无条件宣称
+/// 「逐字节相同」。
+#[test]
+fn package_whose_clip_restores_onto_the_snapshot_is_rejected() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let dir_path = dir.path();
+    let mut core = new_core(dir_path);
+    write_capture(&mut core, "ns-1", "快照不能被随行片段整份覆盖");
+    let good = dir_path.join("good.diarybak");
+    core.create_backup(good.to_str().unwrap()).expect("备份");
+
+    let mut parts = read_package(&good);
+    let snapshot = parts
+        .entries
+        .iter()
+        .find(|(name, _)| name == "db/library.sqlite")
+        .map(|(_, bytes)| bytes.clone())
+        .expect("包里有快照条目");
+
+    // 造一份**合法的另一份 SQLite**（内容不同、结构同样有效）：这样解包之后
+    // `verify_restored_library` 的完整性/行数检查都会过，只有「逐字节等于快照」能识破它。
+    let forged_library = dir_path.join("forged.sqlite");
+    fs::write(&forged_library, &snapshot).expect("复制快照");
+    Connection::open(&forged_library)
+        .expect("打开复制的快照")
+        .execute_batch("VACUUM;")
+        .expect("换一种页布局：逻辑内容相同、字节不同");
+    let forged = fs::read(&forged_library).expect("读伪造的库");
+    assert_ne!(
+        sha_of(&snapshot),
+        sha_of(&forged),
+        "伪造的快照必须与真快照字节不同"
+    );
+
+    // 包内路径 `library.sqlite` 正好等于快照的**恢复路径** `library.sqlite`。
+    parts.manifest["transientClips"] = serde_json::json!([{
+        "path": "library.sqlite",
+        "sha256": sha_of(&forged),
+        "byteSize": forged.len() as i64,
+        "recordingId": "rec_conflict",
+        "segmentIndex": 0,
+    }]);
+    parts.entries.push(("library.sqlite".to_owned(), forged.clone()));
+    let package = dir_path.join("conflict.diarybak");
+    write_package(&package, &parts);
+
+    let target = dir_path.join("restored-conflict");
+    let inspection = core
+        .inspect_backup(package.to_str().expect("UTF-8 路径"))
+        .expect("检查备份包");
+    let restore = core.restore_backup(
+        package.to_str().expect("UTF-8 路径"),
+        target.to_str().expect("UTF-8 路径"),
+    );
+    let detail = match &restore {
+        Ok(report) => {
+            let written = fs::read(&report.library_path)
+                .map(|bytes| sha_of(&bytes))
+                .unwrap_or_else(|err| format!("<读不出来：{err}>"));
+            format!(
+                "inspect issues={:?}、hashes_verified={}；restore 却成功了：写出的库 sha256={written}\
+                 （伪造字节的 sha256={}，真快照的 sha256={}），warnings={:?}",
+                inspection.issues,
+                inspection.hashes_verified,
+                sha_of(&forged),
+                sha_of(&snapshot),
+                report.warnings
+            )
+        }
+        Err(error) => format!(
+            "inspect issues={:?}、hashes_verified={}；restore 报错：{error}",
+            inspection.issues, inspection.hashes_verified
+        ),
+    };
+    assert!(
+        !inspection.issues.is_empty(),
+        "恢复路径冲突的包必须被 inspect 判出问题，而不是全绿：{detail}"
+    );
+    assert!(
+        !inspection.hashes_verified,
+        "有结构性问题时不该报「逐条目哈希都验过」：{detail}"
+    );
+    assert!(
+        inspection
+            .issues
+            .iter()
+            .any(|issue| issue.contains("恢复路径") && issue.contains("library.sqlite")),
+        "issue 要说清是恢复路径撞车：{detail}"
+    );
+    assert!(
+        restore.is_err(),
+        "冲突包必须被拒绝恢复，而不是静默覆盖已校验的快照：{detail}"
+    );
+    assert_code(
+        restore.as_ref().expect_err("上面已经断言是 Err"),
+        ErrorCode::CorruptedBackup,
+    );
+    assert!(
+        !target.join("library.sqlite").exists(),
+        "被拒绝的恢复不该在目标目录里留下库文件"
+    );
+}
+
+// ------------------------------------------------------------------ ④ 同一目标的并发备份
+
+/// ④：「绝不覆盖旧备份」在并发下必须也成立。
+///
+/// 原来只有一次 `target.exists()` 预检查，落地才 `fs::rename`；POSIX 的 rename(2) 在
+/// 目标存在时**静默替换**。两条并发备份因此都会通过预检查，后落地的覆盖先落地的，
+/// 而先返回的 `BackupReport` 里的路径/大小已经指向别人的文件。
+///
+/// 这里用 `BackupGate` 把窗口钉死：A 停在会合点（预检查已过、还没落地），B 用同一个
+/// target 完整跑完并落地；放行 A 之后，A 的最终一步**必须**因为「目标已存在」失败。
+#[test]
+fn concurrent_backups_to_the_same_target_do_not_overwrite() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let dir_path = dir.path();
+    let library = dir_path.join("library.sqlite");
+    let mut core = new_core(dir_path);
+    write_capture(&mut core, "same-target-1", "B 落地之前写的第一条记录");
+
+    let gate = Arc::new(BackupGate::new());
+    let target = dir_path.join("same-target.diarybak");
+    let target_text = target.to_str().expect("UTF-8 路径").to_owned();
+    let backup_a = {
+        let library = library.clone();
+        let gate = Arc::clone(&gate);
+        let target_text = target_text.clone();
+        thread::spawn(move || {
+            let mut driver = Core::open(&library).expect("第二个驱动能开同一个库");
+            driver.set_backup_gate_for_test(gate);
+            driver.create_backup(&target_text)
+        })
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let arrived = loop {
+        if gate.wait_until_arrived(Duration::from_millis(200)) {
+            break true;
+        }
+        if backup_a.is_finished() || Instant::now() >= deadline {
+            break false;
+        }
+    };
+    assert!(arrived, "备份 A 没有停在会合点上（是不是提前失败了？）");
+
+    // A 的快照已经取下（只有 1 条记录）；这时再写一条，让 B 的包与 A 的内容不同。
+    write_capture(&mut core, "same-target-2", "A 停在窗口里时写入的第二条记录");
+    let report_b = core
+        .create_backup(&target_text)
+        .expect("B 应该在 A 之前落地");
+    assert_eq!(report_b.counts.captures, 2);
+    let bytes_b = fs::read(&target).expect("B 的包");
+    let sha_b = sha_of(&bytes_b);
+
+    gate.resume();
+    let result_a = backup_a.join().expect("备份线程正常结束");
+    let detail = match &result_a {
+        Ok(report) => format!(
+            "A 居然成功了：package_path={}、byte_size={}、captures={}（B 的包是 {} 字节、captures=2）",
+            report.package_path, report.byte_size, report.counts.captures, report_b.byte_size
+        ),
+        Err(error) => format!("A 报错：{error}"),
+    };
+    let error = result_a.expect_err(&format!(
+        "同一 target 的第二个备份必须失败，绝不覆盖已经落地的包：{detail}"
+    ));
+    assert_code(&error, ErrorCode::InvalidArgument);
+    assert!(
+        error.to_string().contains("备份目标已经存在"),
+        "要说清是目标已存在，而不是含糊的 I/O 错误：{error}"
+    );
+
+    // 最终留在 target 上的仍然是 B 的那一份，逐字节没变。
+    assert_eq!(
+        sha_of(&fs::read(&target).expect("目标还在")),
+        sha_b,
+        "失败的 A 不能动到 B 已经落地的包"
+    );
+    let inspection = core
+        .inspect_backup(&target_text)
+        .expect("检查落地的那份包");
+    assert!(inspection.issues.is_empty(), "{:?}", inspection.issues);
+    assert_eq!(
+        inspection.counts.captures, 2,
+        "最终包必须还是 B 的那份（captures=2），不是 A 的 captures=1"
+    );
+    assert_eq!(inspection.byte_size, report_b.byte_size);
+
+    // 失败的一方也不该在目标目录里留下隐藏的半成品。
+    let leftovers: Vec<String> = fs::read_dir(dir_path)
+        .expect("列目录")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".partial-") || name.contains(".snapshot-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "失败的备份留下了临时文件：{leftovers:?}"
+    );
+}
+
 /// 内存库没有文件系统根目录：导不出「完整」备份，如实报错而不是产出一份缺原件的包。
 #[test]
 fn backup_requires_a_file_library() {

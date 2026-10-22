@@ -232,13 +232,10 @@ pub(crate) fn create(core: &Core, target: &Path) -> Result<BackupReport> {
             reason: "备份目标路径不能为空".to_owned(),
         });
     }
+    // 快速失败：目标已经存在就不必再花时间取快照。**这不是保证**——真正挡住
+    // 「并发覆盖」的是落地时的 `commit_package`（link 在目标存在时原子失败）。
     if target.exists() {
-        return Err(CoreError::InvalidArgument {
-            reason: format!(
-                "备份目标已经存在，不能覆盖：{}（换一个文件名，或先删掉旧的那一份）",
-                target.display()
-            ),
-        });
+        return Err(target_exists_error(target));
     }
 
     // 原件是文件系统里的东西：内存库没有根目录，导不出「完整」备份，如实报错。
@@ -346,8 +343,9 @@ pub(crate) fn create(core: &Core, target: &Path) -> Result<BackupReport> {
             });
         }
 
-        // 7. 落地：到这一步目标路径上才第一次出现文件。
-        fs::rename(&partial_path, &target_abs)?;
+        // 7. 原子落地：到这一步目标路径上才第一次出现文件。目标已存在就失败，
+        //    **绝不替换**别人已经落地的备份（见 `commit_package`）。
+        commit_package(&partial_path, &target_abs)?;
         let byte_size = fs::metadata(&target_abs)?.len() as i64;
 
         warnings.extend(boundary_warnings(
@@ -355,7 +353,7 @@ pub(crate) fn create(core: &Core, target: &Path) -> Result<BackupReport> {
             manifest.transient_clips.len(),
         ));
         Ok(BackupReport {
-            package_path: target_abs.to_string_lossy().into_owned(),
+            package_path: support::strip_windows_verbatim(&target_abs.to_string_lossy()),
             byte_size,
             schema_version: manifest.schema_version,
             api_version: manifest.api_version.clone(),
@@ -376,6 +374,52 @@ pub(crate) fn create(core: &Core, target: &Path) -> Result<BackupReport> {
         let _ = fs::remove_file(&partial_path);
     }
     outcome
+}
+
+/// 「目标已经存在」的统一拒绝：预检查与最终落地共用一句话。
+fn target_exists_error(target: &Path) -> CoreError {
+    CoreError::InvalidArgument {
+        reason: format!(
+            "备份目标已经存在，不能覆盖：{}（换一个文件名，或先删掉旧的那一份）",
+            target.display()
+        ),
+    }
+}
+
+/// 把写完并自校验过的包**原子地**放到目标路径上：目标已存在就失败，绝不替换。
+///
+/// 为什么不用 `fs::rename`：POSIX 的 `rename(2)` 在目标存在时**静默替换**（Windows 上
+/// Rust 的 `rename` 同样带替换语义）。两条并发备份因此都能通过前面的 `exists()`
+/// 预检查，后落地的盖掉先落地的，而先返回的报告里的路径/大小已经指向别人的文件。
+///
+/// 用 `link(2)`（`fs::hard_link`）：它在目标存在时以 `AlreadyExists` 失败，是原子的。
+/// 成功后删掉临时名，最终只剩目标一个名字，字节与自校验过的 partial 完全相同（同一个
+/// inode，不是拷贝）。这比「先 `create_new` 占位、再删占位、再 rename」少一个窗口：
+/// 占位与最终文件之间没有任何「目标可以不存在」的时刻。
+///
+/// 失败时把 partial 留给外层清理，目标路径保持「什么都没发生」。
+fn commit_package(partial: &Path, target: &Path) -> Result<()> {
+    match fs::hard_link(partial, target) {
+        Ok(()) => {
+            // 临时名删不掉不影响结果：目标已经是完整、自校验过的包；残留的隐藏文件
+            // 不会被后续备份复用（每次都是新的 nonce 名）。
+            let _ = fs::remove_file(partial);
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(target_exists_error(target))
+        }
+        // 文件系统不支持硬链接（FAT/exFAT、部分网络盘与沙箱）时不能悄悄退回 rename：
+        // 那正是「静默替换」。如实报错，并且让调用方知道包没落地——比覆盖别人的备份好。
+        Err(error) => Err(CoreError::IntegrityFailed {
+            reason: format!(
+                "备份包已经写完并自校验通过，但没法原子地放到目标路径 {}：{error}。\
+                 这个位置的文件系统可能不支持硬链接（例如 FAT/exFAT 或部分网络盘）；\
+                 换一个本地目录再备份，半成品不会留在目标路径上",
+                target.display()
+            ),
+        }),
+    }
 }
 
 /// `VACUUM INTO`：SQLite 自己的**一致性导出**（不是拷文件）。
@@ -449,9 +493,19 @@ fn scan_snapshot(path: &Path) -> Result<SnapshotScan> {
         Vec::new()
     };
 
-    // 未收尾录音的片段清单。这里**不筛状态**：状态是 recoverable 的录音既可能是
-    // 「崩溃后还没收尾」（暂存目录还在），也可能是「最终化时有缺口」（暂存目录已经被
-    // 删掉）。文件在不在由复制那一步按事实判断，不靠状态猜。
+    // 未收尾录音的片段清单：**只列还没被最终化的会话**。
+    //
+    // finalize 成功只删暂存目录，`recording_segments` 的行永远留着（全仓只有登记时的
+    // INSERT，没有 DELETE；级联删除只在会话行被删时触发，而 saved 会话不会被删）。
+    // 所以整表扫会把每一条已 saved 录音的历史片段都当成「备份时不在暂存目录」，
+    // 每次备份都谎报「有未收尾片段没随包」——而报告里的 openRecordings 是 0。
+    //
+    // 判定条件是「没有最终化过」，两个条件缺一不可：
+    // - `state <> 'saved'`：`saved` 就是最终化的完成态；
+    // - `ended_at IS NULL`：`ended_at` 只有 `recordings::finalize` 会写。带缺口最终化
+    //   的结果是 `recoverable` 而不是 `saved`，但它同样已经把片段拼进逻辑音频、删掉了
+    //   暂存目录，光看状态名分不出来。真崩溃留下的 `recoverable` / `interrupted`
+    //   会话 `ended_at` 仍是 NULL，片段照旧随包。
     let mut clips = Vec::new();
     let mut warnings = Vec::new();
     if table_exists(&conn, "recording_segments")? {
@@ -459,6 +513,7 @@ fn scan_snapshot(path: &Path) -> Result<SnapshotScan> {
             "SELECT s.id, s.staging_rel_path, g.segment_index, g.relative_file_name, \
              g.sha256, g.byte_size \
              FROM recording_segments g JOIN recording_sessions s ON s.id = g.recording_id \
+             WHERE s.state <> 'saved' AND s.ended_at IS NULL \
              ORDER BY s.id, g.segment_index",
         )?;
         let rows = stmt
@@ -778,6 +833,10 @@ impl PlannedEntry {
     /// 快照在包里固定放在 `db/library.sqlite`（包格式稳定），但落地时必须放在资料库
     /// 根目录：`Core::open` 用资料库文件所在目录当原件根目录，放到 `db/` 下面会让
     /// 所有原件都找不到。
+    ///
+    /// 正因为快照的包内路径与恢复路径不同，恢复路径的**唯一性**必须单独校验（按这个
+    /// 函数的返回值去重，见 [`read_plan`]）：否则一条 `path = library.sqlite` 的随行
+    /// 片段会在解包时整份覆盖已核过哈希的快照。
     fn restored_rel_path(&self) -> &str {
         match self.kind {
             EntryKind::Snapshot => RESTORED_LIBRARY_FILE,
@@ -937,6 +996,30 @@ fn read_plan(package: &Path) -> Result<PackagePlan> {
                 entry.kind.label(),
                 entry.path
             ));
+        }
+    }
+
+    // ---- 恢复路径必须唯一：解包时写的是 `restored_rel_path()`，不是包内 `path`。
+    //
+    // 快照在包里固定叫 `db/library.sqlite`，落地却叫 `library.sqlite`；原件/随行片段
+    // 落地沿用自己的包内路径。只按包内路径去重会漏掉「`db/library.sqlite` 与
+    // `library.sqlite` 不算冲突」这一类：解包按条目顺序用 `File::create` 落到同一个
+    // `staging/library.sqlite`，后写的条目整份覆盖已核过哈希的快照，而每一条自己的
+    // 清单哈希都验得过（`inspect` 全绿）。所以在**恢复路径**上再查一次重。
+    let mut restored_seen: std::collections::HashMap<&str, (&EntryKind, &str)> =
+        std::collections::HashMap::new();
+    for entry in &entries {
+        let restored = entry.restored_rel_path();
+        if let Some((first_kind, first_path)) = restored_seen.get(restored) {
+            issues.push(format!(
+                "corrupted: {}条目 {} 的恢复路径 {restored} 与{}条目 {first_path} 重复\
+                 （恢复路径必须唯一，绝不覆盖已校验的条目）",
+                entry.kind.label(),
+                entry.path,
+                first_kind.label()
+            ));
+        } else {
+            restored_seen.insert(restored, (&entry.kind, &entry.path));
         }
     }
 
@@ -1103,7 +1186,26 @@ fn verify_entries(package: &Path, plan: &PackagePlan, sink: Option<&Path>) -> Re
                 if let Some(parent) = destination.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                Some(fs::File::create(&destination)?)
+                // **独占创建**，不是 `File::create`：解包目录是全新的，正常不会有同名
+                // 文件；真撞上就说明两条条目要落到同一个恢复路径（清单层已经拒绝，
+                // 这里是第二道闸）。宁可报错，也绝不覆盖刚写下去、刚核过哈希的字节。
+                match fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&destination)
+                {
+                    Ok(file) => Some(file),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        return Err(corrupted(format!(
+                            "解包{}条目 {} 时恢复路径 {} 已经被另一条条目占用：\
+                             恢复路径必须唯一，拒绝覆盖已校验的字节",
+                            entry.kind.label(),
+                            entry.path,
+                            entry.restored_rel_path()
+                        )))
+                    }
+                    Err(error) => return Err(error.into()),
+                }
             }
             None => None,
         };
@@ -1222,7 +1324,7 @@ pub(crate) fn inspect(package: &Path) -> Result<BackupInspection> {
     }
 
     Ok(BackupInspection {
-        package_path: package.display().to_string(),
+        package_path: support::strip_windows_verbatim(&package.to_string_lossy()),
         format_version: plan.manifest.format_version,
         schema_version: plan.manifest.schema_version,
         api_version: plan.manifest.api_version.clone(),
@@ -1294,11 +1396,10 @@ fn restore_inner(core: &Core, package: &Path, target_dir: &Path) -> Result<Resto
                 .to_owned(),
         );
         Ok(RestoreReport {
-            library_path: target_abs
-                .join(RESTORED_LIBRARY_FILE)
-                .to_string_lossy()
-                .into_owned(),
-            root_dir: target_abs.to_string_lossy().into_owned(),
+            library_path: support::strip_windows_verbatim(
+                &target_abs.join(RESTORED_LIBRARY_FILE).to_string_lossy(),
+            ),
+            root_dir: support::strip_windows_verbatim(&target_abs.to_string_lossy()),
             schema_version: plan.manifest.schema_version,
             api_version: plan.manifest.api_version.clone(),
             core_version: plan.manifest.core_version.clone(),
@@ -1403,8 +1504,38 @@ fn commit_staging(staging: &Path, target: &Path) -> Result<()> {
     })
 }
 
-/// 恢复出来的库：完整性 + 外键 + 版本 + 关键行数 + 原件交叉核对。
+/// 最终落地的库文件必须**逐字节**等于清单里的快照（大小 + sha256）。
+///
+/// 这是「恢复出来的库与备份里的快照逐字节相同」这句话的唯一依据：只看每条条目
+/// 自己的哈希不够，因为覆盖发生在**写文件**这一步（两条条目共用恢复路径时）。
+fn verify_library_matches_snapshot(library: &Path, snapshot: &ManifestFile) -> Result<()> {
+    let actual_bytes = fs::metadata(library)?.len() as i64;
+    if actual_bytes != snapshot.byte_size {
+        return Err(corrupted(format!(
+            "恢复出来的库是 {actual_bytes} 字节，清单里的快照是 {} 字节",
+            snapshot.byte_size
+        )));
+    }
+    let actual = hash_file_hex(library)?;
+    if !actual.eq_ignore_ascii_case(&snapshot.sha256) {
+        return Err(corrupted(format!(
+            "恢复出来的库与备份里的快照不是逐字节相同：实际 sha256 {actual}，清单声明 {}。\
+             这个包的条目在解包时落到过同一个路径、互相覆盖，拒绝把它当成恢复成功",
+            snapshot.sha256
+        )));
+    }
+    Ok(())
+}
+
+/// 恢复出来的库：**逐字节等于快照** + 完整性 + 外键 + 版本 + 关键行数 + 原件交叉核对。
 fn verify_restored_library(library: &Path, manifest: &Manifest) -> Result<()> {
+    // 第一件事：最终落地的那个文件，字节必须等于清单里的快照。
+    //
+    // 前面已经逐条目验过哈希，但那验的是「条目自己的字节」；如果两条条目落到同一个
+    // 恢复路径，后写的会覆盖先写的，而两者的清单哈希都验得过。报告里「逐字节相同」
+    // 这句承诺必须由**最终文件**的哈希来兑现，不能靠「每一段都验过」推断。
+    verify_library_matches_snapshot(library, &manifest.snapshot)?;
+
     let conn = Connection::open_with_flags(library, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|err| corrupted(format!("恢复出来的资料库打不开：{err}")))?;
 
@@ -1653,4 +1784,43 @@ pub(crate) fn record_completed_job(
     let job = crate::jobs::enqueue_in_tx_with_state(&tx, job, JobState::Succeeded, None)?;
     tx.commit()?;
     Ok(job)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 「逐字节相同」必须真的验过**最终落地的文件**，而不是靠「每条条目都验过哈希」
+    /// 推断：两条条目共用恢复路径时，各自的清单哈希都能过，被覆盖的却是最终文件。
+    #[test]
+    fn restored_library_must_byte_match_the_snapshot() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let library = dir.path().join(RESTORED_LIBRARY_FILE);
+        let bytes = b"the bytes that actually landed on disk";
+        fs::write(&library, bytes).expect("写文件");
+        let snapshot = ManifestFile {
+            path: SNAPSHOT_ENTRY.to_owned(),
+            sha256: hash_file_hex(&library).expect("哈希"),
+            byte_size: bytes.len() as i64,
+        };
+        verify_library_matches_snapshot(&library, &snapshot).expect("字节一致时通过");
+
+        // 等长但内容不同：覆盖常常就是「另一份同样合法的库」。
+        let mut tampered = snapshot.clone();
+        tampered.sha256 = "0".repeat(64);
+        let error =
+            verify_library_matches_snapshot(&library, &tampered).expect_err("哈希不符必须拒绝");
+        assert!(
+            matches!(error, CoreError::CorruptedBackup { .. }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("逐字节"), "{error}");
+
+        // 大小不符同样是「不是那份快照」。
+        let mut truncated = snapshot;
+        truncated.byte_size -= 1;
+        let error =
+            verify_library_matches_snapshot(&library, &truncated).expect_err("大小不符必须拒绝");
+        assert!(error.to_string().contains("字节"), "{error}");
+    }
 }

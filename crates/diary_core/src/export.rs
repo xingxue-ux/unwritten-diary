@@ -215,19 +215,9 @@ fn export_root(core: &Core) -> Result<PathBuf> {
 /// Windows 的 `std::fs::canonicalize` 返回扩展长度路径（`\\?\C:\...`），
 /// `ExportTicket.path` / `packageTicket` 直接把它交出去，宿主保存层与界面会看到
 /// 一个带前缀的怪路径。文件操作仍用 canonical `PathBuf`，只把展示文本还原成普通形式
-/// （UNC 的 `\\?\UNC\server\share` 还原成 `\\server\share`）。
+/// （去前缀的实现与备份共用：[`support::strip_windows_verbatim`]）。
 fn display_path(path: &Path) -> String {
-    strip_windows_verbatim(&path.to_string_lossy())
-}
-
-fn strip_windows_verbatim(text: &str) -> String {
-    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-        return format!(r"\\{rest}");
-    }
-    if let Some(rest) = text.strip_prefix(r"\\?\") {
-        return rest.to_owned();
-    }
-    text.to_owned()
+    support::strip_windows_verbatim(&path.to_string_lossy())
 }
 
 fn ensure_sandbox(core: &Core, path: &Path) -> Result<()> {
@@ -340,26 +330,4 @@ fn record_completed_job(core: &mut Core, path_text: &str) -> Result<crate::model
     )?;
     tx.commit()?;
     Ok(job)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::strip_windows_verbatim;
-
-    #[test]
-    fn windows_verbatim_prefix_is_stripped_for_display() {
-        assert_eq!(
-            strip_windows_verbatim(r"\\?\C:\Users\me\library\exports\a.md"),
-            r"C:\Users\me\library\exports\a.md"
-        );
-        assert_eq!(
-            strip_windows_verbatim(r"\\?\UNC\server\share\a.md"),
-            r"\\server\share\a.md"
-        );
-        // 普通 POSIX / Windows 路径原样返回。
-        assert_eq!(
-            strip_windows_verbatim("/data/storage/el2/base/a.md"),
-            "/data/storage/el2/base/a.md"
-        );
-    }
 }

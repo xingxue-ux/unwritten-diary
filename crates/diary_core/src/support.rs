@@ -85,6 +85,23 @@ pub fn join_cursor(at: DateTime<Utc>, id: &str) -> String {
     format!("{}|{id}", to_iso(at))
 }
 
+/// 把展示用的路径文本还原成普通形式：消掉 Windows 扩展长度前缀。
+///
+/// `std::fs::canonicalize` 在 Windows 上返回 `\\?\C:\...`（UNC 是
+/// `\\?\UNC\server\share\...`）。文件操作继续用 canonical `PathBuf`，但报告/票据里
+/// 的路径是给宿主保存层与界面看的，带前缀的怪路径会让它们认不出来。所以展示文本
+/// 统一过这一道；备份（`BackupReport` / `RestoreReport` / `job.targetIds`）与导出
+/// 用同一份实现，避免两处口径漂移。
+pub(crate) fn strip_windows_verbatim(text: &str) -> String {
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return rest.to_owned();
+    }
+    text.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +126,38 @@ mod tests {
         assert_ne!(a, c);
         // 分隔符避免字段拼接歧义："ab"+"c" 与 "a"+"bc" 必须不同。
         assert_ne!(fingerprint(&["ab", "c"]), fingerprint(&["a", "bc"]));
+    }
+
+    #[test]
+    fn windows_verbatim_prefix_is_stripped_for_display() {
+        // 普通 Windows 盘符路径：去掉扩展长度前缀。
+        assert_eq!(
+            strip_windows_verbatim(r"\\?\C:\Users\me\library\exports\a.md"),
+            r"C:\Users\me\library\exports\a.md"
+        );
+        // UNC：还原成两个反斜杠的普通形式。
+        assert_eq!(
+            strip_windows_verbatim(r"\\?\UNC\server\share\a.md"),
+            r"\\server\share\a.md"
+        );
+        // 普通 POSIX / Windows 路径原样返回（Linux 上也走同一个函数）。
+        assert_eq!(
+            strip_windows_verbatim("/data/storage/el2/base/a.md"),
+            "/data/storage/el2/base/a.md"
+        );
+        assert_eq!(
+            strip_windows_verbatim(r"C:\Users\me\a.diarybak"),
+            r"C:\Users\me\a.diarybak"
+        );
+        // 备份报告里的三个字段都是这条路径：包、库、根目录。
+        assert_eq!(
+            strip_windows_verbatim(r"\\?\D:\backup\diary.diarybak"),
+            r"D:\backup\diary.diarybak"
+        );
+        assert_eq!(
+            strip_windows_verbatim(r"\\?\D:\restored\library.sqlite"),
+            r"D:\restored\library.sqlite"
+        );
+        assert!(!strip_windows_verbatim(r"\\?\D:\restored").contains(r"\\?\"));
     }
 }
