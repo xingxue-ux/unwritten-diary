@@ -85,6 +85,32 @@ fn add_material_to(
     source_id
 }
 
+/// 建一条只有用户自己文字的记录（不导入材料）。记录文字走 `capture` 那一路的
+/// 检索与摘录，是 `snippet_of` 的另一条入口。
+fn add_record_text(
+    core: &mut Core,
+    text: &str,
+    occurred: chrono::DateTime<Utc>,
+    operation: &str,
+) -> String {
+    let capture = core
+        .create_draft(CreateDraftInput {
+            occurred_at: Some(occurred),
+            time_zone: "Asia/Shanghai",
+            utc_offset_minutes: 480,
+            operation_id: &format!("{operation}-create"),
+        })
+        .unwrap();
+    core.save_draft(
+        &capture.id,
+        text,
+        capture.revision,
+        &format!("{operation}-save"),
+    )
+    .unwrap();
+    capture.id
+}
+
 fn request(query: &str, page_size: i64) -> SearchRequest {
     SearchRequest {
         query: query.to_owned(),
@@ -413,6 +439,73 @@ fn snippet_and_highlights_point_at_the_match() {
     assert_eq!(hit.title.as_deref(), Some("长文.txt"));
     assert!(hit.locator.is_some());
     assert_eq!(hit.source_kind, SourceKind::File);
+}
+
+/// #审计 ③：`İ` 的 `to_lowercase` 会展开成两个字符。高亮不能用 lowered 串的字符
+/// 下标去切原文——那会整体错位（`İ bugün ... x` 时高亮点到 x 后面去了）。
+#[test]
+fn snippet_highlights_the_original_match_when_lowercasing_expands() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let text = format!("İ bugün {}x 收尾。", "çok güzel bir gün ".repeat(4));
+    add_record_text(
+        &mut core,
+        &text,
+        Utc.with_ymd_and_hms(2026, 9, 20, 4, 0, 0).unwrap(),
+        "op-dotted",
+    );
+
+    let snapshot = core.start_search(request("x", 10), 1).unwrap();
+    let hit = &snapshot.results[0];
+    let snippet = hit.snippet.as_deref().expect("命中要有摘录");
+    let range = hit.highlights[0];
+    let highlighted: String = snippet
+        .chars()
+        .skip(range.start as usize)
+        .take((range.end - range.start) as usize)
+        .collect();
+    assert_eq!(
+        highlighted, "x",
+        "lowered 下标错位会让高亮点到 x 后面的字符：snippet={snippet:?} range={range:?}"
+    );
+    assert!(
+        snippet.contains('x'),
+        "摘录窗口必须落在 x 附近：{snippet:?}"
+    );
+}
+
+/// #审计 ③（panic）：`İ`×30 让 lowered 串比原文长 30 个字符，旧实现把 lowered 的
+/// `start=60` 当成原串下标，`window_start=36 > characters.len()=31`，切片直接 panic
+/// （C ABI 的 catch_unwind 会把它变成整次检索失败）。这里必须不 panic、且高亮到 x。
+#[test]
+fn a_long_run_of_dotted_capitals_does_not_break_the_snippet_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let text = format!("{}x", "İ".repeat(30));
+    add_record_text(
+        &mut core,
+        &text,
+        Utc.with_ymd_and_hms(2026, 9, 20, 4, 0, 0).unwrap(),
+        "op-dotted-panic",
+    );
+
+    let snapshot = core.start_search(request("x", 10), 1).unwrap();
+    let hit = snapshot
+        .results
+        .iter()
+        .find(|hit| hit.hit_id.starts_with("cap_"))
+        .expect("30 个 İ 之后的 x 必须能搜到");
+    let snippet = hit.snippet.as_deref().expect("命中要有摘录");
+    let range = hit.highlights[0];
+    let highlighted: String = snippet
+        .chars()
+        .skip(range.start as usize)
+        .take((range.end - range.start) as usize)
+        .collect();
+    assert_eq!(
+        highlighted, "x",
+        "窗口必须从原文下标算，不能越过 characters.len()：snippet={snippet:?} range={range:?}"
+    );
 }
 
 #[test]

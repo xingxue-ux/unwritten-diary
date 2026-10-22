@@ -1072,6 +1072,12 @@ fn candidates_impl(
     // 当成当前内容召回（#32 明确禁止；关键词那一路在 #54 已按同一口径修过）。
     // 记录自写文字的 span 没有来源修订（空串），单独按 `capture_id` 处理即可。
     let (kinds, scope) = crate::search_session::filters_to_params(filters)?;
+    // **`source_scope` 与关键词同口径（#审计 ②）**：来源篇按来源 id 过滤；记录自己的
+    // 文字（span 的 `source_id` 是 `capture_id`、`source_revision_id` 为空）没有可对
+    // 的 source_id，只能按「它所属的记录拥有范围内的来源」判断——那正是关键词那一路
+    // （`search::ranked_matches`）和 `chunks::counts` 已经在用的 EXISTS 口径。
+    // 原 SQL 只写 `s.source_id IN (...)`，记录文字永远落在范围外：状态按 capture 算
+    // 报 complete，检索却一条都拿不到。
     let sql = "SELECT v.vector, v.dims, v.storage, s.chunk_id, s.ordinal, s.capture_id, \
                       s.source_id, s.source_revision_id, s.start_char, s.end_char, s.kind, \
                       s.coverage, c.day_key \
@@ -1083,7 +1089,13 @@ fn candidates_impl(
                  AND (?3 IS NULL OR c.day_key >= ?3) \
                  AND (?4 IS NULL OR c.day_key <= ?4) \
                  AND (?5 IS NULL OR s.kind IN (SELECT value FROM json_each(?5))) \
-                 AND (?6 IS NULL OR s.source_id IN (SELECT value FROM json_each(?6))) \
+                 AND (?6 IS NULL \
+                      OR s.source_id IN (SELECT value FROM json_each(?6)) \
+                      OR (s.source_revision_id = '' \
+                          AND EXISTS (SELECT 1 FROM source_items si \
+                                      WHERE si.capture_id = s.capture_id \
+                                        AND si.source_id IN \
+                                            (SELECT value FROM json_each(?6))))) \
                    AND (s.source_revision_id = '' \
                         OR EXISTS (SELECT 1 FROM source_items si \
                                    WHERE si.source_id = s.source_id \

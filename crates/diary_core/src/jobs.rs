@@ -1179,6 +1179,13 @@ struct HandlerFailure {
     disposition: FailureDisposition,
     /// 远端 `Retry-After` 给的等待毫秒数（有就尊重它，没有就按本地退避）。
     retry_after_ms: Option<u64>,
+    /// 终态失败时的 `attentionKey` 覆盖值。
+    ///
+    /// 默认是 `job-terminal:<kind>:<code>`（同类同码只提示一次）；只有需要把
+    /// **同码不同因**分开的情况才覆盖——例如 `diary_generate` 的 `invalid_state`
+    /// 既可能是快照/模板对不上，也可能是材料全在回收站，后者要用户去恢复记录，
+    /// 提示不能和前者混成一条。`jobs.get` 读得到这个 key。
+    attention_key: Option<String>,
 }
 
 impl HandlerFailure {
@@ -1188,6 +1195,16 @@ impl HandlerFailure {
             message,
             disposition: FailureDisposition::Terminal,
             retry_after_ms: None,
+            attention_key: None,
+        }
+    }
+
+    /// 终态失败，并让队列用指定的 `attentionKey`（而不是默认的
+    /// `job-terminal:<kind>:<code>`）去重与展示。
+    fn terminal_with_attention(code: &str, message: String, attention_key: String) -> Self {
+        Self {
+            attention_key: Some(attention_key),
+            ..Self::terminal(code, message)
         }
     }
 
@@ -1211,6 +1228,7 @@ impl HandlerFailure {
             message: error.to_string(),
             disposition,
             retry_after_ms,
+            attention_key: None,
         }
     }
 
@@ -1226,6 +1244,7 @@ impl HandlerFailure {
             message: error.to_string(),
             disposition: FailureDisposition::Retry,
             retry_after_ms: None,
+            attention_key: None,
         }
     }
 }
@@ -1396,7 +1415,11 @@ pub(crate) fn run_due(
             Err(failure) => match failure.disposition {
                 FailureDisposition::Terminal => {
                     // 同类同码的问题只提示一次，不然每次重开都要再喊一遍。
-                    let attention = format!("job-terminal:{}:{}", job.kind, failure.code);
+                    // 处理器可以覆盖这个 key（同码不同因时），覆盖值同样能跨重启去重。
+                    let attention = failure
+                        .attention_key
+                        .clone()
+                        .unwrap_or_else(|| format!("job-terminal:{}:{}", job.kind, failure.code));
                     fail_terminal(
                         core,
                         &job.id,
@@ -1667,7 +1690,16 @@ fn run_diary_generate(core: &mut Core, job: &Job) -> std::result::Result<(), Han
             "日记生成任务没有目标（生成记录），重试也不会变好".to_owned(),
         ));
     }
-    crate::diary::run_generate(core, job).map_err(HandlerFailure::from_error)
+    crate::diary::run_generate(core, job).map_err(|error| match error {
+        // 材料全在回收站：错误码仍是契约里的 `invalid_state`，但 `attentionKey`
+        // 写清是哪一种 `invalid_state`——用户要去做的是「恢复记录」，不是排查快照。
+        CoreError::MaterialsUnavailable { reason } => HandlerFailure::terminal_with_attention(
+            crate::error::ErrorCode::InvalidState.wire(),
+            format!("材料已不可用：{reason}"),
+            format!("job-terminal:{}:trashed_materials", job.kind),
+        ),
+        other => HandlerFailure::from_error(other),
+    })
 }
 
 /// `index` 的执行者：对任务 `target_ids` 里的**来源**重跑关键词索引重建。

@@ -17,9 +17,10 @@ use std::sync::Arc;
 
 use chrono::{DateTime, TimeZone, Utc};
 use diary_core::{
-    Core, CreateDraftInput, EmbedOptions, Embedder, Embedding, EmbeddingConfig, ImportManifest,
-    ImportOrigin, ImportRequest, JobState, MatchedBy, SearchFilters, SearchHit, SearchMode,
-    SearchPhase, SearchRequest, SearchSnapshot, SourceKind, TokenTruncation, VectorStorage,
+    Core, Coverage, CreateDraftInput, EmbedOptions, Embedder, Embedding, EmbeddingConfig,
+    ImportManifest, ImportOrigin, ImportRequest, JobState, MatchedBy, SearchFilters, SearchHit,
+    SearchMode, SearchPhase, SearchRequest, SearchSnapshot, SourceKind, TokenTruncation,
+    VectorStorage,
 };
 use rusqlite::params;
 use sha2::{Digest, Sha256};
@@ -2073,6 +2074,92 @@ fn semantic_search_honours_the_same_filters() {
         )
         .unwrap();
     assert_eq!(with_trashed.results.len(), 2);
+}
+
+/// #审计 ②：`source_scope` 只给了「来源」时，记录自己的文字也要算在范围内——
+/// 只要它的记录拥有范围内的来源。语义路径必须与关键词、`chunks::counts` 同一口径。
+///
+/// 修复前：记录文字 span 的 `source_id` 是 `capture_id`（不是 sources 表里的 id），
+/// 精确 SQL 的 `s.source_id IN (scope)` 永远不命中；而 `chunks::counts` 按 capture
+/// 的 EXISTS 计数，于是 `coverage = complete` 却一条记录文字都搜不到。
+#[test]
+fn semantic_source_scope_includes_record_text_of_a_capture_owning_a_scoped_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let counters = Arc::new(Counters::default());
+    core.set_embedder(stub(&counters, vec![("★", unit(1))]));
+
+    // 范围内：同一 capture 既有自己的草稿文字，又有一份导入来源。
+    // 草稿文字刻意超过 400 字，让它自己成块——短篇会被合进同一块，那样即使
+    // 记录文字的 span 被滤掉，来源 span 也会把这一块带回来，测不出这个 bug。
+    let in_scope = write_capture(&mut core, at(2026, 9, 20), "", "opIn");
+    let source = import_and_extract(
+        &mut core,
+        &in_scope,
+        "范围内.txt",
+        "路边的桂花开了。\n",
+        "opIn-mat",
+    );
+    save(
+        &mut core,
+        &in_scope,
+        &format!("{}★妈妈打电话来。", "铺".repeat(410)),
+        "opIn-save",
+    );
+    // 范围外：同样有「★」记录文字，但它的 capture 不拥有范围内的来源，必须被滤掉。
+    let outside = write_capture(&mut core, at(2026, 9, 21), "妈妈在加班 ★。", "opOut");
+    core.build_semantic_index(None).unwrap();
+
+    let scoped = core
+        .start_search(
+            SearchRequest {
+                query: "★".to_owned(),
+                mode: SearchMode::Semantic,
+                filters: SearchFilters {
+                    source_scope: Some(vec![source.clone()]),
+                    ..Default::default()
+                },
+                page_size: 20,
+            },
+            1,
+        )
+        .unwrap();
+    let groups: Vec<&str> = scoped
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert!(
+        groups.contains(&in_scope.as_str()),
+        "有 scope 时语义也要能命中记录文字：{groups:?}"
+    );
+    assert!(
+        !groups.contains(&outside.as_str()),
+        "范围外的记录不能混进来：{groups:?}"
+    );
+
+    // coverage 与实际一致：范围内 1 条有文字的记录已进索引，语义也真的能查到它，
+    // 不能再出现「coverage=complete，记录文字却永远搜不到」。
+    let status = core
+        .index_status(Some(std::slice::from_ref(&source)))
+        .unwrap();
+    assert_eq!(status.total_captures, 1);
+    assert_eq!(status.indexed_captures, 1);
+    assert_eq!(status.coverage, Coverage::Complete);
+    assert!(status.semantic_index_ready, "范围里的块都要有生效向量");
+    assert_eq!(status.total_chunks, status.embedded_chunks);
+
+    // 不加范围时两篇记录文字都在，证明上面的 1 条是 scope 过滤的结果。
+    let all = search_mode(&mut core, "★", SearchMode::Semantic, 20);
+    let all_groups: Vec<&str> = all
+        .results
+        .iter()
+        .map(|hit| hit.group_id.as_str())
+        .collect();
+    assert!(
+        all_groups.contains(&in_scope.as_str()) && all_groups.contains(&outside.as_str()),
+        "不加范围时两篇记录文字都在，证明上面少了的那条是 scope 过滤的结果：{all_groups:?}"
+    );
 }
 
 /// 模型的 `dims` 与算出来的向量长度对不上时必须报错，不能把坏向量写进库。

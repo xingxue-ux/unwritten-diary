@@ -1738,37 +1738,72 @@ fn mark_generation_error(
 /// `diary_generations` 里执行者要用的那几列（避免一个裸元组散在代码里）。
 type GenerationRow = (String, String, Option<String>, Option<String>, String);
 
-/// 在途日记生成的前置校验：快照里每条材料所属的记录必须还在。
+/// 快照里这次真正可以发给模型的材料。
+///
+/// 快照本身是**不可变的输入凭证**：它如实记下了排队那一刻的材料，排队之后记录进了
+/// 回收站也不能回头改它。但契约 §8 要求「回收站内容立即从后续 AI 输入中排除」，
+/// 所以执行时要按**当时的** `captures.state` 再筛一遍：`trashed` 的材料绝不进提示词。
+struct UsableMaterials {
+    materials: Vec<SnapshotMaterial>,
+    /// 因为所在记录在回收站而被剔除的记录（去重后）。用来在版本审计里如实记
+    /// 「有 N 条材料被排除」，也用来在全部被剔除时写清失败原因。
+    trashed_capture_ids: Vec<String>,
+}
+
+/// 在途日记生成的前置校验：快照里每条材料所属的记录必须还在，且在回收站里的材料
+/// 不能发给模型。
 ///
 /// 用户永久清理一条记录后，引用它的旧快照会保留（#161 方案 A）；排队中的生成任务
 /// 如果照常执行，就会把快照里的正文写进一个新版本，等于绕过「永久清理」。这里在
 /// 调用模型前拦下：**没有记录就不再生成**，而不是拿旧正文复活它。
-fn ensure_snapshot_captures_exist(
+///
+/// 回收站是另一条口径（#155 的删除语义 + 契约 §8）：记录还在、可以恢复，但它的正文
+/// **不再是 AI 输入**。所以这里剔除而不是报「记录不存在」——仍有材料时照常生成，
+/// 一条都不剩时才让任务带着明确原因结束。
+fn usable_snapshot_materials(
     core: &Core,
     generation_id: &str,
     snapshot: &SnapshotBody,
-) -> Result<()> {
+) -> Result<UsableMaterials> {
     let mut missing: Vec<String> = Vec::new();
+    let mut trashed_capture_ids: Vec<String> = Vec::new();
+    let mut materials: Vec<SnapshotMaterial> = Vec::with_capacity(snapshot.materials.len());
     for material in &snapshot.materials {
-        let exists: i64 = core.conn.query_row(
-            "SELECT COUNT(*) FROM captures WHERE id = ?1",
-            params![material.capture_id],
-            |row| row.get(0),
-        )?;
-        if exists == 0 && !missing.iter().any(|id| id == &material.capture_id) {
-            missing.push(material.capture_id.clone());
+        let state: Option<String> = core
+            .conn
+            .query_row(
+                "SELECT state FROM captures WHERE id = ?1",
+                params![material.capture_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match state.as_deref() {
+            None => {
+                if !missing.iter().any(|id| id == &material.capture_id) {
+                    missing.push(material.capture_id.clone());
+                }
+            }
+            Some("trashed") => {
+                if !trashed_capture_ids.iter().any(|id| id == &material.capture_id) {
+                    trashed_capture_ids.push(material.capture_id.clone());
+                }
+            }
+            Some(_) => materials.push(material.clone()),
         }
     }
-    if missing.is_empty() {
-        return Ok(());
+    if !missing.is_empty() {
+        return Err(CoreError::InvalidState {
+            entity: "日记生成",
+            id: generation_id.to_owned(),
+            state: format!(
+                "输入快照里的记录已经被永久清理（{}）；不再生成，也不拿快照里的正文复活它",
+                missing.join("、")
+            ),
+        });
     }
-    Err(CoreError::InvalidState {
-        entity: "日记生成",
-        id: generation_id.to_owned(),
-        state: format!(
-            "输入快照里的记录已经被永久清理（{}）；不再生成，也不拿快照里的正文复活它",
-            missing.join("、")
-        ),
+    Ok(UsableMaterials {
+        materials,
+        trashed_capture_ids,
     })
 }
 
@@ -1863,10 +1898,28 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
     // 如果其中某条记录已经被用户永久清理，继续生成会把快照 body 里的正文写进一个
     // 新版本——「永久清理」就被一次排队任务绕过去了。这里在调用模型之前终止，
     // 不花一次调用、也不产版本；快照本身作为审计保留（#161 方案 A）。
-    ensure_snapshot_captures_exist(core, generation_id, &snapshot)?;
+    let usable = usable_snapshot_materials(core, generation_id, &snapshot)?;
+    let materials = usable.materials;
+    // **全部材料都在回收站**：契约 §8 说回收站内容不进后续 AI 输入，所以一份都不能发。
+    // 这不是可重试的网络/配置问题——记录恢复之前再跑多少次都一样，交给队列终态失败；
+    // 生成行由 `run_generate` 的终态分支写成 `failed`，错误码是既有的 `invalid_state`。
+    // 队列侧还会把 `attentionKey` 记成 `job-terminal:diary_generate:trashed_materials`，
+    // 让 `jobs.get` 能读出「为什么失败」，而不是一个笼统的 invalid_state。
+    if !snapshot.materials.is_empty() && materials.is_empty() {
+        return Err(CoreError::MaterialsUnavailable {
+            reason: format!(
+                "输入快照里的 {} 条材料所在的记录都在回收站（{}）。\
+                 按契约第 8 节，回收站内容不再进入 AI 输入；这一次不生成、也没有调用模型。\
+                 先把记录恢复到列表再重试，或重新发起一次生成",
+                usable.trashed_capture_ids.len(),
+                usable.trashed_capture_ids.join("、")
+            ),
+        });
+    }
+    let excluded_trashed = usable.trashed_capture_ids.len() as i64;
     let freeze = snapshot_freeze(&snapshot)?;
     let style = snapshot.style.profile.as_ref();
-    let plan = plan_generation(&day_key, &snapshot.materials, freeze.as_ref(), style)?;
+    let plan = plan_generation(&day_key, &materials, freeze.as_ref(), style)?;
 
     let account = CallAccount {
         generation_id,
@@ -1894,12 +1947,12 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
         )?;
         calls_made += 1;
         last_model = outcome.model.clone();
-        // 一步生成：每份有正文的材料留一条整段关联（不伪造正文区间）。
-        attach_material_links(&mut provenance, &snapshot);
+        // 一步生成：每份**真的进了提示词**的有正文材料留一条整段关联（不伪造正文区间）。
+        // 回收站里的材料已被剔除，不能在这一版里留出来源关联——正文里没有它。
+        attach_material_links(&mut provenance, &materials);
         outcome.text.trim().to_owned()
     } else {
-        let index: HashMap<String, &SnapshotMaterial> = snapshot
-            .materials
+        let index: HashMap<String, &SnapshotMaterial> = materials
             .iter()
             .filter_map(|material| {
                 material
@@ -1940,7 +1993,9 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
             }
         }
         // 一条中间事实都没匹配上的材料，至少留一条整段关联，不让它从来源里消失。
-        for material in &snapshot.materials {
+        // 这里同样只遍历真正进了提示词的材料：回收站里的正文没有被发送，不能留下
+        // 「这一版基于它」的假来源。
+        for material in &materials {
             if !material.processed {
                 continue;
             }
@@ -2019,13 +2074,13 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
             .iter()
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
-        covered_source_count: snapshot
-            .materials
+        // 这一版**实际用的**材料数：回收站里被剔除的材料不算「已覆盖」，它们既没
+        // 进提示词，也不该被算成这一版覆盖到的输入。快照行自己的计数原样不动。
+        covered_source_count: materials
             .iter()
             .filter(|material| material.processed)
             .count() as i64,
-        unprocessed_source_count: snapshot
-            .materials
+        unprocessed_source_count: materials
             .iter()
             .filter(|material| !material.processed)
             .count() as i64,
@@ -2046,6 +2101,14 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
     generation_info
         .generation_options
         .insert("unmatchedFacts".to_owned(), unmatched_facts.to_string());
+    // 排队之后有材料进了回收站：**不静默**。数量记进这一版的审计槽位，`diary.getVersion`
+    // / `diary.listVersions` 读得到；快照本身仍然是不可变的输入凭证，一个字都不改。
+    if excluded_trashed > 0 {
+        generation_info.generation_options.insert(
+            "excludedTrashedMaterials".to_owned(),
+            excluded_trashed.to_string(),
+        );
+    }
     // 自动整理：把**用的是哪个模板、什么参数**记进版本的审计槽位（来源可追溯）。
     // `sourceSnapshotId` 那边还有一份更完整的（生效参数 + 规则哈希）。
     if let Some(freeze) = &freeze {
@@ -2268,8 +2331,8 @@ fn link_for_material(material: &SnapshotMaterial, fact: Option<String>) -> Optio
 }
 
 /// 一步生成：每份有正文的材料都留一条整段关联（不伪造正文区间）。
-fn attach_material_links(provenance: &mut Vec<ProvenanceLink>, snapshot: &SnapshotBody) {
-    for material in &snapshot.materials {
+fn attach_material_links(provenance: &mut Vec<ProvenanceLink>, materials: &[SnapshotMaterial]) {
+    for material in materials {
         if !material.processed {
             continue;
         }

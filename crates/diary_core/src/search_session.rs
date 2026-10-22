@@ -1390,19 +1390,47 @@ fn keyword_hits(
 }
 
 /// 命中附近的摘录与高亮。高亮下标**相对摘录**，不是相对整段正文。
+///
+/// **不能用「lowered 串的字符下标」切原文**：`char::to_lowercase` 会展开
+/// （`U+0130 İ` → `i` + `U+0307` 组合点），lowered 的下标因此不是原串的下标。
+/// 旧实现直接拿它当 `characters` 的下标，`İ` 一多就整体错位；窗口下界越过
+/// `characters.len()` 时 `characters[start..end]` 甚至 panic（被 C ABI 的
+/// `catch_unwind` 兜成 `invalid_state`，整次检索失败）。
+///
+/// 现在逐字符建 `lowered 字符下标 → 原串字符下标` 的映射，再用原串的下标切窗口、
+/// 算高亮。匹配可能落在展开后的中间（例如查询就是那个组合点），所以高亮区间取
+/// 首尾映射到的**完整原字符**：宁可多覆盖一个 `İ`，也不能跳过用户看到的字。
 fn snippet_of(text: &str, needle: &str) -> (Option<String>, Vec<TextRange>) {
     let characters: Vec<char> = text.chars().collect();
-    let needle_length = needle.chars().count();
-    let lowered = text.to_lowercase();
-    let match_start = lowered
+    if needle.is_empty() {
+        return (None, Vec::new());
+    }
+    let mut lowered = String::new();
+    // `lowered_to_original[i]` = lowered 的第 i 个字符来自原串的哪个字符。
+    let mut lowered_to_original: Vec<usize> = Vec::with_capacity(characters.len());
+    for (original_index, character) in characters.iter().enumerate() {
+        for folded in character.to_lowercase() {
+            lowered.push(folded);
+            lowered_to_original.push(original_index);
+        }
+    }
+    // 调用方传进来的 needle 已经是小写（`ranked_matches` 里先 lower 过），这里与
+    // lowered 串直接比。
+    let Some(lowered_start) = lowered
         .find(needle)
-        .map(|byte_index| lowered[..byte_index].chars().count());
-    let Some(start) = match_start else {
+        .map(|byte_index| lowered[..byte_index].chars().count())
+    else {
         return (None, Vec::new());
     };
+    let lowered_needle_length = needle.chars().count();
+    let lowered_end = lowered_start + lowered_needle_length;
+    // 映射回原串的字符区间（左闭右开）。
+    let match_start = lowered_to_original[lowered_start];
+    let match_end = lowered_to_original[lowered_end - 1] + 1;
+    let match_length = (match_end - match_start).max(1);
 
-    let window_start = start.saturating_sub(SNIPPET_PADDING);
-    let window_end = (start + needle_length + SNIPPET_PADDING).min(characters.len());
+    let window_start = match_start.saturating_sub(SNIPPET_PADDING);
+    let window_end = (match_end + SNIPPET_PADDING).min(characters.len());
     let mut snippet = String::new();
     let mut offset = 0_i64;
     if window_start > 0 {
@@ -1414,12 +1442,12 @@ fn snippet_of(text: &str, needle: &str) -> (Option<String>, Vec<TextRange>) {
         snippet.push('…');
     }
 
-    let highlight_start = (start - window_start) as i64 + offset;
+    let highlight_start = (match_start - window_start) as i64 + offset;
     (
         Some(snippet),
         vec![TextRange {
             start: highlight_start,
-            end: highlight_start + needle_length as i64,
+            end: highlight_start + match_length as i64,
         }],
     )
 }
