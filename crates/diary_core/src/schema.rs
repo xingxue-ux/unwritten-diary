@@ -15,8 +15,17 @@ use rusqlite::{params, Connection};
 ///
 /// 两段的守卫都**不只看版本号，还看东西在不在**（见 `migrate`）：只跑过 B4c 分支的库
 /// `user_version` 已经是 12、但没有 v11 的两张表；只跑过 B4e 分支的库是 11、没有
-/// `revision` 列。光靠 `current < 11` / `current < 12` 会漏掉前者，所以 v11 的守卫是
-/// 「版本号小于 11 **或**表不在」，v12 是「版本号小于 12 **或**列不在」。
+/// `revision` 列。光靠 `current < 11` 会漏掉前者，所以 v11 的守卫是「版本号小于 11
+/// **或**表不在」（V11 的 DDL 全是 `IF NOT EXISTS`、种子是 `INSERT OR IGNORE`，
+/// 重复执行幂等，`current` 允许在这里只决定「要不要顺带跑一遍可重复的建表与种子」）；
+/// v12 的 `ALTER` **不可重复执行**，守卫是**纯结构判定**「列不在」，不带 `current`。
+///
+/// **v11 之后守卫的规则**：`current` 只能决定「要不要跑**可重复**的部分」；不可重复
+/// 执行的 DDL（`ALTER TABLE ... ADD COLUMN`）一律只看结构，不看版本号。版本号不是
+/// 结构证明——外部改过 `user_version`、文件级撕裂复制都会留下「版本号落后、结构已经
+/// 在」的库（见 `docs/development/升级与迁移.md`）。这种库上带 `current` 的 OR / AND
+/// 守卫只要在「结构已在」那一半上再发一次 `ALTER`，open 就报重复列；事务回滚后版本号
+/// 没写上去，**下一次 open 还走同一条路**：库永久打不开。
 ///
 /// 14 是 B6（插件 SDK 与宿主，#88）抬的号：只加 `plugin_installations` /
 /// `plugin_grants` 两张全新的表，**不回填**任何旧数据（升级前没有插件，也没有
@@ -52,7 +61,7 @@ use rusqlite::{params, Connection};
 ///
 /// **合入顺序是死的：16 → 17 → 18**，版本号单调。#166 已经先合入（17），本 PR 接
 /// 18；一个 v15 老库打开本构建会一路跑完 16 / 17 / 18 三段，缺一段就再也补不上
-/// （`current` 一旦写成 18，`current < 16` / `current < 17` 永远不成立）。所以
+/// （版本号一旦写成 18，下一版要补就只能靠纯结构守卫或结构兜底）。所以
 /// **三段 DDL 都保留在本文件里**，且每段的守卫都是**纯结构判定**
 /// （`column_exists` / `table_exists` / `index_exists`），幂等、与起始版本无关；
 /// 「版本号已经是 18 但结构缺一块」的库由 `ensure_v16_v17_v18_structure` 在每次
@@ -84,9 +93,11 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 查询，缺才建（#133 第 1 条，见 `ensure_v15_caliber_index`）。
         ensure_v15_caliber_index(conn)?;
         // **版本号也不能证明结构在**：一个自称 18、却缺 `trashed_from_state` /
-        // `styles` / `settings` 的库（手工改过版本，或旧构建在「版本号已写、DDL 没落」
-        // 的窗口里崩过）如果在这里直接返回，v16 / v17 / v18 的守卫永远轮不到它。
-        // 所以相等分支也做一次结构核对；结构都在才真的什么都不做。
+        // `styles` / `settings`（或更早版本的 `diary_days.revision` / `settings` 的列）
+        // 的库（手工改过版本，或旧构建在「版本号已写、DDL 没落」的窗口里崩过）如果在
+        // 这里直接返回，后面所有结构守卫永远轮不到它——迁移主体在这一行就返回了，
+        // 这正是「open 成功、功能永久坏掉」的来源。所以相等分支也做一次结构
+        // 核对；结构都在才真的什么都不做。
         ensure_processing_summary_indexes(conn)?;
         ensure_v16_v17_v18_structure(conn)?;
         return Ok(());
@@ -142,18 +153,19 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     // ---- 11 与 12：两条分支各自抬的号，合并后这个构建是 13 --------------------
     //
     // 顺序固定：先 v11（建「整理设置」与「调用账本」两张表），再 v12（给 `diary_days`
-    // 加 `revision` 列）。两段都**不只看版本号，还看东西在不在**，因为两条分支的库
-    // 可能处在四种状态：10（都没有）、11（有表、没列）、12（有列、没表）、12（都有）。
+    // 加 `revision` 列）。两段都必须能对着「版本号落后、结构已经在」的库 open。
     //
     // - 10 → 两段都跑；
     // - 11（只跑过 B4e）→ v11 跳过（表在），v12 跑；
     // - **12 但没有 v11 的两张表**（只跑过 B4c）→ `current < 11` 是假，光靠版本号会把
     //   v11 整段跳过，升级后一碰整理设置就报「no such table」。所以 v11 的守卫是
-    //   「版本号小于 11 **或** `organize_settings` 不在」。V11 的建表写成
-    //   `IF NOT EXISTS`、种默认值那一步本来就是 `INSERT OR IGNORE`，所以重复跑幂等：
-    //   已有设置一个字节都不会被改（**默认关**的口径对升级路径同样成立）；
-    // - v12 同理：列不在就补，列已经在就整段跳过——**不重复回填**，否则会把已经推进过的
-    //   `revision` 按版本数改小，反而弄丢冲突保护。
+    //   「版本号小于 11 **或** `organize_settings` 不在」。
+    //
+    // v11 **可以带 `current`**：它的 DDL 全是 `CREATE TABLE IF NOT EXISTS`、种默认值
+    // 是 `INSERT OR IGNORE`，**重复执行幂等**——已有设置一个字节都不会被改，**默认关**
+    // 的口径对升级路径同样成立。`current` 在这里只决定「要不要顺带跑一遍可重复的建表
+    // 与种子」；就算结构已经在、条件为真，跑那一次也不会失败。这正是 `current` 被允许
+    // 出现的唯一位置。
     if current < 11 || !table_exists(&tx, "organize_settings")? {
         tx.execute_batch(V11)?;
         // v11 只加两张全新的表（整理设置、调用账本），并**种一行默认设置**。
@@ -165,16 +177,20 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         crate::organize::seed_default_organize_settings(&tx, crate::support::now())
             .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
     }
-    if current < 12 || !column_exists(&tx, "diary_days", "revision")? {
-        tx.execute_batch(V12)?;
-        // **回填成「这一天的版本数」**：升级前调用方从 `diary.getDay` 能算出来的就是
-        // 这个数字（`candidateVersionIds.length + (currentVersionId == null ? 0 : 1)`），
-        // 所以老库升级不会让任何在飞的 `expectedRevision` 突然对不上。升级之后的每一次
-        // 状态推进（新增一版、`setCurrent` 换指针）再从这个数往上加。
-        // 这一天一条 `diary_days` 行都没有时不用管：`day_revision` 对没有行的天返回 0，
-        // 而没有行也就没有版本可切。
-        tx.execute_batch(V12_BACKFILL)?;
+    // v12 的守卫是**纯结构判定**，不带 `current`：V12 是不可重复执行的
+    // `ALTER TABLE ... ADD COLUMN`。写成 `current < 12 || 列不在` 时，一个
+    // 「`user_version = 11`、但列已经在」的库（外部改过版本号 / 撕裂复制）会再发一次
+    // ALTER，报 `duplicate column name: revision`；事务回滚后版本号还是 11，
+    // **下一次 open 还走同一条路**——库永久打不开。列在就整段跳过，与 v16 一致。
+    if !column_exists(&tx, "diary_days", "revision")? {
+        add_diary_day_revision(&tx)?;
+        // **回填只在补列这一次跑**：`V12_BACKFILL` 把 revision 写成「这一天的版本数」，
+        // 本身不幂等；再跑一次会把迁移之后已经推进过的 revision 按版本数改小，等于
+        // 弄丢冲突保护（见 `add_diary_day_revision` 与 `V12_BACKFILL` 的文档）。
     }
+    // v13 的守卫可以带 `current`：两张新表与索引全是 `IF NOT EXISTS`，重复执行幂等。
+    // 结构项兜住「版本号已经是 13、表却不在」的库；`current < 13` 只决定要不要顺带跑
+    // 一遍可重复的建表，真正的结构缺口由后面的结构项判定。
     if current < 13
         || !table_exists(&tx, "plugin_installations")?
         || !table_exists(&tx, "plugin_grants")?
@@ -184,21 +200,22 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // 也就没有东西可搬；更不能在迁移里替用户预设一个插件或一条授权。迁移后
         // `plugin_installations` 为空，和刚建的新库一样。
     }
-    // v15 的**列**用「版本号 + 结构」双重守卫（与 v12 同一写法）：只靠版本号不够
-    // ——测试会把库手工退回旧版本再升上来，那些库的 `index_meta` 可能已经有这一列，
-    // 再 `ALTER TABLE` 会报重复列；只靠结构也不够（`current < 15` 才该动）。所以是
-    // `current < 15 && 列不在`。
+    // v15 的**列**守卫是**纯结构判定**，不带 `current`：`ALTER TABLE ADD COLUMN` 不可
+    // 重复执行，而 `current < 15 && 列不在` 会把「自称 15（或更高）、实际缺列」的库
+    // 整段跳过——这次 open 把版本号写上去并返回成功，列仍然缺，而 `current` 已经不是
+    // 15，这条 `&&` 的后半永远轮不到它。列在就跳过：重复 open、或从 v15 库升上来都
+    // 不会重复 ALTER；v1 老库也会在 v15 段提前拿到这条可空列，纯加性、不碰已有数据。
     //
     // **索引不能并进这段守卫**：这段被跳过的条件（列已在）恰好是「手工删过索引」
     // 或「单独补索引」的库满足的状态，包在一起会让索引永远补不回来（#133 第 1 条）。
     // 索引由 `ensure_v15_caliber_index` 在每次 open 时独立、幂等地补。
-    if current < 15 && !column_exists(&tx, "index_meta", "auto_rebuild_marker")? {
+    if !column_exists(&tx, "index_meta", "auto_rebuild_marker")? {
         tx.execute_batch(V15_COLUMN)?;
         // **不回填标记**（NULL = 从未自动尝试）**、不用回填索引**（SQLite 从既有行建）。
         // 没有「替用户记一次自动尝试」这种默认：升级后的第一次 `open` 仍会按当时的
         // 口径如实判断该不该自动排一条。
     }
-// v16：回收站（#155）的加列。**这段 DDL 已经在 main 上，这里保留是为了让 v15
+    // v16：回收站（#155）的加列。**这段 DDL 已经在 main 上，这里保留是为了让 v15
     // 直升 17 的库也拿到它**：版本号一旦写成 17，`current < 16` 不再成立，只有纯结构
     // 守卫还能补上这一列。与 #155 的内容逐字一致，只有一份 `const V16`。
     //
@@ -228,10 +245,14 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     }
     // v18：完整设置对象与整理设置**并成同一行**（契约 4.4 `settings.get / update`）。
     //
-    // 守卫是**纯结构判定**：settings 表不在就建并搬一次；表已在就整段跳过，重复
-    // open 不 ALTER、不搬第二次。**不能把「搬数据」写成无条件的 UPSERT**，否则
-    // 一次失败后的重试会用旧行的值盖掉用户后来改过的设置。
-    if !table_exists(&tx, "settings")? {
+    // 守卫是**纯结构判定**：`settings` 表不在就建并搬一次；`settings` 已在、但 v11 的
+    // 旧表 `organize_settings` 又被重新跑出来（「版本号被改回 11、结构却已经是 18」的库
+    // 会走一遍 v11 段）时，也要把旧表**吸收掉**——否则同一个库里留两张设置表，正是
+    // v18 要消灭的第二份真值。搬家用 `INSERT OR IGNORE`：已有的 `settings` 行才是
+    // 用户后来的真值，**不能用旧行盖掉它**；旧行搬不过去也照常删表（行数校验见
+    // `migrate_settings_table`）。正常库两者都不在，只跑一次；重复 open 不 ALTER、
+    // 不搬第二次。
+    if !table_exists(&tx, "settings")? || table_exists(&tx, "organize_settings")? {
         migrate_settings_table(&tx)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
@@ -242,10 +263,11 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         params![SCHEMA_VERSION, crate::support::to_iso(crate::support::now())],
     )?;
     tx.commit()?;
-    // 与「版本已最新」分支同一份补齐逻辑：`current < 15` 但列已在的库也会走到这里。
+    // 与「版本已最新」分支同一份补齐逻辑：v15 的列已在、v12 的列被删过、`settings`
+    // 缺列这类「版本号到了、结构没到」的库都会走到这里。
     ensure_v15_caliber_index(conn)?;
-    // 摘要聚合的三条查询索引（#146）与 v16 / v17 / v18 的结构兜底都要补：
-    // 走到这里的库可能「版本号到了、结构没到」。
+    // 摘要聚合的三条查询索引（#146）与 v12 / v15 的列、v16 / v17 / v18 的结构兜底
+    // 都要补：走到这里的库可能是「版本号领先、结构落后」的形状。
     ensure_processing_summary_indexes(conn)?;
     ensure_v16_v17_v18_structure(conn)?;
     Ok(())
@@ -277,6 +299,18 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Resu
     Ok(false)
 }
 
+/// 一张表的全部列名（一次 `PRAGMA table_info` 读全；表名只传代码里的常量）。
+///
+/// 用于「缺哪列补哪列」：补 `settings` 时要对 14 个列名做包含判断，逐列调一次
+/// `column_exists` 会在每次 open 多发十几次查询。
+fn column_names(conn: &Connection, table: &str) -> rusqlite::Result<Vec<String>> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(names)
+}
+
 /// `sqlite_master` 里有没有这条索引（迁移的结构性守卫用）。
 ///
 /// 用 `sqlite_master` 而不是 `PRAGMA index_list`：这里只需要按名字查一次，索引名是
@@ -292,8 +326,8 @@ fn index_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
 
 /// 确保 v15 的整代口径覆盖索引 `idx_chunk_vectors_caliber` 存在。
 ///
-/// **独立于版本号、也独立于 `auto_rebuild_marker` 列**：那个列的守卫是
-/// `current < 15 && 列不在`，而「列已在、索引不在」正是手工删过索引、或索引补建失败
+/// **独立于版本号、也独立于 `auto_rebuild_marker` 列**：那个列的守卫是纯结构判定
+/// （`!column_exists`），而「列已在、索引不在」正是手工删过索引、或索引补建失败
 /// 会留下的状态——把索引包进同一个守卫就永远补不回来（#133 第 1 条）。
 ///
 /// **不在 `current >= 15` 时重跑整个 v15 段**：`ALTER TABLE` 不能重复跑；每次 open
@@ -344,15 +378,27 @@ fn migrate_settings_table(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()
     Ok(())
 }
 
-/// v16 / v17 / v18 的结构兜底：在「版本号已经是最新」的分支里，列、表或
-/// `idx_styles_current` 被手工删掉、或是只写过部分版本的中间构建时，下次 open 仍能
-/// 补回来。
+/// 结构兜底：在「版本号已经是最新」的分支里，列、表或索引被手工删掉、或只写过部分
+/// 版本的中间构建时，下次 open 仍能补回来。
 ///
-/// 判定与迁移里的守卫是同一组结构查询；结构都在时只做几次轻量查询，不写库。
+/// 判定与迁移里的守卫是同一组结构查询；结构都在时也只做十次以内的轻量查询，不写库
+/// （`table_exists` / `index_exists` 查 `sqlite_master`，列名各读一次 `PRAGMA table_info`）。
 /// **表和索引分开判**：`table_exists("styles")` 为真不能证明 `idx_styles_current`
 /// 在——索引被删或补建失败时，部分唯一索引「一条风格只有一个当前版本」就不再由库
 /// 保证，`query_row` 会静默取任意一条（#166 的复审第 5 条，与 v15 的
 /// `ensure_v15_caliber_index` 是同一个理由：版本号不是结构证明）。
+///
+/// 覆盖范围（**名字沿用历史**：它从 v16 / v17 / v18 起步，后来把更早版本的列与
+/// `settings` 的列形状也收了进来；改名会牵动文档里对它的引用，先记在这里）：
+/// - **v12 的 `diary_days.revision`、v15 的 `index_meta.auto_rebuild_marker`**：
+///   `current == 18` 时迁移主体在函数开头就提前返回了，这两个「更早版本」的列只有
+///   这里能补（`migrate` 里的纯结构守卫轮不到）；
+/// - v16 / v17 / v18 的列、表、索引；
+/// - **v18 `settings` 的列形状**：表在但缺列（手工删列、只写过部分版本的中间构建）
+///   时逐列 `ALTER TABLE ADD COLUMN` 补齐，**不 DROP 表、不丢行**；
+/// - **旧表 `organize_settings` 的残留**：版本号被改回 11 的库会被 v11 段重新建出
+///   这张表，也要收敛掉，否则同一个库里有两份设置真值。
+///
 /// 注意 **`settings` 表缺失时也要走完整的 `migrate_settings_table`**：它不只会建表，
 /// 还会把可能残留的 `organize_settings` 行搬过来，不能只 `CREATE TABLE` 了事。
 fn ensure_v16_v17_v18_structure(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -360,10 +406,44 @@ fn ensure_v16_v17_v18_structure(conn: &mut Connection) -> rusqlite::Result<()> {
     let missing_styles = !table_exists(conn, "styles")?;
     let missing_current_index = !index_exists(conn, "idx_styles_current")?;
     let missing_settings = !table_exists(conn, "settings")?;
-    if !missing_trash_column && !missing_styles && !missing_current_index && !missing_settings {
+    let stray_organize_settings = table_exists(conn, "organize_settings")?;
+    // `table_exists` 先判：这一层的职责是补**列**，不是重建整张表（那是 v10 段的活，
+    // 版本号已经不指向它了）；对着不存在的表发 `ALTER` 只会让 open 报「no such table」。
+    let missing_day_revision =
+        table_exists(conn, "diary_days")? && !column_exists(conn, "diary_days", "revision")?;
+    let missing_rebuild_marker = table_exists(conn, "index_meta")?
+        && !column_exists(conn, "index_meta", "auto_rebuild_marker")?;
+    // `settings` 在、但列形状不对：逐列记下缺失项，缺哪列补哪列（定义见
+    // `settings_column_definitions`）。表整个不在时由 `migrate_settings_table` 建全。
+    // 列名一次读全（`column_names`）：这是每次 open 都要走的路，不该为 14 个列名
+    // 发 14 次 `PRAGMA table_info`。
+    let mut missing_settings_columns = Vec::new();
+    if !missing_settings {
+        let existing = column_names(conn, "settings")?;
+        for (name, definition) in settings_column_definitions(crate::support::now()) {
+            if !existing.iter().any(|column| column == name) {
+                missing_settings_columns.push((name, definition));
+            }
+        }
+    }
+    if !missing_trash_column
+        && !missing_styles
+        && !missing_current_index
+        && !missing_settings
+        && !stray_organize_settings
+        && !missing_day_revision
+        && !missing_rebuild_marker
+        && missing_settings_columns.is_empty()
+    {
         return Ok(());
     }
     let tx = conn.transaction()?;
+    if missing_day_revision {
+        add_diary_day_revision(&tx)?;
+    }
+    if missing_rebuild_marker {
+        tx.execute_batch(V15_COLUMN)?;
+    }
     if missing_trash_column {
         tx.execute_batch(V16)?;
     }
@@ -372,10 +452,104 @@ fn ensure_v16_v17_v18_structure(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.execute_batch(V17)?;
         crate::styles::seed_default_style(&tx, crate::support::now())?;
     }
-    if missing_settings {
+    // 先补 `settings` 的列、再走 `migrate_settings_table`：后者会 `INSERT OR IGNORE`
+    // 一行默认设置，SQL 里点到了所有列；如果表在、列缺、旧表也残留，先补列才不会
+    // 让那条 INSERT 报「no such column」。
+    for (name, definition) in &missing_settings_columns {
+        // 表名、列名与列定义都是本文件的常量（默认值引用 `organize.rs` 的常量），
+        // 没有外部输入。`settings` 是单行表：`ADD COLUMN` 的默认值会落到已有那一行
+        // 上，行与没缺的列都原样保留。
+        tx.execute_batch(&format!(
+            "ALTER TABLE settings ADD COLUMN {name} {definition};"
+        ))?;
+    }
+    if missing_settings || stray_organize_settings {
         migrate_settings_table(&tx)?;
     }
     tx.commit()
+}
+
+/// `settings` 的列定义（与 `V18` 逐列一致），给「表在但缺列」的补列用。
+///
+/// 为什么在 Rust 里拼 SQL 而不是复用 `V18` 的常量：`ALTER TABLE` 一次只能加一列，
+/// 而且 `NOT NULL` 的列**必须带 `DEFAULT`** 才能补到已有行上。默认值不另抄一套——
+/// 直接引用 `organize.rs` 的 `LIMITS` / `DEFAULT_*` 常量（与
+/// `seed_default_settings` 同一个来源）：补出来的列与「这一行缺失时新种一行」的口径
+/// 一致，不会出现两套默认值。
+///
+/// `updated_at` 没有业务默认值：`DEFAULT` 必须是常量，所以用**补列时刻**的 ISO 时间
+/// 作字面量填给已有行（之后的写入都显式带值）。
+///
+/// `id` 不在表里：主键不能用 `ALTER TABLE ADD COLUMN` 补，SQLite 也不允许 DROP 主键列，
+/// 所以 `id` 缺失只可能是文件级损坏，不是这一层能修的形状。
+fn settings_column_definitions(now: chrono::DateTime<chrono::Utc>) -> Vec<(&'static str, String)> {
+    use crate::organize::{DEFAULT_AUTO_ORGANIZE_TIME, DEFAULT_TEMPLATE_ID, LIMITS};
+    vec![
+        ("diary_time_zone", "TEXT NOT NULL DEFAULT 'UTC'".to_owned()),
+        ("default_style_id", "TEXT".to_owned()),
+        ("enabled", "INTEGER NOT NULL DEFAULT 0".to_owned()),
+        (
+            "template_id",
+            format!("TEXT NOT NULL DEFAULT '{}'", DEFAULT_TEMPLATE_ID),
+        ),
+        ("template_params", "TEXT NOT NULL DEFAULT '{}'".to_owned()),
+        (
+            "max_materials",
+            format!(
+                "INTEGER NOT NULL DEFAULT {}",
+                LIMITS.max_materials.default_value
+            ),
+        ),
+        (
+            "max_chars",
+            format!(
+                "INTEGER NOT NULL DEFAULT {}",
+                LIMITS.max_chars.default_value
+            ),
+        ),
+        (
+            "max_calls_per_run",
+            format!(
+                "INTEGER NOT NULL DEFAULT {}",
+                LIMITS.max_calls_per_run.default_value
+            ),
+        ),
+        (
+            "max_calls_per_day",
+            format!(
+                "INTEGER NOT NULL DEFAULT {}",
+                LIMITS.max_calls_per_day.default_value
+            ),
+        ),
+        (
+            "max_failure_rate",
+            format!("REAL NOT NULL DEFAULT {}", LIMITS.max_failure_rate.2),
+        ),
+        (
+            "auto_organize_time",
+            format!("TEXT NOT NULL DEFAULT '{}'", DEFAULT_AUTO_ORGANIZE_TIME),
+        ),
+        (
+            "supplement_on_new_materials",
+            "INTEGER NOT NULL DEFAULT 1".to_owned(),
+        ),
+        ("revision", "INTEGER NOT NULL DEFAULT 1".to_owned()),
+        (
+            "updated_at",
+            format!("TEXT NOT NULL DEFAULT '{}'", crate::support::to_iso(now)),
+        ),
+    ]
+}
+
+/// v12 的「加列 + 回填」，迁移段与结构兜底共用同一份逻辑。
+///
+/// **调用方必须先用 `column_exists` 判过**：`V12_BACKFILL` 是一次无条件 `UPDATE`，
+/// 把 `revision` 写成「这一天的版本数」，本身**不幂等**——迁移之后已经推进过的
+/// revision 再被这样写一次会变小，等于弄丢冲突保护。幂等来自「列在就整段跳过」这个
+/// 结构判定：补列只发生一次，回填也只在那一刻发生一次。
+fn add_diary_day_revision(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(V12)?;
+    conn.execute_batch(V12_BACKFILL)
 }
 
 /// #146 的摘要聚合要用的**查询索引**（不新开 schema 版本）。
@@ -1052,6 +1226,10 @@ ALTER TABLE diary_days ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
 "#;
 
 /// v12 的回填：把老库的 `revision` 从「这一天的版本数」起步（升级前调用方算的就是它）。
+///
+/// **只允许在补列的那一次执行**（见 `add_diary_day_revision`）：这是一次无条件的
+/// `UPDATE`，再跑一次会把迁移之后已经推进过的 `revision` 按版本数改小，**不幂等**。
+/// 幂等来自调用方的结构判定（`!column_exists(...)`），不来自这条 SQL。
 const V12_BACKFILL: &str = r#"
 UPDATE diary_days SET revision = (
     SELECT COUNT(*) FROM diary_versions WHERE diary_versions.day_key = diary_days.day_key
