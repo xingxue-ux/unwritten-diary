@@ -96,6 +96,16 @@ pub enum CoreError {
     #[error("输入不合法：{reason}")]
     InvalidArgument { reason: String },
 
+    /// 快照里的材料都因为所在记录进了回收站而不可用（契约 §8：回收站内容立即从
+    /// 后续 AI 输入中排除）。这不是「数据缺了」——记录还在、可以恢复——而是「这份
+    /// 数据现在不许发给模型」。落既有的 `invalid_state`：状态不允许这次操作。
+    ///
+    /// 单独一个变体不是为了新增契约错误码，而是让队列能把 `attentionKey` 写成
+    /// `job-terminal:diary_generate:trashed_materials`，让 `jobs.get` 读得出
+    /// 「为什么失败」；其它 `invalid_state`（快照/模板对不上等）仍走通用 key。
+    #[error("材料已不可用：{reason}")]
+    MaterialsUnavailable { reason: String },
+
     #[error("版本冲突：期望 revision {expected}，实际 {actual}")]
     RevisionConflict { expected: i64, actual: i64 },
 
@@ -246,7 +256,9 @@ impl CoreError {
     pub fn code(&self) -> ErrorCode {
         match self {
             Self::NotFound { .. } => ErrorCode::NotFound,
-            Self::InvalidState { .. } => ErrorCode::InvalidState,
+            Self::InvalidState { .. } | Self::MaterialsUnavailable { .. } => {
+                ErrorCode::InvalidState
+            }
             Self::InvalidArgument { .. } => ErrorCode::InvalidArgument,
             Self::RevisionConflict { .. } | Self::DiaryRevisionConflict { .. } => {
                 ErrorCode::RevisionConflict

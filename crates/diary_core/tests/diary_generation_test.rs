@@ -1203,3 +1203,190 @@ fn a_generation_queued_before_purge_does_not_resurrect_purged_text() {
     assert_eq!(job.state, JobState::Failed);
     assert_eq!(job.error_code.as_deref(), Some("invalid_state"));
 }
+
+/// #审计 ①：排队之后记录进了回收站——**快照里的正文一个字都不能发给模型**。
+///
+/// 契约 §8：「回收站内容立即从默认搜索和后续 AI 输入中排除」。快照是不可变的输入
+/// 凭证（`a_generation_queued_before_purge_does_not_resurrect_purged_text` 已钉住
+/// 永久清理那一路），但回收站里的记录还在、还能恢复，所以这里不是「记录不存在」的
+/// 终态错误，而是「这份材料现在不许用」：任务终态失败、不花一次调用、不产版本，
+/// 原因能从 `jobs.get` 的 `attentionKey` 与尝试记录里读出来。
+#[test]
+fn a_generation_queued_before_trash_does_not_send_trashed_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, transport) =
+        core_with_transport(dir.path(), vec![chat_ok("不应该出现的正文。")]);
+    save_provider(&mut core);
+    let capture_id = capture_with_text(&mut core, "会被移入回收站的秘密正文。", "op-trashed");
+    let ticket = core
+        .generate_diary(
+            "2026-10-16",
+            None,
+            DiaryGenerationReason::Manual,
+            "op-gen-before-trash",
+        )
+        .unwrap();
+
+    // 快照冻结的是排队那一刻的输入：移入回收站不能回头改它（不可变输入凭证）。
+    let (_, snapshot_body) = snapshot_row(&dir.path().join("library.sqlite"), &ticket.source_snapshot_id);
+    assert!(
+        snapshot_body.contains("会被移入回收站的秘密正文。"),
+        "快照必须原样保留冻结时的材料，不能因为进回收站被改写"
+    );
+
+    // 生成任务还在排队时，用户把材料移入了回收站（没有永久清理）。
+    let capture = core.get_capture(&capture_id).unwrap();
+    core.trash_capture(&capture_id, capture.revision, "op-trash")
+        .unwrap();
+
+    let summary = drive(&mut core);
+    assert_eq!(summary.processed, 1);
+    assert_eq!(summary.failed, 1, "材料全在回收站 → 终态失败");
+    assert_eq!(summary.succeeded, 0);
+    assert_eq!(
+        transport.call_count(),
+        0,
+        "回收站里的正文绝不能进模型输入，一次调用都不许发"
+    );
+    assert!(
+        transport.requests().is_empty(),
+        "没有任何请求，因此不可能带上回收站正文"
+    );
+    assert!(versions(&core).is_empty(), "不产版本，更不能复活回收站内容");
+
+    // 任务本身：失败 + 既有错误码，`attentionKey` 点名「材料在回收站」而不是笼统
+    // 的 invalid_state；`jobs.get` 读得到这三样。
+    let job = core.get_job(&ticket.job_id).unwrap();
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(job.error_code.as_deref(), Some("invalid_state"));
+    assert_eq!(
+        job.attention_key.as_deref(),
+        Some("job-terminal:diary_generate:trashed_materials"),
+        "同码不同因：这里的原因要能被 jobs.get 读出来"
+    );
+    assert!(job.requires_user_action, "要用户去恢复记录，不能静默");
+
+    // 尝试记录里的可读说明与生成行状态都要写清理由。
+    let conn = Connection::open(dir.path().join("library.sqlite")).unwrap();
+    let message: String = conn
+        .query_row(
+            "SELECT message FROM job_attempts WHERE job_id = ?1 \
+             ORDER BY attempt DESC, started_at DESC LIMIT 1",
+            rusqlite::params![ticket.job_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        message.contains("回收站") && message.contains("契约第 8 节"),
+        "失败说明要写清为什么（回收站 + 契约 §8）：{message}"
+    );
+    let (state, error_code): (String, Option<String>) = conn
+        .query_row(
+            "SELECT state, error_code FROM diary_generations WHERE job_id = ?1",
+            rusqlite::params![ticket.job_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "failed", "生成行也要如实失败");
+    assert_eq!(error_code.as_deref(), Some("invalid_state"));
+}
+
+/// #审计 ①（另一半）：只剩部分材料时照常生成，但请求里**绝不能**出现回收站正文，
+/// 版本审计要如实记下「有 N 条材料因在回收站被排除」。
+#[test]
+fn a_generation_queued_before_trash_excludes_only_the_trashed_material() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, transport) =
+        core_with_transport(dir.path(), vec![chat_ok("留下的材料写成的一版。")]);
+    save_provider(&mut core);
+    let trashed_id = capture_with_text(&mut core, "回收站里的秘密正文甲。", "op-a");
+    let kept_id = capture_with_text(&mut core, "留在列表里的材料正文乙。", "op-b");
+    let trashed_source = first_source(&core, &trashed_id);
+    let kept_source = first_source(&core, &kept_id);
+    let ticket = core
+        .generate_diary(
+            "2026-10-16",
+            None,
+            DiaryGenerationReason::Manual,
+            "op-gen-partial-trash",
+        )
+        .unwrap();
+    let (_, snapshot_body) = snapshot_row(&dir.path().join("library.sqlite"), &ticket.source_snapshot_id);
+    assert!(snapshot_body.contains("回收站里的秘密正文甲。"));
+    assert!(snapshot_body.contains("留在列表里的材料正文乙。"));
+
+    let capture = core.get_capture(&trashed_id).unwrap();
+    core.trash_capture(&trashed_id, capture.revision, "op-trash")
+        .unwrap();
+
+    let summary = drive(&mut core);
+    assert_eq!(summary.processed, 1);
+    assert_eq!(summary.succeeded, 1, "还有材料就照常生成");
+    assert_eq!(summary.failed, 0);
+    assert_eq!(transport.call_count(), 1);
+
+    // **核心断言：请求正文不含回收站文字，但保留的材料照常发送。**
+    let request = &transport.requests()[0];
+    let body = String::from_utf8(request.body.clone()).unwrap();
+    assert!(
+        !body.contains("回收站里的秘密正文甲。"),
+        "请求正文绝不能包含回收站里的记录：{body}"
+    );
+    assert!(
+        body.contains("留在列表里的材料正文乙。"),
+        "未进回收站的材料必须照常发送：{body}"
+    );
+    assert!(
+        !body.contains(&trashed_id),
+        "连 capture id 都不该出现在提示词里"
+    );
+
+    let versions = versions(&core);
+    assert_eq!(versions.len(), 1);
+    let version = &versions[0];
+    // 来源关联也不能出现被剔除记录的来源——正文里没有它，就不能说这一版基于它。
+    assert!(
+        version
+            .provenance_links
+            .iter()
+            .all(|link| link.source_id != trashed_source),
+        "回收站材料的来源不能进这一版的 provenanceLinks：{:?}",
+        version.provenance_links
+    );
+    assert!(
+        version
+            .provenance_links
+            .iter()
+            .any(|link| link.source_id == kept_source),
+        "留下的材料仍要有来源关联"
+    );
+
+    let info = version
+        .generation_info
+        .as_ref()
+        .expect("生成版本有 generationInfo");
+    assert_eq!(
+        info.generation_options
+            .get("excludedTrashedMaterials")
+            .map(String::as_str),
+        Some("1"),
+        "被排除的材料数要如实记进版本审计，不能静默：{:?}",
+        info.generation_options
+    );
+    assert_eq!(
+        info.covered_source_count, 1,
+        "coveredSourceCount 说的是这一版实际用的材料数，不包括被剔除的那条"
+    );
+    assert_eq!(info.unprocessed_source_count, 0);
+
+    // 快照仍然一个字都没改：它记的仍是排队那一刻的两条材料。
+    let (_, snapshot_after) = snapshot_row(&dir.path().join("library.sqlite"), &ticket.source_snapshot_id);
+    assert_eq!(
+        snapshot_body, snapshot_after,
+        "快照是不可变输入凭证，执行时的剔除不能改写它"
+    );
+    assert_eq!(
+        core.get_capture(&trashed_id).unwrap().state,
+        diary_core::CaptureState::Trashed
+    );
+}
