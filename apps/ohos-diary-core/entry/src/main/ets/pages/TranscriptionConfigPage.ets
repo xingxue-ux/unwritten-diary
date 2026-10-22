@@ -30,6 +30,8 @@ export struct TranscriptionConfigPage {
   pathStack: NavPathStack = new NavPathStack();
   @State info: LibraryInfo | null = null;
   @State providers: ProviderConfig[] = [];
+  /** provider 列表是否读成功过。false + error 时不能说「没有配置行」。 */
+  @State providersLoaded: boolean = false;
   @State modelDir: string = '';
   @State loading: boolean = true;
   @State error: UiError = EMPTY_UI_ERROR;
@@ -70,6 +72,7 @@ export struct TranscriptionConfigPage {
     if (results.length > 1) {
       if (results[1].ok) {
         this.providers = results[1].data as ProviderConfig[];
+        this.providersLoaded = true;
       } else if (this.error.code.length === 0) {
         this.error = uiErrorOf(results[1]);
       }
@@ -433,9 +436,15 @@ export struct TranscriptionConfigPage {
 
           Column({ space: 6 }) {
             SectionTitle({ text: '已保存的 provider（providers.list）' })
-            if (this.providers.length === 0) {
+            if (this.providers.length === 0 && this.providersLoaded) {
               Text('没有配置行。注意：providers.list 不包含内建引擎行，没有配置行不等于不能转写' +
                 '（可能走随包/环境变量默认）。')
+                .fontSize(12)
+                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .width('100%')
+            } else if (this.providers.length === 0) {
+              // 读失败 ≠ 没有配置行。错误条已经在上面。
+              Text('provider 列表没有读出来：这不代表没有配置行；原因见上面的错误。')
                 .fontSize(12)
                 .fontColor($r('sys.color.ohos_id_color_text_secondary'))
                 .width('100%')

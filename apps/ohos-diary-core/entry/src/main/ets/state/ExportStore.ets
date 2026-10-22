@@ -91,8 +91,16 @@ export class ExportStore {
       this.message = '导出的开始日期和结束日期都不能为空（YYYY-MM-DD）；没有生成文件。';
       return null;
     }
-    // `YYYY-MM-DD` 定长、字典序与时间序一致，可以直接比较；形状不对的由核心校验。
-    if (from > to) {
+    // **不能直接比较原始字符串**：核心是「先 parse 日期、再按规范形比较」
+    // （`crates/diary_core/src/export.rs`），所以 `2026-10-5` 是合法起点；但 JS/ArkTS 里
+    // `'2026-10-5' > '2026-10-15'` 为 true（第 9 位 `'5' > '1'`），直接比会把合法范围
+    // 拒掉，还告诉用户「开始日期不能晚于结束日期」——理由与事实相反。
+    // 本地只做「能规范化时才比」：两边都能补成 `YYYY-MM-DD` 的前提下，字典序才等于
+    // 时间序。形状不合法（`2026-10`、`abc`、月份越界）时**不做本地判断**，原样交给
+    // 核心报 `invalid_argument`——本地不替核心编另一套日期规则。
+    const normalizedFrom: string | null = normalizeDayKey(from);
+    const normalizedTo: string | null = normalizeDayKey(to);
+    if (normalizedFrom !== null && normalizedTo !== null && normalizedFrom > normalizedTo) {
       this.message = '开始日期不能晚于结束日期；没有生成文件。';
       return null;
     }
@@ -141,6 +149,54 @@ export class ExportStore {
       this.message = '导出没有完成，资料库没有变化。';
     }
   }
+}
+
+/**
+ * 把 `YYYY-M-D` 补零成 `YYYY-MM-DD`；形状不合法或日期越界时返回 `null`。
+ *
+ * 为什么要补零：核心的 `parse_day_key` 用 chrono 的 `%Y-%m-%d` 解析，接受
+ * `2026-10-5` / `2026-1-5`，再按 `%Y-%m-%d` 的规范形绑定 SQL。客户端只有补成定长
+ * 之后，字典序才等于时间序。返回 `null` 的两种情况都**不在本地下结论**：
+ * - 不是 `YYYY-M-D` 三段（例如 `2026/10/05`、`2026-10`）——核心会报 `invalid_argument`；
+ * - 月/日越界（例如 `2026-13-01`）——同样交给核心报错，本地不猜「哪天算合法」。
+ *
+ * 年份只接受 4 位数字（dayKey 的口径就是 `YYYY-MM-DD`）；月日接受 1–2 位。
+ */
+export function normalizeDayKey(dayKey: string): string | null {
+  const text: string = dayKey.trim();
+  const parts: string[] = text.split('-');
+  if (parts.length !== 3) {
+    return null;
+  }
+  const year: string = parts[0];
+  const month: string = parts[1];
+  const day: string = parts[2];
+  if (year.length !== 4 || !isDigits(year) ||
+    month.length < 1 || month.length > 2 || !isDigits(month) ||
+    day.length < 1 || day.length > 2 || !isDigits(day)) {
+    return null;
+  }
+  const monthValue: number = parseInt(month, 10);
+  const dayValue: number = parseInt(day, 10);
+  if (monthValue < 1 || monthValue > 12 || dayValue < 1 || dayValue > 31) {
+    return null;
+  }
+  const paddedMonth: string = monthValue < 10 ? `0${monthValue}` : `${monthValue}`;
+  const paddedDay: string = dayValue < 10 ? `0${dayValue}` : `${dayValue}`;
+  return `${year}-${paddedMonth}-${paddedDay}`;
+}
+
+function isDigits(value: string): boolean {
+  if (value.length === 0) {
+    return false;
+  }
+  for (let i = 0; i < value.length; i++) {
+    const ch: string = value.charAt(i);
+    if (ch < '0' || ch > '9') {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**

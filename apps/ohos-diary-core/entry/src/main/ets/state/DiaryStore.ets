@@ -21,6 +21,9 @@
 // 3. **没有可用服务时不要报错成「生成失败」**：`jobs.status.waiting_configuration > 0`
 //    时，本 store 把它如实暴露成 [`waitingConfiguration`] = true（附计数）与一句
 //    「还没配置模型服务」的 `message`，`error` 保持空哨兵。只有调用本身失败才写 `error`。
+//    但**「等待配置」与「调用失败」不是互斥关系**：前者解释「为什么没有生成」，后者说明
+//    「这次调用失败了」，两者可以同时成立，页面必须都显示。而且 `jobs.status` 读失败时
+//    本 store 会复位 `waitingConfiguration`（见 `jobsStatusKnown`）——拿不到结论就别下结论。
 //
 // 另外：
 // - `diary.getDay` 的 `not_found` 是**空态**（这一天既没有材料也没有版本），不是读取
@@ -78,6 +81,14 @@ export const DEFAULT_RUN_BUDGET_MS: number = 30000;
 export class DiaryStore {
   /** `diary.listDays` 的全部结果（按 dayKey 倒序，核心排序）；分页由 store 自己走完。 */
   days: DiaryDay[] = [];
+  /**
+   * `days` 是否**至少成功读过一次**（本次会话）。
+   *
+   * `false` 时 [`days`] 是初值 `[]`（或上一次成功的旧值），**不代表「没有有材料的天」**。
+   * 页面在 `!daysLoaded && error.code.length > 0` 时不能显示空态文案（那是把读失败
+   * 说成没数据）。成功读完（含 `daysTruncated` 的截断）才置 `true`。
+   */
+  daysLoaded: boolean = false;
   /** `days` 是否因为 [`MAX_DAYS_PAGES`] 没走完：为 true 时它只是前一部分，不是全部。 */
   daysTruncated: boolean = false;
   /** 当前看的是哪一天（`YYYY-MM-DD`）；空串 = 还没选。 */
@@ -100,12 +111,24 @@ export class DiaryStore {
    * **这不是失败**：它表示「还没配置模型服务」，配置好后任务会自动继续。界面按这个
    * 字段显示「还没配置模型服务 / 去配置」，不要显示成「生成失败」。
    *
-   * 计数来自 `jobs.status` 的**全队列**聚合（不区分任务种类）；本 store 没有按任务 id
-   * 读状态的能力，所以不替某一条生成任务下结论，只如实摆出这个数。
+   * ⚠️ 口径是**全队列聚合**，不是「这一天 / 这一次生成」的结论：`jobs.status` 不区分
+   * 任务种类，语义索引等本地模型任务也会计入。界面文案必须写成「队列里有 N 个任务在
+   * 等配置（含索引等本地模型任务）」，不能让人以为是某一次生成的判定。
+   *
+   * 读 `jobs.status` **失败**时本字段复位成 `false`、[`jobsStatusKnown`] 置 `false`：
+   * 拿不到结论时不能说「有任务在等配置」，否则上一次的 `true` 会一直挂着，把真实错误
+   * 盖掉（`pages/DiaryPage.ets` 曾因此只显示「不是生成失败」）。
    */
   waitingConfiguration: boolean = false;
   /** 上面那个状态的计数（0 = 没有任务在等配置）。 */
   waitingConfigurationCount: number = 0;
+  /**
+   * `waitingConfiguration` 背后那次 `jobs.status` 是否**读成功过**。
+   *
+   * `false` = 现在不知道有没有任务在等配置（没读过或上一次读失败）。页面在 `false` 时
+   * 不要显示「还没配置模型服务」这种断言。
+   */
+  jobsStatusKnown: boolean = false;
   /** 正在读（天数列表 / 某一天 / 任务状态）。 */
   loading: boolean = false;
   /** 正在执行写操作（受理生成 / 运行任务 / 切换当前版本）。 */
@@ -456,6 +479,7 @@ export class DiaryStore {
       }
     }
     this.days = collected;
+    this.daysLoaded = true;
     this.daysTruncated = truncated;
     if (truncated) {
       // 只走了一部分页：必须说出来，别让页面以为这就是全部。
@@ -498,11 +522,20 @@ export class DiaryStore {
     return false;
   }
 
-  /** 读 `jobs.status`，把 `waiting_configuration` 如实映射成「还没配置」而不是错误。 */
+  /**
+   * 读 `jobs.status`，把 `waiting_configuration` 如实映射成「还没配置」而不是错误。
+   *
+   * 读失败时**必须复位** `waitingConfiguration` / 计数，并把 `jobsStatusKnown` 置 false：
+   * 拿不到结论就别说结论。否则上一次的 `true` 会一直挂着，页面就会把「读失败」解释成
+   * 「还在等配置」，把真实错误藏掉。（这正是 P1 ③ 的根因。）
+   */
   private async loadJobStatusInternal(): Promise<boolean> {
     const result: CoreResult = await CoreGateway.call(this.dbPath, 'jobs.status', null);
     if (!result.ok) {
       this.error = uiErrorOf(result);
+      this.waitingConfiguration = false;
+      this.waitingConfigurationCount = 0;
+      this.jobsStatusKnown = false;
       return false;
     }
     const status: JobStatus = result.data as JobStatus;
@@ -510,6 +543,7 @@ export class DiaryStore {
     this.recentErrors = status.recent_errors;
     this.waitingConfigurationCount = status.waiting_configuration;
     this.waitingConfiguration = status.waiting_configuration > 0;
+    this.jobsStatusKnown = true;
     return true;
   }
 

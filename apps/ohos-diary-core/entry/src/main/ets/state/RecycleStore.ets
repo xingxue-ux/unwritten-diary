@@ -110,6 +110,14 @@ export function selectActiveCaptures(captures: Capture[]): Capture[] {
 export class RecycleStore {
   /** 回收站里的记录（`state === 'trashed'`）。主列表要的是它的补集，见 [`selectActiveCaptures`]。 */
   captures: Capture[] = [];
+  /**
+   * `captures` 是否**至少成功扫过一次**。
+   *
+   * `false` 时 [`captures`] 还是初值 `[]`（或上一次成功的旧值），**不代表「回收站是空的」**。
+   * 页面在 `!loaded && error.code.length > 0` 时不显示「回收站是空的 / 扫描了 0 条」：
+   * 那会把一次读失败说成「确实没有」。[`scanned`] 同理，`loaded === false` 时没有意义。
+   */
+  loaded: boolean = false;
   /** 最近一次 `previewPurge` 的结果（核心原样）；`null` = 还没预览或令牌已作废。 */
   preview: PurgePreview | null = null;
   /** 最近一次成功 `purge` 的结果（核心原样）：`purged_*` / `retained_*` / 两类「没删」的清单都在。 */
@@ -349,6 +357,7 @@ export class RecycleStore {
       }
     }
     this.captures = collected;
+    this.loaded = true;
     this.scanned = scanned;
     this.truncated = truncated;
     if (truncated) {

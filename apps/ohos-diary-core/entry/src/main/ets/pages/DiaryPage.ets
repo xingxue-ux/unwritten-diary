@@ -52,6 +52,8 @@ export struct DiaryPage {
   // ---- store 字段的镜像（store 不依赖 ArkUI，页面自己同步） ----
   @State days: DiaryDay[] = [];
   @State daysTruncated: boolean = false;
+  /** store 的 `daysLoaded`：至少成功读过一次天列表。false 时不能把空数组说成「没有天」。 */
+  @State daysLoaded: boolean = false;
   @State dayKey: string = '';
   @State day: DiaryDay | null = null;
   @State dayEmpty: boolean = false;
@@ -63,6 +65,8 @@ export struct DiaryPage {
   @State candidatesOnly: boolean = false;
   @State waitingConfiguration: boolean = false;
   @State waitingCount: number = 0;
+  /** store 的 `jobsStatusKnown`：`waitingConfiguration` 背后那次 `jobs.status` 是否读成功过。 */
+  @State jobsStatusKnown: boolean = false;
   @State storeError: UiError = EMPTY_UI_ERROR;
   @State storeMessage: string = '';
   @State busy: boolean = false;
@@ -177,6 +181,7 @@ export struct DiaryPage {
   /** store → 页面 `@State` 的唯一同步点。 */
   private sync(store: DiaryStore): void {
     this.days = store.days;
+    this.daysLoaded = store.daysLoaded;
     this.daysTruncated = store.daysTruncated;
     this.dayKey = store.dayKey;
     this.day = store.day;
@@ -188,6 +193,7 @@ export struct DiaryPage {
     this.candidatesOnly = store.candidatesOnly();
     this.waitingConfiguration = store.waitingConfiguration;
     this.waitingCount = store.waitingConfigurationCount;
+    this.jobsStatusKnown = store.jobsStatusKnown;
     this.storeError = store.error;
     this.storeMessage = store.message;
     this.busy = store.loading || store.working;
@@ -308,7 +314,18 @@ export struct DiaryPage {
     .padding({ left: 16, right: 16, top: 12, bottom: 8 })
   }
 
-  /** 状态条：等待配置 / 错误 / 提示。**等待配置时绝不显示成失败**（store 的结论）。 */
+  /**
+   * 状态条：等待配置 / 错误 / 提示。
+   *
+   * **两者不是互斥关系，必须都显示**：
+   * - `waitingConfiguration` 解释「为什么没有生成」（全队列口径，含索引等本地模型任务）；
+   * - `storeError` 说明「这次调用失败了」。
+   *
+   * 以前这里是 `if (waiting) {…} else if (error) {…}`：只要队列里有一个任务在等配置，
+   * 任何真实错误都会被 `else` 吃掉，页面还断言「不是生成失败」。现在两个块各自渲染。
+   * 队列状态读失败时 store 已复位 `waitingConfiguration`；下面再补一句「无法判断」，
+   * 不让人把「没读到」当成「没有任务在等配置」。
+   */
   @Builder
   statusStrip() {
     Column({ space: 6 }) {
@@ -318,11 +335,13 @@ export struct DiaryPage {
           .fontColor(SketchColors.ink)
           .width('100%')
         Text(`队列里有 ${this.waitingCount} 个任务停在 waiting_configuration` +
-          '（requires_user_action=true）：配置好后任务会自动继续，不用重新发起。')
+          '（requires_user_action=true；这是「全队列」口径，含语义索引等本地模型任务，' +
+          '不是「这一天这次生成」的结论）。配置好后任务会自动继续，不用重新发起。')
           .fontSize(SketchType.caption)
           .fontColor(SketchColors.muted)
           .width('100%')
-      } else if (this.storeError.code.length > 0) {
+      }
+      if (this.storeError.code.length > 0) {
         ErrorBanner({
           error: this.storeError,
           showReload: true,
@@ -330,6 +349,12 @@ export struct DiaryPage {
             this.reload();
           },
         })
+      }
+      if (!this.jobsStatusKnown && this.storeError.code.length > 0) {
+        Text('队列状态这次没读出来：现在无法判断有没有任务在等配置模型服务（原因见上面的错误）。')
+          .fontSize(SketchType.caption)
+          .fontColor(SketchColors.muted)
+          .width('100%')
       }
 
       if (this.acceptedNote.length > 0) {
@@ -603,13 +628,22 @@ export struct DiaryPage {
           ListItem() {
             LoadingRow({ text: '正在读取日记列表…' })
           }
-        } else if (this.days.length === 0) {
+        } else if (this.days.length === 0 && this.daysLoaded) {
           ListItem() {
             EmptyState({
               icon: '日',
               title: '还没有有材料的天',
               hint: '先在「记录」里留下材料（或语音），再回来看这一天。',
             })
+          }
+        } else if (this.days.length === 0) {
+          // 一次都没读成功：这里是「读失败」，不是「没有天」。错误条已经在上面显示，
+          // 这里不能再说「还没有有材料的天」——那是把失败说成空。
+          ListItem() {
+            Text('天列表没有读出来：这不代表没有有材料的天；原因见上面的错误。')
+              .fontSize(SketchType.caption)
+              .fontColor(SketchColors.muted)
+              .width('100%')
           }
         } else {
           ForEach(this.days, (day: DiaryDay) => {
