@@ -184,16 +184,10 @@ class UiParityCheckerTest(unittest.TestCase):
         (root / "index.ets").write_text(
             self.arkts_source(arkts_labels, structure), encoding="utf-8"
         )
-        strings = {f"nav.{nav_id}": label for nav_id, label in cup.CANONICAL_NAV}
-        strings.update(
-            {
-                key: "文案"
-                for key in cup.REQUIRED_KEYS
-                if key not in strings
-            }
-        )
+        # 夹具用检查器固化的契约 §4.8 原文，默认就是「逐字一致」的合法文案表；
+        # 要测漂移的用例再针对性改值。
         (root / "strings.json").write_text(
-            json.dumps(strings, ensure_ascii=False), encoding="utf-8"
+            json.dumps(cup.CONTRACT_STRINGS, ensure_ascii=False), encoding="utf-8"
         )
 
     def run_checker(self, root: Path, *extra: str) -> tuple[int, str]:
@@ -366,7 +360,8 @@ class UiParityCheckerTest(unittest.TestCase):
             code, output = self.run_checker(root)
             self.assertEqual(code, 0, output)
             self.assertIn("[跳过]", output)
-            self.assertIn("结果：绿（入口检查跳过", output)
+            self.assertIn("结果：绿（ArkTS 入口检查跳过", output)
+            self.assertIn("仅 ArkTS 侧跳过", output)
             self.assertIn("顶部导航", output)  # 原因里要写清两种结构都没找到
             self.assertNotIn("两端一级入口与共享文案 key 一致", output)
 
@@ -378,6 +373,75 @@ class UiParityCheckerTest(unittest.TestCase):
             self.assertIsNone(payload["nav"]["consistent"])
             self.assertFalse(payload["arkts"]["shell_present"])
             self.assertEqual(payload["skipped"][0]["check"], "nav.cross_side")
+
+    def test_flutter_four_entries_is_red_even_when_arkts_skipped(self) -> None:
+        # 回归：两端比对曾一起挂在 nav_status == "checked" 上。ArkTS 还没接导航时，
+        # Flutter 只有 4 入口会被打印成「Flutter：4 个入口 + [跳过] + 绿」。
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.make_fixture(root, [], "none")
+            flutter = "\n".join(
+                f"        _navItem({i}, Icons.x, '{label}'),"
+                for i, label in enumerate(self.FLUTTER_LABELS[:4])
+            )
+            (root / "flutter.dart").write_text(
+                "Widget _bottomNav() => Row(children: [\n" + flutter + "\n]);\n",
+                encoding="utf-8",
+            )
+            code, output = self.run_checker(root)
+            self.assertEqual(code, 1, output)
+            self.assertIn("flutter.nav.count", output)
+            self.assertIn("Flutter：4 个入口", output)
+            self.assertIn("[跳过]", output)  # 跳过的只有 ArkTS 那一侧
+            self.assertIn("仅 ArkTS 入口检查跳过", output)
+            self.assertNotIn("结果：绿", output)
+
+            code, output = self.run_checker(root, "--json")
+            payload = json.loads(output)
+            self.assertEqual(code, 1)
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["nav"]["status"], "skipped")
+            self.assertEqual(len(payload["flutter"]["nav"]), 4)
+
+    def test_contract_non_nav_text_drift_is_red(self) -> None:
+        # 契约 §4.8 的 30 个 key 必须逐字一致，不只是 nav.*。
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.make_fixture(root, self.FLUTTER_LABELS, "top-bar")
+            strings_path = root / "strings.json"
+            strings = json.loads(strings_path.read_text(encoding="utf-8"))
+            strings["search.partial_coverage"] = "没有结果"
+            strings["state.committed"] = "未提交"
+            strings["danger.trash_confirm"] = "删除？"
+            strings_path.write_text(json.dumps(strings, ensure_ascii=False), encoding="utf-8")
+            code, output = self.run_checker(root)
+            self.assertEqual(code, 1, output)
+            self.assertIn("strings.contract_value", output)
+            self.assertIn("search.partial_coverage", output)
+            self.assertIn("state.committed", output)
+            self.assertIn("danger.trash_confirm", output)
+            self.assertIn("契约 §4.8", output)
+
+    def test_contract_doc_table_drift_is_red(self) -> None:
+        # 固化在检查器里的 30 条文案还必须和契约文档 §4.8 的表一致；
+        # 只改文档不改检查器（或反过来）都要红。
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.make_fixture(root, self.FLUTTER_LABELS, "top-bar")
+            repo_root = Path(cup.__file__).resolve().parent.parent
+            doc = (repo_root / cup.CONTRACT_DOC).read_text(encoding="utf-8")
+            drifted = doc.replace(
+                "| `state.committed` | 已提交 |",
+                "| `state.committed` | 未提交 |",
+            )
+            self.assertNotEqual(doc, drifted, "契约 §4.8 的行格式变了，测试需要同步更新")
+            doc_path = root / cup.CONTRACT_DOC
+            doc_path.parent.mkdir(parents=True)
+            doc_path.write_text(drifted, encoding="utf-8")
+            code, output = self.run_checker(root)
+            self.assertEqual(code, 1, output)
+            self.assertIn("strings.contract_doc_value", output)
+            self.assertIn("state.committed", output)
 
     def test_tabcontent_without_tabbar_is_red(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

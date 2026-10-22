@@ -7,11 +7,21 @@
 3. `tests/fixtures/scenarios/` 下的场景 JSON 能解析、必备字段齐全、id 唯一。
 4. 计划文档与仓库模板的关键文件存在。
 
-退出码 0 表示通过；任何一条失败会逐条打印并返回 1。
+## 跳过 ≠ 通过
+
+本地可能没装 PyYAML。缺 PyYAML 时只打印 `[跳过] …未验证`，**成功文案里不会再写
+「.github YAML 均正常」**（2026-10-22 之前会那样假绿）。CI 里用
+`python3 tools/check_docs.py --require-yaml` 跑：装不上 PyYAML 直接 exit 1，
+保证门禁真的验过 YAML，而不是静默跳过。
+
+同理，没有 `tests/fixtures/scenarios/` 目录时成功文案里也不写「共用场景 JSON 正常」。
+
+退出码 0 表示通过（含「本地确实跳过且已如实说明」）；任何一条失败会逐条打印并返回 1。
 """
 
 from __future__ import annotations
 
+import argparse
 import fnmatch
 import json
 import os
@@ -117,12 +127,25 @@ def check_markdown_links() -> None:
                 problems.append(f"{rel}: 链接指向不存在的路径 -> {raw}")
 
 
-def check_yaml() -> None:
+def check_yaml(require_yaml: bool = False) -> bool:
+    """校验 `.github` YAML；返回是否**真的校验了**。
+
+    没有 PyYAML 时不能假装通过：`require_yaml=True`（CI）直接记失败，
+    否则记一条明确的「未验证」，并由 main() 把它从成功文案里拿掉。
+    """
     try:
         import yaml
-    except ImportError:  # 本地可能没装；CI 上必须装上才算通过
-        notes.append("未安装 PyYAML，跳过 YAML 校验")
-        return
+    except ImportError:  # 本地可能没装；CI 用 --require-yaml 强制装上
+        if require_yaml:
+            problems.append(
+                "未安装 PyYAML，无法校验 .github YAML；--require-yaml 不允许跳过"
+            )
+        else:
+            notes.append(
+                "未安装 PyYAML，跳过 .github YAML 校验（这部分**未验证**，"
+                "不代表 YAML 正常）"
+            )
+        return False
 
     templates = {
         p.relative_to(ROOT).as_posix(): p
@@ -142,14 +165,18 @@ def check_yaml() -> None:
             for field in ("name", "description", "body"):
                 if field not in data:
                     problems.append(f"{rel}: issue 模板缺少字段 `{field}`")
+    return True
 
 
-def check_fixtures() -> None:
-    """共用场景是两层的共同依据，格式坏了要比编译错误更早发现。"""
+def check_fixtures() -> bool:
+    """共用场景是两层的共同依据，格式坏了要比编译错误更早发现。
+
+    返回是否**真的校验了**；没有场景目录时成功文案里不能再写「JSON 正常」。
+    """
     scenario_dir = ROOT / "tests" / "fixtures" / "scenarios"
     if not scenario_dir.is_dir():
-        notes.append("没有 tests/fixtures/scenarios 目录，跳过场景校验")
-        return
+        notes.append("没有 tests/fixtures/scenarios 目录，跳过共用场景校验（这部分未验证）")
+        return False
 
     for path in sorted(scenario_dir.glob("*.json")):
         rel = path.relative_to(ROOT)
@@ -181,13 +208,38 @@ def check_fixtures() -> None:
                     problems.append(f"{where}: id 重复 `{sid}`")
                 seen.add(sid)
                 where = f"{rel} {sid}"
+    return True
 
 
-def main() -> int:
+def summary_line(yaml_checked: bool, fixtures_checked: bool) -> str:
+    """按实际跑过的检查拼成功文案，没跑过的项不写「正常」。"""
+    checked = ["关键文件", "Markdown 相对链接"]
+    if yaml_checked:
+        checked.append(".github YAML")
+    if fixtures_checked:
+        checked.append("共用场景 JSON")
+    return f"[通过] {'、'.join(checked)} 均正常。"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="检查关键文件、Markdown 链接、.github YAML 与共用场景 JSON。",
+    )
+    parser.add_argument(
+        "--require-yaml",
+        action="store_true",
+        help="缺 PyYAML 时直接失败（CI 用；本地不传则如实跳过但不报「YAML 正常」）",
+    )
+    args = parser.parse_args(argv)
+
+    # 全局列表在进程内可能被复用（自测会多次调用 main），每次先清空。
+    problems.clear()
+    notes.clear()
+
     check_required_files()
     check_markdown_links()
-    check_yaml()
-    check_fixtures()
+    yaml_checked = check_yaml(args.require_yaml)
+    fixtures_checked = check_fixtures()
 
     for note in notes:
         print(f"[跳过] {note}")
@@ -198,7 +250,7 @@ def main() -> int:
         print(f"\n共 {len(problems)} 处问题。")
         return 1
 
-    print("[通过] 关键文件、Markdown 相对链接、.github YAML、共用场景 JSON 均正常。")
+    print(summary_line(yaml_checked, fixtures_checked))
     return 0
 
 

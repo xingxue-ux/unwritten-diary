@@ -33,10 +33,18 @@ TS1005/TS1128），所以排除掉 —— 它们仍需本地 `hvigorw` 把关（
 | 码 | 原因 |
 |---|---|
 | `TS2307` | 找不到 `@kit.*` / `@ohos.*` 模块 —— 鸿蒙内置模块没有 `.d.ts` 可解析 |
-| `TS2339` | 属性不存在 —— 上一条的连带（基类来自解析不到的内置模块） |
+| `TS2339` | 属性不存在 —— **只在同一文件也有 `TS2307` 时才忽略**：那才是「基类来自解析不到的内置模块」的连带。本地定义的类型上拼错属性同样报 `TS2339`（`counter.total`），整类忽略会把真实错误一起放走（2026-10-22 实测）。做不到精确时保守地红，让误报暴露出来再按实际放行 |
 | `TS1206` | 装饰器不能用在顶层函数 —— ArkTS 的 `@Concurrent` 允许，`tsc` 不允许 |
 
 **不忽略** `TS2304`（找不到名字）：那正是「变量出了作用域还在用」的信号。
+
+## 拿不到 tsc、或 tsc 自己挂了
+
+- **没有 `tsc` / `npx`**：本地开发允许跳过，但输出必须明确写「未验证」，且**不能**打印
+  `[通过]`（跳过 ≠ 通过）。CI 用 `--require-tsc` 跑，拿不到 tsc 直接 exit 1。
+- **tsc 非零退出却解析不出任何诊断**（例如 tsc 崩了、`tsconfig` 坏了、npx 解析错包）：
+  以前会静默当通过，现在一律 exit 1 并回显原始输出。只有「解析出了诊断、且全部落在
+  上面的忽略表里」才允许通过（仓库里 `@kit.*` 解析不到时 tsc 本来就非零退出）。
 
 ## 为什么分两轮判
 
@@ -51,6 +59,7 @@ TS1005/TS1128），所以排除掉 —— 它们仍需本地 `hvigorw` 把关（
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -70,9 +79,10 @@ ETS_ROOT = Path(os.environ["ARKTS_ETS_ROOT"]) if os.environ.get("ARKTS_ETS_ROOT"
 DSL_DIRS = {"pages", "ui"}
 
 # 见模块文档里的「忽略哪些诊断码」。
+# TS2339 **不在这里**：它只有和同一文件里的 TS2307 同时出现时才允许忽略，
+# 判定在 main() 里按文件做（本地类型上拼错属性也必须红）。
 IGNORED_CODES = {
     "TS2307",  # Cannot find module '@kit.*' / '@ohos.*'
-    "TS2339",  # Property does not exist（基类来自解析不到的内置模块）
     "TS1206",  # Decorators are not valid here（ArkTS 的 @Concurrent）
 }
 
@@ -92,8 +102,12 @@ def collect_sources() -> list[Path]:
     return out
 
 
-def run_tsc(workdir: Path, sources: list[Path]) -> tuple[int, str]:
-    """把 .ets 复制成 .ts（保留相对结构，import 才找得到同目录文件）后跑 tsc。"""
+def run_tsc(workdir: Path, sources: list[Path]) -> tuple[int | None, str]:
+    """把 .ets 复制成 .ts（保留相对结构，import 才找得到同目录文件）后跑 tsc。
+
+    返回 `(退出码, 输出)`；**退出码为 None 表示本机没有 tsc / npx**，调用方必须
+    区分「跳过」与「通过」，不能把空输出当成一切正常。
+    """
     copied = 0
     for src in sources:
         rel = src.relative_to(ETS_ROOT).with_suffix(".ts")
@@ -123,11 +137,14 @@ def run_tsc(workdir: Path, sources: list[Path]) -> tuple[int, str]:
     tsc = shutil.which("tsc")
     if tsc is None:
         # 本地可能只装了 npx；CI 里用 `npm install -g typescript` 放 path。
-        tsc = shutil.which("npx")
-        if tsc is None:
-            print("[跳过] 找不到 tsc / npx：本检查需要 Node 与 TypeScript（CI 里装 typescript@5）。", file=sys.stderr)
-            return 0, ""
-        cmd = [tsc, "--yes", "typescript@5", "tsc", "-p", "tsconfig.json"]
+        npx = shutil.which("npx")
+        if npx is None:
+            return None, ""
+        # `-p typescript@5` 不能省：`npx --yes typescript@5 tsc` 会被 npm 当成
+        # 「运行包 typescript@5 的可执行文件」，实测报
+        # `npm error could not determine executable to run`（exit 1），
+        # 而旧代码把这个非零退出静默吞掉、照样打印通过。
+        cmd = [npx, "--yes", "-p", "typescript@5", "tsc", "-p", "tsconfig.json"]
     else:
         cmd = [tsc, "-p", "tsconfig.json"]
 
@@ -135,7 +152,17 @@ def run_tsc(workdir: Path, sources: list[Path]) -> tuple[int, str]:
     return proc.returncode, proc.stdout + proc.stderr
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="用 tsc 对非 ArkUI DSL 的 .ets 做语法与作用域检查（跳过 ≠ 通过）。",
+    )
+    parser.add_argument(
+        "--require-tsc",
+        action="store_true",
+        help="找不到 tsc / npx 时直接失败（CI 用；本地不传则跳过并写明「未验证」）",
+    )
+    args = parser.parse_args(argv)
+
     sources = collect_sources()
     if not sources:
         print("[跳过] 没找到可检查的 ArkTS 文件。")
@@ -143,24 +170,75 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="arkts-scope-") as tmp:
         workdir = Path(tmp)
-        _, output = run_tsc(workdir, sources)
+        returncode, output = run_tsc(workdir, sources)
+
+        if returncode is None:
+            reason = (
+                "找不到 tsc / npx：本检查需要 Node 与 TypeScript"
+                "（本地可 `npm install -g typescript@5`）。"
+            )
+            if args.require_tsc:
+                print(
+                    f"[失败] {reason}--require-tsc 不允许跳过："
+                    "ArkTS 语法与作用域**未验证**。",
+                    file=sys.stderr,
+                )
+                return 1
+            print(
+                f"[跳过] {reason}ArkTS 语法与作用域**未验证**（跳过 ≠ 通过；"
+                "CI 用 --require-tsc 强制失败）。",
+                file=sys.stderr,
+            )
+            return 0
+
+        # 先把诊断全部解析出来。只有「一个诊断都解析不出」时，才说明 tsc 本身的
+        # 输出不是我们认识的形状（崩溃、tsconfig 坏了、npx 解析错包），不能当通过。
+        diags: list[tuple[str, int, int, str, str]] = []
+        for line in output.splitlines():
+            m = DIAG_RE.match(line.strip())
+            if m:
+                diags.append(
+                    (
+                        m.group("file"),
+                        int(m.group("line")),
+                        int(m.group("col")),
+                        m.group("code"),
+                        m.group("msg"),
+                    )
+                )
+
+        if returncode != 0 and not diags:
+            print(
+                f"[失败] tsc 退出码 {returncode}，但输出里没有可解析的诊断 —— "
+                "不当作通过（tsc 崩了 / tsconfig 坏了 / npx 解析错包都会这样）。",
+                file=sys.stderr,
+            )
+            tail = output.strip().splitlines()[-20:]
+            if tail:
+                print("\n--- tsc 原始输出（末 20 行）---", file=sys.stderr)
+                print("\n".join(tail), file=sys.stderr)
+            return 1
+
+        # TS2339 只有和同一文件的 TS2307 同时出现时才忽略：那才是「基类来自
+        # 解析不到的内置模块」的连带。本地类型上的属性拼错也必须报出来。
+        files_with_missing_modules = {
+            file for file, _, _, code, _ in diags if code == "TS2307"
+        }
 
         syntax: list[str] = []
         semantic: list[str] = []
-        for line in output.splitlines():
-            m = DIAG_RE.match(line.strip())
-            if not m:
-                continue
-            code = m.group("code")
+        for file, line, col, code, msg in diags:
             if code in IGNORED_CODES:
                 continue
+            if code == "TS2339" and file in files_with_missing_modules:
+                continue
             # 还原成仓库里的真实路径与行号（临时目录不暴露给使用者）。
-            rel = Path(m.group("file")).relative_to(workdir) if m.group("file").startswith(str(workdir)) else Path(m.group("file"))
+            rel = Path(file).relative_to(workdir) if file.startswith(str(workdir)) else Path(file)
             rel_display = str(rel).replace(os.sep, "/")
             if rel_display.endswith(".ts"):
                 rel_display = rel_display[:-3] + ".ets"
             pretty = f"  apps/ohos-diary-core/entry/src/main/ets/{rel_display}" \
-                     f":{m.group('line')}:{m.group('col')}  {code}  {m.group('msg')}"
+                     f":{line}:{col}  {code}  {msg}"
             (syntax if code.startswith("TS1") else semantic).append(pretty)
 
     if syntax:

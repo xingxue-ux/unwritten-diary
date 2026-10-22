@@ -19,14 +19,22 @@
    入口清单不一致 ⇒ 红（说明有一份是废弃的，得删掉）。
 
 2. **文案 key**：`packages/ui_strings/ui_strings.json` 必须存在，必须是
-   `key -> 非空中文文案` 的扁平 JSON；契约定下的必需 key 一个都不能少。
-   源码里已经按约定引用（`uiStrings.get('...')` / `uiStrings.t('...')` /
-   `uiString('...')`）的 key 也必须在表里。
+   `key -> 非空中文文案` 的扁平 JSON；契约 §4.8 的 **30 个 key 逐个逐字比对**
+   （期望文案固化在本文件的 `CONTRACT_STRINGS` 里），并回读契约 §4.8 的表格，
+   文档与检查器不一致也算漂移。源码里已经按约定引用
+   （`uiStrings.get('...')` / `uiStrings.t('...')` / `uiString('...')`）的 key
+   也必须在表里。
+
+**Flutter 与 ArkTS 两侧独立核对**：只要 Flutter 壳解析出了入口，就按 5 入口比对，
+**不看** ArkTS 是否跳过。以前两端比对一起挂在 `nav_status == "checked"` 上，
+于是「Flutter 只有 4 入口 + ArkTS 还没接导航」会打印「Flutter：4 个入口」+
+`[跳过]` + 绿（2026-10-22 实测）。
 
 **跳过条件收得很窄**：只有「`Index.ets` 不存在」或「底部页签、顶部导航两种结构都
-没找到」才允许跳过。跳过时仍然 **exit 0**，但人类输出会打 `[跳过]` 和醒目原因，
+没找到」才允许跳过 **ArkTS 那一侧**。跳过时人类输出打 `[跳过]` 和醒目原因，
 JSON 的 `nav.status` 是 `skipped`（不是 `passed`）——按 `CONTRIBUTING.md` §10.1.1
-的例子 3，「跳过要如实说没跑，而不是显示绿」。
+的例子 3，「跳过要如实说没跑，而不是显示绿」。注意：ArkTS 跳过时若 Flutter 侧
+入口不符，结果**仍然是 exit 1**，只是失败码是 `flutter.nav.*`。
 一旦找到导航结构，**数量 / 集合 / 顺序不符就是 exit 1**；找到结构却取不到字面量
 标签（例如有 `TabContent` 却没有 `.tabBar`、`NavItem(SOME_VAR, i)` 用了变量）
 同样是 exit 1，不是跳过。
@@ -85,28 +93,53 @@ CANONICAL_NAV: tuple[tuple[str, str], ...] = (
     ("profile", "我的"),
 )
 
-# 语义层必需 key。前 5 个是导航（检查器用来把入口和文案表钉在一起）；
-# 其余来自任务书与 `docs/development/01-共享接口契约.md` §7/§8。
-REQUIRED_KEYS: tuple[str, ...] = (
-    "nav.record",
-    "nav.diary",
-    "nav.search",
-    "nav.snippets",
-    "nav.profile",
-    "state.draft",
-    "state.committed",
-    "state.trashed",
-    "job.queued",
-    "job.running",
-    "job.failed",
-    "job.needs_attention",
-    "search.partial_coverage",
-    "error.revision_conflict",
-    "error.invalid_state",
-    "export.contains_private_data",
-    "backup.not_encrypted",
-    "privacy.local_only",
-)
+# 契约 §4.8「全量 key 表（30 个）」的期望文案，**逐字固化**在这里。
+# 契约原话：「这里的文案与 `ui_strings.json` 必须逐字一致；改文案 = 改契约 =
+# 同时改 JSON、两端、检查器。」所以不能只校验「key 存在」——`state.committed`
+# 从「已提交」改成「未提交」、`danger.trash_confirm` 从「移入回收站？」改成
+# 「删除？」都必须红（2026-10-22 之前只逐字比对 5 个 nav.*，剩下 25 个随便改）。
+#
+# 同时会解析 `docs/product/界面结构契约.md` §4.8 的表与本表对照：文档表格漂移
+# （改了文档没改检查器）也红。两边必须一起改。
+CONTRACT_STRINGS: dict[str, str] = {
+    "nav.record": "记录",
+    "nav.diary": "日记",
+    "nav.search": "搜索",
+    "nav.snippets": "片段",
+    "nav.profile": "我的",
+    "state.draft": "草稿",
+    "state.committed": "已提交",
+    "state.trashed": "已移入回收站",
+    "job.queued": "排队中",
+    "job.running": "处理中",
+    "job.succeeded": "已完成",
+    "job.retry_wait": "等待自动重试",
+    "job.waiting_configuration": "需要配置",
+    "job.waiting_dependency": "等待前一步",
+    "job.waiting_network": "等待网络",
+    "job.failed": "未完成",
+    "job.cancelled": "已取消",
+    "job.needs_attention": "需要处理",
+    "search.partial_coverage": "语义索引还没有覆盖全部内容，结果可能不全（不是「没有结果」）。",
+    "error.revision_conflict": "内容已被修改",
+    "error.revision_conflict.hint": "你读到的是旧版本；刷新后重新查看，再决定是否保存。",
+    "error.invalid_state": "当前状态不允许这个操作",
+    "error.invalid_state.hint": "数据可能已在别处更新；刷新后按当前状态操作，不要直接重试。",
+    "privacy.local_only": "日记默认只保存在这台设备上；只有你主动配置的模型服务会收到交给它处理的材料。",
+    "privacy.ai_egress": "整理时，材料可能发送到你启用的模型服务；请先确认它们的隐私规则与额度。",
+    "export.contains_private_data": "导出包包含你的私人内容；请保存到你信任的位置，不要上传到不受控的服务。",
+    "backup.not_encrypted": "备份没有加密；请保存到你信任的位置，不要上传到不受控的服务。",
+    "danger.trash_confirm": "移入回收站？记录会离开时间线，之后仍可从「存储与回收站」恢复。",
+    "danger.purge_confirm": "永久清理这条记录？原件、派生内容与索引会一起删除；引用过它的日记版本会单独列出。此操作不能撤销。",
+    "danger.restore_confirm": "恢复到新的资料库？当前资料库不会被覆盖；恢复完成后，你可以单独打开新资料库核对内容。",
+}
+
+# 旧名字保留给自测/外部引用：必需 key 就是契约 §4.8 的全量 30 个。
+REQUIRED_KEYS: tuple[str, ...] = tuple(CONTRACT_STRINGS)
+
+CONTRACT_DOC = "docs/product/界面结构契约.md"
+CONTRACT_SECTION_RE = re.compile(r"^### 4\.8[^\n]*\n(.*?)(?=\n---\n|\Z)", re.M | re.S)
+CONTRACT_ROW_RE = re.compile(r"^\|\s*`([a-z][a-z0-9_.]*)`\s*\|\s*(.+?)\s*\|\s*$", re.M)
 
 # 源码引用文案 key 的约定写法。Flutter 已接表，ArkTS 尚未接；
 # 这里只校验「引用的 key 在表里存在」，不要求两端引用数相同。
@@ -489,6 +522,21 @@ def load_strings(path: Path, failures: list[Failure]) -> dict[str, str]:
     return strings
 
 
+def contract_doc_table(root: Path) -> dict[str, str] | None:
+    """从契约 §4.8 的 Markdown 表里读出 key -> 文案。
+
+    返回 None 表示文档不存在（自测的临时根目录）；返回空 dict 表示文档在、
+    但 §4.8 的表不见了或格式变了——那是漂移，必须红，不能静默当成没这项检查。
+    """
+    path = root / CONTRACT_DOC
+    if not path.is_file():
+        return None
+    match = CONTRACT_SECTION_RE.search(read_text(path))
+    if not match:
+        return {}
+    return dict(CONTRACT_ROW_RE.findall(match.group(1)))
+
+
 def scan_key_references(root: Path) -> list[dict[str, object]]:
     references: list[dict[str, object]] = []
     for base in (root / "apps", root / "packages"):
@@ -696,8 +744,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             nav_status = "checked"
 
-    if nav_status == "checked":
+    # Flutter 侧独立于 ArkTS 核对：ArkTS 壳还没接导航（skipped）**不代表** Flutter
+    # 少入口可以放过。只有「ArkTS 确实没有导航」时才只跳过 ArkTS 那一侧。
+    if flutter_path.is_file():
         nav_failures("flutter", flutter_entries, expected, failures)
+    if nav_status == "checked":
         nav_failures("arkts", arkts_entries, expected, failures)
 
     strings = load_strings(strings_path, failures)
@@ -706,7 +757,7 @@ def main(argv: list[str] | None = None) -> int:
         failures.append(
             Failure(
                 "strings.required_missing",
-                f"文案表缺必需 key：{', '.join(required_missing)}",
+                f"文案表缺契约 §4.8 的 key：{', '.join(required_missing)}",
             )
         )
     canonical_missing: list[str] = []
@@ -726,6 +777,57 @@ def main(argv: list[str] | None = None) -> int:
         failures.append(
             Failure("strings.nav_missing", f"文案表缺导航 key：{', '.join(canonical_missing)}")
         )
+
+    # 契约 §4.8 的 30 个 key 逐个**逐字**比对。nav.* 已由上面按 CANONICAL_NAV
+    # 检查过，这里跳过它们只为避免同一条文案报两次。
+    for key, expected_text in CONTRACT_STRINGS.items():
+        if key.startswith("nav."):
+            continue
+        if key in strings and strings[key] != expected_text:
+            failures.append(
+                Failure(
+                    "strings.contract_value",
+                    f"{key} 是 {strings[key]!r}，契约 §4.8 期望 {expected_text!r}",
+                )
+            )
+
+    # 契约文档自身也要和脚本固化的期望一致（文档表格漂移同样红）。
+    doc_table = contract_doc_table(root)
+    if doc_table is not None:
+        if not doc_table:
+            failures.append(
+                Failure(
+                    "strings.contract_doc_missing",
+                    f"{CONTRACT_DOC} 里找不到 §4.8 的 key 表；文档结构变了，检查器读不到期望文案",
+                )
+            )
+        else:
+            doc_missing = [key for key in CONTRACT_STRINGS if key not in doc_table]
+            doc_extra = [key for key in doc_table if key not in CONTRACT_STRINGS]
+            if doc_missing:
+                failures.append(
+                    Failure(
+                        "strings.contract_doc_keys",
+                        f"契约文档 §4.8 缺少 key：{', '.join(doc_missing)}",
+                    )
+                )
+            if doc_extra:
+                failures.append(
+                    Failure(
+                        "strings.contract_doc_keys",
+                        f"契约文档 §4.8 多出 key（检查器未固化）：{', '.join(doc_extra)}",
+                    )
+                )
+            for key, expected_text in CONTRACT_STRINGS.items():
+                actual_text = doc_table.get(key)
+                if actual_text is not None and actual_text != expected_text:
+                    failures.append(
+                        Failure(
+                            "strings.contract_doc_value",
+                            f"契约文档 §4.8 的 {key} 是 {actual_text!r}，"
+                            f"检查器固化为 {expected_text!r}；改文案要同时改文档、JSON、检查器",
+                        )
+                    )
 
     references = scan_key_references(root)
     referenced_keys = sorted({ref["key"] for ref in references})
@@ -772,7 +874,8 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "check": "nav.cross_side",
                     "reason": nav_reason,
-                    "effect": "exit 0；不声称入口一致；找到任一种导航结构后自动恢复检查",
+                    "effect": "不声称两端入口一致；Flutter 侧入口仍单独核对；"
+                    "找到任一种导航结构后自动恢复 ArkTS 侧比对",
                 }
             ]
             if nav_status == "skipped"
@@ -791,6 +894,11 @@ def main(argv: list[str] | None = None) -> int:
             "structures": arkts_structures,
             "nav": [entry.as_dict() for entry in arkts_entries],
             "error": arkts_error,
+        },
+        "contract": {
+            "source": f"{CONTRACT_DOC} §4.8",
+            "key_count": len(CONTRACT_STRINGS),
+            "doc_table_found": doc_table is not None,
         },
         "strings": {
             "path": str(strings_path),
@@ -833,6 +941,8 @@ def main(argv: list[str] | None = None) -> int:
             f"  [{rel(arkts_path)}]"
         )
         print(f"  文案表：{len(strings)} 个 key  [{rel(strings_path)}]")
+        contract_note = "（已在 §4.8 表中核对）" if doc_table else ""
+        print(f"  契约 §4.8：{len(CONTRACT_STRINGS)} 个 key 逐字比对{contract_note}")
         print(f"  源码引用：{len(referenced_keys)} 个 key（{len(references)} 处）")
         if args.expect:
             print("  [诊断] 使用了 --expect：只改比较基准，不是放行开关；CI 永不传这个参数。")
@@ -841,20 +951,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[跳过] {nav_reason}")
             print(
                 "  跳过不等于通过：JSON 的 nav.status 是 skipped，consistent 是 null；"
-                "这只表示没有可比对的导航结构。"
+                "这只表示 ArkTS 侧没有可比对的导航结构。"
             )
+            print("  仅 ArkTS 侧跳过：Flutter 侧入口仍在上面的独立核对中。")
         if failures:
             print()
             for failure in failures:
                 print(f"[FAIL] {failure.code}: {failure.message}")
             print()
-            suffix = "；入口检查已跳过" if nav_status == "skipped" else ""
+            suffix = "；仅 ArkTS 入口检查跳过" if nav_status == "skipped" else ""
             print(f"结果：红（{len(failures)} 项失败{suffix}）。")
             print("这不是脚本坏了：入口/文案不一致就是这次要抓的漂移。")
         elif nav_status == "skipped":
             print()
-            print("结果：绿（入口检查跳过；文案表检查通过）。")
-            print("跳过原因见上：没有可比对的导航结构，不是「入口一致」。")
+            print("结果：绿（ArkTS 入口检查跳过；Flutter 入口与契约文案已核对）。")
+            print("跳过原因见上：ArkTS 侧没有可比对的导航结构，不是「两端入口一致」。")
         else:
             print()
             print("结果：绿。两端一级入口与共享文案 key 一致。")
