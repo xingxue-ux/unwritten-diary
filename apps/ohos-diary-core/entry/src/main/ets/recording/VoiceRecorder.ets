@@ -676,7 +676,8 @@ export class VoiceRecorder {
     }
     // 「空 draft 泄漏」的现状：启动失败会留下一条没有来源、没有正文的草稿，而
     // Flutter 启动会把最新 draft 当编辑器草稿恢复。核心目前**没有**「只删空 draft」
-    // 的安全能力（captures.trash/purge 都还没接），自己写 SQL 删是破坏性路径，不做。
+    // 的安全能力（captures.trash / previewPurge / purge 已接，但删空 draft 要先 trash 再
+    // preview/purge 两步，且可能连带日记版本），自己写 SQL 删是破坏性路径，不做。
     // 这里只如实记录 capture id 并交给调用方；残留与后续方案见 apps/ohos-diary-core/README.md。
     if (this.captureId.length > 0 && this.lastRegistered < 0) {
       this.abandonedDraft = this.captureId;

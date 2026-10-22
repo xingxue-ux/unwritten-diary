@@ -10,7 +10,7 @@
 //   * 语义解析（把 `ok:false` 变成 ArkTS 异常、把 `data` 变成类型化对象）只在 ArkTS 侧的
 //     `DiaryCore.ets` 里做一次。
 //
-// 这么分层的理由：C ABI 的方法面还会继续加（现在 9 条），每加一条都不该动 C++ 胶水；
+// 这么分层的理由：C ABI 的方法面还会继续加（现在 59 条），每加一条都不该动 C++ 胶水；
 // 而「一进一出」的 JSON 面是已经冻结、可版本化的（信封里的 `apiVersion`）。
 //
 // JS 面（与 `entry/src/main/cpp/types/libdiary_napi/index.d.ts` 一一对应）：

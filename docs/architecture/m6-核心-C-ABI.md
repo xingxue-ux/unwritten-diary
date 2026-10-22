@@ -67,7 +67,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `diary_close` | `int diary_close(handle *h)` | `0` 成功；`1` 空指针；`2` 句柄无效或已关闭；`3` 桥面内部错误。重复关闭返回 `2`，不崩 |
 | `diary_call` | `char *diary_call(handle *h, const char *method_json)` | 方法调用；**永远返回信封 JSON**（失败也是 `ok:false` 信封） |
 | `diary_string_free` | `void diary_string_free(char *text)` | 释放本库返回的字符串；空指针是 no-op |
-| `diary_last_error` | `char *diary_last_error(void)` | 本线程最近一条错误（JSON，与信封里的 `error` 同形），没有则 `NULL` |
+| `diary_last_error` | `char *diary_last_error(void)` | 本线程最近一条错误（JSON，与信封里的 `error` **同形**：顶层就是 `{code,message,retryable}`，不是整条失败信封），没有则 `NULL` |
 | — | `handle` 是不透明指针 | C 侧只能原样传回，不要读它指向的内存 |
 
 > `diary_last_error` 是「NULL 返回带不出原因」的唯一补救，也是本块在任务书点名的入口之外
@@ -193,7 +193,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `sources.previousRevision` | `Core::previous_source_revision`（只有一版是 `null`） | `SourceRevision \| null` |
 | `sources.reviseText` | `Core::revise_text`（新修订、不覆盖旧内容；`expected_revision` 乐观锁） | `SourceRevision` |
 | `sources.locate` | `Core::locate_source`（`source_ref` + locator；打不开时 `available:false` + `reason`） | `SourceLocation` |
-| `search.start` | `Core::start_search`（`{"request":{…},"query_revision":N}`） | `SearchSnapshot` |
+| `search.start` | `Core::start_search`（`{"request":{…},"query_revision":N}`；`mode` 省略 = `hybrid`） | `SearchSnapshot` |
 | `search.nextPage` | `Core::search_next_page`（不透明游标） | `SearchSnapshot` |
 | `search.upgrade` | `Core::upgrade_search_to_hybrid`（显式第二阶段；无证据不假装融合） | `SearchSnapshot` |
 | `search.cancel` | `Core::cancel_search` | `SearchSnapshot` |
@@ -261,9 +261,12 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 契约的 camelCase 写法（`diaryTimeZone` 等）；`revision` / `updated_at` 是只读结论，核心
 忽略，冲突保护只认外层的 `expected_revision`。
 
-`search.start` 的 `request` 里只有 `query` 必填，`mode`（默认 `keyword`；`semantic` 是
-语义那一路）、`filters`（全字段可选）、`page_size`（默认 20，与 `bridge_diary_api.dart`
-同口径）都可省。
+`search.start` 的 `request` 里只有 `query` 必填，`mode`（省略 = **`hybrid`**，与共享契约
+§2.6 和 Dart 的 `SearchRequest` 默认值一致；`keyword` / `semantic` / `hybrid` 三选一）、
+`filters`（全字段可选）、`page_size`（默认 20，与 `bridge_diary_api.dart` 同口径）都可省。
+**省略 `mode` 不等于 keyword**：hybrid 的**首屏**仍然只算关键词那一路
+（`phase = keyword_ready`），要融合得显式调 `search.upgrade`；语义索引拿不出证据时核心
+会降级并在 `warnings` 里说明，不静默假装融合。
 
 **六条 `diary.*` 为什么在这里**：「日记」是契约 §2.2 的一级入口，而在它们之前 C ABI
 **没有任何 `diary.*`**——鸿蒙的日记页无数据可取。它们只把核心的 `diary` 模块转接出来：

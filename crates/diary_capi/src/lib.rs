@@ -184,16 +184,21 @@ fn ok_envelope(data: Value) -> String {
     json!({"apiVersion": API_VERSION, "ok": true, "data": data}).to_string()
 }
 
+/// 失败信封里 `error` 那一格。`message` 原样带出去，调用方按 `code` 决定行为。
+fn error_body(error: &CallError) -> Value {
+    json!({
+        "code": error.code.wire(),
+        "message": error.message,
+        "retryable": error.retryable,
+    })
+}
+
 /// 失败信封。`message` 原样带出去，调用方按 `code` 决定行为。
 fn error_envelope(error: &CallError) -> String {
     json!({
         "apiVersion": API_VERSION,
         "ok": false,
-        "error": {
-            "code": error.code.wire(),
-            "message": error.message,
-            "retryable": error.retryable,
-        }
+        "error": error_body(error),
     })
     .to_string()
 }
@@ -230,8 +235,16 @@ fn clear_last_error() {
     LAST_ERROR.with(|slot| *slot.borrow_mut() = None);
 }
 
+/// 记下本线程最近一条错误，**只记 `error` 对象**（`{code,message,retryable}`）。
+///
+/// 以前这里存的是 `error_envelope(error)`——整条 `{apiVersion,ok:false,error:{…}}`。
+/// 但三处对外文档都承诺 `diary_last_error`「与信封里的 `error` 同形」：
+/// `docs/architecture/m6-核心-C-ABI.md` §4.1、本文件 [`diary_last_error`] 的注释、
+/// `apps/ohos-diary-core/entry/src/main/cpp/types/libdiary_napi/index.d.ts`。
+/// 改三处文档去迁就一处实现不划算，也容易再漂移；这里改成与文档一致。调用方拿到的
+/// 就是错误体本身，不需要先判断「这是信封还是 error」。
 fn record_last_error(error: &CallError) {
-    LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(error_envelope(error)));
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(error_body(error).to_string()));
 }
 
 fn panic_message(payload: &(dyn Any + Send)) -> String {
@@ -449,7 +462,8 @@ pub unsafe extern "C" fn diary_call(
     })
 }
 
-/// 本线程最近一条错误（JSON 对象，与信封里的 `error` 同形）；没有错误时为 NULL。
+/// 本线程最近一条错误（**顶层就是** `{code,message,retryable}`，与信封里的 `error` 同形，
+/// **不是**整条失败信封）；没有错误时为 NULL。
 ///
 /// 每个导出函数进入时清空、失败时写入。返回的字符串由 Rust 分配，用
 /// [`diary_string_free`] 释放。

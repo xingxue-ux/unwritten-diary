@@ -1327,7 +1327,15 @@ impl Default for SearchRequestParams {
     fn default() -> Self {
         Self {
             query: String::new(),
-            mode: SearchMode::Keyword,
+            // 以共享契约为准：`docs/development/01-共享接口契约.md` §2.6 写「默认 hybrid」，
+            // Dart 的 `SearchRequest`（`packages/diary_api/lib/src/models_diary.dart`）也是
+            // `mode = SearchMode.hybrid`。C ABI 这一层此前默认 `Keyword`，同一个请求换个
+            // 入口就换了语义——这里对齐契约与 Dart，不另立一套默认值。
+            //
+            // 注意：hybrid 的**首屏**仍只算关键词那一路（`phase = keyword_ready`），
+            // 真正的融合在显式 `search.upgrade`；语义索引不可用时核心会降级并在
+            // `warnings` 里说明，不静默假装融合。
+            mode: SearchMode::Hybrid,
             filters: SearchFiltersParams::default(),
             // 与 `packages/diary_bridge/lib/src/bridge_diary_api.dart` 的 pageSize 同一口径。
             page_size: 20,

@@ -9,8 +9,8 @@
 // 空态：「既没有材料也没有版本」的一天核心报 `not_found`，显示「这一天还没有成篇日记」，
 // 不当读取失败。
 //
-// 能力缺失：`diary.saveEdit` / `diary.merge` 的 C ABI 已经接了，但这一版界面没有做编辑/
-// 合并交互；`diary.generate` 还没接。这些都如实写在页脚，不摆假按钮。
+// 能力缺失：`diary.saveEdit` / `diary.merge` / `diary.generate` 的 C ABI 都已就绪，但这一版
+// 界面没有做编辑/合并/生成交互。这些都如实写在页脚，不摆假按钮。
 
 import { common } from '@kit.AbilityKit';
 import {
@@ -330,7 +330,7 @@ export struct DiaryDayPage {
               EmptyState({
                 icon: '—',
                 title: '这一天还没有成篇日记',
-                hint: '有材料、但还没有成篇正文。生成入口（diary.generate）还没接，这里不能生成。',
+                hint: '有材料、但还没有成篇正文。生成接口（diary.generate）已就绪，生成按钮界面还没做，这里不能生成。',
               })
             } else {
               SectionTitle({ text: `版本（${this.versions.length}）` })
@@ -347,7 +347,8 @@ export struct DiaryDayPage {
             }
 
             Text('本页可以读正文、看版本、切换当前版本。编辑正文/合并版本（diary.saveEdit / ' +
-              'diary.merge）的 C ABI 已经接了，界面还没做；生成（diary.generate）还没接。')
+              'diary.merge）的 C ABI 已经接了，界面还没做；生成（diary.generate）的 C ABI 也已就绪，' +
+              '只差入口按钮。')
               .fontSize(11)
               .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
               .width('100%')

@@ -760,7 +760,7 @@ export interface LocateSourceParams {
 /** `search.start` 的检索条件；只有 `query` 必填。 */
 export interface SearchRequestParams {
   query: string;
-  /** `keyword`（默认）/ `semantic` / `hybrid`（以核心支持为准）。 */
+  /** `hybrid`（默认，与共享契约 §2.6 一致）/ `keyword` / `semantic`。 */
   mode?: string;
   filters?: SearchFiltersParams;
   /** 默认 20（与 Dart 侧的 pageSize 同一口径）。 */
@@ -840,7 +840,13 @@ export interface RunDueParams {
  * `limit` 默认 20，核心最多给 200 条。
  */
 export interface ListJobsParams {
-  states?: string[] | null;
+  /**
+   * 状态筛选；省略或空数组 = 「不限状态」。
+   *
+   * **不能传 `null`**：C ABI 的 `states` 是 `Vec<JobState>`（`#[serde(default)]`
+   * 只对「缺省」生效），显式 `null` 会报 `invalid type: null`。要「不限」就省略它。
+   */
+  states?: string[];
   cursor?: string | null;
   limit?: number;
 }

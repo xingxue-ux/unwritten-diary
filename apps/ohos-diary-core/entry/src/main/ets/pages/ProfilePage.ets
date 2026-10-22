@@ -1,10 +1,10 @@
 // 我的（契约 §2.5）：个人空间与设置分组——**不是**一张诊断表，也不是一级「设置」tab。
 //
 // 分组（与 Windows 的 `_profilePage` 同构）：
-// - 创作与整理：模型服务（语义/转写状态）、任务中心（二级页）、风格偏好（未接）；
+// - 创作与整理：模型服务（语义/转写状态）、任务中心（二级页）、风格偏好（接口已就绪，界面待重做）；
 // - 设置：整理设置与默认风格（契约 4.4 的 `settings.get` / `settings.update`，已接 C ABI）；
-// - 资料与应用：插件 / 备份与恢复 / 阅读导出 / 存储与回收站 / 封面与加载动画（未接的
-//   全部如实标注，不摆按了没反应的假按钮）；
+// - 资料与应用：插件（未接）/ 备份与恢复（接口已就绪，界面待重做）/ 阅读导出（接口已就绪，
+//   界面待重做）/ 存储与回收站（已接）/ 封面与加载动画（未做）；都如实标注，不摆假按钮；
 // - 设备与诊断：语义索引、队列概览、诊断与能力清单（鸿蒙保留这一组）。
 //
 // 设置这一块**只做最小接线**：读写、三态与乐观锁都在 `state/SettingsStore.ets`
@@ -617,7 +617,7 @@ export struct ProfilePage {
             Blank()
           }
           .width('100%')
-          InfoRow({ label: '风格偏好', value: '未接：styles.* 还没有 C ABI，本页不提供风格选择器；默认风格见下面的「设置」' })
+          InfoRow({ label: '风格偏好', value: '风格：接口已就绪（styles.list / get / save），界面待重做；本页暂不提供风格选择器，默认风格见下面的「设置」' })
         }
         .width('100%')
         .padding(14)
@@ -627,7 +627,7 @@ export struct ProfilePage {
 
         // ---------------------------------------------------------- 设置
         // 契约 4.4 的 `settings.get` / `settings.update` 已经在 C ABI 的 WIRED_METHODS 里
-        // （46 条方法中包含这两条），所以这里是真的读写，不是「未接」占位。
+        // （59 条方法中包含这两条），所以这里是真的读写，不是「未接」占位。
         // 只做最小接线（显示 + 触发 update）；三态/乐观锁在 `state/SettingsStore.ets`，
         // 面板视觉等 UI 统一那一步再做——这里沿用本页既有的组件（InfoRow/StatePill）。
         SectionTitle({ text: '设置' })
@@ -692,7 +692,7 @@ export struct ProfilePage {
               }
               .width('100%')
             }
-            Text('风格列表要等 styles.* 接到 C ABI；这里只提供「清空」，不伪造风格选择器。' +
+            Text('风格接口已就绪（styles.list / get / save），风格选择器界面还没做；这里只提供「清空」，不伪造选择器。' +
               '改开关不会碰这个字段（省略 = 不改，只有「清空」才发显式 null）。')
               .fontSize(12)
               .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
@@ -722,10 +722,10 @@ export struct ProfilePage {
         SectionTitle({ text: '资料与应用' })
 
         Column({ space: 4 }) {
-          this.section('资料与应用（未接的能力如实标注）')
+          this.section('资料与应用（能力状态如实标注）')
           InfoRow({ label: '插件', value: '未接：plugins.* 还没有 C ABI' })
-          InfoRow({ label: '备份与恢复', value: '未接：backups.* 还没有 C API 入口' })
-          InfoRow({ label: '阅读导出', value: '未接：exports.* 还没有 C ABI' })
+          InfoRow({ label: '备份与恢复', value: '备份与恢复：接口已就绪（backups.create / inspect / restore），界面待重做' })
+          InfoRow({ label: '阅读导出', value: '阅读导出：接口已就绪（exports.create），界面待重做' })
           // 回收站已经接通（`captures.trash / restore / previewPurge / purge` 都在
           // WIRED_METHODS 里）：整行可点，跳二级页 `recycle`。页面本身是临时功能界面。
           Column() {
@@ -739,8 +739,8 @@ export struct ProfilePage {
             this.pathStack.pushPathByName('recycle', '');
           })
           InfoRow({ label: '封面与加载动画', value: '未做：非语义页，契约不要求逐字对齐' })
-          Text('其余四项在鸿蒙上**没有可用入口**：C ABI 与核心都还不完整，所以这里只写「未接」，' +
-            '不放按了没反应的按钮。')
+          Text('插件还没有 C ABI；备份与导出接口已就绪、页面待重做；封面与加载动画不是契约要求的语义页。' +
+            '没有页面的能力都如实写清楚，不放按了没反应的按钮。')
             .fontSize(12)
             .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
             .width('100%')
@@ -895,9 +895,9 @@ export struct ProfilePage {
           InfoRow({ label: 'C ABI 版本', value: this.nativeVersion() })
           InfoRow({ label: '原生库目录', value: this.nativeLibraryDir() })
           InfoRow({ label: '未关闭句柄', value: this.openHandleCount() })
-          Text('未接的能力：文件导入（imports.*）、styles.*、通知/事件（core.events）、' +
-            '备份恢复（backups.*）、插件（plugins.*）、记录移动/删除（captures.moveDay/trash/restore）。' +
-            '本页不伪造这些入口。')
+          Text('真未接的只有文件导入（imports.*）与插件（plugins.*）；风格（styles.*）、事件轮询（core.events）、' +
+            '备份恢复（backups.*）、记录移动/删除（captures.moveDay/trash/restore）的 C ABI 都已就绪，' +
+            '缺的是界面入口。本页不伪造这些入口。')
             .fontSize(12)
             .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
             .width('100%')
