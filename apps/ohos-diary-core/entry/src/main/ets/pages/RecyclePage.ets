@@ -47,6 +47,8 @@ export struct RecyclePage {
   @State message: string = '';
   @State scanned: number = 0;
   @State truncated: boolean = false;
+  /** store 的 `loaded`：至少成功扫过一次回收站。false 时不能说「回收站是空的」。 */
+  @State loaded: boolean = false;
 
   // ---- 只属于这一屏的选择 ----------------------------------------------------
   /** 「同时删除日记版本」开关；默认 false = 保留仍引用这条记录的版本。 */
@@ -81,6 +83,7 @@ export struct RecyclePage {
     this.message = store.message;
     this.scanned = store.scanned;
     this.truncated = store.truncated;
+    this.loaded = store.loaded;
   }
 
   private async reload(): Promise<void> {
@@ -704,7 +707,7 @@ export struct RecyclePage {
           ListItem() {
             LoadingRow({ text: '正在扫描回收站…' })
           }
-        } else if (this.items.length === 0) {
+        } else if (this.items.length === 0 && this.loaded) {
           ListItem() {
             Column({ space: 8 }) {
               EmptyState({
@@ -720,6 +723,15 @@ export struct RecyclePage {
             }
             .width('100%')
             .alignItems(HorizontalAlign.Center)
+          }
+        } else if (this.items.length === 0) {
+          // 一次都没扫成功：这是「读失败」，不是「回收站是空的」。
+          // 错误条已经在上面显示；这里既不报 0 条，也不说空。
+          ListItem() {
+            Text('回收站没有读出来：这不代表回收站是空的；原因见上面的错误。')
+              .fontSize(SketchType.caption)
+              .fontColor(SketchColors.muted)
+              .width('100%')
           }
         } else {
           ForEach(this.items, (capture: Capture) => {

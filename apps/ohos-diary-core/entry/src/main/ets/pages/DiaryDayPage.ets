@@ -2,7 +2,8 @@
 //
 // 数据全部来自 C ABI：
 // - `diary.getDay`：当前/候选、材料计数、`revision`（切换当前版本要原样回传）；
-// - `diary.listVersions`：版本列表（最新在前，游标不透明；这里取第一页 50 条）；
+// - `diary.listVersions`：版本列表（最新在前，游标不透明）。本页**只取第一页 50 条**，
+//   并把 `next_cursor` 如实反映成「已显示前 50 版（还有更多）」——不把第一页当总数；
 // - `diary.setCurrent`：切换当前版本。核心有这个方法，所以按钮是真的能按的；
 //   切完重读 `diary.getDay`，不自己猜新状态。
 //
@@ -41,6 +42,15 @@ export struct DiaryDayPage {
   dayKey: string = '';
   @State day: DiaryDay | null = null;
   @State versions: DiaryVersion[] = [];
+  /** 版本列表是否读成功过。false 时不能说「这一天还没有成篇日记」。 */
+  @State versionsLoaded: boolean = false;
+  /**
+   * `diary.listVersions` 还有下一页（本页只取第一页 50 条）。
+   *
+   * 之前这里把 `versions.length` 当总数显示「版本（N）」——版本超过 50 时就是假数字。
+   * 现在只如实说「已显示前 N 版（还有更多）」。
+   */
+  @State versionsHasMore: boolean = false;
   @State current: DiaryVersion | null = null;
   @State loading: boolean = true;
   @State refreshing: boolean = false;
@@ -61,6 +71,8 @@ export struct DiaryDayPage {
     this.loading = true;
     this.error = EMPTY_UI_ERROR;
     this.actionError = EMPTY_UI_ERROR;
+    this.versionsLoaded = false;
+    this.versionsHasMore = false;
     const dayParams: DiaryDayParams = { day_key: this.dayKey };
     const listParams: ListDiaryVersionsParams = { day_key: this.dayKey, limit: 50 };
     const requests: CoreRequest[] = [
@@ -90,8 +102,13 @@ export struct DiaryDayPage {
       if (results[1].ok) {
         const page: DiaryVersionPage = results[1].data as DiaryVersionPage;
         this.versions = page.versions;
+        this.versionsLoaded = true;
+        // 游标不透明：只拿它判断「还有没有下一页」，不解析、不自己拼。
+        this.versionsHasMore = page.next_cursor !== null;
       } else {
         this.versions = [];
+        this.versionsLoaded = false;
+        this.versionsHasMore = false;
         if (this.error.code.length === 0) {
           this.error = uiErrorOf(results[1]);
         }
@@ -273,11 +290,20 @@ export struct DiaryDayPage {
       if (this.loading) {
         LoadingRow({ text: '正在读取这一天的日记…' })
       } else if (this.day === null) {
-        EmptyState({
-          icon: '日',
-          title: '这一天还没有成篇日记',
-          hint: '这一天既没有材料，也没有版本。先去「记录」留下点什么。',
-        })
+        if (this.error.code.length > 0) {
+          // 读失败 ≠ 这一天没有内容。错误条已经在上面显示，这里不再摆空态。
+          Text('这一天的状态没有读出来：这不代表这一天没有成篇日记；原因见上面的错误。')
+            .fontSize(12)
+            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .width('100%')
+            .padding({ left: 16, right: 16 })
+        } else {
+          EmptyState({
+            icon: '日',
+            title: '这一天还没有成篇日记',
+            hint: '这一天既没有材料，也没有版本。先去「记录」留下点什么。',
+          })
+        }
       } else {
         Scroll() {
           Column({ space: 10 }) {
@@ -287,7 +313,12 @@ export struct DiaryDayPage {
               InfoRow({ label: '覆盖', value: coverageLabel(this.day.coverage) })
               InfoRow({
                 label: '版本数',
-                value: `${this.versions.length} 个 · revision ${this.day.revision}`,
+                // 只取第一页 50 条：有下一页时必须说「已显示前 N 版」，不能把 N 当总数。
+                value: this.versionsLoaded
+                  ? (this.versionsHasMore
+                    ? `已显示前 ${this.versions.length} 版（还有更多） · revision ${this.day.revision}`
+                    : `${this.versions.length} 个 · revision ${this.day.revision}`)
+                  : `版本列表没有读出来 · revision ${this.day.revision}`,
               })
             }
             .width('100%')
@@ -326,14 +357,24 @@ export struct DiaryDayPage {
             }
 
             // ---------------------------------------------------------- 版本
-            if (this.versions.length === 0) {
+            if (this.versions.length === 0 && !this.versionsLoaded && this.error.code.length > 0) {
+              // 版本列表读失败：这不是「没有版本」，错误条已经在上面。
+              Text('版本列表没有读出来：这不代表这一天没有版本；原因见上面的错误。')
+                .fontSize(12)
+                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .width('100%')
+            } else if (this.versions.length === 0) {
               EmptyState({
                 icon: '—',
                 title: '这一天还没有成篇日记',
                 hint: '有材料、但还没有成篇正文。生成接口（diary.generate）已就绪，生成按钮界面还没做，这里不能生成。',
               })
             } else {
-              SectionTitle({ text: `版本（${this.versions.length}）` })
+              SectionTitle({
+                text: this.versionsHasMore
+                  ? `版本（已显示前 ${this.versions.length} 版，还有更多）`
+                  : `版本（${this.versions.length}）`,
+              })
               if (this.day.current_version_id === null) {
                 Text('这一天还没有指定当前版本；核心只给了候选版本。')
                   .fontSize(12)

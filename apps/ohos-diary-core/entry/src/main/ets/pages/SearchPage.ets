@@ -9,7 +9,8 @@
 // 2. keyword 的 `phase` 可能是 `keyword_ready`（还有下一页），不恒为 `done`；
 //    能不能翻页看 **cursor**，phase 不是结束标志；
 // 3. hybrid 的 `start` 只算关键词阶段；`upgrade` 成功才 `hybrid_ready`，
-//    升不了级时仍停在 `keyword_ready`，不能把标签写成「混合结果」。
+//    升不了级时仍停在 `keyword_ready`，不能把标签写成「混合结果」；
+// 4. `error` 有值时**不显示「没有结果」**：检索失败不等于库里没有匹配内容。
 
 import { common } from '@kit.AbilityKit';
 import {
@@ -516,15 +517,27 @@ export struct SearchPage {
         LoadingRow({ text: '正在检索…（语义/混合可能要加载模型）' })
       } else if (this.results.length === 0) {
         if (this.searched) {
-          EmptyState({
-            icon: '—',
-            title: '没有结果',
-            hint: this.warnings.length > 0
-              ? '原因见上方的核心提示；不要把「没有结果」当成「没有内容」。'
-              : (this.mode === 'semantic' && this.indexStatus !== null && !this.semanticReady()
-                ? '语义索引还没有可用向量；先到设置页确认模型与重建状态。'
-                : '换一个关键词，或切换检索模式。'),
-          })
+          if (this.error.code.length > 0) {
+            // `error` 有值 = 这次检索**没有完整完成**（`search.start` 失败，或混合升级
+            // 失败）。这时不能说「没有结果 / 换一个关键词」：那是把失败说成「库里没有」，
+            // 用户会白改关键词。错误条已经在上面显示，这里只补一句边界说明。
+            Text('这次检索没有完成，结果不代表「没有匹配的内容」；原因见上面的错误。' +
+              '可以重试搜索，或先确认索引状态。')
+              .fontSize(12)
+              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+              .width('100%')
+              .padding({ left: 16, right: 16 })
+          } else {
+            EmptyState({
+              icon: '—',
+              title: '没有结果',
+              hint: this.warnings.length > 0
+                ? '原因见上方的核心提示；不要把「没有结果」当成「没有内容」。'
+                : (this.mode === 'semantic' && this.indexStatus !== null && !this.semanticReady()
+                  ? '语义索引还没有可用向量；先到设置页确认模型与重建状态。'
+                  : '换一个关键词，或切换检索模式。'),
+            })
+          }
         } else {
           EmptyState({
             icon: '⌕',

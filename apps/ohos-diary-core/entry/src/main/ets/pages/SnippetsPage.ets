@@ -8,10 +8,14 @@
 //   拿它判断「有没有在跑」会撒谎；
 // - 每条的真实转写状态来自 `sources.extract(ordered_source_ids[0])` 的
 //   `status` / `coverage` / `coverage_reason`；
-// - `state=draft` 的条目显式标「未提交」，不写成「已保存」来掩盖。
+// - `state=draft` 的条目显式标「未提交」，不写成「已保存」来掩盖；
+// - `state=trashed` 的记录**不出现在这一页**：`captures.list` 不过滤状态，客户端用
+//   `selectActiveCaptures()` 筛掉回收站（核心不改口径，回收站页负责另一半）；
+// - 逐条 `sources.extract` 失败时显示「转写状态未知」+ 行内原因与重试，不当成空记录。
 
 import { common } from '@kit.AbilityKit';
 import { Capture, CapturePage, ExtractedContent, ExtractParams, ListCapturesParams } from '../core/Models';
+import { selectActiveCaptures } from '../state/RecycleStore';
 import { CoreGateway, CoreRequest, CoreResult, uiErrorOf } from '../ui/CoreGateway';
 import { EMPTY_UI_ERROR, UiError } from '../ui/Errors';
 import {
@@ -52,6 +56,8 @@ function sourceKindOf(extracted: ExtractedContent | null): string {
 export struct SnippetsPage {
   pathStack: NavPathStack = new NavPathStack();
   @State rows: CaptureRow[] = [];
+  /** 至少成功读过一页。「false + error」时不能把空数组说成「今天还没有片段」。 */
+  @State loaded: boolean = false;
   @State loading: boolean = true;
   @State refreshing: boolean = false;
   @State loadingMore: boolean = false;
@@ -135,7 +141,12 @@ export struct SnippetsPage {
       return;
     }
     const page: CapturePage = result.data as CapturePage;
-    const captures: Capture[] = page.captures;
+    // `captures.list` **不按 state 过滤**（核心把回收站里的记录也返回）。片段是「主列表」，
+    // 必须排除 `state === 'trashed'`：回收站有自己的页面，不能让已删除的记录继续出现在
+    // 时间线里（否则「删除」在界面上就是假的）。过滤用 store 的 `selectActiveCaptures`，
+    // 与回收站页的 `selectTrashedCaptures` 是同一个口径的两半。
+    // 先过滤再建行：trashed 的记录不发起 `sources.extract`，少一批无谓调用。
+    const captures: Capture[] = selectActiveCaptures(page.captures);
 
     // 每条的转写状态：只取第一条来源；多来源在详情页展开。
     const positions: number[] = [];
@@ -180,6 +191,7 @@ export struct SnippetsPage {
     }
 
     this.rows = append ? this.rows.concat(fresh) : fresh;
+    this.loaded = true;
     this.nextCursor = page.next_cursor === null ? '' : page.next_cursor;
     this.hasMore = page.next_cursor !== null;
     this.loading = false;
@@ -218,6 +230,10 @@ export struct SnippetsPage {
   }
 
   private typeLabel(row: CaptureRow): string {
+    if (row.extractionError.code.length > 0) {
+      // 抽取调用失败时我们**不知道**这条来源是什么类型，不能写成「空记录」。
+      return '来源状态未知';
+    }
     if (row.capture.ordered_source_ids.length > 1) {
       return `多来源 · ${row.capture.ordered_source_ids.length}`;
     }
@@ -263,12 +279,17 @@ export struct SnippetsPage {
   }
 
   private transcribeLabel(row: CaptureRow): string {
+    // ⚠️ 顺序很重要：`extractionError` 必须**先**判。
+    // `sourceKind` 由 `extracted` 推出，而 `extracted` 与 `extractionError` 互斥
+    // （成功才有 extracted）⇒ 先判 `hasAudioSource` 时，抽取失败的音频记录一定是
+    // `sourceKind === 'unknown'`，错误分支**永远走不到**，界面就把它显示成「空记录」，
+    // 逐条抽取的错误被整条丢掉。现在只要这次抽取失败，就先说「转写状态未知」。
+    if (row.extractionError.code.length > 0) {
+      return '转写状态未知';
+    }
     if (!this.hasAudioSource(row)) {
       // 空串 = 这条记录没有音频来源，界面不渲染转写标签（类型仍由 typeLabel 显示「文字」）。
       return '';
-    }
-    if (row.extractionError.code.length > 0) {
-      return '转写状态未知';
     }
     if (row.capture.ordered_source_ids.length === 0) {
       return row.capture.draft_text.trim().length > 0 ? '纯文字' : '无内容';
@@ -297,6 +318,46 @@ export struct SnippetsPage {
       return 'muted';
     }
     return extractStatusTone(row.extracted.status);
+  }
+
+  /**
+   * 只重试这一条的第一条来源抽取（`sources.extract`），不动其它行。
+   *
+   * 逐条失败是本页已知的现象（模型没配好、音频文件缺失等）；给一个行内重试，
+   * 用户不用整页刷新，也能看到失败原因。
+   */
+  private async retryExtract(row: CaptureRow): Promise<void> {
+    if (row.capture.ordered_source_ids.length === 0) {
+      return;
+    }
+    const params: ExtractParams = { source_ref: row.capture.ordered_source_ids[0] };
+    const result: CoreResult = await CoreGateway.call(this.dbPath, 'sources.extract', params);
+    let next: CaptureRow[] = [];
+    for (let i = 0; i < this.rows.length; i++) {
+      const item: CaptureRow = this.rows[i];
+      if (item.capture.id !== row.capture.id) {
+        next.push(item);
+        continue;
+      }
+      if (result.ok) {
+        const extracted: ExtractedContent = result.data as ExtractedContent;
+        next.push({
+          capture: item.capture,
+          extracted: extracted,
+          extractionError: EMPTY_UI_ERROR,
+          sourceKind: sourceKindOf(extracted),
+        });
+      } else {
+        next.push({
+          capture: item.capture,
+          extracted: null,
+          extractionError: uiErrorOf(result),
+          sourceKind: 'unknown',
+        });
+      }
+    }
+    // 整数组换引用，ArkUI 才会重算 ForEach（key 里含错误码/状态）。
+    this.rows = next;
   }
 
   @Builder
@@ -334,6 +395,27 @@ export struct SnippetsPage {
           .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
+        if (row.extractionError.code.length > 0) {
+          // 逐条抽取失败：不能只把它藏进类型标签，原因与重试都要在行内可见。
+          Row({ space: 8 }) {
+            Text(`来源状态没读出来（${row.extractionError.code}）：${row.extractionError.message}`)
+              .fontSize(12)
+              .fontColor($r('sys.color.ohos_id_color_warning'))
+              .layoutWeight(1)
+              .maxLines(3)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            Button('重试读取')
+              .fontSize(12)
+              .height(28)
+              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
+              .fontColor($r('sys.color.ohos_id_color_text_primary'))
+              .onClick(() => {
+                this.retryExtract(row);
+              })
+          }
+          .width('100%')
+          .alignItems(VerticalAlign.Top)
+        }
         Row({ space: 6 }) {
           Text(this.typeLabel(row))
             .fontSize(12)
@@ -442,7 +524,7 @@ export struct SnippetsPage {
             ListItem() {
               LoadingRow({ text: '正在读取这一天的片段…' })
             }
-          } else if (this.rows.length === 0) {
+          } else if (this.rows.length === 0 && this.loaded) {
             ListItem() {
               EmptyState({
                 icon: '—',
@@ -451,6 +533,15 @@ export struct SnippetsPage {
                   ? '去「记录」写一条或录一段，原始材料会按天出现在这里。'
                   : '可以点「后一天」回到今天。',
               })
+            }
+          } else if (this.rows.length === 0) {
+            // 一次都没读成功：这是「读失败」，不是「今天没有片段」。
+            ListItem() {
+              Text('这一天的片段没有读出来：这不代表今天没有片段；原因见上面的错误。')
+                .fontSize(12)
+                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .width('100%')
+                .padding(12)
             }
           } else {
             ForEach(this.rows, (row: CaptureRow) => {
@@ -462,7 +553,7 @@ export struct SnippetsPage {
               // 重新渲染（#150 真机抓到）。
             }, (row: CaptureRow) => `${row.capture.id}-${row.capture.state}-${row.capture.revision}-` +
               `${row.extracted === null ? 'none' : row.extracted.status}-` +
-              `${row.extracted === null ? '' : row.extracted.coverage}`)
+              `${row.extracted === null ? '' : row.extracted.coverage}-${row.extractionError.code}`)
             if (this.loadingMore) {
               ListItem() {
                 LoadingRow({ text: '加载更早的片段…' })

@@ -56,6 +56,8 @@ const NON_RETRYABLE: string[] = [
 export struct JobsPage {
   pathStack: NavPathStack = new NavPathStack();
   @State jobs: Job[] = [];
+  /** 至少成功读过一次任务列表。「false + error」时不能把空数组说成「这个筛选下没有任务」。 */
+  @State loaded: boolean = false;
   @State status: JobStatus | null = null;
   @State filterIndex: number = 0;
   @State loading: boolean = true;
@@ -133,6 +135,7 @@ export struct JobsPage {
       if (results[1].ok) {
         const page: JobPage = results[1].data as JobPage;
         this.jobs = page.jobs;
+        this.loaded = true;
         this.nextCursor = page.next_cursor === null ? '' : page.next_cursor;
         this.hasMore = page.next_cursor !== null;
       } else {
@@ -660,13 +663,22 @@ export struct JobsPage {
             ListItem() {
               LoadingRow({ text: '读取任务…' })
             }
-          } else if (this.jobs.length === 0) {
+          } else if (this.jobs.length === 0 && this.loaded) {
             ListItem() {
               EmptyState({
                 icon: '—',
                 title: '这个筛选下没有任务',
                 hint: '转写/索引任务在录音保存、重建索引或运行到期任务后出现。',
               })
+            }
+          } else if (this.jobs.length === 0) {
+            // 一次都没读成功：这是「读失败」，不是「这个筛选下没有任务」。
+            ListItem() {
+              Text('任务列表没有读出来：这不代表没有任务；原因见上面的错误。')
+                .fontSize(12)
+                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .width('100%')
+                .padding(12)
             }
           } else {
             ForEach(this.jobs, (job: Job) => {

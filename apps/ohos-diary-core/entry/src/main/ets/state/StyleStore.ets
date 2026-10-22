@@ -16,6 +16,11 @@
 //    - 带上 = 冲突检测；不符报 `revision_conflict`，本 store 会**重读最新版本**，
 //      绝不拿旧 revision 重试，也不会静默覆盖别人写进去的值。
 //    `revision` / `updatedAt` 由核心盖章，调用方传了也不生效；本 store 不再转发。
+// 4. **`styles.save` 是整行写入，没有「省略 = 不改」**：请求里缺少的字段会被核心当成
+//    空值写进去（`tone: null`、`examples: []`）。所以本 store 的部分更新靠**补齐基底**
+//    实现：`buildStyleInput(current, patch, label)` 把没出现在 patch 里的字段从
+//    「这条风格当前完整 profile」抄过来。拿不到基底（新建风格）时用核心默认，并在
+//    `message` 里明说「这是新风格，未填的用默认」。
 //
 // 每次保存落一个**新的不可变版本**（`revision` +1），旧版本保留：历史日记的
 // `styleSnapshotId` 仍指得到当时那一版，所以这里没有「删除风格」的入口，也不自动
@@ -34,44 +39,67 @@ import { EMPTY_UI_ERROR, UiError } from '../ui/Errors';
 export const DEFAULT_STYLE_ID: string = 'sty_default';
 
 /**
- * 把页面给的 `StyleProfileInput` 收敛成要发出去的入参。
+ * 把页面给的「部分改动」补齐成一条**完整**的 `styles.save` 入参。
  *
- * 这里沿用 SettingsStore 的三态纪律：
- * - 字段 `undefined` → **不写这个键**（核心用自己的默认值，等价于「不改」）；
- * - 字段 `null` → 明确清空这个偏好；
- * - 字段有值 → 设置。
+ * ⚠️ 这里**没有**「字段 `undefined` = 不改」的三态语义：`styles.save` 是**整行写入**
+ * （`crates/diary_core/src/styles.rs` 每次 INSERT 全部列；C ABI 的
+ * `StyleProfileParams` 里 `examples` / `banned_expressions` 是 `#[serde(default)]`、
+ * `tone` / `person` 等是 `Option`，省略 = 空数组 / None）。也就是说，请求体里**省略某个
+ * 字段等于把它清空**，不是「保持原值」。曾经照搬 SettingsStore 的注释在这里写「省略 =
+ * 不改」，结果是「只改个名字」会把用户已保存的语气、示例、禁用表达静默清成 NULL / []。
  *
- * 所以不要用 `undefined` 表达清空，清空只能写 `null`。`revision` / `updatedAt` 不转发：
- * 它们由核心盖章，传了也不生效。`label` 去首尾空白（核心对空 label 报 `invalid_argument`，
- * 本 store 先在本地拦掉）。
+ * 所以部分更新必须靠**补齐基底**实现：`current` 是这条风格在当前库里的完整 profile，
+ * 没在 `patch` 里出现的字段一律从 `current` 抄过来，请求体永远是完整的一行。
+ *
+ * - `patch.X !== undefined` → 用 `patch.X`（包括显式写 `null` = 清空这个偏好）；
+ * - `patch.X === undefined` → 用 `current.X`；
+ * - `current === null`（**新建风格**）→ 未填字段用核心默认：可选字段 `null`、数组 `[]`。
+ *   这种情况下界面必须说明「这是新风格，没填的用默认」（[`StyleStore.defaultsApplied`]
+ *   与 `message` 会写出来），不能让人以为是从某条已有风格继承来的。
+ *
+ * `revision` / `updatedAt` 不转发：它们由核心盖章，传了也不生效。`label` 去首尾空白
+ * （核心对空 label 报 `invalid_argument`，本 store 先在本地拦掉）。
  */
-export function buildStyleInput(input: StyleProfileInput, label: string): StyleProfileInput {
+export function buildStyleInput(
+  current: StyleProfile | null,
+  patch: StyleProfileInput,
+  label: string,
+): StyleProfileInput {
+  const base = current;
   const profile: StyleProfileInput = {
-    id: input.id.trim(),
+    id: patch.id.trim(),
     label: label,
+    lengthPreference: patch.lengthPreference !== undefined
+      ? patch.lengthPreference
+      : (base === null ? null : base.lengthPreference),
+    person: patch.person !== undefined
+      ? patch.person
+      : (base === null ? null : base.person),
+    tone: patch.tone !== undefined
+      ? patch.tone
+      : (base === null ? null : base.tone),
+    emotionalTemperature: patch.emotionalTemperature !== undefined
+      ? patch.emotionalTemperature
+      : (base === null ? null : base.emotionalTemperature),
+    rhetoricLevel: patch.rhetoricLevel !== undefined
+      ? patch.rhetoricLevel
+      : (base === null ? null : base.rhetoricLevel),
+    examples: patch.examples !== undefined
+      ? patch.examples
+      : (base === null ? [] : base.examples),
+    bannedExpressions: patch.bannedExpressions !== undefined
+      ? patch.bannedExpressions
+      : (base === null ? [] : base.bannedExpressions),
   };
-  if (input.lengthPreference !== undefined) {
-    profile.lengthPreference = input.lengthPreference;
-  }
-  if (input.person !== undefined) {
-    profile.person = input.person;
-  }
-  if (input.tone !== undefined) {
-    profile.tone = input.tone;
-  }
-  if (input.emotionalTemperature !== undefined) {
-    profile.emotionalTemperature = input.emotionalTemperature;
-  }
-  if (input.rhetoricLevel !== undefined) {
-    profile.rhetoricLevel = input.rhetoricLevel;
-  }
-  if (input.examples !== undefined) {
-    profile.examples = input.examples;
-  }
-  if (input.bannedExpressions !== undefined) {
-    profile.bannedExpressions = input.bannedExpressions;
-  }
   return profile;
+}
+
+/** `patch` 是不是已经把 8 个可选字段全给齐了（给齐就不需要再读基底）。 */
+function isCompleteStyleInput(input: StyleProfileInput): boolean {
+  return input.lengthPreference !== undefined && input.person !== undefined &&
+    input.tone !== undefined && input.emotionalTemperature !== undefined &&
+    input.rhetoricLevel !== undefined && input.examples !== undefined &&
+    input.bannedExpressions !== undefined;
 }
 
 /**
@@ -100,6 +128,13 @@ export class StyleStore {
   saving: boolean = false;
   /** 最近一次保存是否因为 `revision` 过期被拒（为 true 时 store 已经重读过最新版本）。 */
   conflicted: boolean = false;
+  /**
+   * 最近一次保存是不是「新建风格 + 未给全字段」，因而已填字段用了核心默认值。
+   *
+   * 只在 `saveStyle` 里复位/置位：`true` 时 `message` 会写明「这是新风格，未填的用默认」。
+   * 页面可以据此在表单上提示「新风格，空字段不会继承任何已有偏好」。
+   */
+  defaultsApplied: boolean = false;
   /** 读/写失败时核心或宿主的原话（成功时是空哨兵）。 */
   error: UiError = EMPTY_UI_ERROR;
   /** 最近一次操作的结果说明；没有提示时是空串。 */
@@ -125,6 +160,7 @@ export class StyleStore {
     this.error = EMPTY_UI_ERROR;
     this.message = '';
     this.conflicted = false;
+    this.defaultsApplied = false;
     const result: CoreResult = await CoreGateway.call(this.dbPath, 'styles.list', null);
     this.loading = false;
     if (!result.ok) {
@@ -155,6 +191,7 @@ export class StyleStore {
     this.error = EMPTY_UI_ERROR;
     this.message = '';
     this.conflicted = false;
+    this.defaultsApplied = false;
     const params: StyleIdParams = { style_id: id };
     const result: CoreResult = await CoreGateway.call(this.dbPath, 'styles.get', params);
     this.loading = false;
@@ -205,7 +242,37 @@ export class StyleStore {
     this.error = EMPTY_UI_ERROR;
     this.message = '';
     this.conflicted = false;
-    const profile: StyleProfileInput = buildStyleInput(input, label);
+    this.defaultsApplied = false;
+
+    // ---- 部分更新必须先拿到基底（styles.save 是整行写入，省略字段 = 清空） ----
+    // 只认**刚读过/刚保存过**的那条（`current`），不拿 `styles` 列表里的旧快照当基底：
+    // 列表可能已经过期，拿旧值补齐会把别人刚写进去的语气/示例又覆盖回去。
+    // 没有可用基底时用 `styles.get` 读一次当前完整 profile；读失败（不是 not_found）
+    // 就**不保存**：宁可报错，也不能把用户已保存的语气/示例清空。`not_found` = 这里
+    // 确实还没有这条风格 → 新建，用核心默认。
+    const partial: boolean = !isCompleteStyleInput(input);
+    let base: StyleProfile | null =
+      (this.current !== null && this.current.id === id) ? this.current : null;
+    if (partial && base === null) {
+      const probeParams: StyleIdParams = { style_id: id };
+      const probe: CoreResult = await CoreGateway.call(this.dbPath, 'styles.get', probeParams);
+      if (probe.ok) {
+        base = probe.data as StyleProfile;
+        this.upsert(base);
+      } else {
+        const probeError: UiError = uiErrorOf(probe);
+        if (probeError.code !== 'not_found') {
+          this.saving = false;
+          this.error = probeError;
+          this.message = '这条风格的当前内容没有读出来，无法判断「哪些字段要保留」；' +
+            '为了不清空已保存的语气/示例，这次没有保存。';
+          return null;
+        }
+      }
+    }
+    const defaultsApplied: boolean = base === null;
+    this.defaultsApplied = defaultsApplied;
+    const profile: StyleProfileInput = buildStyleInput(base, input, label);
     const params: SaveStyleParams = { profile: profile };
     if (expectedRevision !== undefined) {
       params.expected_revision = expectedRevision;
@@ -219,7 +286,14 @@ export class StyleStore {
       const checked: string = expectedRevision === undefined
         ? '这次是明确覆盖，没有做版本检查'
         : '版本检查通过';
-      this.message = `已保存「${saved.label}」第 ${saved.revision} 版；${checked}。` +
+      let provenance: string = '';
+      if (defaultsApplied) {
+        // 新建 + 没给全字段：必须说清楚，这是核心默认，不是从别的风格继承的。
+        provenance = '这是新风格，未填的字段用了核心默认（无偏好、无示例、无禁用表达）；';
+      } else if (partial) {
+        provenance = '未填的字段沿用了这条风格已保存的值（整行写入，靠补齐基底实现部分更新）；';
+      }
+      this.message = `已保存「${saved.label}」第 ${saved.revision} 版；${checked}。` + provenance +
         '历史日记不会自动重写（styleSnapshotId 仍指当时那一版）。';
       return saved;
     }
