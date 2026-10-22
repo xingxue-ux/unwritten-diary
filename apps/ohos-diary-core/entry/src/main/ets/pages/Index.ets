@@ -1,45 +1,12 @@
-// 产品界面根页面：**顶部导航条**（对齐 Windows 桌面版）+ Navigation 二级页。
-//
-// 一级入口是契约 §2 冻结的 5 个、顺序固定（本文件逐字写死；检查器见下）：
-//   记录 → 日记 → 搜索 → 片段 → 我的
-// 任务中心**不是**一级入口：它从全局 header 的「任务」按钮、以及「我的 → 创作与整理 →
-// 任务中心」进（契约 §0.2 / §3）。
-//
-// 壳与 Windows 的对齐口径（`apps/diary_app/lib/src/experience_shell.dart:588-612`）：
-//   - 导航从底部 Tabs 移到**顶部横排文字按钮**：当前项 `ink` + 加粗，其余 `muted`，
-//     项间距 6（Windows 每项 `padding: EdgeInsets.only(right: 6)`）；
-//   - 最左标题「不写日记」33 / ink / 加粗；最右标语「给今天留一页」13 / muted；
-//   - 顶部条底色 `canvas`，底边 1vp `line` 分隔线；根背景 `canvas`；
-//   - 颜色 / 字号全部来自 `ui/Sketch.ets`，不再取系统色。
-//
-// **检查器**：`tools/check_ui_parity.py` 已适配顶部导航——按 `NavItem('<文案>', <索引>)`
-// 的调用顺序解析这 5 个一级入口，逐字比对契约 §2 的名称与顺序；数量或顺序不符会 exit 1
-// （不再打印 `[跳过]`）。改这里之后跑一次 `python3 tools/check_ui_parity.py` 即可自查。
-//
-// **已知差异**：Windows 最左还有猫头标记（CatMark），任务中心是右上角铃铛图标
-// （`Icons.notifications_none`，tooltip「任务中心」）。鸿蒙没有 Material Icons，
-// 也没有随包图标资源，所以保留文字按钮「任务」，改成 ink 色 + 无背景。
-//
-// 页面：
-//   pages/RecordPage             记录（文字新建 + 录音入口）
-//   pages/DiaryPage              日记（按天倒序的成篇正文列表；diary.getDay/listVersions）
-//   pages/DiaryDayPage           日记某一天（正文 + 版本 + 切换当前版本；diary.*）
-//   pages/SearchPage             搜索（search.start/nextPage/upgrade/cancel）
-//   pages/SnippetsPage           片段（captures.list；原始记录与转写状态）
-//   pages/ProfilePage            我的（设置分组 + 任务中心入口）
-//   pages/CaptureDetailPage      记录详情（captures.get / sources.extract / captures.commit）
-//   pages/RecordingPage          录音（VoiceRecorder / finalize / recover）
-//   pages/JobsPage               任务中心（jobs.list/get/retry/cancel/runDue）
-//   pages/TranscriptionConfigPage 转写 provider（providers.list/save/test）
-//
-// 所有核心调用都在 `ui/CoreGateway.ets` 里经 TaskPool 执行；本文件不直接调核心。
-
+// 与 Windows 共用视觉基线；850vp 以上顶栏，窄屏底栏。页面常驻以保留输入和滚动位置。
 import { common } from '@kit.AbilityKit';
 import { CoreGateway } from '../ui/CoreGateway';
 import { AppState } from '../ui/AppState';
 import { databasePath } from '../ui/AppRuntime';
 import { RunDueParams } from '../core/Models';
-import { SketchColors, SketchType } from '../ui/Sketch';
+import { CatMark, SketchColors, SketchFonts, sketchOutline } from '../ui/Sketch';
+import { StylesPage } from './StylesPage';
+import { ExportPage } from './ExportPage';
 import { RecordPage } from './RecordPage';
 import { DiaryPage } from './DiaryPage';
 import { DiaryDayPage } from './DiaryDayPage';
@@ -57,10 +24,17 @@ import { TranscriptionConfigPage } from './TranscriptionConfigPage';
 struct Index {
   private pathStack: NavPathStack = new NavPathStack();
   @State currentTab: number = 0;
+  @State desktop: boolean = false;
+  @State availableWidth: number = 0;
   private lastForegroundKickMs: number = 0;
 
   aboutToAppear(): void {
     AppState.init();
+    AppStorage.setOrCreate('ohosWideLayout', false);
+    this.getUIContext().getFont().registerFont({
+      familyName: SketchFonts.display,
+      familySrc: $rawfile('fonts/DiaryDisplay-AppSubset.ttf'),
+    });
   }
 
   onPageShow(): void {
@@ -93,15 +67,33 @@ struct Index {
    */
   @Builder
   NavItem(label: string, index: number) {
-    Text(label)
-      .fontSize(SketchType.section)
-      .fontWeight(this.currentTab === index ? FontWeight.Bold : FontWeight.Normal)
-      .fontColor(this.currentTab === index ? SketchColors.ink : SketchColors.muted)
-      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-      .margin({ right: 6 })
+    Column({ space: 3 }) {
+      if (!this.desktop) {
+        Image(this.navIcon(index)).width(21).height(21)
+          .opacity(this.currentTab === index ? 1 : 0.65)
+      }
+      Text(label)
+        .fontSize(this.desktop ? 14 : 11)
+        .fontWeight(this.currentTab === index ? FontWeight.Bold : FontWeight.Normal)
+        .fontColor(this.currentTab === index ? SketchColors.ink : SketchColors.muted)
+    }
+      .padding({ left: this.desktop ? 12 : 6, right: this.desktop ? 12 : 6, top: 10, bottom: 10 })
+      .margin({ right: this.desktop ? 6 : 0 })
+      .constraintSize({ minHeight: 48 })
+      .layoutWeight(this.desktop ? 0 : 1)
+      .accessibilitySelected(this.currentTab === index)
+      .accessibilityLevel('yes')
       .onClick(() => {
         this.switchTo(index);
       })
+  }
+
+  private navIcon(index: number): Resource {
+    if (index === 0) { return $r('app.media.sketch_record'); }
+    if (index === 1) { return $r('app.media.sketch_diary'); }
+    if (index === 2) { return $r('app.media.sketch_search'); }
+    if (index === 3) { return $r('app.media.sketch_snippets'); }
+    return $r('app.media.sketch_profile');
   }
 
   /**
@@ -121,23 +113,14 @@ struct Index {
     AppState.bumpDataVersion();
   }
 
-  /** 二级页占位：只立路由骨架，页面内容由对应线填充。 */
+  /** 五个入口仅声明一次，宽屏顶栏和窄屏底栏使用相同顺序。 */
   @Builder
-  PlaceholderPage(title: string, note: string) {
-    Column({ space: 8 }) {
-      Text(title)
-        .fontSize(SketchType.pageTitle)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(SketchColors.ink)
-      Text(note)
-        .fontSize(SketchType.body)
-        .fontColor(SketchColors.muted)
-    }
-    .width('100%')
-    .height('100%')
-    .padding(24)
-    .alignItems(HorizontalAlign.Start)
-    .backgroundColor(SketchColors.canvas)
+  PrimaryNavigation() {
+    this.NavItem('记录', 0)
+    this.NavItem('日记', 1)
+    this.NavItem('搜索', 2)
+    this.NavItem('片段', 3)
+    this.NavItem('我的', 4)
   }
 
   @Builder
@@ -152,132 +135,158 @@ struct Index {
       NavDestination() {
         DiaryDayPage({ pathStack: this.pathStack, dayKey: param as string })
       }
-      .title('日记')
+      .title('日记', { backgroundColor: SketchColors.canvas })
     } else if (name === 'settings') {
       // 路由名保留 `settings`：SearchPage / JobsPage 已经在用它跳「我的」，
       // 改路由名只会制造无谓的跨文件改动（本 PR 不动 SearchPage）。
       NavDestination() {
         ProfilePage({ pathStack: this.pathStack })
       }
-      .title('我的')
+      .title('我的', { backgroundColor: SketchColors.canvas })
     } else if (name === 'jobs') {
       NavDestination() {
         JobsPage({ pathStack: this.pathStack })
       }
-      .title('任务中心')
+      .title('任务中心', { backgroundColor: SketchColors.canvas })
     } else if (name === 'recycle') {
       NavDestination() {
         RecyclePage()
       }
-      .title('回收站')
+      .title('回收站', { backgroundColor: SketchColors.canvas })
     } else if (name === 'styles') {
-      // 路由骨架：风格线填充。
       NavDestination() {
-        this.PlaceholderPage('风格', '占位页：由风格线填充（路由名 styles）。')
+        StylesPage()
       }
-      .title('风格')
+      .title('风格偏好', { backgroundColor: SketchColors.canvas })
     } else if (name === 'export') {
-      // 路由骨架：导出线填充。
       NavDestination() {
-        this.PlaceholderPage('导出', '占位页：由导出线填充（路由名 export）。')
+        ExportPage()
       }
-      .title('导出')
+      .title('阅读导出', { backgroundColor: SketchColors.canvas })
     }
   }
 
   build() {
     Navigation(this.pathStack) {
-      Column() {
-        // ── 顶部条：与 Windows 桌面版 `_header(desktop: true)` 同构 ──────────────
-        // 标题 → 5 个文字入口 → Blank 推开 → 标语 → 任务中心。
-        Row() {
-          Text('不写日记')
-            .fontSize(SketchType.display)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(SketchColors.ink)
-            .maxLines(1)
-            .margin({ right: 40 })
+      Stack({ alignContent: Alignment.Center }) {
+        Column() {
+          Column() {
+            Row({ space: 15 }) {
+              Stack({ alignContent: Alignment.Center }) {
+                CatMark()
+              }.width(48).height(48).padding(5)
+                .backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
+              Text('不写日记')
+                .fontFamily(SketchFonts.display)
+                .fontSize(this.desktop ? 33 : 29)
+                .fontColor(SketchColors.ink)
+                .maxLines(1)
+                .flexShrink(1)
+              if (this.desktop) {
+                Row() {
+                  this.PrimaryNavigation()
+                }
+                .margin({ left: 25 })
+              }
+              Blank()
+              if (this.desktop && this.availableWidth >= 1100) {
+                Text('给今天留一页')
+                  .fontSize(13)
+                  .fontColor(SketchColors.muted)
+              }
+              Button({ type: ButtonType.Normal }) {
+                Image($r('app.media.sketch_bell'))
+                  .width(24)
+                  .height(24)
+              }
+              .width(48)
+              .height(48)
+              .backgroundColor(Color.Transparent)
+              .accessibilityText('任务中心')
+              .onClick(() => this.pathStack.pushPathByName('jobs', ''))
+            }
+            .width('100%')
+            .padding({ left: this.desktop ? 46 : 22, right: this.desktop ? 46 : 22,
+              top: this.desktop ? 19 : 14, bottom: this.desktop ? 19 : 14 })
 
-          this.NavItem('记录', 0)
-          this.NavItem('日记', 1)
-          this.NavItem('搜索', 2)
-          this.NavItem('片段', 3)
-          this.NavItem('我的', 4)
+            Divider()
+              .color(SketchColors.ink)
+              .strokeWidth(1)
+              .margin({ left: 24, right: 24 })
 
-          Blank()
+            // ── 内容区：5 个页面常驻，按 currentTab 显隐 ──────────────────────────
+            // 用 Stack + visibility 而不是 `if`：页面只创建一次，切走再切回来保留滚动位置
+            // 和未提交的输入（与原来的页签行为一致）。隐藏页不占布局、不参与命中测试。
+            // 代价是 5 个页面在启动时都会 aboutToAppear；数据量小，换来的是切页不闪。
+            Stack({ alignContent: Alignment.TopStart }) {
+              Column() {
+                RecordPage({ pathStack: this.pathStack })
+              }
+              .width('100%')
+              .height('100%')
+              .visibility(this.currentTab === 0 ? Visibility.Visible : Visibility.None)
 
-          Text('给今天留一页')
-            .fontSize(SketchType.body)
-            .fontColor(SketchColors.muted)
-            .margin({ right: 16 })
+              Column() {
+                DiaryPage({ pathStack: this.pathStack })
+              }
+              .width('100%')
+              .height('100%')
+              .visibility(this.currentTab === 1 ? Visibility.Visible : Visibility.None)
 
-          // Windows 这里是铃铛图标（`Icons.notifications_none` + tooltip「任务中心」）；
-          // 鸿蒙没有 Material Icons、也没有随包图标资源，保留文字「任务」，
-          // 但改成 ink 色、无背景（原来是系统 `sub_background` 的 Button）。
-          Text('任务')
-            .fontSize(SketchType.body)
-            .fontColor(SketchColors.ink)
-            .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-            .onClick(() => {
-              this.pathStack.pushPathByName('jobs', '');
-            })
+              Column() {
+                SearchPage({ pathStack: this.pathStack })
+              }
+              .width('100%')
+              .height('100%')
+              .visibility(this.currentTab === 2 ? Visibility.Visible : Visibility.None)
+
+              Column() {
+                SnippetsPage({ pathStack: this.pathStack })
+              }
+              .width('100%')
+              .height('100%')
+              .visibility(this.currentTab === 3 ? Visibility.Visible : Visibility.None)
+
+              Column() {
+                ProfilePage({ pathStack: this.pathStack })
+              }
+              .width('100%')
+              .height('100%')
+              .visibility(this.currentTab === 4 ? Visibility.Visible : Visibility.None)
+            }
+            .width('100%')
+            .layoutWeight(1)
+            .constraintSize({ maxWidth: 1332 })
+            .padding({ left: this.desktop ? 30 : 6, right: this.desktop ? 30 : 6,
+              top: this.desktop ? 23 : 13 })
+            .backgroundColor(SketchColors.canvas)
+
+            if (!this.desktop) {
+              Row() {
+                this.PrimaryNavigation()
+              }
+              .width('100%')
+              .padding({ left: 12, right: 12 })
+              .border({ width: { top: 1 }, color: SketchColors.ink })
+              .backgroundColor(SketchColors.paper)
+            }
+          }
+          .width('100%')
+          .height('100%')
+          .backgroundColor(SketchColors.canvas)
+          .drawModifier(sketchOutline())
         }
-        .width('100%')
-        .height(76)
-        .padding({ left: 46, right: 46 })
-        .alignItems(VerticalAlign.Center)
-        .backgroundColor(SketchColors.canvas)
-        .border({ width: { bottom: 1 }, color: SketchColors.line })
-
-        // ── 内容区：5 个页面常驻，按 currentTab 显隐 ──────────────────────────
-        // 用 Stack + visibility 而不是 `if`：页面只创建一次，切走再切回来保留滚动位置
-        // 和未提交的输入（与原来的页签行为一致）。隐藏页不占布局、不参与命中测试。
-        // 代价是 5 个页面在启动时都会 aboutToAppear；数据量小，换来的是切页不闪。
-        Stack({ alignContent: Alignment.TopStart }) {
-          Column() {
-            RecordPage({ pathStack: this.pathStack })
-          }
-          .width('100%')
-          .height('100%')
-          .visibility(this.currentTab === 0 ? Visibility.Visible : Visibility.None)
-
-          Column() {
-            DiaryPage({ pathStack: this.pathStack })
-          }
-          .width('100%')
-          .height('100%')
-          .visibility(this.currentTab === 1 ? Visibility.Visible : Visibility.None)
-
-          Column() {
-            SearchPage({ pathStack: this.pathStack })
-          }
-          .width('100%')
-          .height('100%')
-          .visibility(this.currentTab === 2 ? Visibility.Visible : Visibility.None)
-
-          Column() {
-            SnippetsPage({ pathStack: this.pathStack })
-          }
-          .width('100%')
-          .height('100%')
-          .visibility(this.currentTab === 3 ? Visibility.Visible : Visibility.None)
-
-          Column() {
-            ProfilePage({ pathStack: this.pathStack })
-          }
-          .width('100%')
-          .height('100%')
-          .visibility(this.currentTab === 4 ? Visibility.Visible : Visibility.None)
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .backgroundColor(SketchColors.canvas)
-      }
-      .width('100%')
-      .height('100%')
-      .backgroundColor(SketchColors.canvas)
+        .width('100%').height('100%')
+        .constraintSize({ maxWidth: 1500 })
+        .padding(this.desktop ? 22 : 0)
+      }.width('100%').height('100%')
     }
     .navDestination(this.PageMap)
+    .onAreaChange((_old: Area, area: Area) => {
+      this.availableWidth = Number(area.width);
+      this.desktop = Number(area.width) >= 850;
+      AppStorage.set('ohosWideLayout', this.desktop);
+    })
     .hideTitleBar(true)
     .mode(NavigationMode.Stack)
     .width('100%')

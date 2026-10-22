@@ -1,40 +1,41 @@
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchOutline } from './Sketch';
 // 页面公用的小组件：状态徽标、错误条、空态、加载行、键值行。
 //
-// 颜色全部来自系统资源（`sys.color.ohos_id_color_*`），深色模式跟随系统；
+// 与 Windows 共用纸色、墨色和手绘描边；状态文字保留原有语义。
 // 字号用默认 fp（跟随系统字体缩放），不写死 px，也不给文本容器写死高度。
 
 import { EMPTY_UI_ERROR, UiError } from './Errors';
 
-/** 状态徽标：语气只影响文字颜色，底色统一用系统次级背景。 */
+/** 状态徽标：语气只影响文字颜色，底色使用共享纸色。 */
 @Component
 export struct StatePill {
   @Prop text: string = '';
   /** ok / warn / alert / active / muted */
   @Prop tone: string = 'muted';
 
-  private textColor(): Resource {
+  private textColor(): string {
     if (this.tone === 'ok') {
-      return $r('sys.color.ohos_id_color_emphasize');
+      return SketchColors.ink;
     }
     if (this.tone === 'warn') {
-      return $r('sys.color.ohos_id_color_warning');
+      return SketchColors.warning;
     }
     if (this.tone === 'alert') {
-      return $r('sys.color.ohos_id_color_alert');
+      return SketchColors.alert;
     }
     if (this.tone === 'active') {
-      return $r('sys.color.ohos_id_color_emphasize');
+      return SketchColors.ink;
     }
-    return $r('sys.color.ohos_id_color_text_secondary');
+    return SketchColors.muted;
   }
 
   build() {
     Text(this.text)
       .fontSize(12)
       .fontColor(this.textColor())
-      .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
+      .backgroundColor(SketchColors.soft)
       .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-      .borderRadius(8)
+      .borderRadius(0)
       .maxLines(1)
       .textOverflow({ overflow: TextOverflow.Ellipsis })
   }
@@ -54,28 +55,28 @@ export struct ErrorBanner {
         Text(this.error.title)
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('sys.color.ohos_id_color_alert'))
+          .fontColor(SketchColors.alert)
           .width('100%')
         Text(this.error.message)
           .fontSize(14)
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .fontColor(SketchColors.text)
           .width('100%')
         Text(this.error.hint)
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
           .width('100%')
         if (this.error.code.length > 0) {
           Text(`错误码：${this.error.code}${this.error.native ? '（调用没有发生）' : ''}`)
             .fontSize(11)
-            .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
         }
         if (this.showReload) {
           Button('重新加载')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(14)
-            .height(34)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.onReload();
             })
@@ -83,8 +84,8 @@ export struct ErrorBanner {
       }
       .width('100%')
       .padding(12)
-      .backgroundColor($r('sys.color.ohos_id_color_alert_transparent'))
-      .borderRadius(12)
+      .backgroundColor(SketchColors.soft)
+      .borderRadius(0)
       .alignItems(HorizontalAlign.Start)
     }
   }
@@ -101,16 +102,16 @@ export struct EmptyState {
     Column({ space: 8 }) {
       Text(this.icon)
         .fontSize(30)
-        .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+        .fontColor(SketchColors.muted)
       Text(this.title)
         .fontSize(16)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('sys.color.ohos_id_color_text_primary'))
+        .fontColor(SketchColors.text)
         .textAlign(TextAlign.Center)
       if (this.hint.length > 0) {
         Text(this.hint)
           .fontSize(13)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
           .textAlign(TextAlign.Center)
       }
     }
@@ -130,10 +131,10 @@ export struct LoadingRow {
       LoadingProgress()
         .width(20)
         .height(20)
-        .color($r('sys.color.ohos_id_color_emphasize'))
+        .color(SketchColors.ink)
       Text(this.text)
         .fontSize(13)
-        .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+        .fontColor(SketchColors.muted)
     }
     .width('100%')
     .justifyContent(FlexAlign.Center)
@@ -151,12 +152,12 @@ export struct InfoRow {
     Row({ space: 10 }) {
       Text(this.label)
         .fontSize(13)
-        .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+        .fontColor(SketchColors.muted)
         .width(92)
         .flexShrink(0)
       Text(this.value.length > 0 ? this.value : '—')
         .fontSize(13)
-        .fontColor($r('sys.color.ohos_id_color_text_primary'))
+        .fontColor(SketchColors.text)
         .layoutWeight(1)
     }
     .width('100%')
@@ -172,9 +173,10 @@ export struct SectionTitle {
 
   build() {
     Text(this.text)
-      .fontSize(14)
+      .fontSize(SketchType.section)
+      .fontFamily(SketchFonts.display)
       .fontWeight(FontWeight.Medium)
-      .fontColor($r('sys.color.ohos_id_color_text_primary'))
+      .fontColor(SketchColors.text)
       .width('100%')
       .margin({ top: 8, bottom: 4 })
   }
@@ -189,14 +191,15 @@ export struct PageTitle {
   build() {
     Column({ space: 4 }) {
       Text(this.title)
-        .fontSize(28)
+        .fontSize(SketchType.pageTitle)
+        .fontFamily(SketchFonts.display)
         .fontWeight(FontWeight.Bold)
-        .fontColor($r('sys.color.ohos_id_color_text_primary'))
+        .fontColor(SketchColors.text)
         .width('100%')
       if (this.subtitle.length > 0) {
         Text(this.subtitle)
           .fontSize(13)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
           .width('100%')
       }
     }

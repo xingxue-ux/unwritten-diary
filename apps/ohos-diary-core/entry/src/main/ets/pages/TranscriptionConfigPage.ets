@@ -1,3 +1,4 @@
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchInput, sketchArea, sketchOutline } from '../ui/Sketch';
 // 转写引擎配置入口：本机 sherpa_onnx provider 的保存与连接测试。
 //
 // 事实（文档 §5.5）：
@@ -292,7 +293,7 @@ export struct TranscriptionConfigPage {
         Text(provider.label.length > 0 ? provider.label : provider.id)
           .fontSize(14)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .fontColor(SketchColors.text)
         StatePill({
           text: provider.test_status,
           tone: provider.test_status === 'ok' ? 'ok' : (provider.test_status === 'failed' ? 'alert' : 'muted'),
@@ -300,7 +301,7 @@ export struct TranscriptionConfigPage {
         Blank()
         Text(provider.id)
           .fontSize(10)
-          .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+          .fontColor(SketchColors.muted)
       }
       .width('100%')
       InfoRow({ label: 'adapter', value: provider.adapter_id })
@@ -310,8 +311,8 @@ export struct TranscriptionConfigPage {
     }
     .width('100%')
     .padding(12)
-    .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-    .borderRadius(10)
+    .backgroundColor(SketchColors.soft)
+    .borderRadius(0)
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -338,7 +339,7 @@ export struct TranscriptionConfigPage {
               StatePill({ text: this.transcriptionStateLabel(), tone: this.transcriptionStateTone() })
               Text(this.transcriptionProviderId())
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
             }
             .width('100%')
             InfoRow({ label: '原因', value: this.transcriptionReason() })
@@ -346,49 +347,49 @@ export struct TranscriptionConfigPage {
             InfoRow({ label: '引擎库', value: this.transcriptionEngineLib() })
             Text('state=configured/ready 只说明路径/文件解析结果；真正能不能转写，要跑一次「连接测试」。')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+              .fontColor(SketchColors.muted)
               .width('100%')
           }
           .width('100%')
           .padding(14)
-          .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-          .borderRadius(14)
+          .backgroundColor(SketchColors.paper)
+          .drawModifier(sketchOutline())
           .alignItems(HorizontalAlign.Start)
 
           Column({ space: 8 }) {
             SectionTitle({ text: '本机转写（sherpa_onnx）' })
             Text('模型目录（model 是目录，不是文件名）')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+              .fontColor(SketchColors.muted)
               .width('100%')
-            TextInput({ text: this.modelDir, placeholder: '<filesDir>/asr/sense-voice' })
+            TextInput({ text: this.modelDir, placeholder: '<filesDir>/asr/sense-voice' }).attributeModifier(sketchInput)
               .height(42)
               .fontSize(13)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
+              .backgroundColor(SketchColors.soft)
               .onChange((value: string) => {
                 this.modelDir = value;
               })
             Text('SenseVoice 模型不在 HAP 里，需要另外下载/导入到应用沙箱；当前没有产品下载源，' +
               '本页不伪造「一键下载」。')
               .fontSize(11)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+              .fontColor(SketchColors.muted)
               .width('100%')
             Row({ space: 8 }) {
               Button(this.saveBusy ? '保存中…' : '保存配置')
+                .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(13)
-                .height(36)
                 .enabled(!this.saveBusy)
-                .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+                .backgroundColor(SketchColors.button)
+                .fontColor(SketchColors.ink)
                 .onClick(() => {
                   this.save();
                 })
               Button(this.testBusy ? '测试中…' : '连接测试（真加载模型）')
+                .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(13)
-                .height(36)
                 .enabled(!this.testBusy)
-                .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                .backgroundColor(SketchColors.soft)
+                .fontColor(SketchColors.text)
                 .onClick(() => {
                   this.test();
                 })
@@ -418,20 +419,20 @@ export struct TranscriptionConfigPage {
                 })
                 Text(JSON.stringify((this.testReport as ProviderTestReport).results))
                   .fontSize(11)
-                  .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                  .fontColor(SketchColors.muted)
                   .width('100%')
               }
               .width('100%')
               .padding(10)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .borderRadius(10)
+              .backgroundColor(SketchColors.soft)
+              .borderRadius(0)
               .alignItems(HorizontalAlign.Start)
             }
           }
           .width('100%')
           .padding(14)
-          .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-          .borderRadius(14)
+          .backgroundColor(SketchColors.paper)
+          .drawModifier(sketchOutline())
           .alignItems(HorizontalAlign.Start)
 
           Column({ space: 6 }) {
@@ -440,13 +441,13 @@ export struct TranscriptionConfigPage {
               Text('没有配置行。注意：providers.list 不包含内建引擎行，没有配置行不等于不能转写' +
                 '（可能走随包/环境变量默认）。')
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
             } else if (this.providers.length === 0) {
               // 读失败 ≠ 没有配置行。错误条已经在上面。
               Text('provider 列表没有读出来：这不代表没有配置行；原因见上面的错误。')
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
             } else {
               ForEach(this.providers, (provider: ProviderConfig) => {
@@ -454,31 +455,31 @@ export struct TranscriptionConfigPage {
               }, (provider: ProviderConfig) => `${provider.id}-${provider.test_status}`)
             }
             Button(this.runBusy ? '运行中…' : '立即运行待办任务')
+              .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(13)
-              .height(36)
               .enabled(!this.runBusy)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .fontColor($r('sys.color.ohos_id_color_text_primary'))
+              .backgroundColor(SketchColors.soft)
+              .fontColor(SketchColors.text)
               .onClick(() => {
                 this.runDue();
               })
             if (this.runMessage.length > 0) {
               Text(this.runMessage)
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
             }
           }
           .width('100%')
           .padding(14)
-          .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-          .borderRadius(14)
+          .backgroundColor(SketchColors.paper)
+          .drawModifier(sketchOutline())
           .alignItems(HorizontalAlign.Start)
 
           Text('说明：保存后核心会把 test_status 置回 untested；「连接测试」会真加载模型并转写 0.05 秒静音，' +
             '耗时几秒，放在 TaskPool 里跑。')
             .fontSize(11)
-            .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
             .padding({ bottom: 24 })
         }
@@ -489,8 +490,8 @@ export struct TranscriptionConfigPage {
       .height('100%')
       // 同 CaptureDetailPage：Scroll 的 align 默认 Center，内容不足一屏会垂直居中。
       .align(Alignment.Top)
-      .backgroundColor($r('sys.color.ohos_id_color_background'))
+      .backgroundColor(SketchColors.canvas)
     }
-    .title('转写引擎')
+    .title('转写引擎', { backgroundColor: SketchColors.canvas })
   }
 }

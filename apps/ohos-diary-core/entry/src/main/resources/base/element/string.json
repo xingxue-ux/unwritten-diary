@@ -2,15 +2,15 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "Diary core ArkTS NAPI reference module"
+      "value": "不写日记"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "Runs the diary core smoke sequence and logs it to hilog"
+      "value": "记录、回看和整理留在本机的日子"
     },
     {
       "name": "EntryAbility_label",
-      "value": "Diary Core"
+      "value": "不写日记"
     },
     {
       "name": "microphone_reason",

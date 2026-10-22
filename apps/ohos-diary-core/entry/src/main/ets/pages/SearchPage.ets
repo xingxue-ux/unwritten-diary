@@ -1,3 +1,4 @@
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchInput, sketchArea, sketchOutline } from '../ui/Sketch';
 // 搜索：关键词 / 语义 / 混合三种模式。
 //
 // 用到的 C ABI：`search.start`、`search.nextPage`、`search.upgrade`、`search.cancel`、
@@ -271,14 +272,14 @@ export struct SearchPage {
   @Builder
   modeButton(label: string, value: string) {
     Button(label)
+      .attributeModifier(sketchButton).drawModifier(sketchOutline())
       .fontSize(14)
-      .height(34)
       .backgroundColor(this.mode === value
-        ? $r('sys.color.ohos_id_color_emphasize')
-        : $r('sys.color.ohos_id_color_sub_background'))
+        ? SketchColors.button
+        : SketchColors.soft)
       .fontColor(this.mode === value
-        ? $r('sys.color.ohos_id_color_text_primary_contrary')
-        : $r('sys.color.ohos_id_color_text_primary'))
+        ? SketchColors.ink
+        : SketchColors.text)
       .onClick(() => {
         this.setMode(value);
       })
@@ -293,20 +294,20 @@ export struct SearchPage {
       Text('!')
         .fontSize(12)
         .fontWeight(FontWeight.Bold)
-        .fontColor($r('sys.color.ohos_id_color_warning'))
+        .fontColor(SketchColors.warning)
         .width(16)
         .height(16)
         .textAlign(TextAlign.Center)
         .flexShrink(0)
       Text(text)
         .fontSize(12)
-        .fontColor($r('sys.color.ohos_id_color_text_primary'))
+        .fontColor(SketchColors.text)
         .layoutWeight(1)
     }
     .width('100%')
     .padding(10)
-    .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-    .borderRadius(10)
+    .backgroundColor(SketchColors.soft)
+    .borderRadius(0)
     .alignItems(VerticalAlign.Top)
   }
 
@@ -316,7 +317,7 @@ export struct SearchPage {
       Row({ space: 6 }) {
         Text(hit.day_key === null ? '日期未知' : hit.day_key)
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
         StatePill({ text: hitSourceKindLabel(hit.source_kind), tone: 'muted' })
         Blank()
         ForEach(hit.matched_by, (matched: string) => {
@@ -328,14 +329,14 @@ export struct SearchPage {
         Text(hit.title)
           .fontSize(14)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .fontColor(SketchColors.text)
           .width('100%')
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       Text(hit.snippet === null ? '（没有摘录）' : hit.snippet)
         .fontSize(15)
-        .fontColor($r('sys.color.ohos_id_color_text_primary'))
+        .fontColor(SketchColors.text)
         .width('100%')
         .maxLines(4)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -343,27 +344,27 @@ export struct SearchPage {
         Text(`覆盖：${coverageLabel(hit.coverage)}`)
           .fontSize(11)
           .fontColor(hit.coverage === 'complete'
-            ? $r('sys.color.ohos_id_color_text_tertiary')
-            : $r('sys.color.ohos_id_color_warning'))
+            ? SketchColors.muted
+            : SketchColors.warning)
         if (this.locatorLabel(hit).length > 0) {
           Text(this.locatorLabel(hit))
             .fontSize(11)
-            .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            .fontColor(SketchColors.muted)
         }
       }
       .width('100%')
     }
     .width('100%')
     .padding(14)
-    .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-    .borderRadius(14)
+    .backgroundColor(SketchColors.paper)
+    .drawModifier(sketchOutline())
     .alignItems(HorizontalAlign.Start)
   }
 
   build() {
     Column({ space: 10 }) {
       Column() {
-        PageTitle({ title: '搜索', subtitle: '关键词、语义，或先关键词再显式升级到混合' })
+        PageTitle({ title: '搜索', subtitle: '找回本机的文字与原始材料。' })
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 12 })
@@ -378,11 +379,11 @@ export struct SearchPage {
       .padding({ left: 16, right: 16 })
 
       Row({ space: 8 }) {
-        TextInput({ placeholder: '搜索日记内容…', text: this.query })
+        TextInput({ placeholder: '搜索一个词，或一段记忆…', text: this.query }).attributeModifier(sketchInput)
           .layoutWeight(1)
           .height(42)
           .fontSize(15)
-          .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
+          .backgroundColor(SketchColors.soft)
           .onChange((value: string) => {
             this.query = value;
           })
@@ -390,11 +391,11 @@ export struct SearchPage {
             this.startSearch();
           })
         Button('搜索')
-          .height(42)
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
           .fontSize(15)
           .enabled(!this.loading)
-          .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-          .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+          .backgroundColor(SketchColors.button)
+          .fontColor(SketchColors.ink)
           .onClick(() => {
             this.startSearch();
           })
@@ -410,31 +411,31 @@ export struct SearchPage {
             Text('!')
               .fontSize(12)
               .fontWeight(FontWeight.Bold)
-              .fontColor($r('sys.color.ohos_id_color_warning'))
+              .fontColor(SketchColors.warning)
               .width(16)
               .height(16)
               .textAlign(TextAlign.Center)
               .flexShrink(0)
             Text(this.semanticBanner())
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_primary'))
+              .fontColor(SketchColors.text)
               .layoutWeight(1)
           }
           .width('100%')
           .alignItems(VerticalAlign.Top)
           Button('去设置查看/重建语义索引')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(12)
-            .height(30)
-            .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+            .backgroundColor(SketchColors.button)
+            .fontColor(SketchColors.ink)
             .onClick(() => {
               this.pathStack.pushPathByName('settings', '');
             })
         }
         .width('100%')
         .padding(12)
-        .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-        .borderRadius(12)
+        .backgroundColor(SketchColors.soft)
+        .borderRadius(0)
         .margin({ left: 16, right: 16 })
         .alignItems(HorizontalAlign.Start)
       }
@@ -442,7 +443,7 @@ export struct SearchPage {
       if (this.statusError.code.length > 0) {
         Text(`索引状态读取失败（${this.statusError.code}）；搜索仍可继续，但无法判断语义覆盖。`)
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
           .width('100%')
           .padding({ left: 16, right: 16 })
       }
@@ -463,37 +464,37 @@ export struct SearchPage {
         Row({ space: 8 }) {
           Text(`阶段：${searchPhaseLabel(this.phase)}`)
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
           if (this.indexCoverage.length > 0) {
             Text(`覆盖：${coverageLabel(this.indexCoverage)}`)
               .fontSize(12)
               .fontColor(this.indexCoverage === 'complete'
-                ? $r('sys.color.ohos_id_color_text_secondary')
-                : $r('sys.color.ohos_id_color_warning'))
+                ? SketchColors.muted
+                : SketchColors.warning)
           }
           if (this.hasMore) {
             Text('还有下一页')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+              .fontColor(SketchColors.muted)
           }
           Blank()
           if (this.mode === 'hybrid' && this.phase === 'keyword_ready' && !this.upgradeAttempted) {
             Button(this.upgrading ? '融合中…' : '升级为混合检索')
+              .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(12)
-              .height(30)
               .enabled(!this.upgrading)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .fontColor($r('sys.color.ohos_id_color_text_primary'))
+              .backgroundColor(SketchColors.soft)
+              .fontColor(SketchColors.text)
               .onClick(() => {
                 this.upgrade();
               })
           }
           if (this.phase !== 'cancelled' && this.sessionId.length > 0) {
             Button('取消本次搜索')
+              .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(12)
-              .height(30)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+              .backgroundColor(SketchColors.soft)
+              .fontColor(SketchColors.muted)
               .onClick(() => {
                 this.cancel();
               })
@@ -524,7 +525,7 @@ export struct SearchPage {
             Text('这次检索没有完成，结果不代表「没有匹配的内容」；原因见上面的错误。' +
               '可以重试搜索，或先确认索引状态。')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+              .fontColor(SketchColors.muted)
               .width('100%')
               .padding({ left: 16, right: 16 })
           } else {
@@ -559,10 +560,10 @@ export struct SearchPage {
           } else if (this.hasMore) {
             ListItem() {
               Button('加载更多')
+                .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(13)
-                .height(36)
-                .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                .backgroundColor(SketchColors.soft)
+                .fontColor(SketchColors.text)
                 .onClick(() => {
                   this.loadMore();
                 })
@@ -571,7 +572,7 @@ export struct SearchPage {
             ListItem() {
               Text('没有更多了')
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
                 .textAlign(TextAlign.Center)
                 .padding(12)
@@ -588,6 +589,6 @@ export struct SearchPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('sys.color.ohos_id_color_background'))
+    .backgroundColor(SketchColors.canvas)
   }
 }

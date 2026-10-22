@@ -1,3 +1,4 @@
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchOutline } from '../ui/Sketch';
 // 片段（契约 §2.4）：原始材料的时间线——保存下来的文字、录音、文件，**不是日记正文**。
 //
 // 从一个旧的「今日」页拆出来的：按天列出 captures（`captures.list`，游标分页），
@@ -366,17 +367,17 @@ export struct SnippetsPage {
       Text(this.typeIcon(row))
         .fontSize(16)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+        .fontColor(SketchColors.muted)
         .width(38)
         .height(38)
         .textAlign(TextAlign.Center)
-        .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-        .borderRadius(19)
+        .backgroundColor(SketchColors.soft)
+        .borderRadius(0)
       Column({ space: 6 }) {
         Row({ space: 8 }) {
           Text(formatTime(row.capture.occurred_at))
             .fontSize(13)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
           StatePill({
             text: captureStateLabel(row.capture.state),
             tone: row.capture.state === 'draft'
@@ -391,7 +392,7 @@ export struct SnippetsPage {
         .width('100%')
         Text(this.summaryOf(row))
           .fontSize(16)
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .fontColor(SketchColors.text)
           .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
@@ -400,15 +401,15 @@ export struct SnippetsPage {
           Row({ space: 8 }) {
             Text(`来源状态没读出来（${row.extractionError.code}）：${row.extractionError.message}`)
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_warning'))
+              .fontColor(SketchColors.warning)
               .layoutWeight(1)
               .maxLines(3)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
             Button('重试读取')
+              .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(12)
-              .height(28)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .fontColor($r('sys.color.ohos_id_color_text_primary'))
+              .backgroundColor(SketchColors.soft)
+              .fontColor(SketchColors.text)
               .onClick(() => {
                 this.retryExtract(row);
               })
@@ -419,22 +420,22 @@ export struct SnippetsPage {
         Row({ space: 6 }) {
           Text(this.typeLabel(row))
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            .fontColor(SketchColors.muted)
           if (row.extracted !== null && row.extracted.coverage !== 'complete') {
             Text('·')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+              .fontColor(SketchColors.muted)
             Text(coverageLabel(row.extracted.coverage))
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_warning'))
+              .fontColor(SketchColors.warning)
           }
           if (row.capture.state === 'draft') {
             Text('·')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+              .fontColor(SketchColors.muted)
             Text('未提交')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_warning'))
+              .fontColor(SketchColors.warning)
           }
         }
         .width('100%')
@@ -444,8 +445,8 @@ export struct SnippetsPage {
     }
     .width('100%')
     .padding(14)
-    .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-    .borderRadius(14)
+    .backgroundColor(SketchColors.paper)
+    .drawModifier(sketchOutline())
     .alignItems(VerticalAlign.Top)
     .onClick(() => {
       this.pathStack.pushPathByName('capture', row.capture.id);
@@ -457,7 +458,7 @@ export struct SnippetsPage {
       Row({ space: 8 }) {
         Column() {
           PageTitle({
-            title: '片段',
+            title: '留下的片段',
             subtitle: `${dayLabelAtOffset(this.dayOffset)} · 留下的片段（原始记录与转写状态）`,
           })
         }
@@ -465,42 +466,45 @@ export struct SnippetsPage {
         .alignItems(HorizontalAlign.Start)
         Text('原始材料')
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+          .fontColor(SketchColors.muted)
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 12 })
 
       Row({ space: 8 }) {
         Button('前一天')
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
           .fontSize(13)
           .height(32)
-          .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .backgroundColor(SketchColors.soft)
+          .fontColor(SketchColors.text)
           .onClick(() => {
             this.changeDay(-1);
           })
         Button('后一天')
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
           .fontSize(13)
           .height(32)
           .enabled(this.dayOffset < 0)
-          .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .backgroundColor(SketchColors.soft)
+          .fontColor(SketchColors.text)
           .onClick(() => {
             this.changeDay(1);
           })
         Button('回到今天')
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
           .fontSize(13)
           .height(32)
           .enabled(this.dayOffset !== 0)
-          .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .backgroundColor(SketchColors.soft)
+          .fontColor(SketchColors.text)
           .onClick(() => {
             this.changeDay(-this.dayOffset);
           })
         Blank()
         Text(this.loading ? '读取中' : `${this.rows.length} 条`)
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+          .fontColor(SketchColors.muted)
       }
       .width('100%')
       .padding({ left: 16, right: 16 })
@@ -539,7 +543,7 @@ export struct SnippetsPage {
             ListItem() {
               Text('这一天的片段没有读出来：这不代表今天没有片段；原因见上面的错误。')
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
                 .padding(12)
             }
@@ -562,7 +566,7 @@ export struct SnippetsPage {
               ListItem() {
                 Text('没有更多了')
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                  .fontColor(SketchColors.muted)
                   .width('100%')
                   .textAlign(TextAlign.Center)
                   .padding(12)
@@ -584,6 +588,6 @@ export struct SnippetsPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('sys.color.ohos_id_color_background'))
+    .backgroundColor(SketchColors.canvas)
   }
 }

@@ -1,3 +1,4 @@
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchOutline } from '../ui/Sketch';
 // 任务中心：`jobs.status` 聚合 + `jobs.list` 游标翻页 + `jobs.get` 逐条详情。
 //
 // 按钮只按**状态**给（文档 §3.2 / §3.5）：
@@ -379,13 +380,13 @@ export struct JobsPage {
         .fontSize(18)
         .fontWeight(FontWeight.Bold)
         .fontColor(tone === 'warn'
-          ? $r('sys.color.ohos_id_color_warning')
+          ? SketchColors.warning
           : (tone === 'alert'
-            ? $r('sys.color.ohos_id_color_alert')
-            : $r('sys.color.ohos_id_color_text_primary')))
+            ? SketchColors.alert
+            : SketchColors.text))
       Text(label)
         .fontSize(11)
-        .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+        .fontColor(SketchColors.muted)
     }
     .layoutWeight(1)
     .padding({ top: 8, bottom: 8 })
@@ -395,14 +396,15 @@ export struct JobsPage {
   @Builder
   filterButton(label: string, index: number) {
     Button(label)
+      .attributeModifier(sketchButton).drawModifier(sketchOutline())
       .fontSize(13)
-      .height(32)
+      .margin({ right: 6, bottom: 6 })
       .backgroundColor(this.filterIndex === index
-        ? $r('sys.color.ohos_id_color_emphasize')
-        : $r('sys.color.ohos_id_color_sub_background'))
+        ? SketchColors.button
+        : SketchColors.soft)
       .fontColor(this.filterIndex === index
-        ? $r('sys.color.ohos_id_color_text_primary_contrary')
-        : $r('sys.color.ohos_id_color_text_primary'))
+        ? SketchColors.ink
+        : SketchColors.text)
       .onClick(() => {
         this.setFilter(index);
       })
@@ -431,44 +433,44 @@ export struct JobsPage {
       if (job.requires_user_action) {
         if (this.isConfigAttention(job)) {
           Button('去配置')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(34)
-            .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+            .backgroundColor(SketchColors.button)
+            .fontColor(SketchColors.ink)
             .onClick(() => {
               this.goConfigure(job);
             })
         } else if (this.isTerminalAttention(job)) {
           Text('终态、需要人工处理；没有可靠的自动跳转目标，先看上面的错误码。')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
         } else {
           Text('需要处理，但核心没有给出 attention_key；不猜原因、不乱跳。')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
         }
       }
       Row({ space: 8 }) {
         if (this.canRetry(job)) {
           Button(this.busyJobId === job.id ? '提交中…' : '重试')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(34)
             .enabled(this.busyJobId.length === 0)
-            .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+            .backgroundColor(SketchColors.button)
+            .fontColor(SketchColors.ink)
             .onClick(() => {
               this.retry(job);
             })
         }
         if (this.canCancel(job)) {
           Button(this.busyJobId === job.id ? '提交中…' : '取消任务')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(34)
             .enabled(this.busyJobId.length === 0)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.cancel(job);
             })
@@ -489,15 +491,15 @@ export struct JobsPage {
         Text(jobKindLabel(job.kind))
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .fontColor(SketchColors.text)
         StatePill({ text: jobStateLabel(job.state), tone: jobStateTone(job.state) })
         Blank()
         Text(job.id.substring(0, 10))
           .fontSize(11)
-          .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+          .fontColor(SketchColors.muted)
         Text(this.expandedJobId === job.id ? '收起' : '详情')
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_emphasize'))
+          .fontColor(SketchColors.ink)
       }
       .width('100%')
       .onClick(() => {
@@ -506,16 +508,16 @@ export struct JobsPage {
       Row({ space: 10 }) {
         Text(`尝试 ${job.attempt_count}/${job.max_attempts}`)
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
         if (job.error_code !== null) {
           Text(`错误码：${job.error_code}`)
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_alert'))
+            .fontColor(SketchColors.alert)
         }
         if (job.next_attempt_at !== null) {
           Text(`下次：${formatDateTime(job.next_attempt_at)}`)
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            .fontColor(SketchColors.muted)
         }
       }
       .width('100%')
@@ -523,10 +525,10 @@ export struct JobsPage {
         Row({ space: 8 }) {
           Progress({ value: job.progress.completed, total: job.progress.total, type: ProgressType.Linear })
             .layoutWeight(1)
-            .color($r('sys.color.ohos_id_color_emphasize'))
+            .color(SketchColors.ink)
           Text(`${job.progress.completed} / ${job.progress.total}`)
             .fontSize(11)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
         }
         .width('100%')
       }
@@ -536,11 +538,11 @@ export struct JobsPage {
           if (this.isConfigAttention(job)) {
             Text('可以「去配置」')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_warning'))
+              .fontColor(SketchColors.warning)
           } else {
             Text('没有可靠的跳转目标')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+              .fontColor(SketchColors.muted)
           }
         }
         .width('100%')
@@ -559,8 +561,8 @@ export struct JobsPage {
     }
     .width('100%')
     .padding(14)
-    .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-    .borderRadius(14)
+    .backgroundColor(SketchColors.paper)
+    .drawModifier(sketchOutline())
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -573,11 +575,11 @@ export struct JobsPage {
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
         Button(this.runningDue ? '运行中…' : '运行到期任务')
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
           .fontSize(13)
-          .height(36)
           .enabled(!this.runningDue)
-          .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-          .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+          .backgroundColor(SketchColors.button)
+          .fontColor(SketchColors.ink)
           .onClick(() => {
             this.runDue();
           })
@@ -598,32 +600,32 @@ export struct JobsPage {
             if (this.status.due_backlog > 0) {
               Text(`到期积压：${this.status.due_backlog}`)
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_warning'))
+                .fontColor(SketchColors.warning)
             }
             if (this.status.next_wakeup !== null) {
               Text(`下次唤醒：${formatDateTime(this.status.next_wakeup)}`)
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .fontColor(SketchColors.muted)
             }
             if (this.status.cancelled > 0) {
               Text(`已取消：${this.status.cancelled}`)
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .fontColor(SketchColors.muted)
             }
           }
           .width('100%')
         }
         .width('100%')
         .padding(10)
-        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-        .borderRadius(12)
+        .backgroundColor(SketchColors.paper)
+        .drawModifier(sketchOutline())
         .margin({ left: 16, right: 16 })
       }
 
       if (this.runMessage.length > 0) {
         Text(this.runMessage)
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
           .width('100%')
           .padding({ left: 16, right: 16 })
       }
@@ -631,7 +633,7 @@ export struct JobsPage {
       if (this.statusError.code.length > 0) {
         Text(`队列计数读取失败（${this.statusError.code}）；列表仍按真实任务展示。`)
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
           .width('100%')
           .padding({ left: 16, right: 16 })
       }
@@ -649,7 +651,7 @@ export struct JobsPage {
         .padding({ left: 16, right: 16 })
       }
 
-      Row({ space: 6 }) {
+      Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(this.filterLabels, (label: string, index: number) => {
           this.filterButton(label, index)
         }, (label: string, index: number) => `${index}-${label}`)
@@ -676,7 +678,7 @@ export struct JobsPage {
             ListItem() {
               Text('任务列表没有读出来：这不代表没有任务；原因见上面的错误。')
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
                 .padding(12)
             }
@@ -694,7 +696,7 @@ export struct JobsPage {
               ListItem() {
                 Text('没有更多了')
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                  .fontColor(SketchColors.muted)
                   .width('100%')
                   .textAlign(TextAlign.Center)
                   .padding(12)
@@ -716,6 +718,6 @@ export struct JobsPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('sys.color.ohos_id_color_background'))
+    .backgroundColor(SketchColors.canvas)
   }
 }

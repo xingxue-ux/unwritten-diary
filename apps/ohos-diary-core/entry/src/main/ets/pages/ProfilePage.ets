@@ -1,24 +1,5 @@
-// 我的（契约 §2.5）：个人空间与设置分组——**不是**一张诊断表，也不是一级「设置」tab。
-//
-// 分组（与 Windows 的 `_profilePage` 同构）：
-// - 创作与整理：模型服务（语义/转写状态）、任务中心（二级页）、风格偏好（接口已就绪，界面待重做）；
-// - 设置：整理设置与默认风格（契约 4.4 的 `settings.get` / `settings.update`，已接 C ABI）；
-// - 资料与应用：插件（未接）/ 备份与恢复（接口已就绪，界面待重做）/ 阅读导出（接口已就绪，
-//   界面待重做）/ 存储与回收站（已接）/ 封面与加载动画（未做）；都如实标注，不摆假按钮；
-// - 设备与诊断：语义索引、队列概览、诊断与能力清单（鸿蒙保留这一组）。
-//
-// 设置这一块**只做最小接线**：读写、三态与乐观锁都在 `state/SettingsStore.ets`
-// （纯数据层，不依赖 ArkUI）。这里只把 store 的字段镜像到 `@State` 上并摆几个
-// 入口，证明接口可用；面板的视觉等 UI 统一那一步再做。
-//
-// 状态如实（不拿「模型加载过」冒充「索引就绪」）：
-// - `runtime_config.semantic.state` 只表示模型/配置的状态；
-// - 语义索引是否覆盖全部块，看 `indexes.status.semantic_index_ready` 与 `reasons`；
-// - `reasons[]` 是核心写的中文整句，**原样展示**，不改写成自己的文案；
-// - 配置只在 `Core::open` 时读一次；当前没有写 `core-config.json` 的 C ABI，
-//   所以「去配置」只能如实说是缺口（不伪造一个保存按钮）。
-// - 隐私承诺用契约 `privacy.local_only` 的原句，不改写。
-
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchOutline } from '../ui/Sketch';
+// 我的：沿用 Windows 的创作与整理、资料与应用分组；设备诊断按需展开。
 import { common } from '@kit.AbilityKit';
 import { DiaryCore } from '../core/DiaryCore';
 import {
@@ -59,6 +40,8 @@ export struct ProfilePage {
   @State rebuildMessage: string = '';
   @State rebuildError: UiError = EMPTY_UI_ERROR;
   @State showCapabilities: boolean = false;
+  @State showDiagnostics: boolean = false;
+  @State showSettings: boolean = false;
   @State hasBacklog: boolean = false;
   /** 设置块：store 的字段镜像（数据与并发都在 store 里，页面只负责显示）。 */
   @State settings: Settings | null = null;
@@ -489,147 +472,28 @@ export struct ProfilePage {
     SectionTitle({ text: title })
   }
 
-  build() {
-    Scroll() {
-      Column({ space: 10 }) {
-        Row({ space: 8 }) {
-          Column() {
-            PageTitle({
-              title: '我的',
-              subtitle: '本地资料边界、整理与默认风格设置、设备与诊断',
-            })
-          }
-          .layoutWeight(1)
-          .alignItems(HorizontalAlign.Start)
-          Button('刷新')
-            .fontSize(13)
-            .height(34)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
-            .onClick(() => {
-              this.load();
-            })
-        }
-        .width('100%')
-        .padding({ top: 12 })
+  @Builder
+  entry(label: string, description: string, route: string) {
+    Row({ space: 14 }) {
+      Column({ space: 5 }) {
+        Text(label).fontSize(16).fontColor(SketchColors.ink)
+        Text(route === 'jobs' ? this.taskSummary() : description).fontSize(13).fontColor(SketchColors.muted)
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      Text('›').fontSize(24).fontColor(SketchColors.muted)
+    }
+    .width('100%').padding({ top: 14, bottom: 14 })
+    .constraintSize({ minHeight: 64 }).accessibilityLevel('yes')
+    .accessibilityText(`${label}，${description}`)
+    .onClick(() => {
+      if (route === 'schedule') { this.showSettings = !this.showSettings; }
+      else if (route === 'diagnostics') { this.showDiagnostics = !this.showDiagnostics; }
+      else { this.pathStack.pushPathByName(route, ''); }
+    })
+    Divider().color(SketchColors.line)
+  }
 
-        if (this.loading && this.info === null) {
-          LoadingRow({ text: '读取设置与索引状态…' })
-        }
-
-        if (this.error.code.length > 0) {
-          ErrorBanner({
-            error: this.error,
-            showReload: true,
-            onReload: () => {
-              this.load();
-            },
-          })
-        }
-
-        // ---------------------------------------------------------- 本地资料边界
-        Column({ space: 4 }) {
-          this.section('本地资料边界')
-          Text('日记默认只保存在这台设备上；只有你主动配置的模型服务会收到交给它处理的材料。')
-            .fontSize(14)
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
-            .width('100%')
-          InfoRow({
-            label: '最近记录',
-            value: this.info === null ? '—' : `${(this.info as LibraryInfo).capture_count} 条`,
-          })
-          Text('不登录、不自动同步；备份/导出只写到用户选择的位置（当前鸿蒙构建还没有备份/导出入口）。')
-            .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
-            .width('100%')
-        }
-        .width('100%')
-        .padding(14)
-        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-        .borderRadius(14)
-        .alignItems(HorizontalAlign.Start)
-
-        // ---------------------------------------------------------- 创作与整理
-        SectionTitle({ text: '创作与整理' })
-
-        Column({ space: 4 }) {
-          this.section('模型服务（转写 / 语义）')
-          Row({ space: 8 }) {
-            Text('语义')
-              .fontSize(13)
-              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
-              .width(92)
-            StatePill({ text: this.semanticStateLabel(), tone: this.semanticStateTone() })
-            Text(`${this.configSourceLabel()} · ${this.semanticModelVersion()}`)
-              .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
-              .layoutWeight(1)
-              .maxLines(2)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-          .width('100%')
-          InfoRow({ label: '原因', value: this.semanticReason() })
-          InfoRow({ label: '模型目录', value: this.semanticModelDir() })
-          InfoRow({ label: 'ORT 库', value: this.semanticOrt() })
-          Row({ space: 8 }) {
-            Text('转写')
-              .fontSize(13)
-              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
-              .width(92)
-            StatePill({ text: this.transcriptionStateLabel(), tone: this.transcriptionStateTone() })
-            Text(`${this.transcriptionConfigSource()} · ${this.transcriptionModelDir()}`)
-              .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
-              .layoutWeight(1)
-              .maxLines(2)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-          .width('100%')
-          InfoRow({ label: '原因', value: this.transcriptionReason() })
-          InfoRow({ label: '引擎库', value: this.transcriptionEngineLib() })
-          InfoRow({ label: '引擎来源', value: this.transcriptionEngineLibSource() })
-          Button('打开转写引擎配置')
-            .fontSize(13)
-            .height(34)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
-            .onClick(() => {
-              this.pathStack.pushPathByName('transcription', '');
-            })
-          if (this.semanticState() === 'absent' || this.semanticState() === 'invalid') {
-            Text('语义模型要在 core-config.json 里配置；当前 C ABI 没有写配置文件的接口，' +
-              '所以这里只能显示状态，不能伪造「一键配置」。')
-              .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_warning'))
-              .width('100%')
-          }
-          // 任务中心是**二级页**：一级 tab 里没有「任务」（契约 §0.2）。
-          InfoRow({ label: '任务中心', value: this.taskSummary() })
-          Row({ space: 8 }) {
-            Button('打开任务中心')
-              .fontSize(13)
-              .height(34)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .fontColor($r('sys.color.ohos_id_color_text_primary'))
-              .onClick(() => {
-                this.pathStack.pushPathByName('jobs', '');
-              })
-            Blank()
-          }
-          .width('100%')
-          InfoRow({ label: '风格偏好', value: '风格：接口已就绪（styles.list / get / save），界面待重做；本页暂不提供风格选择器，默认风格见下面的「设置」' })
-        }
-        .width('100%')
-        .padding(14)
-        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-        .borderRadius(14)
-        .alignItems(HorizontalAlign.Start)
-
-        // ---------------------------------------------------------- 设置
-        // 契约 4.4 的 `settings.get` / `settings.update` 已经在 C ABI 的 WIRED_METHODS 里
-        // （59 条方法中包含这两条），所以这里是真的读写，不是「未接」占位。
-        // 只做最小接线（显示 + 触发 update）；三态/乐观锁在 `state/SettingsStore.ets`，
-        // 面板视觉等 UI 统一那一步再做——这里沿用本页既有的组件（InfoRow/StatePill）。
+  @Builder
+  settingsPanel() {
         SectionTitle({ text: '设置' })
 
         Column({ space: 4 }) {
@@ -649,14 +513,14 @@ export struct ProfilePage {
             } else {
               Text('设置还没有读到，上面的错误说明了原因；这一块不做本地猜测。')
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
             }
           } else {
             Row({ space: 8 }) {
               Text('自动整理')
                 .fontSize(13)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width(92)
                 .flexShrink(0)
               StatePill({
@@ -665,6 +529,7 @@ export struct ProfilePage {
               })
               Blank()
               Toggle({ type: ToggleType.Switch, isOn: this.currentSettings().auto_organize_enabled })
+                .selectedColor(SketchColors.ink)
                 .enabled(!this.settingsBusy)
                 .onChange((isOn: boolean) => {
                   this.toggleAutoOrganize(isOn);
@@ -680,11 +545,11 @@ export struct ProfilePage {
             if (this.currentSettings().default_style_id !== null) {
               Row({ space: 8 }) {
                 Button('清空默认风格')
+                  .attributeModifier(sketchButton).drawModifier(sketchOutline())
                   .fontSize(13)
-                  .height(34)
                   .enabled(!this.settingsBusy)
-                  .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                  .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                  .backgroundColor(SketchColors.soft)
+                  .fontColor(SketchColors.text)
                   .onClick(() => {
                     this.clearDefaultStyle();
                   })
@@ -695,7 +560,7 @@ export struct ProfilePage {
             Text('风格接口已就绪（styles.list / get / save），风格选择器界面还没做；这里只提供「清空」，不伪造选择器。' +
               '改开关不会碰这个字段（省略 = 不改，只有「清空」才发显式 null）。')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+              .fontColor(SketchColors.muted)
               .width('100%')
             InfoRow({
               label: '设置版本',
@@ -707,51 +572,22 @@ export struct ProfilePage {
             if (this.settingsMessage.length > 0) {
               Text(this.settingsMessage)
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
             }
           }
         }
         .width('100%')
         .padding(14)
-        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-        .borderRadius(14)
+        .backgroundColor(SketchColors.paper)
+        .drawModifier(sketchOutline())
         .alignItems(HorizontalAlign.Start)
 
-        // ---------------------------------------------------------- 资料与应用
-        SectionTitle({ text: '资料与应用' })
+  }
 
-        Column({ space: 4 }) {
-          this.section('资料与应用（能力状态如实标注）')
-          InfoRow({ label: '插件', value: '未接：plugins.* 还没有 C ABI' })
-          InfoRow({ label: '备份与恢复', value: '备份与恢复：接口已就绪（backups.create / inspect / restore），界面待重做' })
-          InfoRow({ label: '阅读导出', value: '阅读导出：接口已就绪（exports.create），界面待重做' })
-          // 回收站已经接通（`captures.trash / restore / previewPurge / purge` 都在
-          // WIRED_METHODS 里）：整行可点，跳二级页 `recycle`。页面本身是临时功能界面。
-          Column() {
-            InfoRow({
-              label: '存储与回收站',
-              value: '打开：回收站列表、恢复记录、预览永久清理（点这一行进入）',
-            })
-          }
-          .width('100%')
-          .onClick(() => {
-            this.pathStack.pushPathByName('recycle', '');
-          })
-          InfoRow({ label: '封面与加载动画', value: '未做：非语义页，契约不要求逐字对齐' })
-          Text('插件还没有 C ABI；备份与导出接口已就绪、页面待重做；封面与加载动画不是契约要求的语义页。' +
-            '没有页面的能力都如实写清楚，不放按了没反应的按钮。')
-            .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
-            .width('100%')
-        }
-        .width('100%')
-        .padding(14)
-        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-        .borderRadius(14)
-        .alignItems(HorizontalAlign.Start)
-
-        // ---------------------------------------------------------- 设备与诊断
+  @Builder
+  diagnosticsPanel() {
+    Column({ space: 12 }) {
         SectionTitle({ text: '设备与诊断' })
 
         Column({ space: 4 }) {
@@ -774,7 +610,7 @@ export struct ProfilePage {
               })
               Text(`已嵌入 ${this.indexStatus.embedded_chunks} / ${this.indexStatus.total_chunks} 块`)
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
             }
             .width('100%')
             InfoRow({ label: '关键词覆盖', value: `${this.indexStatus.coverage}` })
@@ -788,37 +624,37 @@ export struct ProfilePage {
               Column({ space: 4 }) {
                 Text('核心给出的原因（原样）：')
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                  .fontColor(SketchColors.muted)
                   .width('100%')
                 ForEach(this.indexStatus.reasons, (reason: string, index: number) => {
                   Text(`· ${reason}`)
                     .fontSize(12)
-                    .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                    .fontColor(SketchColors.text)
                     .width('100%')
                 }, (reason: string, index: number) => `${index}-${reason}`)
               }
               .width('100%')
               .padding(10)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .borderRadius(10)
+              .backgroundColor(SketchColors.soft)
+              .borderRadius(0)
             }
             Row({ space: 8 }) {
               Button(this.rebuilding ? '重建中…' : '一键重建语义索引')
+                .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(13)
-                .height(36)
                 .enabled(!this.rebuilding && this.canRebuildSemantic())
-                .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+                .backgroundColor(SketchColors.button)
+                .fontColor(SketchColors.ink)
                 .onClick(() => {
                   this.rebuildSemantic();
                 })
               if (this.hasBacklog) {
                 Button('再跑一轮')
+                  .attributeModifier(sketchButton).drawModifier(sketchOutline())
                   .fontSize(13)
-                  .height(36)
                   .enabled(!this.rebuilding)
-                  .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                  .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                  .backgroundColor(SketchColors.soft)
+                  .fontColor(SketchColors.text)
                   .onClick(() => {
                     this.continueRunDue();
                   })
@@ -828,13 +664,13 @@ export struct ProfilePage {
             if (!this.canRebuildSemantic()) {
               Text('模型未配置或配置无效，不能重建。先按上面的原因修复 core-config.json。')
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_warning'))
+                .fontColor(SketchColors.warning)
                 .width('100%')
             }
             if (this.rebuildMessage.length > 0) {
               Text(this.rebuildMessage)
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
             }
             if (this.rebuildError.code.length > 0) {
@@ -845,8 +681,8 @@ export struct ProfilePage {
         }
         .width('100%')
         .padding(14)
-        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-        .borderRadius(14)
+        .backgroundColor(SketchColors.paper)
+        .drawModifier(sketchOutline())
         .alignItems(HorizontalAlign.Start)
 
         // ---------------------------------------------------------- 诊断
@@ -862,10 +698,10 @@ export struct ProfilePage {
             InfoRow({ label: '恢复摘要', value: `待办任务 ${(this.info as LibraryInfo).recovery.pending_jobs}，未收尾录音 ${(this.info as LibraryInfo).recovery.open_recordings}` })
             InfoRow({ label: '能力数', value: `${(this.info as LibraryInfo).capabilities.length} 项（core.info.capabilities）` })
             Button(this.showCapabilities ? '收起能力清单' : '查看能力清单')
+              .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(12)
-              .height(30)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .fontColor($r('sys.color.ohos_id_color_text_primary'))
+              .backgroundColor(SketchColors.soft)
+              .fontColor(SketchColors.text)
               .onClick(() => {
                 this.showCapabilities = !this.showCapabilities;
               })
@@ -874,14 +710,14 @@ export struct ProfilePage {
                 ForEach((this.info as LibraryInfo).capabilities, (name: string, index: number) => {
                   Text(name)
                     .fontSize(11)
-                    .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                    .fontColor(SketchColors.muted)
                     .width('100%')
                 }, (name: string, index: number) => `${index}-${name}`)
               }
               .width('100%')
               .padding(8)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .borderRadius(8)
+              .backgroundColor(SketchColors.soft)
+              .borderRadius(0)
             }
             InfoRow({ label: '配置文件', value: this.configFileName() })
             InfoRow({ label: '配置状态', value: this.configFileState() })
@@ -889,7 +725,7 @@ export struct ProfilePage {
           } else {
             Text('核心信息还没有读到。')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+              .fontColor(SketchColors.muted)
               .width('100%')
           }
           InfoRow({ label: 'C ABI 版本', value: this.nativeVersion() })
@@ -899,27 +735,65 @@ export struct ProfilePage {
             '备份恢复（backups.*）、记录移动/删除（captures.moveDay/trash/restore）的 C ABI 都已就绪，' +
             '缺的是界面入口。本页不伪造这些入口。')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
             .padding({ top: 6 })
         }
         .width('100%')
         .padding(14)
-        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-        .borderRadius(14)
+        .backgroundColor(SketchColors.paper)
+        .drawModifier(sketchOutline())
         .alignItems(HorizontalAlign.Start)
 
         Text('状态说明：语义 state=ready 只表示模型加载过；索引是否覆盖全部块看本页的「语义索引」。')
           .fontSize(11)
-          .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+          .fontColor(SketchColors.muted)
           .width('100%')
           .padding({ bottom: 24 })
+    }.width('100%')
+  }
+
+  build() {
+    Scroll() {
+      Column({ space: 20 }) {
+        PageTitle({ title: '我的小天地', subtitle: '你的记录安静地留在这台设备上。' })
+        Text('日记默认只保存在这台设备上；只有你主动配置的模型服务会收到交给它处理的材料。')
+          .fontSize(13).fontColor(SketchColors.text).padding(20)
+          .width('100%').backgroundColor(SketchColors.soft).drawModifier(sketchOutline())
+        ErrorBanner({ error: this.error, showReload: true, onReload: () => { this.load(); } })
+        if (this.loading && this.info === null) { LoadingRow() }
+        SketchCard() {
+          Text(this.info === null ? '最近记录 · 尚未读取' : `最近记录 · ${(this.info as LibraryInfo).capture_count} 条`)
+            .fontSize(17).fontColor(SketchColors.ink)
+        }
+        SketchCard() {
+          Column() {
+            SectionTitle({ text: '创作与整理' })
+            this.entry('风格偏好', '篇幅、语气与叙述方式', 'styles')
+            this.entry('模型服务', '转写能力、连接与使用范围', 'transcription')
+            this.entry('整理时机', '安静地安排每天的整理', 'schedule')
+            this.entry('任务中心', '等待、运行与需要处理', 'jobs')
+          }.width('100%').alignItems(HorizontalAlign.Start)
+        }
+        if (this.showSettings) { this.settingsPanel() }
+        SketchCard() {
+          Column() {
+            SectionTitle({ text: '资料与应用' })
+            this.entry('搜索索引', '状态与语义索引重建', 'diagnostics')
+            this.entry('阅读导出', '按日期生成便于阅读的副本', 'export')
+            this.entry('存储与回收站', '原件、缓存、索引的边界', 'recycle')
+            Text('插件、完整备份与恢复、封面与加载动画仍在接入。')
+              .fontSize(13).fontColor(SketchColors.muted).padding({ top: 16 })
+          }.width('100%').alignItems(HorizontalAlign.Start)
+        }
+        Button(this.showDiagnostics ? '收起设备与诊断' : '设备与诊断')
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
+          .onClick(() => { this.showDiagnostics = !this.showDiagnostics; })
+        if (this.showDiagnostics) { this.diagnosticsPanel() }
       }
-      .width('100%')
-      .padding({ left: 16, right: 16 })
+      .width('100%').constraintSize({ maxWidth: 1240 })
+      .padding({ left: 16, right: 16, top: 12, bottom: 30 }).alignItems(HorizontalAlign.Start)
     }
-    .width('100%')
-    .height('100%')
-    .backgroundColor($r('sys.color.ohos_id_color_background'))
+    .width('100%').height('100%').backgroundColor(SketchColors.canvas)
   }
 }

@@ -1,3 +1,4 @@
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchOutline } from '../ui/Sketch';
 // 记录/详情：`captures.get` 显示来源与转写；草稿可手动提交为正式记录。
 //
 // 「未提交」是如实状态，不是装饰：
@@ -202,15 +203,15 @@ export struct CaptureDetailPage {
         Text(this.sourceTitle(source, index))
           .fontSize(14)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .fontColor(SketchColors.text)
         StatePill({ text: this.sourceStatus(source), tone: this.sourceTone(source) })
         Blank()
         if (source.extracted !== null) {
           Text(coverageLabel(source.extracted.coverage))
             .fontSize(11)
             .fontColor(source.extracted.coverage === 'complete'
-              ? $r('sys.color.ohos_id_color_text_tertiary')
-              : $r('sys.color.ohos_id_color_warning'))
+              ? SketchColors.muted
+              : SketchColors.warning)
         }
       }
       .width('100%')
@@ -220,37 +221,37 @@ export struct CaptureDetailPage {
       }
       Text(this.sourceBody(source))
         .fontSize(15)
-        .fontColor($r('sys.color.ohos_id_color_text_primary'))
+        .fontColor(SketchColors.text)
         .width('100%')
         .lineHeight(23)
       if (source.extracted !== null && source.extracted.coverage_reason !== null) {
         Text(source.extracted.coverage_reason)
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_warning'))
+          .fontColor(SketchColors.warning)
           .width('100%')
       }
       if (source.extracted !== null && source.extracted.error_code !== null) {
         Text(`错误码：${source.extracted.error_code}`)
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_alert'))
+          .fontColor(SketchColors.alert)
           .width('100%')
       }
       if (source.extracted !== null && source.extracted.segments.length > 0) {
         Column({ space: 6 }) {
           Text('分段时间轴')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
           ForEach((source.extracted as ExtractedContent).segments, (segment: ExtractedSegment) => {
             Row({ space: 8 }) {
               Text(this.segmentLabel(segment))
                 .fontSize(11)
-                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .fontColor(SketchColors.muted)
                 .width(110)
                 .flexShrink(0)
               Text(segment.text)
                 .fontSize(13)
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                .fontColor(SketchColors.text)
                 .layoutWeight(1)
             }
             .width('100%')
@@ -259,18 +260,18 @@ export struct CaptureDetailPage {
         }
         .width('100%')
         .padding(10)
-        .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-        .borderRadius(10)
+        .backgroundColor(SketchColors.soft)
+        .borderRadius(0)
       }
       Text(`来源 ID：${source.sourceId}`)
         .fontSize(10)
-        .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+        .fontColor(SketchColors.muted)
         .width('100%')
     }
     .width('100%')
     .padding(14)
-    .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-    .borderRadius(14)
+    .backgroundColor(SketchColors.paper)
+    .drawModifier(sketchOutline())
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -281,10 +282,10 @@ export struct CaptureDetailPage {
           Row() {
             Blank()
             Button('刷新')
+              .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(12)
-              .height(30)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .fontColor($r('sys.color.ohos_id_color_text_primary'))
+              .backgroundColor(SketchColors.soft)
+              .fontColor(SketchColors.text)
               .onClick(() => {
                 this.reload();
               })
@@ -308,7 +309,7 @@ export struct CaptureDetailPage {
                 Text(formatDateTime((this.capture as Capture).occurred_at))
                   .fontSize(20)
                   .fontWeight(FontWeight.Bold)
-                  .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                  .fontColor(SketchColors.text)
                 StatePill({
                   text: captureStateLabel((this.capture as Capture).state),
                   tone: (this.capture as Capture).state === 'draft' ? 'warn' : 'ok',
@@ -323,8 +324,8 @@ export struct CaptureDetailPage {
             }
             .width('100%')
             .padding(14)
-            .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-            .borderRadius(14)
+            .backgroundColor(SketchColors.paper)
+            .drawModifier(sketchOutline())
             .alignItems(HorizontalAlign.Start)
 
             if ((this.capture as Capture).state === 'draft') {
@@ -332,19 +333,19 @@ export struct CaptureDetailPage {
                 Text('未提交（草稿）')
                   .fontSize(15)
                   .fontWeight(FontWeight.Medium)
-                  .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                  .fontColor(SketchColors.text)
                   .width('100%')
                 Text('这条记录还没有提交。录音停止后会自动提交一次；如果当时提交失败，录音页会显示错误码。' +
                   '也可以在这里用 captures.commit 手动提交。')
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                  .fontColor(SketchColors.muted)
                   .width('100%')
                 Button(this.commitBusy ? '提交中…' : '提交为正式记录')
+                  .attributeModifier(sketchButton).drawModifier(sketchOutline())
                   .fontSize(13)
-                  .height(34)
                   .enabled(!this.commitBusy)
-                  .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-                  .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+                  .backgroundColor(SketchColors.button)
+                  .fontColor(SketchColors.ink)
                   .onClick(() => {
                     this.commit();
                   })
@@ -357,8 +358,8 @@ export struct CaptureDetailPage {
               .padding(14)
               // 同 S2：warning_transparent 在本机主题下是不透明红，不能再当卡片底色；
               // 标题用正常文字色，「草稿」的警告语义由顶部 StatePill(tone=warn) 承担。
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .borderRadius(14)
+              .backgroundColor(SketchColors.soft)
+              .borderRadius(0)
               .alignItems(HorizontalAlign.Start)
             }
 
@@ -368,14 +369,14 @@ export struct CaptureDetailPage {
                 SectionTitle({ text: (this.capture as Capture).state === 'draft' ? '草稿正文' : '正文' })
                 Text((this.capture as Capture).draft_text)
                   .fontSize(16)
-                  .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                  .fontColor(SketchColors.text)
                   .width('100%')
                   .lineHeight(24)
               }
               .width('100%')
               .padding(14)
-              .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-              .borderRadius(14)
+              .backgroundColor(SketchColors.paper)
+              .drawModifier(sketchOutline())
               .alignItems(HorizontalAlign.Start)
             }
 
@@ -401,9 +402,9 @@ export struct CaptureDetailPage {
       // Scroll 的 align 默认是 Center：内容不足一屏时会被垂直居中（真机 07/33 的
       // 上下各约 1/4 屏空白）。显式 Top，从顶部开始排。
       .align(Alignment.Top)
-      .backgroundColor($r('sys.color.ohos_id_color_background'))
+      .backgroundColor(SketchColors.canvas)
       .scrollBar(BarState.Auto)
     }
-    .title('记录')
+    .title('记录', { backgroundColor: SketchColors.canvas })
   }
 }

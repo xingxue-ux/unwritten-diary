@@ -64,6 +64,8 @@ jobs:
           # 先跑检查器自测：证明「4 入口会红、5 入口会绿、缺 key 会红、缺壳跳过」。
           # 这样真实检查红/跳过时，都能看出脚本本身没坏。
           python3 tools/test_check_ui_parity.py
+          python3 tools/test_check_ohos_visual.py
+          python3 tools/check_ohos_visual.py
       # 诊断包隐私/确定性测试：之前只在本地手动跑，Windows 上的 time.tzset
       # 硬红一直没被 CI 发现。它只用 Python 标准库，几秒钟，跟 docs 一起跑。
       - name: 诊断包隐私与 zip 确定性测试

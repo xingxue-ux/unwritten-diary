@@ -1,4 +1,5 @@
-// ⚠️ 临时功能界面：UI 将由对方按 Windows 版重做。
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchOutline } from '../ui/Sketch';
+// 与 Windows 共用视觉组件，业务语义由现有 Store 提供。
 // 本文件只做「把 DiaryStore 的状态显示出来 + 把按钮点下去」。
 // 请勿在此加入业务逻辑——那会让重做 UI 时不得不搬逻辑。
 //
@@ -27,7 +28,6 @@ import { CoreGateway, CoreResult, uiErrorOf } from '../ui/CoreGateway';
 import { EMPTY_UI_ERROR, UiError } from '../ui/Errors';
 import { databasePath } from '../ui/AppRuntime';
 import { EmptyState, ErrorBanner, LoadingRow, PageTitle, SectionTitle, StatePill } from '../ui/Common';
-import { SketchColors, SketchType } from '../ui/Sketch';
 
 /**
  * 日记（临时功能界面）：上面是这一天，下面是「有材料的天」列表。
@@ -46,6 +46,7 @@ import { SketchColors, SketchType } from '../ui/Sketch';
  */
 @Component
 export struct DiaryPage {
+  @StorageProp('ohosWideLayout') desktop: boolean = false;
   /** 页面不再 push 详情页（当天内容就显示在本页），但 Index 仍按这个签名构造本组件。 */
   pathStack: NavPathStack = new NavPathStack();
 
@@ -270,8 +271,8 @@ export struct DiaryPage {
     if (day === null) {
       return '';
     }
-    return `captures=${day.material_counts.captures} · processed=${day.material_counts.processed} · ` +
-      `pending=${day.material_counts.pending} · failed=${day.material_counts.failed}`;
+    return `材料 ${day.material_counts.captures} 条 · 已处理 ${day.material_counts.processed} 条 · ` +
+      `待处理 ${day.material_counts.pending} 条 · 未完成 ${day.material_counts.failed} 条`;
   }
 
   private metaLine(): string {
@@ -297,13 +298,14 @@ export struct DiaryPage {
       Column() {
         PageTitle({
           title: '日记',
-          subtitle: '临时功能界面：按天看材料与版本（正式 UI 按 Windows 版重做）。',
+          subtitle: '把留下的片段，慢慢整理成一页。',
         })
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
       Button(this.busy ? '处理中…' : '刷新')
+        .attributeModifier(sketchButton).drawModifier(sketchOutline())
         .enabled(!this.busy)
         .onClick(() => {
           this.reload();
@@ -391,6 +393,7 @@ export struct DiaryPage {
           .fontColor(SketchColors.ink)
         Blank()
         Button('重读这一天')
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
           .enabled(!this.busy)
           .onClick(() => {
             this.openDay(this.dayKey);
@@ -400,7 +403,7 @@ export struct DiaryPage {
 
       if (this.day === null) {
         Text(this.dayEmpty
-          ? 'diary.getDay 报 not_found：这一天既没有材料也没有成篇日记（空态，不是读取失败）。'
+          ? '这一天还没有材料，也没有成篇日记。'
           : '这一天的状态没有读出来（原因见上面的错误）。')
           .fontSize(SketchType.body)
           .fontColor(SketchColors.muted)
@@ -438,25 +441,27 @@ export struct DiaryPage {
         }
 
         // ---- 材料与这一天本身的真实字段（snake_case 原样） ----
-        Text(`material_counts: ${this.materialLine()}`)
+        Text(this.materialLine())
           .fontSize(SketchType.caption)
           .fontColor(SketchColors.text)
           .width('100%')
-        Text(this.metaLine())
+        Text(this.day === null ? '' : `最近更新：${(this.day as DiaryDay).updated_at}`)
           .fontSize(SketchType.caption)
           .fontColor(SketchColors.muted)
           .width('100%')
 
         // ---- 生成：先受理，再跑任务 ----
         Row({ space: 8 }) {
-          Button('生成（受理后要跑任务）')
+          Button('整理这一天')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .enabled(!this.busy)
             .onClick(() => {
               this.generateAndRun();
             })
-          Text('generate() 只排队；跑完 jobs.runDue 才会有正文')
+          Text('先受理，再在任务完成后查看正文。')
             .fontSize(SketchType.caption)
             .fontColor(SketchColors.muted)
+            .layoutWeight(1)
         }
         .width('100%')
 
@@ -479,6 +484,7 @@ export struct DiaryPage {
               .fontColor(SketchColors.muted)
             Blank()
             Button('重读正文')
+              .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .enabled(!this.busy)
               .onClick(() => {
                 this.reloadBody();
@@ -492,14 +498,14 @@ export struct DiaryPage {
               .fontColor(SketchColors.ink)
               .width('100%')
           } else if (this.bodyVersionId.length === 0) {
-            Text('还没有当前版本，所以本页没有正文。候选正文点上面的「看这一版正文」' +
-              '临时读一次（页面级临时做法，重做 UI 时换成正规接口）。')
+            Text('还没有当前版本。可以先阅读候选，再决定是否采用。')
               .fontSize(SketchType.caption)
               .fontColor(SketchColors.muted)
               .width('100%')
           } else {
             Text(this.bodyText.length > 0 ? this.bodyText : '（这一版正文为空）')
-              .fontSize(SketchType.body)
+              .fontSize(18)
+              .lineHeight(30)
               .fontColor(SketchColors.text)
               .width('100%')
           }
@@ -512,32 +518,32 @@ export struct DiaryPage {
     .alignItems(HorizontalAlign.Start)
     .padding(14)
     .backgroundColor(SketchColors.paper)
-    .border({ width: 1, color: SketchColors.line })
-    .borderRadius(0)
+    .drawModifier(sketchOutline())
   }
 
   @Builder
   candidateRow(versionId: string) {
-    Row({ space: 8 }) {
+    Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
       Text(versionId)
         .fontSize(SketchType.caption)
         .fontColor(SketchColors.text)
-        .layoutWeight(1)
+        .width('100%')
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
       Button('看这一版正文')
+        .attributeModifier(sketchButton).drawModifier(sketchOutline()).margin({ right: 8, top: 8 })
         .enabled(!this.busy)
         .onClick(() => {
           this.previewBody(versionId);
         })
       Button('采用为当前')
+        .attributeModifier(sketchButton).drawModifier(sketchOutline()).margin({ right: 8, top: 8 })
         .enabled(!this.busy)
         .onClick(() => {
           this.adopt(versionId);
         })
     }
     .width('100%')
-    .alignItems(VerticalAlign.Center)
   }
 
   @Builder
@@ -560,9 +566,9 @@ export struct DiaryPage {
       }
       .width('100%')
 
-      Text(`材料 captures=${day.material_counts.captures} · ` +
-        `processed=${day.material_counts.processed} · ` +
-        `pending=${day.material_counts.pending} · failed=${day.material_counts.failed}`)
+      Text(`材料 ${day.material_counts.captures} 条 · ` +
+        `已处理 ${day.material_counts.processed} 条 · ` +
+        `待处理 ${day.material_counts.pending} 条 · 未完成 ${day.material_counts.failed} 条`)
         .fontSize(SketchType.caption)
         .fontColor(SketchColors.muted)
         .width('100%')
@@ -578,10 +584,10 @@ export struct DiaryPage {
   @Builder
   listHeading() {
     Row({ space: 8 }) {
-      SectionTitle({ text: '有材料的天（diary.listDays）' })
+      SectionTitle({ text: '留下的日子' })
       Blank()
       if (this.daysTruncated) {
-        Text('只载入了前一部分（daysTruncated=true）')
+        Text('还有未加载的日子')
           .fontSize(SketchType.caption)
           .fontColor(SketchColors.muted)
       }
@@ -590,34 +596,10 @@ export struct DiaryPage {
   }
 
   @Builder
-  footNote() {
-    Column({ space: 4 }) {
-      Text('天列表来自 diaryStore.refresh() → days；当天来自 openDay() → day。' +
-        '正文用 diary.getVersion 在本页临时读取、不缓存——重做 UI 时换成正规接口。')
-        .fontSize(SketchType.caption)
-        .fontColor(SketchColors.muted)
-        .width('100%')
-      Text('「已生成」只认 current_version_id；只有候选时显示「候选版本（未采用）」，' +
-        '并给「采用为当前」。waiting_configuration 显示为「还没配置模型服务」，不是失败。')
-        .fontSize(SketchType.caption)
-        .fontColor(SketchColors.muted)
-        .width('100%')
-    }
-    .width('100%')
-    .alignItems(HorizontalAlign.Start)
-    .padding({ top: 12, bottom: 24 })
-  }
-
-  build() {
-    Column() {
-      this.header()
-      this.statusStrip()
-
+  dayList() {
       List({ space: 8 }) {
-        if (this.dayKey.length > 0) {
-          ListItem() {
-            this.dayPanel()
-          }
+        if (!this.desktop && this.dayKey.length > 0) {
+          ListItem() { this.dayPanel() }
         }
 
         ListItem() {
@@ -632,8 +614,8 @@ export struct DiaryPage {
           ListItem() {
             EmptyState({
               icon: '日',
-              title: '还没有有材料的天',
-              hint: '先在「记录」里留下材料（或语音），再回来看这一天。',
+              title: '这里还没有日记',
+              hint: '先留下一点今天的片段，再慢慢整理成一页。',
             })
           }
         } else if (this.days.length === 0) {
@@ -653,16 +635,31 @@ export struct DiaryPage {
           }, (day: DiaryDay) => this.dayRowKey(day))
         }
 
-        ListItem() {
-          this.footNote()
-        }
       }
       .width('100%')
       .layoutWeight(1)
       .padding({ left: 16, right: 16 })
+  }
+
+  build() {
+    Column() {
+      this.header()
+      this.statusStrip()
+      if (this.desktop) {
+        Row({ space: 24 }) {
+          Column() { this.dayList() }.width(280).height('100%')
+          Divider().vertical(true).color(SketchColors.line)
+          Scroll() {
+            Column() {
+              if (this.dayKey.length > 0) { this.dayPanel() }
+              else { EmptyState({ title: '选一天，慢慢回看', hint: '从左侧打开留下的日子。' }) }
+            }.width('100%').padding({ right: 16, bottom: 24 })
+          }.layoutWeight(1).height('100%')
+        }.width('100%').layoutWeight(1).alignItems(VerticalAlign.Top)
+      } else {
+        this.dayList()
+      }
     }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(SketchColors.canvas)
+    .width('100%').height('100%').backgroundColor(SketchColors.canvas)
   }
 }

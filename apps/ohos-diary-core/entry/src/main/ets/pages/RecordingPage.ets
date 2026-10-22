@@ -1,3 +1,4 @@
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchOutline } from '../ui/Sketch';
 // 录音页：复用 `recording/VoiceRecorder.ets`（权限 / 常亮 / 分片 / 崩溃恢复）。
 //
 // 停止后的真实流程：
@@ -414,47 +415,47 @@ export struct RecordingPage {
           Text('上次录音未收尾')
             .fontSize(15)
             .fontWeight(FontWeight.Medium)
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .fontColor(SketchColors.text)
           StatePill({ text: this.recoveryStateLabel((this.recovery as RecordingRecovery).state), tone: 'warn' })
         }
         .width('100%')
         Text(`已保存 ${formatDuration((this.recovery as RecordingRecovery).persisted_ms)}（已登记 ${(this.recovery as RecordingRecovery).closed_segment_indexes.length} 段）`)
           .fontSize(14)
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .fontColor(SketchColors.text)
           .width('100%')
         if (this.recoveryTail() > 0) {
           Text(`崩溃前还有约 ${formatDuration(this.recoveryTail())} 未保存（不完整）；收到量只是最后一次上报值，实际可能更多。`)
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
         } else {
           Text('没有可见的未登记尾巴；这不代表墙上时间一秒没少。')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
         }
         ForEach((this.recovery as RecordingRecovery).notes, (note: string, index: number) => {
           Text(`· ${note}`)
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
         }, (note: string, index: number) => `${index}-${note}`)
         Row({ space: 8 }) {
           Button(this.recoverySaving ? '保存中…' : '保存已录部分')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(34)
             .enabled(!this.recoverySaving && (this.recovery as RecordingRecovery).closed_segment_indexes.length > 0)
-            .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+            .backgroundColor(SketchColors.button)
+            .fontColor(SketchColors.ink)
             .onClick(() => {
               this.saveRecovery();
             })
           Button('稍后')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(34)
             .enabled(!this.recoverySaving)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.recovery = null;
             })
@@ -469,8 +470,8 @@ export struct RecordingPage {
       .padding(14)
       // 同 S2：warning_transparent 在本机主题下是不透明红，不能再当卡片底色；
       // 警告信息用正常文字色，warning 只留给 StatePill / 具体风险句子。
-      .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-      .borderRadius(14)
+      .backgroundColor(SketchColors.soft)
+      .borderRadius(0)
       .alignItems(HorizontalAlign.Start)
     }
   }
@@ -483,7 +484,7 @@ export struct RecordingPage {
           Text('已保存')
             .fontSize(18)
             .fontWeight(FontWeight.Bold)
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .fontColor(SketchColors.text)
           StatePill({
             text: this.finalizeStateLabel((this.finalized as RecordingFinalizeResult).state),
             tone: (this.finalized as RecordingFinalizeResult).state === 'saved' ? 'ok' : 'warn',
@@ -500,40 +501,40 @@ export struct RecordingPage {
         if ((this.finalized as RecordingFinalizeResult).state === 'recoverable') {
           Text('这次录音不完整：核心只按已登记片段拼接；缺口如实标成 recoverable。')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
         }
         if (this.interrupted) {
           Text('录音被系统中断过（锁屏/来电/抢占），墙上时间可能少录；核心只能保证已登记片段。')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
         }
         Column({ space: 4 }) {
           Text(this.commitHeadline())
             .fontSize(15)
             .fontWeight(FontWeight.Medium)
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .fontColor(SketchColors.text)
             .width('100%')
           Text(this.commitDetail())
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
           if (this.commitState === 'failed') {
             Text(`错误码：${this.commitErrorCode()}`)
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_primary'))
+              .fontColor(SketchColors.text)
               .width('100%')
             Text(this.commitError)
               .fontSize(11)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+              .fontColor(SketchColors.muted)
               .width('100%')
             Button(this.commitRetrying ? '重试中…' : '重试提交')
+              .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(13)
-              .height(34)
               .enabled(!this.commitRetrying)
-              .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-              .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+              .backgroundColor(SketchColors.button)
+              .fontColor(SketchColors.ink)
               .onClick(() => {
                 this.retryCommit();
               })
@@ -548,23 +549,23 @@ export struct RecordingPage {
         if (this.transcribeHint.length > 0) {
           Text(this.transcribeHint)
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
         }
         Row({ space: 8 }) {
           Button('回到今日')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(36)
-            .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+            .backgroundColor(SketchColors.button)
+            .fontColor(SketchColors.ink)
             .onClick(() => {
               this.pathStack.pop();
             })
           Button('再录一条')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(36)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.finalized = null;
               this.phase = 'idle';
@@ -583,8 +584,8 @@ export struct RecordingPage {
       }
       .width('100%')
       .padding(14)
-      .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-      .borderRadius(14)
+      .backgroundColor(SketchColors.paper)
+      .drawModifier(sketchOutline())
       .alignItems(HorizontalAlign.Start)
     }
   }
@@ -598,22 +599,23 @@ export struct RecordingPage {
               Text('说一条')
                 .fontSize(28)
                 .fontWeight(FontWeight.Bold)
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                .fontColor(SketchColors.text)
                 .width('100%')
               Text('录音期间屏幕会保持常亮（系统限制：熄屏会停止采集，且不会自动恢复）。')
                 .fontSize(13)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
               Text('停止后会先 finalize 保存音频，再自动提交成篇；提交失败会在这里显示错误码。')
                 .fontSize(13)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
               Button('开始录音')
+                .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(16)
                 .height(48)
                 .width('100%')
-                .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+                .backgroundColor(SketchColors.button)
+                .fontColor(SketchColors.ink)
                 .onClick(() => {
                   this.startRecording();
                 })
@@ -622,36 +624,36 @@ export struct RecordingPage {
                   Text('需要麦克风权限')
                     .fontSize(15)
                     .fontWeight(FontWeight.Medium)
-                    .fontColor($r('sys.color.ohos_id_color_alert'))
+                    .fontColor(SketchColors.alert)
                     .width('100%')
                   Text(this.permissionMessage.length > 0 ? this.permissionMessage : '系统没有授予麦克风权限。')
                     .fontSize(13)
-                    .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                    .fontColor(SketchColors.text)
                     .width('100%')
                   Text('请到系统设置 → 应用 → 不写日记 → 权限 → 麦克风 打开，然后回来重新检查。')
                     .fontSize(12)
-                    .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                    .fontColor(SketchColors.muted)
                     .width('100%')
                   Button('重新检查权限')
+                    .attributeModifier(sketchButton).drawModifier(sketchOutline())
                     .fontSize(13)
-                    .height(34)
-                    .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                    .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                    .backgroundColor(SketchColors.soft)
+                    .fontColor(SketchColors.text)
                     .onClick(() => {
                       this.startRecording();
                     })
                 }
                 .width('100%')
                 .padding(14)
-                .backgroundColor($r('sys.color.ohos_id_color_alert_transparent'))
-                .borderRadius(14)
+                .backgroundColor(SketchColors.soft)
+                .borderRadius(0)
                 .alignItems(HorizontalAlign.Start)
               }
             }
             .width('100%')
             .padding(14)
-            .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-            .borderRadius(14)
+            .backgroundColor(SketchColors.paper)
+            .drawModifier(sketchOutline())
             .alignItems(HorizontalAlign.Start)
           }
 
@@ -663,58 +665,59 @@ export struct RecordingPage {
             Column({ space: 10 }) {
               Text('录音中')
                 .fontSize(15)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
               Text(formatDuration(this.persistedMs))
                 .fontSize(40)
                 .fontWeight(FontWeight.Bold)
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                .fontColor(SketchColors.text)
                 .width('100%')
               Text(`已登记 ${this.segmentCount()} 段；已收到 ${formatDuration(this.elapsedMs)}`)
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
               if (this.elapsedMs > this.persistedMs) {
                 Text(`还有约 ${formatDuration(this.elapsedMs - this.persistedMs)} 未登记（进程崩溃会丢；时长以已登记为准）`)
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_warning'))
+                  .fontColor(SketchColors.warning)
                   .width('100%')
               }
               Button('停止并保存')
+                .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(16)
                 .height(46)
                 .width('100%')
-                .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+                .backgroundColor(SketchColors.button)
+                .fontColor(SketchColors.ink)
                 .onClick(() => {
                   this.stopRecording();
                 })
               Button('放弃录音')
+                .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(13)
-                .height(36)
                 .width('100%')
-                .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                .backgroundColor(SketchColors.soft)
+                .fontColor(SketchColors.text)
                 .onClick(() => {
                   this.abortRecording();
                 })
               if (!this.keepScreenOk) {
                 Text('无法保持屏幕常亮；熄屏可能中断录音。')
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_warning'))
+                  .fontColor(SketchColors.warning)
                   .width('100%')
               }
               if (!this.bgTaskOk) {
                 Text('后台录音不可用（长时任务申请失败）；请保持应用在前台。')
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_warning'))
+                  .fontColor(SketchColors.warning)
                   .width('100%')
               }
             }
             .width('100%')
             .padding(16)
-            .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-            .borderRadius(14)
+            .backgroundColor(SketchColors.paper)
+            .drawModifier(sketchOutline())
             .alignItems(HorizontalAlign.Start)
           }
 
@@ -737,14 +740,14 @@ export struct RecordingPage {
             Column({ space: 8 }) {
               Text(`当前录音：${this.segmentCount()} 个已登记片段`)
                 .fontSize(13)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
               if (this.segmentCount() > 0 && this.finalized === null && !this.finalizeAttempted) {
                 Button('保存已录部分')
+                  .attributeModifier(sketchButton).drawModifier(sketchOutline())
                   .fontSize(13)
-                  .height(36)
-                  .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-                  .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+                  .backgroundColor(SketchColors.button)
+                  .fontColor(SketchColors.ink)
                   .onClick(() => {
                     this.stopRecording();
                   })
@@ -752,14 +755,14 @@ export struct RecordingPage {
               if (this.finalizeAttempted && this.finalized === null) {
                 Text('最终化已经尝试过；不要再重复保存（核心可能报 invalid_state / integrity_failed）。')
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_warning'))
+                  .fontColor(SketchColors.warning)
                   .width('100%')
               }
               Button('重新开始')
+                .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(13)
-                .height(36)
-                .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                .backgroundColor(SketchColors.soft)
+                .fontColor(SketchColors.text)
                 .onClick(() => {
                   this.phase = 'idle';
                   this.error = EMPTY_UI_ERROR;
@@ -784,7 +787,7 @@ export struct RecordingPage {
 
           Text('平台限制：熄屏/锁屏时系统会强制停止采集，亮屏也不会自动续录；应用只能保持常亮，不能绕过。')
             .fontSize(11)
-            .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
             .padding({ top: 8, bottom: 24 })
         }
@@ -796,9 +799,9 @@ export struct RecordingPage {
       // Scroll 的 align 默认是 Center：内容不足一屏时会被垂直居中（真机 02 截图）。
       // 显式 Top，内容从顶部开始排。
       .align(Alignment.Top)
-      .backgroundColor($r('sys.color.ohos_id_color_background'))
+      .backgroundColor(SketchColors.canvas)
     }
-    .title('录音')
+    .title('录音', { backgroundColor: SketchColors.canvas })
     .onBackPressed(() => {
       if (this.phase === 'preparing' || this.phase === 'recording' || this.phase === 'stopping') {
         toast('录音还没结束；请先「停止并保存」或「放弃录音」。');

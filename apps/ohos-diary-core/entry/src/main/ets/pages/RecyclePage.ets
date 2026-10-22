@@ -1,4 +1,5 @@
-// ⚠️ 临时功能界面：UI 将由对方按 Windows 版重做。
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchOutline } from '../ui/Sketch';
+// 与 Windows 共用视觉组件，业务语义由现有 Store 提供。
 // 只做「把 RecycleStore 的状态显示出来 + 把按钮点下去」，请勿在此加业务逻辑。
 //
 // 数据与并发全在 `state/RecycleStore.ets`：本页只把 store 的字段镜像到 @State，
@@ -32,7 +33,6 @@ import { RecycleStore } from '../state/RecycleStore';
 import { AppState } from '../ui/AppState';
 import { confirmAction, databasePath, formatDateTime } from '../ui/AppRuntime';
 import { EmptyState, ErrorBanner, LoadingRow, PageTitle, StatePill } from '../ui/Common';
-import { SketchCard, SketchColors, SketchType } from '../ui/Sketch';
 
 @Component
 export struct RecyclePage {
@@ -461,6 +461,7 @@ export struct RecyclePage {
           .alignItems(HorizontalAlign.Start)
 
           Toggle({ type: ToggleType.Switch, isOn: this.deleteDiaryVersions })
+            .selectedColor(SketchColors.ink)
             .enabled(!this.busy)
             .onChange((isOn: boolean) => {
               this.deleteDiaryVersions = isOn;
@@ -473,19 +474,19 @@ export struct RecyclePage {
         Button(this.busy ? '处理中…' : (this.deleteDiaryVersions
           ? '确认永久删除（同时删除第 ① 类版本）'
           : '确认永久删除（保留日记版本）'))
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
           .fontSize(SketchType.body)
-          .height(40)
           .width('100%')
           .enabled(!this.busy)
-          .backgroundColor($r('sys.color.ohos_id_color_alert'))
-          .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+          .backgroundColor(SketchColors.paper)
+          .fontColor(SketchColors.alert)
           .onClick(() => {
             this.doPurge();
           })
 
         Text('永久删除不可逆：先看清上面四类清单，再点确认。')
           .fontSize(SketchType.caption)
-          .fontColor($r('sys.color.ohos_id_color_alert'))
+          .fontColor(SketchColors.alert)
           .width('100%')
       }
       .width('100%')
@@ -528,20 +529,20 @@ export struct RecyclePage {
 
         Row({ space: 8 }) {
           Button('恢复')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(SketchType.caption)
-            .height(34)
             .enabled(!this.busy)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.doRestore(capture);
             })
           Button('预览永久删除')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(SketchType.caption)
-            .height(34)
             .enabled(!this.busy)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.doPreview(capture);
             })
@@ -612,11 +613,11 @@ export struct RecyclePage {
           .layoutWeight(1)
           .alignItems(HorizontalAlign.Start)
           Button(this.busy ? '处理中…' : '刷新')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(SketchType.caption)
-            .height(34)
             .enabled(!this.busy)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.reload();
             })
@@ -655,7 +656,7 @@ export struct RecyclePage {
           Text(`记录很多：这次只扫描了前 ${this.scanned} 条，回收站列表不完整（truncated=true）；` +
             '后面的记录没有检查，不能当作「回收站只有这些」。')
             .fontSize(SketchType.caption)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
             .padding(10)
             .backgroundColor(SketchColors.soft)
@@ -677,7 +678,7 @@ export struct RecyclePage {
         Column() {
           Text('预览令牌已作废：要永久删除，请重新预览后再确认；记录没有被删除。')
             .fontSize(SketchType.caption)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
             .padding(10)
             .backgroundColor(SketchColors.soft)
@@ -689,7 +690,7 @@ export struct RecyclePage {
         Column() {
           Text(this.purgeNote)
             .fontSize(SketchType.body)
-            .fontColor($r('sys.color.ohos_id_color_alert'))
+            .fontColor(SketchColors.alert)
             .width('100%')
             .padding(10)
             .backgroundColor(SketchColors.soft)

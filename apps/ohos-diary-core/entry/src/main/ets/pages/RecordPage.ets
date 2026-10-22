@@ -1,3 +1,5 @@
+import { LengthMetrics } from '@kit.ArkUI';
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchInput, sketchArea, sketchOutline } from '../ui/Sketch';
 // 记录（契约 §2.1）：新建一条原始记录——写下来，或者说一段。
 //
 // 这一页承担从旧「今日」页拆出来的新建职责：
@@ -35,6 +37,7 @@ import { ErrorBanner, InfoRow, PageTitle, SectionTitle, StatePill } from '../ui/
 @Component
 export struct RecordPage {
   pathStack: NavPathStack = new NavPathStack();
+  @StorageProp('ohosWideLayout') desktop: boolean = false;
   @State text: string = '';
   @State busy: boolean = false;
   @State error: UiError = EMPTY_UI_ERROR;
@@ -161,142 +164,123 @@ export struct RecordPage {
     this.error = EMPTY_UI_ERROR;
   }
 
-  build() {
-    Scroll() {
-      Column({ space: 12 }) {
-        Row({ space: 8 }) {
-          Column() {
-            PageTitle({ title: '记录', subtitle: '新建一条原始记录：写下来，或者说一段。' })
-          }
-          .layoutWeight(1)
-          .alignItems(HorizontalAlign.Start)
-        }
-        .width('100%')
-        .padding({ top: 8 })
+  @Builder
+  introduction() {
+    Column({ space: 18 }) {
+      Text(dayTitleAtOffset(0))
+        .fontSize(this.desktop ? 17 : 14)
+        .fontColor(SketchColors.muted)
+      Text(this.desktop ? '今天，\n想留住什么？' : '今天，想留住什么？')
+        .fontFamily(SketchFonts.display)
+        .fontSize(this.desktop ? 52 : 42)
+        .fontColor(SketchColors.ink)
+        .lineHeight(this.desktop ? 70 : 56)
+        .margin({ top: 8 })
+      Text('从眼前这一刻开始就好。')
+        .fontSize(17)
+        .fontColor(SketchColors.muted)
+      Text('记录保存在本地，写下来，或者说一段。')
+        .fontSize(13)
+        .fontColor(SketchColors.text)
+        .padding(20)
+        .backgroundColor(SketchColors.soft)
+        .drawModifier(sketchOutline())
+        .margin({ top: 24 })
+    }
+    .alignItems(HorizontalAlign.Start)
+    .width('100%')
+  }
 
-        // ---------------------------------------------------------- 文字
-        Column({ space: 10 }) {
+  @Builder
+  editor() {
+    Column({ space: 20 }) {
+      SketchCard({ contentPadding: this.desktop ? 28 : 21 }) {
+        Column({ space: 16 }) {
+          Text('此刻的记录')
+            .fontFamily(SketchFonts.display)
+            .fontSize(31)
+            .fontColor(SketchColors.ink)
+          Divider().color(SketchColors.ink).strokeWidth(0.8)
+          TextArea({ text: this.text, placeholder: '今天路过花店，看到一束很明亮的橘色花…' }).attributeModifier(sketchArea)
+            .height(this.desktop ? 295 : 220)
+            .width('100%')
+            .fontSize(18)
+            .fontColor(SketchColors.text)
+            .placeholderColor(SketchColors.muted)
+            .backgroundColor(SketchColors.paper)
+            .borderRadius(0)
+            .padding(0)
+            .enabled(!this.busy && this.savedState !== 'committed')
+            .onChange((value: string) => { this.text = value; })
+          Divider().color(SketchColors.ink).strokeWidth(0.8)
           Row({ space: 8 }) {
-            Text(dayTitleAtOffset(0))
-              .fontSize(13)
-              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
             StatePill({ text: this.stateLabel(), tone: this.stateTone() })
             Blank()
-            Text(`${this.text.length} 字`)
-              .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            Text(`${this.text.length} 字`).fontSize(13).fontColor(SketchColors.muted)
           }
           .width('100%')
-
-          TextArea({ text: this.text, placeholder: '今天想留下什么？写几句就好。' })
-            .height(200)
-            .width('100%')
-            .fontSize(16)
-            .enabled(this.savedState !== 'committed')
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .onChange((value: string) => {
-              this.text = value;
-            })
-
-          Row({ space: 8 }) {
-            if (this.savedState === 'committed') {
-              Button('再写一条')
-                .fontSize(14)
-                .height(38)
-                .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
-                .onClick(() => {
-                  this.startNew();
-                })
-              Button('查看这条')
-                .fontSize(14)
-                .height(38)
-                .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
-                .onClick(() => {
-                  this.pathStack.pushPathByName('capture', this.captureId);
-                })
-            } else {
-              Button(this.busy ? '保存中…' : '保存草稿')
-                .fontSize(14)
-                .height(38)
-                .enabled(this.canSave())
-                .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
-                .onClick(() => {
-                  this.save(false);
-                })
-              Button(this.busy ? '提交中…' : '收好（提交）')
-                .fontSize(14)
-                .height(38)
-                .enabled(this.canSave())
-                .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
-                .onClick(() => {
-                  this.save(true);
-                })
-            }
-            Blank()
+          Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
+            Button(this.busy ? '保存中…' : '保存草稿')
+              .attributeModifier(sketchButton).drawModifier(sketchOutline())
+              .enabled(this.canSave())
+              .onClick(() => { this.save(false); })
+            Button('录音')
+              .attributeModifier(sketchButton).drawModifier(sketchOutline())
+              .onClick(() => { this.pathStack.pushPathByName('recording', ''); })
           }
-          .width('100%')
-
           if (this.message.length > 0) {
-            Text(this.message)
-              .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
-              .width('100%')
+            Text(this.message).fontSize(13).fontColor(SketchColors.muted).width('100%')
           }
           if (this.savedAt.length > 0) {
             InfoRow({ label: '保存时间', value: this.savedAt })
           }
-          if (this.error.code.length > 0) {
-            ErrorBanner({ error: this.error, showReload: false, onReload: () => {
-            } })
-          }
+          ErrorBanner({ error: this.error })
         }
         .width('100%')
-        .padding(14)
-        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-        .borderRadius(14)
         .alignItems(HorizontalAlign.Start)
-
-        // ---------------------------------------------------------- 录音
-        Column({ space: 6 }) {
-          SectionTitle({ text: '说一段' })
-          Text('录音会走真实的采集链路：先建草稿、再分片登记，停止后自动收尾并排转写任务。')
-            .fontSize(13)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
-            .width('100%')
-          Row({ space: 8 }) {
-            Button('开始录音')
-              .fontSize(14)
-              .height(38)
-              .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-              .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
-              .onClick(() => {
-                this.pathStack.pushPathByName('recording', '');
-              })
-            Blank()
-          }
-          .width('100%')
+      }
+      if (this.savedState === 'committed') {
+        Flex({ wrap: FlexWrap.Wrap }) {
+          Button('再写一条').attributeModifier(sketchButton).drawModifier(sketchOutline()).onClick(() => { this.startNew(); })
+          Button('查看这条').attributeModifier(sketchButton).drawModifier(sketchOutline())
+            .onClick(() => { this.pathStack.pushPathByName('capture', this.captureId); })
         }
-        .width('100%')
-        .padding(14)
-        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-        .borderRadius(14)
-        .alignItems(HorizontalAlign.Start)
-
-        Text('文字先落成草稿；「收好」把草稿提交为正式记录。片段、日记、搜索都只读已落库的内容。')
-          .fontSize(11)
-          .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+      } else {
+        Button(this.busy ? '收好中…' : '收好这一刻')
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
           .width('100%')
-          .padding({ bottom: 24 })
+          .backgroundColor(SketchColors.button)
+          .enabled(this.canSave())
+          .onClick(() => { this.save(true); })
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  build() {
+    Scroll() {
+      Column() {
+        if (this.desktop) {
+          Row({ space: 32 }) {
+            Column() { this.introduction() }.layoutWeight(4).padding({ top: 20 })
+            Divider().vertical(true).height(575).color(SketchColors.ink)
+            Column() { this.editor() }.layoutWeight(7)
+          }
+          .alignItems(VerticalAlign.Top)
+          .width('100%')
+        } else {
+          this.introduction()
+          Column() { this.editor() }.margin({ top: 24 })
+        }
       }
       .width('100%')
-      .padding({ left: 16, right: 16 })
+      .constraintSize({ maxWidth: 1240 })
+      .padding({ left: 16, right: 16, top: 12, bottom: 30 })
+      .alignItems(HorizontalAlign.Start)
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('sys.color.ohos_id_color_background'))
+    .backgroundColor(SketchColors.canvas)
   }
 }
