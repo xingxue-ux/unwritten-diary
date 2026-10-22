@@ -669,34 +669,33 @@ fn a_real_v15_library_fixture_with_an_uncheckpointed_wal_migrates_to_v18() {
     )
     .unwrap();
 
-    // 迁移前先证明这是一份真 v15 库：版本 15、两条记录在 WAL 里可读、三样结构都没有。
-    {
-        let conn = Connection::open(&path).unwrap();
-        let version: i64 = conn
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, 15);
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM captures", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(count, 2);
-        let history: Vec<i64> = {
-            let mut statement = conn
-                .prepare("SELECT version FROM schema_migrations ORDER BY version")
-                .unwrap();
-            statement
-                .query_map([], |row| row.get(0))
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap()
-        };
-        assert_eq!(history, vec![15], "旧库的历史行是 v15，不是当前构建补出来的");
-        assert!(!table_exists(&conn, "styles"));
-        assert!(!table_exists(&conn, "settings"));
-        assert!(!column_exists(&conn, "captures", "trashed_from_state"));
-    }
+    // **预检必须走文件级**：任何 `Connection::open`（哪怕只读一次
+    // `PRAGMA user_version`）都会在连接 drop 时把 WAL checkpoint 回主库并删掉 `-wal`；
+    // 那样 `Core::open` 拿到的就是已检查点的主库，这个测试名里的
+    // “uncheckpointed wal” 也就名不副实了（实测：预检一次后 4096 + 700432 变成
+    // 409600 且 `-wal` 消失）。这里只 `std::fs::metadata`，一个字节都不让 SQLite 碰。
+    let main_len = std::fs::metadata(&path).unwrap().len();
+    let wal_path = dir.path().join("library.sqlite-wal");
+    let wal_len = std::fs::metadata(&wal_path).unwrap().len();
+    assert!(
+        wal_len > 0,
+        "fixture 必须带未检查点的 -wal（文件级预检，不能先开库）"
+    );
+    assert!(
+        main_len < 64 * 1024,
+        "未检查点的主库只有一页（v15 样本是 4096 B）；{main_len} B 说明 WAL 已被检查点过"
+    );
+    assert!(
+        wal_len > main_len,
+        "数据应该还在 WAL 里：main={main_len} B, wal={wal_len} B"
+    );
 
     // 当前构建打开：v15 → 18 的三段（回收站列 + styles + settings）都必须跑。
+    // 「这确实是一份 v15 库」由 open 之后的断言证明：`schema_migrations` 必须保留
+    // v15 的历史行、两条记录（含 emoji）必须可读——它们只在 `-wal` 里，WAL 丢了
+    // 这两条就都不成立。版本号 15 本身无法在不 checkpoint 的前提下从 SQLite 读到
+    // （主库头里的 user_version 还不是 15——本 fixture 是创建时的 0，真值在那条 WAL
+    // 里），所以不在这里断言。
     let core = open(dir.path());
     assert_eq!(core.schema_version().unwrap(), SCHEMA_VERSION);
     assert_eq!(SCHEMA_VERSION, 18);

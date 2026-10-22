@@ -15,11 +15,17 @@
 | `library.sqlite` | `da63a52bdf62b3fc863995d79f497584be3ba97c1de4c55d1d301afbafab6cfc` |
 | `library.sqlite-wal` | `c6b36112c5868e952cd52bfaede5c7b949b22f1e8ccd67ae00cede90bc6a4b38` |
 
+`crates/diary_core/tests/settings_test.rs` 的
+`a_real_v15_library_fixture_with_an_uncheckpointed_wal_migrates_to_v18` 与
 `crates/diary_core/tests/styles_schema_v17_test.rs` 的
-`a_real_v15_library_fixture_with_an_uncheckpointed_wal_migrates_to_v17` 会在每次
-`cargo test`（CI）里把它复制到临时目录、连同 `-wal` 一起打开，断言 v15 → 18 的
-三段结构（回收站列 + `styles` 表/索引 + `settings` 表）都补上、旧记录原样可读、
-`schema_migrations` 保留 15 并新增 18。
+`a_real_v15_library_fixture_migrates_to_v18_with_the_v17_segment` 会在每次 `cargo test`
+（CI）里把它复制到临时目录、连同 `-wal` 一起打开，断言 v15 → 18 的三段结构（回收站列 +
+`styles` 表/索引 + `settings` 表）都补上、旧记录原样可读、`schema_migrations` 保留 15
+并新增 18。
+
+**预检不能开库**：这两个测试在 `Core::open` 之前只做文件级断言（`-wal` 存在且主库仍是
+4 KiB 的一页）。任何 `Connection::open`（哪怕只读 `PRAGMA user_version`）都会在连接
+drop 时把 WAL checkpoint 回主库并删掉 `-wal`——那样测的就不是未检查点的库了。
 
 样本由 [`tools/migration/make_v15_fixture.sh`](../../../../../tools/migration/make_v15_fixture.sh)
 生成，可复现。`backups` 的 `-wal` 哈希会随每次生成时的 WAL salt 变化，表里是**本次入库**
