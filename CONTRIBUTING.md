@@ -63,7 +63,7 @@
 
 `main` 上现在有两道门禁，PR 必须同时通过：
 
-1. **必过检查 8 项**（都在 `.github/workflows/check.yml`，PR 上必须全绿）：
+1. **必过检查 8 项**（都在 `.github/workflows/check.yml`，PR 上必须全绿；`arkts` job 里含下面两条检查，对外仍是同一个 required check 名 `arkts`，不需要改仓库的 required checks 配置）：
    - `docs`：关键文件存在、Markdown 相对链接有效、`.github` 下的 YAML 可解析、共用场景 JSON 合法。CI 里先装 PyYAML 并用 `--require-yaml` 跑，**装不上就红**——不允许「跳过 YAML 校验」还报通过；
    - `arkts`：**两条检查**，缺一不可：
      1. `tools/check_arkts_capi_contract.py`（**2026-10-22 之前从未在 CI 跑过**）：核对 ArkTS 包装与 C ABI 的**方法名与条数**（`DiaryCore.ets` ↔ `WIRED_METHODS`，当前 59 条）、**错误码**（`DiaryError.ets` ↔ `ErrorCode::wire`，同序）、**C 符号**（shim 的 `dlsym` ↔ `lib.rs` 导出）、**JS 函数**（`index.d.ts` ↔ `napi_define_properties`）、以及 types 包的**三件套**（`.so` 依赖 → `index.d.ts` → `oh-package.json5` 的 `name`/`types`）。改了 `crates/diary_capi`、`DiaryCore.ets`、`Models.ets`、`m6-核心-C-ABI.md` 任何一处，其余几处必须同步；
