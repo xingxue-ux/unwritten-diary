@@ -10,7 +10,8 @@ use std::path::Path;
 use std::time::Instant;
 
 use diary_core::{
-    Core, Coverage, CreateDraftInput, ImportManifest, ImportOrigin, ImportRequest,
+    Core, Coverage, CreateDraftInput, ImportManifest, ImportOrigin, ImportRequest, SearchFilters,
+    SearchMode, SearchRequest,
 };
 use sha2::{Digest, Sha256};
 
@@ -659,4 +660,62 @@ fn hundred_thousand_segments_measurement() {
             count_ms
         );
     }
+}
+/// 非 ASCII 的大小写：查询与正文**完全同大小写**也必须搜到。
+///
+/// 索引侧（`grams_for` / `candidate_filter`）用 Rust 的 `to_lowercase()`（完整 Unicode
+/// 折叠），SQL 复核里的 `lower()` 却只折 ASCII（本仓 SQLite 是 bundled、无 ICU）。
+/// 两端口径不一致时，`ÄÖÜ` 的 gram `äö` 能进候选，`instr(lower('ÄÖÜ …'), 'äöü')` 却
+/// 永远是 0——连 `ÄÖÜ` 原样查询都 0 条。这条用例钉住「两端同一套折叠」，同时钉住
+/// 中文（无大小写）与纯 ASCII 的行为不变。
+#[test]
+fn non_ascii_case_folding_is_the_same_on_both_sides() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    import_and_extract(
+        &mut core,
+        "不写日记.txt",
+        "ÄÖÜ 妈妈今天来了。\n\nReport 2026 Q3 正常。\n\n",
+        "op-unicode-case",
+    );
+
+    for query in ["ÄÖÜ", "äöü", "Ä", "ä"] {
+        assert_eq!(
+            core.count_search_matches(query).unwrap(),
+            1,
+            "「{query}」应当命中同大小写的正文"
+        );
+        assert_eq!(
+            core.search_candidates(query, 10).unwrap().len(),
+            1,
+            "「{query}」的候选也必须命中"
+        );
+    }
+
+    // 产品路径（`ranked_matches` / 高亮）也要过：命中、摘录与高亮都在。
+    let snapshot = core
+        .start_search(
+            SearchRequest {
+                query: "äöü".to_owned(),
+                mode: SearchMode::Keyword,
+                filters: SearchFilters::default(),
+                page_size: 10,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(snapshot.results.len(), 1, "{snapshot:?}");
+    let hit = &snapshot.results[0];
+    assert!(
+        hit.snippet.as_deref().unwrap_or_default().contains("ÄÖÜ"),
+        "摘录要带原文：{hit:?}"
+    );
+    assert_eq!(hit.highlights.len(), 1, "命中的是原文里的 ÄÖÜ：{hit:?}");
+
+    // 中文（无大小写）与纯 ASCII 的口径不变。
+    assert_eq!(core.count_search_matches("妈妈").unwrap(), 1);
+    assert_eq!(core.count_search_matches("report").unwrap(), 1);
+    assert_eq!(core.count_search_matches("REPORT").unwrap(), 1);
+    assert_eq!(core.count_search_matches("report 2026").unwrap(), 1);
+    assert_eq!(core.count_search_matches("nope").unwrap(), 0);
 }

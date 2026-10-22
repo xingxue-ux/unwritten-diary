@@ -14,8 +14,13 @@
 //!    的片段里，也可能出现「妈……妈」而不连续。核对用 `instr`，所以召回是精确的
 //!    ——一条真正包含查询的文本一定包含查询的全部 gram。
 //!
-//! 词项统一存小写。SQLite 的 `lower()` 只折叠 ASCII，中文没有大小写，
-//! 其余语系的大小写折叠不在这一片的能力范围内（见文档「没有做到的」）。
+//! 词项统一存小写，折叠规则是 Rust 的 `to_lowercase()`（完整 Unicode）。
+//!
+//! **两端必须用同一套折叠**：本仓的 SQLite 是 bundled、没有 ICU，`lower()` 只折
+//! ASCII。索引侧的 gram 能命中 `ÄÖÜ`，SQL 复核的 `instr(lower(text), 'äöü')` 却永远
+//! 是 0——连 `ÄÖÜ` 原样查询都 0 条。所以复核分两路（见 [`needs_rust_fold`]）：纯
+//! ASCII / 无大小写的查询继续走 SQL `instr`（大库热路径，一点不变慢）；含非 ASCII
+//! 大小写字符的查询把候选行的原文取回，用同一个 `to_lowercase()` 比对。
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -864,6 +869,10 @@ pub(crate) fn candidates(core: &Core, query: &str, limit: usize) -> Result<Vec<S
         None => return Ok(Vec::new()),
     };
 
+    if needs_rust_fold(&needle) {
+        return candidates_by_rust_fold(core, &filter, &needle, limit);
+    }
+
     let sql = format!(
         "SELECT d.segment_id FROM search_grams g \
          CROSS JOIN search_docs d ON d.doc_id = g.doc_id \
@@ -881,6 +890,71 @@ pub(crate) fn candidates(core: &Core, query: &str, limit: usize) -> Result<Vec<S
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// 命中位置：原文折叠后 needle 第一次出现的位置（1 开始的字符数）。
+///
+/// 与 SQL 的 `instr(lower(text), needle)` 同一个语义，只是折叠用 Rust 的
+/// `to_lowercase()`。排序只用它比「谁出现得更早」，不对外暴露。
+fn folded_position(text: &str, needle: &str) -> Option<i64> {
+    let folded = text.to_lowercase();
+    let byte_index = folded.find(needle)?;
+    Some(folded[..byte_index].chars().count() as i64 + 1)
+}
+
+/// 含非 ASCII 大小写字符的查询：候选仍由 gram 索引给出，核对改在 Rust 里做。
+///
+/// 为什么只对这一类查询分叉：SQL 的 `lower()` 只折 ASCII，而 [`candidate_filter`] /
+/// [`grams_for`] 用完整的 `to_lowercase()`。两边对 `Ä` / `ä` / `café` 这类字符不等价。
+/// 纯 ASCII 与中文（无大小写）的查询两端等价，继续走 SQL `instr`——那是大库热路径
+/// （10 万片段上的实测数字见 `count_matches` 的注释），不能为了一条少见的查询把它拖慢。
+///
+/// 代价：这些查询要读候选行的正文（而不是在 SQL 里过滤掉）。候选已经被过滤 gram
+/// 缩过，且它们不在中文/ASCII 热路径上，这个代价可以接受。
+fn candidates_by_rust_fold(
+    core: &Core,
+    filter: &str,
+    needle: &str,
+    limit: usize,
+) -> Result<Vec<String>> {
+    let sql = format!(
+        "SELECT d.segment_id, s.text FROM search_grams g \
+         CROSS JOIN search_docs d ON d.doc_id = g.doc_id \
+         CROSS JOIN extracted_segments s ON s.id = d.segment_id \
+         JOIN extracted_contents ec ON ec.id = s.content_id \
+         JOIN source_items src ON src.source_id = ec.source_id \
+         WHERE g.term = ?1 AND {} \
+         ORDER BY g.doc_id",
+        current_revision_only("ec")
+    );
+    let mut statement = core.conn.prepare(&sql)?;
+    let mut rows = statement.query(params![filter])?;
+    let mut hits = Vec::new();
+    while let Some(row) = rows.next()? {
+        let segment_id: String = row.get(0)?;
+        let text: String = row.get(1)?;
+        if folded_position(&text, needle).is_some() {
+            hits.push(segment_id);
+            if hits.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(hits)
+}
+
+/// 查询需不需要 Rust 侧的折叠核对。
+///
+/// `needs_rust_fold` 为 true = 查询里有「SQLite 的 `lower()` 折不动的非 ASCII 大小写
+/// 字符」：这类字符 `to_lowercase()` 会变（`Ä → ä`）或 `to_uppercase()` 会变，SQL 的
+/// ASCII-only `lower()` 两边都不动，于是与 Rust 折叠的结果不一致。中文（无大小写）、
+/// emoji、纯 ASCII 都返回 false：两端等价，继续走 SQL `instr`。
+fn needs_rust_fold(needle: &str) -> bool {
+    needle.chars().any(|character| {
+        !character.is_ascii()
+            && (character.to_uppercase().ne(std::iter::once(character))
+                || character.to_lowercase().ne(std::iter::once(character)))
+    })
+}
+
 /// 命中数量。测试与测量用它核对召回是否完整。
 ///
 /// 与 `candidates` 一样只数派生片段，且只数**当前修订**：它核对的口径必须与
@@ -891,6 +965,29 @@ pub(crate) fn count_matches(core: &Core, query: &str) -> Result<i64> {
         Some(pair) => pair,
         None => return Ok(0),
     };
+    if needs_rust_fold(&needle) {
+        // 与候选查询同一个分叉：SQL 的 lower() 折不动的字符交给 Rust 核对。
+        let sql = format!(
+            "SELECT s.text FROM search_grams g \
+             CROSS JOIN search_docs d ON d.doc_id = g.doc_id \
+             CROSS JOIN extracted_segments s ON s.id = d.segment_id \
+             JOIN extracted_contents ec ON ec.id = s.content_id \
+             JOIN source_items src ON src.source_id = ec.source_id \
+             WHERE g.term = ?1 AND {}",
+            current_revision_only("ec")
+        );
+        let mut statement = core.conn.prepare(&sql)?;
+        let mut rows = statement.query(params![filter])?;
+        let mut count = 0_i64;
+        while let Some(row) = rows.next()? {
+            let text: String = row.get(0)?;
+            if folded_position(&text, &needle).is_some() {
+                count += 1;
+            }
+        }
+        return Ok(count);
+    }
+
     // `CROSS JOIN` 把连接顺序写成「倒排表 → 文档行 → 片段」，和候选查询一致。
     // 诚实说明：在 SQLite 3.51 上实测 `JOIN` 与 `CROSS JOIN` 的计划**本来就相同**
     // （10 万片段上 39.1 对 37.8 ms），这不是性能修复，而是防规划器变化——
@@ -1015,15 +1112,26 @@ pub(crate) fn ranked_matches(
     needle: &str,
     filters: &SearchFilters,
 ) -> Result<Vec<RankedMatch>> {
-    let Some((filter, _)) = candidate_filter(needle) else {
+    let Some((filter, folded_needle)) = candidate_filter(needle) else {
         return Ok(Vec::new());
     };
     let (kinds, scope) = crate::search_session::filters_to_params(filters)?;
+    // 与 `candidates` / `count_matches` 同一个分叉（见 [`needs_rust_fold`]）。
+    let rust_fold = needs_rust_fold(&folded_needle);
 
     // 派生片段一路：过滤条件全部下到 SQL（与记录文字那一路同一套语义）。
     // `current_revision_only` 是「旧修订退出默认检索」的关键：索引照旧按修订存，
     // 但只有 `source_items.current_revision_id` 指向的那一版参与命中。
-    let mut matches: Vec<RankedMatch> = {
+    let mut matches: Vec<RankedMatch> = if rust_fold {
+        ranked_segments_by_rust_fold(
+            core,
+            &filter,
+            &folded_needle,
+            filters,
+            kinds.as_deref(),
+            scope.as_deref(),
+        )?
+    } else {
         let sql = format!(
             "SELECT d.doc_id, instr(lower(s.text), ?2), c.day_key \
              FROM search_grams g \
@@ -1046,7 +1154,7 @@ pub(crate) fn ranked_matches(
             .query_map(
                 params![
                     filter,
-                    needle,
+                    &folded_needle,
                     i64::from(filters.include_trashed),
                     filters.from_day_key,
                     filters.to_day_key,
@@ -1071,45 +1179,155 @@ pub(crate) fn ranked_matches(
     // 记录文字一路。它属于 `text` 类型：`kinds` 非空且不含 `Text` 时整路不参与
     // ——那表示这个过滤器把这一路排除了，而不是「恰好没命中」。
     if filters.kinds.is_empty() || filters.kinds.contains(&SourceKind::Text) {
-        let mut statement = core.conn.prepare(
-            "SELECT d.doc_id, instr(lower(c.draft_text), ?2), c.day_key \
-             FROM search_capture_grams g \
-             CROSS JOIN search_capture_docs d ON d.doc_id = g.doc_id \
-             CROSS JOIN captures c ON c.id = d.capture_id \
-             WHERE g.term = ?1 AND instr(lower(c.draft_text), ?2) > 0 \
-               AND (?3 = 1 OR c.state <> 'trashed') \
-               AND (?4 IS NULL OR c.day_key >= ?4) \
-               AND (?5 IS NULL OR c.day_key <= ?5) \
-               AND (?6 IS NULL OR EXISTS (SELECT 1 FROM source_items si \
-                    WHERE si.capture_id = c.id \
-                      AND si.source_id IN (SELECT value FROM json_each(?6))))",
-        )?;
-        let rows = statement
-            .query_map(
-                params![
-                    filter,
-                    needle,
-                    i64::from(filters.include_trashed),
-                    filters.from_day_key,
-                    filters.to_day_key,
-                    scope,
-                ],
-                |row| {
-                    Ok(RankedMatch {
-                        doc: DocRef {
-                            capture: true,
-                            doc_id: row.get(0)?,
-                        },
-                        position: row.get(1)?,
-                        day_key: row.get(2)?,
-                    })
-                },
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = if rust_fold {
+            ranked_captures_by_rust_fold(core, &filter, &folded_needle, filters, scope.as_deref())?
+        } else {
+            let mut statement = core.conn.prepare(
+                "SELECT d.doc_id, instr(lower(c.draft_text), ?2), c.day_key \
+                 FROM search_capture_grams g \
+                 CROSS JOIN search_capture_docs d ON d.doc_id = g.doc_id \
+                 CROSS JOIN captures c ON c.id = d.capture_id \
+                 WHERE g.term = ?1 AND instr(lower(c.draft_text), ?2) > 0 \
+                   AND (?3 = 1 OR c.state <> 'trashed') \
+                   AND (?4 IS NULL OR c.day_key >= ?4) \
+                   AND (?5 IS NULL OR c.day_key <= ?5) \
+                   AND (?6 IS NULL OR EXISTS (SELECT 1 FROM source_items si \
+                        WHERE si.capture_id = c.id \
+                          AND si.source_id IN (SELECT value FROM json_each(?6))))",
+            )?;
+            let rows = statement
+                .query_map(
+                    params![
+                        filter,
+                        &folded_needle,
+                        i64::from(filters.include_trashed),
+                        filters.from_day_key,
+                        filters.to_day_key,
+                        scope,
+                    ],
+                    |row| {
+                        Ok(RankedMatch {
+                            doc: DocRef {
+                                capture: true,
+                                doc_id: row.get(0)?,
+                            },
+                            position: row.get(1)?,
+                            day_key: row.get(2)?,
+                        })
+                    },
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
         matches.extend(rows);
     }
 
     matches.sort_by_key(crate::search_session::sort_key);
+    Ok(matches)
+}
+
+/// `ranked_matches` 的派生片段那一路（Rust 侧折叠核对）。
+///
+/// 与上面那条 SQL 只差一处：`instr(lower(...))` 的核对不在 SQL 里做，而是把正文取回
+/// 来、用同一个 `to_lowercase()` 在 [`folded_position`] 里比对。过滤条件与参数顺序
+/// 与 SQL 那一路逐项相同，改一处要同时改两处。
+fn ranked_segments_by_rust_fold(
+    core: &Core,
+    filter: &str,
+    needle: &str,
+    filters: &SearchFilters,
+    kinds: Option<&str>,
+    scope: Option<&str>,
+) -> Result<Vec<RankedMatch>> {
+    let sql = format!(
+        "SELECT d.doc_id, s.text, c.day_key \
+         FROM search_grams g \
+         CROSS JOIN search_docs d ON d.doc_id = g.doc_id \
+         CROSS JOIN extracted_segments s ON s.id = d.segment_id \
+         JOIN extracted_contents ec ON ec.id = s.content_id \
+         JOIN source_items src ON src.source_id = ec.source_id \
+         JOIN captures c ON c.id = src.capture_id \
+         WHERE g.term = ?1 \
+           AND {} \
+           AND (?2 = 1 OR c.state <> 'trashed') \
+           AND (?3 IS NULL OR c.day_key >= ?3) \
+           AND (?4 IS NULL OR c.day_key <= ?4) \
+           AND (?5 IS NULL OR src.kind IN (SELECT value FROM json_each(?5))) \
+           AND (?6 IS NULL OR src.source_id IN (SELECT value FROM json_each(?6)))",
+        current_revision_only("ec")
+    );
+    let mut statement = core.conn.prepare(&sql)?;
+    let mut rows = statement.query(params![
+        filter,
+        i64::from(filters.include_trashed),
+        filters.from_day_key,
+        filters.to_day_key,
+        kinds,
+        scope,
+    ])?;
+    let mut matches = Vec::new();
+    while let Some(row) = rows.next()? {
+        let doc_id: i64 = row.get(0)?;
+        let text: String = row.get(1)?;
+        let day_key: Option<String> = row.get(2)?;
+        if let Some(position) = folded_position(&text, needle) {
+            matches.push(RankedMatch {
+                doc: DocRef {
+                    capture: false,
+                    doc_id,
+                },
+                position,
+                day_key,
+            });
+        }
+    }
+    Ok(matches)
+}
+
+/// `ranked_matches` 的记录文字那一路（Rust 侧折叠核对）。理由同上。
+fn ranked_captures_by_rust_fold(
+    core: &Core,
+    filter: &str,
+    needle: &str,
+    filters: &SearchFilters,
+    scope: Option<&str>,
+) -> Result<Vec<RankedMatch>> {
+    let mut statement = core.conn.prepare(
+        "SELECT d.doc_id, c.draft_text, c.day_key \
+         FROM search_capture_grams g \
+         CROSS JOIN search_capture_docs d ON d.doc_id = g.doc_id \
+         CROSS JOIN captures c ON c.id = d.capture_id \
+         WHERE g.term = ?1 \
+           AND (?2 = 1 OR c.state <> 'trashed') \
+           AND (?3 IS NULL OR c.day_key >= ?3) \
+           AND (?4 IS NULL OR c.day_key <= ?4) \
+           AND (?5 IS NULL OR EXISTS (SELECT 1 FROM source_items si \
+                WHERE si.capture_id = c.id \
+                  AND si.source_id IN (SELECT value FROM json_each(?5))))",
+    )?;
+    let mut rows = statement.query(params![
+        filter,
+        i64::from(filters.include_trashed),
+        filters.from_day_key,
+        filters.to_day_key,
+        scope,
+    ])?;
+    let mut matches = Vec::new();
+    while let Some(row) = rows.next()? {
+        let doc_id: i64 = row.get(0)?;
+        let text: String = row.get(1)?;
+        let day_key: String = row.get(2)?;
+        if let Some(position) = folded_position(&text, needle) {
+            matches.push(RankedMatch {
+                doc: DocRef {
+                    capture: true,
+                    doc_id,
+                },
+                position,
+                day_key: Some(day_key),
+            });
+        }
+    }
     Ok(matches)
 }
 

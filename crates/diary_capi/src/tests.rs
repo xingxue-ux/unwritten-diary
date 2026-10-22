@@ -1664,6 +1664,205 @@ fn provider_presets_and_models_are_wired() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// `providers.save` 的 `config` 是**显式参数结构体**，不是直接透传核心的 `Provider`。
+///
+/// 核心的 `Provider` 没有 `deny_unknown_fields`（也不能给它加：那会改变核心对旧数据的
+/// 反序列化口径）。直接把它当入参，调用方照契约写 `credentialRef` 时会被当成未知字段
+/// **静默丢掉**，`credential_ref` 落成 `null`；核心随后认为旧引用没人用了，
+/// `forget_secret` 直接删掉密钥文件——**响应还是 `ok:true`，密钥不可恢复**。
+/// 同型的 `sources.locate` 的 `locator` 也在这里钉住（`pageNumber` 曾经被丢掉）。
+#[test]
+fn provider_save_keeps_credential_ref_written_in_camel_case() {
+    let (dir, _path, handle) = open_temp("provider-credential-ref");
+    let secret_path = |reference: &str| dir.join("secrets").join(format!("{reference}.secret"));
+
+    // 1) 首次保存：snake_case + 明文密钥 -> 核心换成引用并落盘。
+    let saved = expect_ok(&call(
+        handle,
+        "providers.save",
+        json!({
+            "config": {
+                "id": "prv_credential",
+                "label": "凭据保留",
+                "adapter_id": "openai_compatible",
+                "endpoint": "http://127.0.0.1:9/v1",
+                "model": "m",
+                "capabilities": ["generate_text"],
+                "credential_ref": null,
+                "enabled": true,
+                "test_status": "untested"
+            },
+            "secret": "sk-capi-credential"
+        }),
+    ));
+    let credential_ref = saved["credential_ref"]
+        .as_str()
+        .expect("保存密钥必须给出引用")
+        .to_owned();
+    let path = secret_path(&credential_ref);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "sk-capi-credential");
+
+    // 2) 实际复现的写法：其余字段 snake_case，只有 `credentialRef` 照契约写成
+    //    camelCase。旧实现在这里**静默成功**并把引用落成 null，随后核心删掉密钥。
+    let saved = expect_ok(&call(
+        handle,
+        "providers.save",
+        json!({
+            "config": {
+                "id": "prv_credential",
+                "label": "凭据保留（契约写法）",
+                "adapter_id": "openai_compatible",
+                "endpoint": "http://127.0.0.1:9/v1",
+                "model": "m",
+                "capabilities": ["generate_text"],
+                "credentialRef": credential_ref,
+                "enabled": true,
+                "test_status": "untested"
+            }
+        }),
+    ));
+    assert!(
+        path.is_file(),
+        "配置行还在引用这个凭据，密钥文件不能被删：{path:?}"
+    );
+    assert_eq!(
+        saved["credential_ref"],
+        json!(credential_ref),
+        "camelCase 的 credentialRef 不能被静默丢掉"
+    );
+    assert_eq!(saved["label"], json!("凭据保留（契约写法）"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "sk-capi-credential");
+
+    // 2b) 全 camelCase 的契约写法也要认（每个字段都有别名，不是只补一个）。
+    let saved = expect_ok(&call(
+        handle,
+        "providers.save",
+        json!({
+            "config": {
+                "id": "prv_credential",
+                "label": "凭据保留（全 camelCase）",
+                "adapterId": "openai_compatible",
+                "endpoint": "http://127.0.0.1:9/v1",
+                "model": "m",
+                "capabilities": ["generate_text"],
+                "credentialRef": credential_ref,
+                "enabled": true,
+                "testStatus": "untested"
+            }
+        }),
+    ));
+    assert_eq!(saved["credential_ref"], json!(credential_ref));
+    assert_eq!(saved["adapter_id"], json!("openai_compatible"));
+    assert_eq!(saved["label"], json!("凭据保留（全 camelCase）"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "sk-capi-credential");
+
+    // 3) 拼错的字段必须报 invalid_argument，且报错时一个字节都不改。
+    let message = expect_error(
+        &call(
+            handle,
+            "providers.save",
+            json!({
+                "config": {
+                    "id": "prv_credential",
+                    "label": "拼错字段",
+                    "adapter_id": "openai_compatible",
+                    "endpoint": "http://127.0.0.1:9/v1",
+                    "model": "m",
+                    "capabilities": ["generate_text"],
+                    "credential_reff": credential_ref,
+                    "enabled": true,
+                    "test_status": "untested"
+                }
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(
+        message.contains("credential_reff"),
+        "错误要指出拼错的字段：{message}"
+    );
+    let listed = expect_ok(&call(handle, "providers.list", json!(null)));
+    assert_eq!(listed[0]["credential_ref"], json!(credential_ref));
+    assert!(path.is_file(), "报错不能有副作用：密钥文件还在");
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `sources.locate` 的 `locator` 也是显式参数结构体：核心 `SourceLocator` 同样没有
+/// `deny_unknown_fields`，camelCase 与拼错字段在本层就得分清。
+#[test]
+fn locate_source_locator_accepts_contract_field_names() {
+    let (dir, _path, handle) = open_temp("locator-camel-case");
+
+    // 实际复现的写法：`locator_type` / `source_revision_id` snake_case，`pageNumber`
+    // 照契约 camelCase。旧实现把 `pageNumber` 当未知字段忽略，返回 `ok:true` 但
+    // `page_number` 是 null。
+    let located = expect_ok(&call(
+        handle,
+        "sources.locate",
+        json!({
+            "source_ref": "src-does-not-exist",
+            "locator": {
+                "locator_type": "document",
+                "source_revision_id": "srv-1",
+                "pageNumber": 7
+            }
+        }),
+    ));
+    assert_eq!(located["available"], json!(false), "来源不存在不是错误");
+    assert_eq!(located["locator"]["locator_type"], json!("document"));
+    assert_eq!(located["locator"]["source_revision_id"], json!("srv-1"));
+    assert_eq!(
+        located["locator"]["page_number"],
+        json!(7),
+        "pageNumber 不能被静默丢掉"
+    );
+
+    // 全 camelCase（契约写法）也要认：每个字段都有别名。
+    let located = expect_ok(&call(
+        handle,
+        "sources.locate",
+        json!({
+            "sourceRef": "src-does-not-exist",
+            "locator": {
+                "locatorType": "document",
+                "sourceRevisionId": "srv-1",
+                "pageNumber": 7,
+                "blockId": "b-1"
+            }
+        }),
+    ));
+    assert_eq!(located["locator"]["locator_type"], json!("document"));
+    assert_eq!(located["locator"]["source_revision_id"], json!("srv-1"));
+    assert_eq!(located["locator"]["page_number"], json!(7));
+    assert_eq!(located["locator"]["block_id"], json!("b-1"));
+
+    // 拼错的字段同一个口径：invalid_argument，不是「当没写」。
+    let message = expect_error(
+        &call(
+            handle,
+            "sources.locate",
+            json!({
+                "source_ref": "src-does-not-exist",
+                "locator": {
+                    "locator_type": "document",
+                    "source_revision_id": "srv-1",
+                    "pageNumbr": 7
+                }
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert!(
+        message.contains("pageNumbr"),
+        "错误要指出拼错的字段：{message}"
+    );
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// 第 1 组：`captures.get` / `captures.list`——「看今天」、历史列表、条目详情的
 /// 数据源，游标必须是**真游标**（第二页接得上、不重不漏）。
 #[test]
