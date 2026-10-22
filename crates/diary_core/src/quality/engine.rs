@@ -358,7 +358,7 @@ impl GenerateEngine for OpenAiCompatibleGenerateEngine {
                 reason: format!(
                     "服务返回 {}：{}",
                     response.status,
-                    crate::provider::normalize::redact(&response.excerpt(), Some(&self.secret))
+                    response.excerpt(Some(&self.secret))
                 ),
             });
         }

@@ -210,6 +210,10 @@ pub(crate) fn list(core: &Core) -> Result<Vec<Provider>> {
 
 /// 校验并规范化 endpoint：只接受 `http(s)://host[:port][/path]`。
 ///
+/// **不接受 userinfo**（`http://user:pass@host/v1`）：URL 里的密码没有可靠的生命周期
+/// 管理，且一定会出现在配置列表、测试报告与错误消息里。这里直接报错而不是静默剥离，
+/// 否则用户会以为配上了、实际没配。凭据走 `secret` / `credentialRef`。
+///
 /// 不用通用 URL 解析库：这里要的只是「协议是 http/https、有非空主机、没有空白」，
 /// 多引一个依赖不划算。**不校验主机能不能解析**——那是连接测试的事。
 fn normalize_endpoint(endpoint: &str) -> Result<String> {
@@ -225,16 +229,28 @@ fn normalize_endpoint(endpoint: &str) -> Result<String> {
             reason: format!("endpoint 的协议只支持 http / https，实际是「{scheme}」"),
         });
     }
+    // **拒绝 userinfo，不做静默剥离**：`http://user:pass@host/v1` 里的密码没有可靠的
+    // 生命周期管理（改配置、删配置、换引用都不会清理它），而且必然会原样出现在
+    // `providers.list`、连接测试报告和错误串里。静默剥离更糟：用户以为配上了，
+    // 实际一个字节都没发出去，排查时找不到原因。
+    //
+    // 放在空白检查之前，且**不把 endpoint 原样写进这条消息**：那条 URL 本身就是
+    // 凭据，拒绝它的时候再回显一遍等于换个地方泄漏。
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return Err(CoreError::InvalidArgument {
+            reason: "endpoint 的 authority 里带了用户名或密码（userinfo）。不要把凭据写进 \
+                     URL：密钥请用 secret/credentialRef，不要写进 URL；URL 里的密码没有可靠\
+                     的生命周期管理，还会原样出现在配置列表与错误消息里"
+                .to_owned(),
+        });
+    }
     if rest.chars().any(char::is_whitespace) {
         return Err(CoreError::InvalidArgument {
             reason: format!("endpoint「{endpoint}」里不能有空白字符"),
         });
     }
-    let host = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .trim();
+    let host = authority.trim();
     if host.is_empty() {
         return Err(CoreError::InvalidArgument {
             reason: format!("endpoint「{endpoint}」没有主机名"),
@@ -487,6 +503,21 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
     load_provider(&core.conn, &provider_id)
 }
 
+/// 更新本机引擎配置时先读出来的旧行：功能参数（适配器、模型目录）、创建时间，
+/// 以及**验证结论**（已验能力、测试状态、失败码与测试时间）。
+///
+/// 与 HTTP 那条路的 [`ExistingProvider`] 同一个理由（#96）：只有功能参数真的变了，
+/// 这一组才作废；只改显示名或 `enabled` 开关时得把旧结论原样写回去。
+struct ExistingLocal {
+    adapter_id: String,
+    model: Option<String>,
+    created_at: String,
+    verified_capabilities: String,
+    test_status: String,
+    last_error_code: Option<String>,
+    last_tested_at: Option<String>,
+}
+
 /// 保存一条**本机引擎**的服务配置。
 ///
 /// 与 HTTP 那条路的差别就三处，其余（幂等、验证结论作废、等配置重评）完全一致：
@@ -507,27 +538,53 @@ fn save_local(
     label: &str,
     model: Option<String>,
 ) -> Result<Provider> {
-    let existing: Option<(String, Option<String>, String, String)> = core
+    let existing: Option<ExistingLocal> = core
         .conn
         .query_row(
-            "SELECT adapter_id, model, created_at, verified_capabilities FROM providers \
-             WHERE id = ?1",
+            "SELECT adapter_id, model, created_at, verified_capabilities, test_status, \
+             last_error_code, last_tested_at FROM providers WHERE id = ?1",
             params![provider_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok(ExistingLocal {
+                    adapter_id: row.get(0)?,
+                    model: row.get(1)?,
+                    created_at: row.get(2)?,
+                    verified_capabilities: row.get(3)?,
+                    test_status: row.get(4)?,
+                    last_error_code: row.get(5)?,
+                    last_tested_at: row.get(6)?,
+                })
+            },
         )
         .optional()?;
     let config_changed = match &existing {
         None => true,
-        Some((adapter_id, old_model, _, _)) => {
-            adapter_id != &config.adapter_id || old_model.as_deref() != model.as_deref()
+        Some(old) => {
+            old.adapter_id != config.adapter_id || old.model.as_deref() != model.as_deref()
         }
     };
-    let verified = match &existing {
-        Some((_, _, _, verified)) if !config_changed => verified.clone(),
-        _ => "[]".to_owned(),
+    // 验证结论四件套：功能参数没变就**原样保留**，变了才一起清回「没测过」。
+    //
+    // 之前这里无条件写 `untested`（且 SQL 的 ON CONFLICT 不更新失败码/测试时间）：
+    // 一次失败的连接测试之后，用户原样再点一次保存——一个字段都没改——就把 `failed`
+    // 洗成了 `untested`。闸门对 `untested` 会跳过「验过没有」这一条，于是「引擎库
+    // 不是有效 ELF / 模型文件损坏」的服务被重新放行，任务注定失败。
+    let (verified, test_status, last_error_code, last_tested_at) = match &existing {
+        Some(old) if !config_changed => (
+            old.verified_capabilities.clone(),
+            old.test_status.clone(),
+            old.last_error_code.clone(),
+            old.last_tested_at.clone(),
+        ),
+        _ => (
+            "[]".to_owned(),
+            ProviderTestStatus::Untested.wire().to_owned(),
+            None,
+            None,
+        ),
     };
     let created_at = match &existing {
-        Some((_, _, created_at, _)) => created_at.clone(),
+        Some(old) => old.created_at.clone(),
         None => support::to_iso(now()),
     };
     let declared = capabilities_json(&config.capabilities)?;
@@ -537,12 +594,13 @@ fn save_local(
         "INSERT INTO providers (id, label, adapter_id, endpoint, model, declared_capabilities, \
          verified_capabilities, credential_ref, enabled, test_status, last_tested_at, \
          last_error_code, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, NULL, ?7, ?8, NULL, NULL, ?9, ?10) \
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10, ?11, ?12) \
          ON CONFLICT(id) DO UPDATE SET label = excluded.label, adapter_id = excluded.adapter_id, \
          endpoint = NULL, model = excluded.model, \
          declared_capabilities = excluded.declared_capabilities, \
          verified_capabilities = excluded.verified_capabilities, credential_ref = NULL, \
          enabled = excluded.enabled, test_status = excluded.test_status, \
+         last_tested_at = excluded.last_tested_at, last_error_code = excluded.last_error_code, \
          updated_at = excluded.updated_at",
         params![
             provider_id,
@@ -552,7 +610,9 @@ fn save_local(
             declared,
             verified,
             i64::from(config.enabled),
-            ProviderTestStatus::Untested.wire(),
+            test_status,
+            last_tested_at,
+            last_error_code,
             created_at,
             now_text,
         ],

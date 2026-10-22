@@ -310,15 +310,21 @@ impl ProtocolAdapter for OpenAiCompatible {
             .ok_or_else(|| CoreError::ModelUnavailable {
                 reason: format!(
                     "远端响应不是 OpenAI 兼容的 chat completions 结构（没有 choices[0].message.content）：{}",
-                    redact(&response.excerpt(), secret)
+                    response.excerpt(secret)
                 ),
             })?;
+        // **成功路径也必须擦**：远端可能把密钥回显进 content / model（提示词注入、
+        // 调试模式、网关回显都会这么干），而这两个字段会被落库（`ai_responses`、
+        // 日记正文）并交给插件。只在错误消息里擦是不够的。
+        //
+        // 这里逐个字段显式擦，新增字段也要跟着擦——`GenerateOutcome` 目前没有别的
+        // 出口，字段一多就该在这里统一过一遍。
         Ok(GenerateOutcome {
-            text: text.to_owned(),
+            text: redact(text, secret),
             model: value
                 .get("model")
                 .and_then(|model| model.as_str())
-                .map(str::to_owned),
+                .map(|model| redact(model, secret)),
         })
     }
 }
@@ -338,11 +344,11 @@ fn parse_transcription(
     value
         .get("text")
         .and_then(|text| text.as_str())
-        .map(str::to_owned)
+        .map(|text| redact(text, secret))
         .ok_or_else(|| CoreError::ModelUnavailable {
             reason: format!(
                 "远端响应不是 OpenAI 兼容的转写结构（没有 text 字段）：{}",
-                redact(&response.excerpt(), secret)
+                response.excerpt(secret)
             ),
         })
 }
@@ -354,7 +360,7 @@ fn parse_json(
     serde_json::from_slice(&response.body).map_err(|error| CoreError::ModelUnavailable {
         reason: format!(
             "远端响应不是合法 JSON（{error}）：{}",
-            redact(&response.excerpt(), secret)
+            response.excerpt(secret)
         ),
     })
 }
@@ -477,6 +483,42 @@ mod tests {
             debug.to_ascii_lowercase().contains("authorization: ***"),
             "{debug}"
         );
+    }
+
+    #[test]
+    fn generate_outcome_redacts_a_secret_echoed_by_the_remote() {
+        let secret = "sk-echoed-0123456789";
+        let body = serde_json::json!({
+            "model": format!("mirror-{secret}"),
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": format!("远端把密钥 {secret} 原样回显了"),
+                }
+            }],
+        })
+        .to_string();
+        let response = super::super::transport::HttpResponse::new(200, body);
+
+        let outcome = OpenAiCompatible {}
+            .parse_generate(&response, Some(secret))
+            .unwrap();
+        assert!(
+            !outcome.text.contains(secret),
+            "成功路径的正文泄漏了密钥：{}",
+            outcome.text
+        );
+        assert!(
+            outcome.text.contains("***"),
+            "应该留下擦除痕迹：{}",
+            outcome.text
+        );
+        let model = outcome.model.expect("远端回显了模型名");
+        assert!(
+            !model.contains(secret),
+            "成功路径的模型名泄漏了密钥：{model}"
+        );
+        assert!(model.contains("***"), "模型名也应该擦：{model}");
     }
 
     #[test]

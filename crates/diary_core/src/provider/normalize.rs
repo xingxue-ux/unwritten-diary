@@ -54,7 +54,7 @@ pub fn transport_error(error: &TransportError, secret: Option<&str>) -> CoreErro
 /// 有响应的失败 → 契约错误码。2xx 之外都应该走这里。
 pub fn http_error(response: &HttpResponse, secret: Option<&str>) -> CoreError {
     let status = response.status;
-    let excerpt = redact(&response.excerpt(), secret);
+    let excerpt = response.excerpt(secret);
     let retry_after = parse_retry_after(response.header("retry-after"));
 
     match status {
@@ -261,6 +261,25 @@ mod tests {
         let text = error.to_string();
         assert!(!text.contains(secret), "错误消息泄漏了密钥：{text}");
         assert!(text.contains("***"), "应该留下擦除痕迹：{text}");
+    }
+
+    #[test]
+    fn a_secret_longer_than_the_excerpt_is_redacted_before_truncation() {
+        // 300 个字符的密钥：比 200 字的摘录上限还长。先截断再擦的话，完整的密钥
+        // 永远匹配不上，前缀会原样留在错误消息里。
+        let secret = format!("sk-{}", "A".repeat(297));
+        assert!(secret.len() > 200, "这条用例要的是「密钥比摘录还长」");
+        let prefix: String = secret.chars().take(20).collect();
+        let response = HttpResponse::new(400, format!("{{\"echo\":\"{secret}\"}}"));
+        let error = http_error(&response, Some(&secret));
+        let text = error.to_string();
+        assert!(
+            !text.contains(&prefix),
+            "超长密钥的前 20 个字符留在了摘录里：{text}"
+        );
+        assert!(text.contains("***"), "应该留下擦除痕迹：{text}");
+        // 摘录仍受 200 字上限约束（擦除发生在截断之前）。
+        assert!(response.excerpt(Some(&secret)).chars().count() <= 201);
     }
 
     #[test]
