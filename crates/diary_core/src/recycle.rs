@@ -105,15 +105,23 @@ pub(crate) fn trash(
         return Ok(serde_json::from_str(&json)?);
     }
 
-    let capture = crate::load_capture(&core.conn, capture_id)?;
+    // **IMMEDIATE + 复核在事务里**：事务外先查再写会让两个连接都通过 revision 检查，
+    // 后一个把前一个的写入覆盖成同一个 `N+1`，并各发一条同 revision 的事件；
+    // `trashed_from_state` 也可能被旧值覆盖（另一个连接刚提交成 `committed`，这里仍写
+    // `draft`）。口径与 `diary.rs` 的 `ensure_day_revision`、本模块 `purge` 一致。
+    let tx = core
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let capture = crate::load_capture(&tx, capture_id)?;
     crate::ensure_revision(&capture, expected_revision)?;
     if capture.state == CaptureState::Trashed {
         return Err(invalid_state(&capture, "已经在回收站里"));
     }
     // 正在录音/导入的记录不能进回收站：trash 本身不丢数据，但收起后写入口是只读的，
     // 用户会以为录音还在继续；更危险的是接着 purge 会把在途会话与暂存材料一起删掉。
-    // 要求先结束或取消，把「这段音频还在不在」变成用户看得见的决定。
-    ensure_no_in_flight(&core.conn, &capture)?;
+    // 要求先结束或取消，把「这段音频还在不在」变成用户看得见的决定。这个检查也放进
+    // 事务：会话状态被另一条连接改掉时，不能按事务外的旧结论放行。
+    ensure_no_in_flight(&tx, &capture)?;
 
     let now = support::now();
     let new_revision = capture.revision + 1;
@@ -122,17 +130,20 @@ pub(crate) fn trash(
     trashed.revision = new_revision;
     trashed.updated_at = now;
 
-    let tx = core.conn.transaction()?;
-    tx.execute(
+    // `AND revision = ?5` 是第二道闸：IMMEDIATE 事务里读与写对着同一份锁，正常不会
+    // 影响行数不对；真不对说明行在事务内被改了/删了，绝不能当成成功。
+    let updated = tx.execute(
         "UPDATE captures SET revision = ?1, state = 'trashed', trashed_from_state = ?2, \
-         updated_at = ?3 WHERE id = ?4",
+         updated_at = ?3 WHERE id = ?4 AND revision = ?5",
         params![
             new_revision,
             capture.state.wire(),
             support::to_iso(now),
-            capture.id
+            capture.id,
+            expected_revision
         ],
     )?;
+    ensure_single_row(updated, &tx, capture_id, expected_revision, &capture)?;
     // 可见性变了：进行中的检索会话要失效，下一次翻页重新按新口径查。
     crate::search::bump_index_epoch(&tx)?;
     crate::store_receipt(
@@ -167,13 +178,19 @@ pub(crate) fn restore(
         return Ok(serde_json::from_str(&json)?);
     }
 
-    let capture = crate::load_capture(&core.conn, capture_id)?;
+    // 闸门与写在同一个事务里（理由同 `trash`）：`trashed_from_state` 也必须在事务内
+    // 读——另一个连接先恢复之后，事务外的旧值会把状态按旧口径再写一遍，还多一条同
+    // revision 的事件。
+    let tx = core
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let capture = crate::load_capture(&tx, capture_id)?;
     crate::ensure_revision(&capture, expected_revision)?;
     if capture.state != CaptureState::Trashed {
         return Err(invalid_state(&capture, "不在回收站里，不能恢复"));
     }
 
-    let previous = previous_state(&core.conn, capture_id)?;
+    let previous = previous_state(&tx, capture_id)?;
     let now = support::now();
     let new_revision = capture.revision + 1;
     let mut restored = capture.clone();
@@ -181,17 +198,18 @@ pub(crate) fn restore(
     restored.revision = new_revision;
     restored.updated_at = now;
 
-    let tx = core.conn.transaction()?;
-    tx.execute(
+    let updated = tx.execute(
         "UPDATE captures SET revision = ?1, state = ?2, trashed_from_state = NULL, \
-         updated_at = ?3 WHERE id = ?4",
+         updated_at = ?3 WHERE id = ?4 AND revision = ?5",
         params![
             new_revision,
             previous.wire(),
             support::to_iso(now),
-            capture.id
+            capture.id,
+            expected_revision
         ],
     )?;
+    ensure_single_row(updated, &tx, capture_id, expected_revision, &capture)?;
     crate::search::bump_index_epoch(&tx)?;
     crate::store_receipt(
         &tx,
@@ -1345,6 +1363,26 @@ fn invalid_state(capture: &Capture, reason: &str) -> CoreError {
         id: capture.id.clone(),
         state: format!("{}（{reason}）", capture.state.wire()),
     }
+}
+
+/// `UPDATE ... WHERE id AND revision` 的受影响行数必须是 1。
+///
+/// `trash` / `restore` 的写事务是 `IMMEDIATE`：读与写对着同一份锁，正常一定命中。
+/// 真不命中说明行在事务内被删了或 revision 变了——如实报出来（not_found /
+/// revision_conflict），不能把「没写进去」当成成功。
+fn ensure_single_row(
+    updated: usize,
+    tx: &rusqlite::Transaction<'_>,
+    capture_id: &str,
+    expected_revision: i64,
+    capture: &Capture,
+) -> Result<()> {
+    if updated == 1 {
+        return Ok(());
+    }
+    let current = crate::load_capture(tx, capture_id)?;
+    crate::ensure_revision(&current, expected_revision)?;
+    Err(invalid_state(capture, "状态在事务里被改动，请重试"))
 }
 
 fn preview_error(token: &str, reason: &str) -> CoreError {

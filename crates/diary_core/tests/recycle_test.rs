@@ -1886,3 +1886,116 @@ fn unrelated_version_on_the_same_day_is_not_listed_or_deleted() {
     assert_eq!(alive(&v_ab), 0, "含 A 材料的版本按用户选择删除");
     assert_eq!(alive(&v_b), 1, "同一天另一条记录的版本不能被牵连");
 }
+
+// ------------------------------------------------------ expectedRevision 的并发闸门
+
+/// `trash` 的 `expectedRevision` 必须在**写事务里**复核。
+///
+/// 用 SQLite 的写锁把这个窗口确定地撑开：另一条连接先拿写锁、改掉 revision 但先不
+/// 提交；主线程此时调 `trash`——它在事务外读到的是旧 revision，写的时候被锁挡住；
+/// 另一条连接提交后，**旧实现**的 `UPDATE ... WHERE id = ?`（没有 revision 谓词）
+/// 照写，把对方的提交覆盖掉（revision 倒退、状态被旧值覆盖、还多一条同 revision 的
+/// 事件）；**新实现**的 `BEGIN IMMEDIATE` + 事务内复核会报 `revision_conflict`，
+/// 零改动、零事件。
+#[test]
+fn trash_rechecks_expected_revision_inside_the_write_transaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let a = commit_text(&mut core, 17, "今天风很大。", "op-race-trash");
+    let before = core.get_capture(&a).unwrap();
+    let db = dir.path().join("library.sqlite");
+
+    let other = Connection::open(&db).unwrap();
+    other
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    other
+        .execute(
+            "UPDATE captures SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
+            params!["2026-09-17T05:00:00.000Z", a],
+        )
+        .unwrap();
+    let writer = std::thread::spawn(move || {
+        // `trash` 先在事务外读（旧 revision），再被写锁挡住；150 ms 足够它走到 UPDATE。
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        other.execute_batch("COMMIT").unwrap();
+    });
+
+    let result = core.trash_capture(&a, before.revision, "op-race-trash-write");
+    writer.join().unwrap();
+
+    let error = result.expect_err("旧 revision 必须报冲突，不能覆盖另一条连接的提交");
+    assert_eq!(error.code(), ErrorCode::RevisionConflict, "{error:?}");
+
+    let after = core.get_capture(&a).unwrap();
+    assert_eq!(
+        after.revision,
+        before.revision + 1,
+        "另一条连接已经提交的 revision 不能被旧值覆盖"
+    );
+    assert_eq!(
+        after.state,
+        CaptureState::Committed,
+        "冲突时零改动：不能进回收站"
+    );
+    let trash_events = core
+        .events_page(0, 10_000)
+        .unwrap()
+        .events
+        .into_iter()
+        .filter(|event| event.event_type == EventType::CaptureTrashed && event.entity_id == a)
+        .count();
+    assert_eq!(trash_events, 0, "冲突时零改动：不能发事件");
+}
+
+/// `restore` 同一条闸门：另一条连接已经恢复过之后，拿旧 revision 再恢复必须报
+/// `revision_conflict`，不能凭事务外读到的 `trashed_from_state` 再写一遍（那会多出
+/// 一条同 revision 的事件，并把状态按旧值重建）。
+#[test]
+fn restore_rechecks_expected_revision_inside_the_write_transaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let a = commit_text(&mut core, 17, "今天风很大。", "op-race-restore");
+    let committed = core.get_capture(&a).unwrap();
+    let trashed = core
+        .trash_capture(&a, committed.revision, "op-race-restore-trash")
+        .unwrap();
+    let db = dir.path().join("library.sqlite");
+
+    let other = Connection::open(&db).unwrap();
+    other
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    // 另一条连接的「恢复」：状态回到 committed、清掉 trashed_from_state、推进 revision。
+    other
+        .execute(
+            "UPDATE captures SET revision = revision + 1, state = 'committed', \
+             trashed_from_state = NULL, updated_at = ?1 WHERE id = ?2",
+            params!["2026-09-17T05:00:00.000Z", a],
+        )
+        .unwrap();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        other.execute_batch("COMMIT").unwrap();
+    });
+
+    let result = core.restore_capture(&a, trashed.revision, "op-race-restore-write");
+    writer.join().unwrap();
+
+    let error = result.expect_err("旧 revision 必须报冲突，不能覆盖另一条连接的恢复");
+    assert_eq!(error.code(), ErrorCode::RevisionConflict, "{error:?}");
+
+    let after = core.get_capture(&a).unwrap();
+    assert_eq!(after.revision, trashed.revision + 1);
+    assert_eq!(after.state, CaptureState::Committed);
+    let restore_events = core
+        .events_page(0, 10_000)
+        .unwrap()
+        .events
+        .into_iter()
+        .filter(|event| event.event_type == EventType::CaptureRestored && event.entity_id == a)
+        .count();
+    assert_eq!(restore_events, 0, "冲突时零改动：不能再写一条恢复事件");
+}

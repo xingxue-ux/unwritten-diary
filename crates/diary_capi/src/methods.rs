@@ -173,8 +173,8 @@
 
 use chrono::Utc;
 use diary_core::model::{
-    ExportRequest, NativeRecordingStatus, RecordingState, SegmentManifest, SourceLocator,
-    StyleProfile,
+    ExportRequest, LocatorType, NativeRecordingStatus, ProviderTestStatus, RecordingState,
+    SegmentManifest, SourceLocator, StyleProfile,
 };
 use diary_core::provider::local_engine::is_ohos_app_data_path;
 use diary_core::{
@@ -457,7 +457,7 @@ pub(crate) fn dispatch(
         // 找不到 / 纯文字没有原件时核心返回 `available:false` + `reason`，**不报错**。
         "sources.locate" => {
             let input: LocateSourceParams = parse(params)?;
-            to_value(core.locate_source(&input.source_ref, input.locator)?)
+            to_value(core.locate_source(&input.source_ref, input.locator.into_locator())?)
         }
         // ------------------------------------------------------------ 检索
         "search.start" => {
@@ -574,7 +574,8 @@ pub(crate) fn dispatch(
         // 测试结论作废都在核心 `provider::save` 里（见那条路径的注释）。
         "providers.save" => {
             let input: SaveProviderParams = parse(params)?;
-            let saved = core.save_provider(&input.config, input.secret.as_deref())?;
+            let config = input.config.into_provider();
+            let saved = core.save_provider(&config, input.secret.as_deref())?;
             to_value(saved)
         }
         "providers.list" => {
@@ -1279,7 +1280,56 @@ struct ReviseTextParams {
 struct LocateSourceParams {
     #[serde(alias = "ref", alias = "sourceRef")]
     source_ref: String,
-    locator: SourceLocator,
+    locator: LocatorParams,
+}
+
+/// `SourceLocator` 的入参形态。
+///
+/// **为什么不直接反序列化成核心的 `SourceLocator`**：同 [`ProviderParams`] ——它没有
+/// `deny_unknown_fields`，也不认 camelCase。直接透传时 `pageNumber` 会被静默丢掉，
+/// `page_number` 落成 `null`，响应仍是 `ok:true`（定位到错误的页）。
+/// 字段名以核心的 snake_case 为主，契约的 camelCase 作别名；可选性照核心 serde 原样。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocatorParams {
+    #[serde(alias = "locatorType")]
+    locator_type: LocatorType,
+    #[serde(alias = "sourceRevisionId")]
+    source_revision_id: String,
+    #[serde(default, alias = "textStart")]
+    text_start: Option<i64>,
+    #[serde(default, alias = "textEnd")]
+    text_end: Option<i64>,
+    #[serde(default, alias = "startMs")]
+    start_ms: Option<i64>,
+    #[serde(default, alias = "endMs")]
+    end_ms: Option<i64>,
+    #[serde(default, alias = "pageNumber")]
+    page_number: Option<i64>,
+    #[serde(default, alias = "blockId")]
+    block_id: Option<String>,
+    /// 图片归一化矩形（左、上、右、下）。
+    #[serde(default)]
+    rect: Option<[f64; 4]>,
+    #[serde(default, alias = "assetId")]
+    asset_id: Option<String>,
+}
+
+impl LocatorParams {
+    fn into_locator(self) -> SourceLocator {
+        SourceLocator {
+            locator_type: self.locator_type,
+            source_revision_id: self.source_revision_id,
+            text_start: self.text_start,
+            text_end: self.text_end,
+            start_ms: self.start_ms,
+            end_ms: self.end_ms,
+            page_number: self.page_number,
+            block_id: self.block_id,
+            rect: self.rect,
+            asset_id: self.asset_id,
+        }
+    }
 }
 
 /// `search.start`：`SearchRequest` + `queryRevision`（契约第 4.4 节）。
@@ -1465,17 +1515,68 @@ struct AcknowledgeAttentionParams {
     attention_key: String,
 }
 
-/// `providers.save`：`config` 与 `secret` 的字段名就是核心 `Provider` 的字段名。
+/// `providers.save`：`config` + 可选的明文 `secret`。
 ///
 /// `config.test_status` 由核心忽略（只读结论，不能由调用方写成「已验证」）；
 /// 本机引擎的 `model` 是一份**目录**，`endpoint` 必须为空。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SaveProviderParams {
-    config: Provider,
+    config: ProviderParams,
     /// 明文密钥：只在这一刻经过内存，核心立刻换成凭据引用。本机引擎不需要。
     #[serde(default)]
     secret: Option<String>,
+}
+
+/// `Provider` 的入参形态。
+///
+/// **为什么不直接反序列化成核心的 `Provider`**（理由与 [`StyleProfileParams`] 同一套）：
+/// 那个结构体的 serde 没有 `deny_unknown_fields`、也不认 camelCase。直接拿它做入参时，
+/// 调用方照契约写 `credentialRef` 会被当成未知字段**静默丢掉**：`credential_ref` 落成
+/// `null`，核心随后认为旧引用没人用了，`forget_secret` 会把密钥文件删掉——**响应还是
+/// `ok:true`，密钥不可恢复**。所以这里显式列字段、两种写法都收，再组装成核心的
+/// `Provider`（响应仍然原样透传，不是二次翻译）。
+///
+/// 也不给核心 `Provider` 加 `deny_unknown_fields`：那会改变核心对旧数据/旧调用方的
+/// 反序列化口径，风险比在 C ABI 边界收窄大得多。
+///
+/// 可选性照核心 serde 原样：`endpoint` / `model` / `credential_ref` 可省（核心里是
+/// `Option`），`capabilities` / `enabled` / `test_status` 必填。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderParams {
+    id: String,
+    label: String,
+    #[serde(alias = "adapterId")]
+    adapter_id: String,
+    #[serde(default)]
+    endpoint: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    capabilities: Vec<ProviderCapability>,
+    #[serde(default, alias = "credentialRef")]
+    credential_ref: Option<String>,
+    enabled: bool,
+    /// 只读结论：核心保存时自己盖章，传进来也会被忽略。收下它只为了「读出来改一改再
+    /// 存回去」的调用方能原样带回整个对象。
+    #[serde(alias = "testStatus")]
+    test_status: ProviderTestStatus,
+}
+
+impl ProviderParams {
+    fn into_provider(self) -> Provider {
+        Provider {
+            id: self.id,
+            label: self.label,
+            adapter_id: self.adapter_id,
+            endpoint: self.endpoint,
+            model: self.model,
+            capabilities: self.capabilities.into_iter().collect(),
+            credential_ref: self.credential_ref,
+            enabled: self.enabled,
+            test_status: self.test_status,
+        }
+    }
 }
 
 /// `providers.remove`：只删配置行，不删任何日记/派生内容。
