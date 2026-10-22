@@ -160,7 +160,7 @@ fn parse_models(
     response: &HttpResponse,
     secret: Option<&str>,
 ) -> Result<Vec<ProviderModelInfo>> {
-    let excerpt = redact(&response.excerpt(), secret);
+    let excerpt = response.excerpt(secret);
     let value: serde_json::Value =
         serde_json::from_slice(&response.body).map_err(|error| CoreError::ModelUnavailable {
             reason: format!("远端响应不是合法 JSON（{error}）：{excerpt}"),
