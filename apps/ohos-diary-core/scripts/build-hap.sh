@@ -74,33 +74,16 @@ restore() {
 }
 trap restore EXIT
 
-# INTERNET 只在 **debug** 变体声明：验证期要用 rport 下载模型；release 不声明，
-# 从权限层面保证「release 不联网」。这里在构建期改 module.json5、退出时还原
-# （与 bundleName/签名注入同一套做法）。
-apply_internet_permission() {
-  python3 - "$MODULEJSON" "$BUILD_MODE" <<'PY'
-import re, sys
-path, mode = sys.argv[1], sys.argv[2]
-text = open(path, encoding="utf-8").read()
-if mode == "debug":
-    if "ohos.permission.INTERNET" in text:
-        print("[build-hap] INTERNET 已在 module.json5（debug）")
-        sys.exit(0)
-    marker = '"requestPermissions": ['
-    assert marker in text, "module.json5 里找不到 requestPermissions"
-    block = marker + '\n      {\n        "name": "ohos.permission.INTERNET"\n      },'
-    text = text.replace(marker, block, 1)
-    print("[build-hap] INTERNET 已注入 module.json5（debug 专用）")
-else:
-    if "ohos.permission.INTERNET" not in text:
-        print("[build-hap] INTERNET 未声明（release）")
-        sys.exit(0)
-    text = re.sub(
-        r'\s*\{\s*"name"\s*:\s*"ohos\.permission\.INTERNET"\s*\},?', '', text
-    )
-    text = re.sub(r',(\s*)\]', r'\1]', text)
-    print("[build-hap] INTERNET 已从 module.json5 移除（release）")
-open(path, "w", encoding="utf-8").write(text)
+# 产品的远端模型服务在 debug/release 都需要联网权限。
+# 探针的执行由 EntryAbility 的 BuildProfile.DEBUG 门禁控制，不通过删权限禁用产品能力。
+check_internet_permission() {
+  python3 - "$MODULEJSON" <<'PY'
+import json, sys
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+permissions = {p["name"] for p in manifest["module"]["requestPermissions"]}
+if "ohos.permission.INTERNET" not in permissions:
+    sys.exit("[build-hap] 产品清单缺少 INTERNET，远端模型不可用；拒绝构建")
+print("[build-hap] INTERNET 已在产品清单中（debug/release 共用）")
 PY
 }
 
@@ -145,8 +128,8 @@ else
   echo "[build-hap] 矩阵 asr-only：只带 sherpa ORT 1.16.3（关键词检索可用；语义检索不可用；WITH_SEMANTIC=1 才含 1.29.1）"
 fi
 
-# ── 0a2. INTERNET 权限：debug 声明（验证期 rport 下载），release 不声明
-apply_internet_permission
+# ── 0a2. 两种构建都必须保留产品联网权限
+check_internet_permission
 
 # ── 0b. ohpm install（依赖是本地 file: 目录，不需要联网）
 if [[ -z "${SKIP_OHPM:-}" ]]; then

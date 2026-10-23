@@ -252,7 +252,7 @@ finalize `state=saved`、`logical_duration_ms=4980`、blob 159,404 B 是合法�
 2026-10-18 夜，HAD-W32 / API 23 / arm64-v8a / HarmonyOS PC，产品身份
 `com.lingxing.unwrittendiary`，debug signed HAP。**转写推理全程不联网**：引擎是包里的
 `sherpa-onnx-c-api.so`，模型在应用沙箱，转写走本机推理。**验证期的模型传输**走
-`hdc rport`（debug 构建声明 `INTERNET`）；release 构建**不声明** `INTERNET`，也不下载。
+`hdc rport`。debug 与 release 均声明 `INTERNET`，供用户配置的远程服务使用；release 仍不运行探针下载流程。
 
 ### 打进 HAP 的库与体积（同一份代码，四种打包）
 
@@ -607,9 +607,9 @@ hdc shell "hilog -x" | grep DIARY_HAP
 - **ArkTS 不支持条件 import**：release 的 `ets/modules.abc` 里**仍有探针模块**
   （实测 `strings` 能命中 `HapBothVerify` / `hap_both` / `PROBE_DISABLED`）——**没有裁掉**，
   只是运行时不可达。这是当前构建工具/语言的边界，不声称「已从包里移除」。
-- `INTERNET` 只在 **debug** 变体声明（`build-hap.sh` 构建期注入 `module.json5`
-  `requestPermissions`，退出时还原）；release 的 HAP 里只有 `MICROPHONE` 与
-  `KEEP_BACKGROUND_RUNNING`（`unzip -p ... module.json` 实测）。
+- `INTERNET` 在源码清单中声明，debug 与 release 均保留，供产品远程服务使用。
+  构建脚本校验该权限，不再按变体删除。release 的探针禁用逻辑保持不变。
+  旧包曾仅包含 `MICROPHONE` 与 `KEEP_BACKGROUND_RUNNING`；这也是 2026-10-23 修复的权限缺口。
 - `ProbeAbility` / `ProbeIsoAbility` 是 `exported: false`；`EntryAbility` 是产品入口
   （launcher 的 home skill 需要），保持 `exported: true`，探针路由已由 `BuildProfile` 关掉。
 - `hap_both` 用**临时库** `<filesDir>/hap-both-tmp/library.sqlite`（配置也放同目录），
@@ -620,7 +620,7 @@ hdc shell "hilog -x" | grep DIARY_HAP
 
 ### 没验到的（这一片）
 
-- **release 真机启动没有跑**：只做了静态检查（release HAP 无 `INTERNET`、
+- **release 真机启动没有跑**：当时只做了静态检查（旧 release HAP 无 `INTERNET`、
   `BuildProfile.DEBUG=false`、探针分支会走 `PROBE_DISABLED`）与字符串检查（探针代码仍在
   `modules.abc` 里）；没有装 release HAP 去真机点一遍；
 - 产品 Profile / 混淆都没重跑；本轮只装 debug；
@@ -659,7 +659,7 @@ hdc shell "hilog -x" | grep DIARY_HAP
 | 8 | 两个并发 `call`（coreInfo + search） | ✅ 通过 | 同一句柄：2 个 worker（tid 26206/26211）+ 主线程，800+800+500 次，0 error；各自 open 同一路径：1200+1200 次，0 error，观测到 `maxObservedHandles=2`；无 panic/死锁 |
 | 9 | 多进程 / 多 Ability | ✅ 通过 | 同进程两 Ability：pid 26187，`open OK handles=2` → `CLOSED handles=1`；隔离进程：`com.example.myapplication:probe` pid 27768，`ISO HOLD open ... handles=1`，两进程各自一个 Core |
 | 10 | 错误路径 | ✅ 通过（发现并修了一个错误码降级 bug） | 空路径 `invalid_argument`；缺父目录/损坏库 `invalid_state`；同路径两次共享核心；关闭后调用 `invalid_state` / `ERR_DIARY_HANDLE`；非法 JSON/未知方法/缺参数 `invalid_argument`；`revision_conflict` 正确；全程不崩、`handles=0` |
-| 11 | release / 混淆 | ⚠️ **门控前的历史证据**（当前 release 不跑 Smoke） | 门控前那次 release 构建：`BUILD_MODE=release` 签名安装成功、`debug:false`、Smoke 通过；混淆 HAP 也跑通 Smoke（构建后已还原 `enable:false`）。**现在** release 下 `EntryAbility` 走 `PROBE_DISABLED`，Smoke / record* / asr_* / hap_both 都不跑，`INTERNET` 也不在 release 包内 ⇒ 该证据只说明「当初验过」，不代表「现在还能验」；本轮也没装 release 真机（见「没验到的」） |
+| 11 | release / 混淆 | ⚠️ **门控前的历史证据**（当前 release 不跑 Smoke） | 门控前那次 release 构建：`BUILD_MODE=release` 签名安装成功、`debug:false`、Smoke 通过；混淆 HAP 也跑通 Smoke（构建后已还原 `enable:false`）。**现在** release 下 `EntryAbility` 走 `PROBE_DISABLED`，Smoke / record* / asr_* / hap_both 都不跑，旧包当时未声明 `INTERNET`（2026-10-23 已修复）⇒ 该证据只说明「当初验过」，不代表「现在还能验」；本轮也没装 release 真机（见「没验到的」） |
 | 12 | 升级回滚（同 bundleName 重装，数据仍在） | ✅ 升级通过 | v1 `1000000/1.0.0` → v2 `1000001/1.0.1`；升级前后 `captures=4`、`hits=2`、`dbBytes=389120`、`schema=13` 完全一致 |
 | 13 | hilog 实际输出 | ✅ 通过 | `DIARY_SMOKE JSON[...]` 10 个 label 全部按分片还原成合法 JSON（`search` 占 2 片）；`CLOSED handles=0` 出现 |
 | 14 | C++ OOM 兜底 | ✅ 已修（#133；host 注入，**设备未跑 OOM**） | 所有 NAPI 入口统一走 `Guarded()`：`std::bad_alloc` / 其它 C++ 异常兜底成既有 `ERR_DIARY_CALL`，不再穿透边界；`CoreText`/`PendingHandle` RAII 保证异常路径归还 `char *`/句柄。host harness（[`tests/napi_host/run.sh`](tests/napi_host/run.sh)）对 8 个入口逐个注入 `bad_alloc`：修前 8/8 逃逸，修后 8/8 变成 `ERR_DIARY_CALL`，`diary_string_free` 恰好 1 次；另注入 `open()` 在 `Add` 之后抛异常，断言 `openHandleCount()==0`（修前虚报 1，且 `close(id)` double-free abort） |
@@ -901,8 +901,8 @@ C ABI 的 `OPEN_LIBRARIES` 是进程内静态，这个行为符合文档；产�
 
 > **门控前的历史证据（2026-10-18）**：下面的「release Smoke 通过」来自
 > `BuildProfile.DEBUG` 门控**之前**的 release 构建。**现在** release 下 `EntryAbility`
-> 直接走 `PROBE_DISABLED`，Smoke / record* / asr_* / hap_both 都不跑，`INTERNET` 也不在
-> release 包内——用同样的命令重装 release HAP，**Smoke 不会再跑**。所以这条是「当初验过」，
+> 直接走 `PROBE_DISABLED`，Smoke / record* / asr_* / hap_both 都不跑。2026-10-23 起 release
+> 保留产品远程服务所需的 `INTERNET`；这不会启用探针。重装 release HAP，**Smoke 不会再跑**。所以这条是「当初验过」，
 > 不是「现在还能验」；本轮 release 真机启动也没有重跑（见「没验到的」）。
 
 - `BUILD_MODE=release` 构建 + 签名 + `hdc install -r` 成功；`bm dump` 显示

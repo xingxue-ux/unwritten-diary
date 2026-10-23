@@ -16,6 +16,7 @@ import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketch
 import { common } from '@kit.AbilityKit';
 import {
   Capture,
+  CaptureIdParams,
   CommitParams,
   CommitResult,
   CreateDraftParams,
@@ -47,12 +48,62 @@ export struct RecordPage {
   /** 空串（还没保存）/ `draft` / `committed`。 */
   @State savedState: string = '';
   @State savedAt: string = '';
+  @State preservedText: string = '';
+  @StorageLink('ohosDataVersion') @Watch('onDataVersionChanged') dataVersion: number = 0;
 
   private dbPath: string = '';
+  private savedText: string = '';
+  private refreshSeq: number = 0;
 
   aboutToAppear(): void {
     const context = getContext(this) as common.UIAbilityContext;
     this.dbPath = databasePath(context);
+  }
+
+  onDataVersionChanged(): void {
+    this.refreshCapture();
+  }
+
+  private async refreshCapture(): Promise<void> {
+    if (this.captureId.length === 0 || this.busy) {
+      return;
+    }
+    const id: string = this.captureId;
+    const token: number = ++this.refreshSeq;
+    const params: CaptureIdParams = { capture_id: id };
+    const result = await CoreGateway.call(this.dbPath, 'captures.get', params);
+    if (token !== this.refreshSeq || id !== this.captureId || this.busy) {
+      return;
+    }
+    if (!result.ok) {
+      this.error = uiErrorOf(result);
+      return;
+    }
+    const capture: Capture = result.data as Capture;
+    this.error = EMPTY_UI_ERROR;
+    if (capture.revision === this.revision && capture.state === this.savedState) {
+      return;
+    }
+    // Keep local edits separately before adopting the authoritative revision/state.
+    // Never replay them into a record that was committed on another page.
+    const dirty: boolean = this.text !== this.savedText;
+    if (dirty) {
+      this.preservedText = this.text;
+    }
+    this.text = capture.draft_text;
+    this.savedText = capture.draft_text;
+    this.revision = capture.revision;
+    this.savedState = capture.state;
+    this.error = EMPTY_UI_ERROR;
+    this.message = dirty
+      ? '这条记录已在其他页面更新。未保存的修改已保留，可另存为新记录。'
+      : (capture.state === 'committed' ? '这条记录已提交，可以再写一条。' : '已刷新到最新草稿。');
+  }
+
+  private savePreservedAsNew(): void {
+    const text: string = this.preservedText;
+    this.startNew();
+    this.text = text;
   }
 
   private canSave(): boolean {
@@ -90,6 +141,7 @@ export struct RecordPage {
       return;
     }
     this.busy = true;
+    this.refreshSeq++;
     this.error = EMPTY_UI_ERROR;
     this.message = '';
     const now: Date = new Date();
@@ -112,9 +164,10 @@ export struct RecordPage {
       this.revision = capture.revision;
     }
 
+    const savedText: string = this.text;
     const saveParams: SaveDraftParams = {
       capture_id: this.captureId,
-      text: this.text,
+      text: savedText,
       expected_revision: this.revision,
       operation_id: newOperationId('op-ohos-save'),
     };
@@ -122,12 +175,16 @@ export struct RecordPage {
     if (!saved.ok) {
       this.busy = false;
       this.error = uiErrorOf(saved);
+      if (this.error.code === 'revision_conflict' || this.error.code === 'invalid_state') {
+        await this.refreshCapture();
+      }
       return;
     }
     const receipt: DraftSaveResult = saved.data as DraftSaveResult;
     this.revision = receipt.revision;
     this.savedAt = receipt.saved_at;
     this.savedState = 'draft';
+    this.savedText = savedText;
     this.message = receipt.durable ? '草稿已保存。' : '核心没有确认落盘（durable=false），先别离开这一页。';
 
     if (submit) {
@@ -140,6 +197,9 @@ export struct RecordPage {
       if (!committed.ok) {
         this.busy = false;
         this.error = uiErrorOf(committed);
+        if (this.error.code === 'revision_conflict' || this.error.code === 'invalid_state') {
+          await this.refreshCapture();
+        }
         return;
       }
       const result: CommitResult = committed.data as CommitResult;
@@ -155,6 +215,7 @@ export struct RecordPage {
 
   /** 清空这一页的状态，开始写新的一条（不动已经提交的记录）。 */
   private startNew(): void {
+    this.refreshSeq++;
     this.text = '';
     this.captureId = '';
     this.revision = 0;
@@ -162,6 +223,8 @@ export struct RecordPage {
     this.savedAt = '';
     this.message = '';
     this.error = EMPTY_UI_ERROR;
+    this.savedText = '';
+    this.preservedText = '';
   }
 
   @Builder
@@ -234,10 +297,16 @@ export struct RecordPage {
           if (this.savedAt.length > 0) {
             InfoRow({ label: '保存时间', value: this.savedAt })
           }
-          ErrorBanner({ error: this.error })
+          ErrorBanner({ error: this.error, showReload: !this.busy, onReload: () => { this.refreshCapture(); } })
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
+      }
+      if (this.preservedText.length > 0) {
+        Button('将未保存的修改另存为新记录')
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
+          .enabled(!this.busy)
+          .onClick(() => { this.savePreservedAsNew(); })
       }
       if (this.savedState === 'committed') {
         Flex({ wrap: FlexWrap.Wrap }) {

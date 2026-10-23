@@ -51,6 +51,7 @@ export struct SearchPage {
   @State loading: boolean = false;
   @State loadingMore: boolean = false;
   @State upgrading: boolean = false;
+  @State cancelling: boolean = false;
   @State upgradeAttempted: boolean = false;
   @State searched: boolean = false;
   @State error: UiError = EMPTY_UI_ERROR;
@@ -104,6 +105,7 @@ export struct SearchPage {
     this.loading = true;
     this.loadingMore = false;
     this.upgrading = false;
+    this.cancelling = false;
     this.error = EMPTY_UI_ERROR;
     this.searched = true;
     this.upgradeAttempted = false;
@@ -153,7 +155,7 @@ export struct SearchPage {
   }
 
   private async loadMore(): Promise<void> {
-    if (!this.hasMore || this.loadingMore || this.loading || this.cursor.length === 0) {
+    if (!this.hasMore || this.loadingMore || this.loading || this.upgrading || this.cancelling || this.cursor.length === 0) {
       return;
     }
     if (this.sessionId.length === 0) {
@@ -178,7 +180,7 @@ export struct SearchPage {
   }
 
   private async upgrade(): Promise<void> {
-    if (this.sessionId.length === 0 || this.upgrading) {
+    if (this.sessionId.length === 0 || this.upgrading || this.loadingMore || this.loading || this.cancelling) {
       return;
     }
     this.upgrading = true;
@@ -199,15 +201,19 @@ export struct SearchPage {
   }
 
   private async cancel(): Promise<void> {
-    if (this.sessionId.length === 0) {
+    if (this.sessionId.length === 0 || this.cancelling) {
       return;
     }
-    const token: number = this.seq;
+    const token: number = ++this.seq;
+    this.cancelling = true;
+    this.loadingMore = false;
+    this.upgrading = false;
     const params: SearchSessionParams = { session_id: this.sessionId };
     const result = await CoreGateway.call(this.dbPath, 'search.cancel', params);
     if (token !== this.seq) {
       return;
     }
+    this.cancelling = false;
     if (!result.ok) {
       this.error = uiErrorOf(result);
       return;
@@ -222,6 +228,12 @@ export struct SearchPage {
     this.mode = mode;
     if (this.searched && this.query.trim().length > 0) {
       this.startSearch();
+    }
+  }
+
+  private openHit(hit: SearchHit): void {
+    if (hit.capture_id.length > 0) {
+      this.pathStack.pushPathByName('capture', hit.capture_id);
     }
   }
 
@@ -359,6 +371,9 @@ export struct SearchPage {
     .backgroundColor(SketchColors.paper)
     .drawModifier(sketchOutline())
     .alignItems(HorizontalAlign.Start)
+    .accessibilityLevel('yes')
+    .accessibilityText('查看原记录')
+    .onClick(() => { this.openHit(hit); })
   }
 
   build() {
@@ -482,7 +497,7 @@ export struct SearchPage {
             Button(this.upgrading ? '融合中…' : '升级为混合检索')
               .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(12)
-              .enabled(!this.upgrading)
+              .enabled(!this.upgrading && !this.loadingMore && !this.loading && !this.cancelling)
               .backgroundColor(SketchColors.soft)
               .fontColor(SketchColors.text)
               .onClick(() => {
@@ -491,6 +506,7 @@ export struct SearchPage {
           }
           if (this.phase !== 'cancelled' && this.sessionId.length > 0) {
             Button('取消本次搜索')
+              .enabled(!this.cancelling)
               .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(12)
               .backgroundColor(SketchColors.soft)
@@ -560,6 +576,7 @@ export struct SearchPage {
           } else if (this.hasMore) {
             ListItem() {
               Button('加载更多')
+                .enabled(!this.upgrading && !this.cancelling)
                 .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(13)
                 .backgroundColor(SketchColors.soft)

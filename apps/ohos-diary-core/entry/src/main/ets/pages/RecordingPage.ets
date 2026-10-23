@@ -66,14 +66,19 @@ export struct RecordingPage {
   private timer: number = -1;
   private context: common.UIAbilityContext | null = null;
   private dbPath: string = '';
+  private active: boolean = false;
+  private startSeq: number = 0;
 
   aboutToAppear(): void {
+    this.active = true;
     this.context = getContext(this) as common.UIAbilityContext;
     this.dbPath = databasePath(this.context);
     this.loadRecovery();
   }
 
   aboutToDisappear(): void {
+    this.active = false;
+    this.startSeq++;
     this.stopTimer();
     const recorder: VoiceRecorder | null = this.recorder;
     if (recorder !== null && (this.phase === 'recording' || this.phase === 'preparing')) {
@@ -93,6 +98,14 @@ export struct RecordingPage {
       }
       this.elapsedMs = recorder.receivedMs();
       this.persistedMs = recorder.persistedMs();
+      this.interrupted = recorder.wasInterrupted();
+      if (recorder.currentPhase() === 'error') {
+        this.phase = 'error';
+        const failure = recorder.lastError();
+        this.error = uiErrorFromThrown(failure === null ? new Error(recorder.error()) : failure);
+        this.refreshHoldHints(recorder);
+        this.stopTimer();
+      }
     }, 250);
   }
 
@@ -122,6 +135,9 @@ export struct RecordingPage {
   }
 
   private async startRecording(): Promise<void> {
+    if (!this.active) {
+      return;
+    }
     if (this.phase === 'preparing' || this.phase === 'recording' || this.phase === 'stopping') {
       return;
     }
@@ -129,6 +145,8 @@ export struct RecordingPage {
     if (context === null) {
       return;
     }
+    const token: number = ++this.startSeq;
+    this.phase = 'preparing';
     this.error = EMPTY_UI_ERROR;
     this.finalized = null;
     this.transcribeHint = '';
@@ -141,7 +159,11 @@ export struct RecordingPage {
     this.permissionMessage = '';
 
     const permission: PermissionOutcome = await ensureMicrophonePermission(context);
+    if (!this.active || token !== this.startSeq) {
+      return;
+    }
     if (!permission.granted) {
+      this.phase = 'idle';
       this.permissionDenied = true;
       this.permissionMessage = permission.message;
       return;
@@ -150,6 +172,7 @@ export struct RecordingPage {
 
     const opened: CoreOpenResult = CoreSession.open(context.filesDir);
     if (opened.core === null) {
+      this.phase = 'error';
       this.error = opened.error;
       return;
     }
@@ -158,12 +181,19 @@ export struct RecordingPage {
     this.phase = 'preparing';
     try {
       await recorder.start();
+      if (!this.active || token !== this.startSeq) {
+        await recorder.abort();
+        return;
+      }
       this.phase = 'recording';
       this.elapsedMs = recorder.receivedMs();
       this.persistedMs = recorder.persistedMs();
       this.refreshHoldHints(recorder);
       this.startTimer();
     } catch (e) {
+      if (!this.active || token !== this.startSeq) {
+        return;
+      }
       this.phase = 'error';
       this.error = uiErrorFromThrown(e as Object);
       this.refreshHoldHints(recorder);
