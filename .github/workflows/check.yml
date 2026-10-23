@@ -138,7 +138,7 @@ jobs:
       # 不能把「跳过」当「通过」。
       - name: 校验 ArkTS 语法与作用域（pages/ui 除外，CI 不允许跳过）
         run: python3 tools/check_arkts_scope.py --require-tsc
-      - name: 鸿蒙交互回归（录音取消/错误、跨页草稿状态、检索代次）
+      - name: 鸿蒙交互回归（录音、草稿、检索与 LLM 配置）
         run: NODE_PATH="$(npm root -g)" node tools/test_ohos_interactions.cjs
 
 

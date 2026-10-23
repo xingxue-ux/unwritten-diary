@@ -18,6 +18,7 @@ import { JobsPage } from './JobsPage';
 import { ProfilePage } from './ProfilePage';
 import { RecyclePage } from './RecyclePage';
 import { TranscriptionConfigPage } from './TranscriptionConfigPage';
+import { LlmConfigPage } from './LlmConfigPage';
 
 @Entry
 @Component
@@ -131,6 +132,8 @@ struct Index {
       RecordingPage({ pathStack: this.pathStack })
     } else if (name === 'transcription') {
       TranscriptionConfigPage({ pathStack: this.pathStack })
+    } else if (name === 'llm') {
+      LlmConfigPage({ pathStack: this.pathStack })
     } else if (name === 'diaryDay') {
       NavDestination() {
         DiaryDayPage({ pathStack: this.pathStack, dayKey: param as string })

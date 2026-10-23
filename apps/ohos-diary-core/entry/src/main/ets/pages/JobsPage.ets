@@ -253,8 +253,8 @@ export struct JobsPage {
       this.pathStack.pushPathByName('transcription', '');
       return;
     }
-    if (job.kind === 'respond') {
-      toast('AI 服务配置页面还没做（providers.* / settings.* 的 C ABI 已就绪）；当前只能查看任务状态。');
+    if (job.kind === 'respond' || job.kind === 'diary_generate' || job.kind === 'organize') {
+      this.pathStack.pushPathByName('llm', '');
       return;
     }
     // semantic_index / index / extract：都去设置页看模型与索引状态。

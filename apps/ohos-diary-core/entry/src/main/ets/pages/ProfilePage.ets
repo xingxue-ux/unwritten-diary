@@ -770,7 +770,8 @@ export struct ProfilePage {
           Column() {
             SectionTitle({ text: '创作与整理' })
             this.entry('风格偏好', '篇幅、语气与叙述方式', 'styles')
-            this.entry('模型服务', '转写能力、连接与使用范围', 'transcription')
+            this.entry('模型服务', '配置 AI、模型和连接测试', 'llm')
+            this.entry('本地语音转写', '录音转文字的引擎与模型', 'transcription')
             this.entry('整理时机', '安静地安排每天的整理', 'schedule')
             this.entry('任务中心', '等待、运行与需要处理', 'jobs')
           }.width('100%').alignItems(HorizontalAlign.Start)

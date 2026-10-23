@@ -135,8 +135,59 @@ async function searchTransitions(){
   page.openHit({capture_id:'real-capture',source_id:'source'});
   assert.deepEqual(paths,[['capture','real-capture']]);
 }
+async function llmConfiguration(){
+  const calls=[];let saved=null;let secretReceived=null;let failList=false;let failSave=false;let confirmed=true;
+  let provider={id:'llm',label:'Existing',adapter_id:'openai_compatible',endpoint:'https://example.com/v1',
+    model:'model-a',capabilities:['generate_text'],credential_ref:'sec_existing',enabled:false,test_status:'untested'};
+  const local={...provider,id:'asr',adapter_id:'sherpa_onnx',capabilities:['transcribe_audio']};
+  const ok=data=>({ok:true,data,error:null});
+  const failed={ok:false,data:null,error:{code:'network_unavailable',message:'offline',retryable:true}};
+  const gateway={call:async(db,method,params)=>{
+    calls.push(method);
+    if(method==='providers.list')return failList?failed:ok([provider,local]);
+    if(method==='providers.presets')return ok([]);
+    if(method==='providers.save'){
+      saved=JSON.parse(JSON.stringify(params.config));secretReceived=params.secret;
+      if(failSave)return failed;
+      provider={...saved,id:'llm',credential_ref:params.secret?'sec_new':saved.credential_ref};return ok(provider);
+    }
+    if(method==='providers.models')return ok([{id:'detected'}]);
+    if(method==='providers.test'){
+      assert.deepEqual(Array.from(params.scope),['generate_text']);
+      provider={...provider,test_status:'ok'};return ok({message:null,actual_call_made:true});
+    }
+    if(method==='providers.remove')return ok(null);
+    throw new Error('Unexpected '+method);
+  }};
+  const {LlmConfigPage}=load('pages/LlmConfigPage.ets',{
+    '../ui/CoreGateway':{CoreGateway:gateway,uiErrorOf:r=>({...empty,...r.error})},
+    '../ui/Errors':errorModule,'../ui/AppRuntime':{confirmAction:async()=>confirmed},
+    '../ui/AppState':{AppState:{bumpDataVersion:noop}}},{},true);
+  const page=new LlmConfigPage();await page.load();
+  assert.deepEqual(calls,['providers.list','providers.presets']);assert.equal(page.providers.length,1);
+  page.adopt(provider);page.label='Renamed';page.dirty=true;await page.save();
+  assert.equal(saved.credential_ref,'sec_existing');assert.equal(secretReceived,null);assert.equal(saved.enabled,false);
+  page.secret='new-test-secret';page.dirty=true;await page.save();
+  assert.equal(secretReceived,'new-test-secret');assert.equal(page.secret,'');
+  assert.equal(page.selected.credential_ref,'sec_new');
+  const before=calls.length;page.model='changed';page.dirty=true;await page.test();await page.detectModels();
+  assert.equal(calls.length,before);await page.save();await page.detectModels();assert.equal(page.models[0].id,'detected');
+  await page.toggleEnabled();assert.equal(page.selected.enabled,false); // untested cannot enable
+  await page.test();assert.equal(page.selected.test_status,'ok');await page.toggleEnabled();
+  assert.equal(saved.enabled,true);assert.equal(saved.credential_ref,'sec_new');assert.equal(secretReceived,null);
+  failList=true;await page.test();assert.equal(page.canProbe(),false);failList=false;await page.load();assert.equal(page.canProbe(),true);
+  page.secret='never-echo-this';page.dirty=true;failSave=true;await page.save();
+  assert.equal(page.secret,'');assert.equal(page.canProbe(),false);assert.ok(!page.message.includes('never-echo-this'));failSave=false;
+  page.secret='draft-secret';confirmed=false;await page.newProvider(null);assert.equal(page.secret,'draft-secret');
+  confirmed=true;await page.newProvider(null);assert.equal(page.secret,'');assert.equal(page.selected,null);
+  page.label='Local';page.endpoint='http://localhost:8080/v1';page.model='local';await page.save();assert.equal(saved.endpoint,'http://localhost:8080/v1');
+  for(const endpoint of ['http://remote.example/v1','https://example.com/v1/chat/completions','https://user:password@example.com/v1','https://example.com/v1?key=secret']){
+    const count=calls.length;page.endpoint=endpoint;page.dirty=true;await page.save();assert.equal(calls.length,count);
+  }
+  page.secret='temporary';page.aboutToDisappear();assert.equal(page.secret,'');
+}
 (async()=>{
-  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,editorState,searchTransitions]){
+  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,editorState,searchTransitions,llmConfiguration]){
     await test();console.log('PASS '+test.name);
   }
 })().catch(e=>{console.error(e);process.exitCode=1;});

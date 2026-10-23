@@ -331,6 +331,8 @@ export struct DiaryPage {
   @Builder
   statusStrip() {
     Column({ space: 6 }) {
+      Button('配置 AI 模型服务').attributeModifier(sketchButton)
+        .onClick(() => { this.pathStack.pushPathByName('llm', ''); })
       if (this.waitingConfiguration) {
         Text('还没配置模型服务，不是生成失败')
           .fontSize(SketchType.section)
