@@ -9,6 +9,7 @@ import { RecordingVerify } from '../recording/RecordingVerify';
 import { TranscriptionVerify } from '../recording/TranscriptionVerify';
 import { HapBothVerify } from '../verify/HapBothVerify';
 import { CoreGateway } from '../ui/CoreGateway';
+import { verifyBundledModels } from '../verify/BundledModelsVerify';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryCore';
@@ -120,6 +121,10 @@ export default class EntryAbility extends UIAbility {
       hilog.info(DOMAIN, TAG,
         '%{public}s PRODUCT_UI mode=(none) buildMode=%{public}s（未跑探针）',
         MARK, BuildProfile.BUILD_MODE_NAME);
+    } else if (this.mode === 'bundled_models') {
+      verifyBundledModels(this.context).catch((err: Object) => {
+        hilog.error(DOMAIN, TAG, 'BUNDLED_MODELS_ACCEPTANCE_FAILED %{public}s', (err as Error).message);
+      });
     } else if (this.mode === 'hap_both') {
       HapBothVerify.run(this.mode, this.context, filesDir, this.query, this.order).catch((err: Object) => {
         hilog.error(DOMAIN, TAG, '%{public}s HAP_BOTH failed %{public}s',
@@ -148,7 +153,7 @@ export default class EntryAbility extends UIAbility {
     // `jobs.runDue`（budget 1500 ms），与探针自己那一轮抢同两条任务——第一次真机
     // 验证时它把 waiting_configuration 的任务抢先跑掉，探针的摘要成了 processed=0。
     // 探针不需要界面；不加载页面也就没有前台驱动，队列只由探针自己推进。
-    if (DEBUG_BUILD && (this.mode === 'gen_remote' || this.mode === 'gen_remove')) {
+    if (DEBUG_BUILD && (this.mode === 'gen_remote' || this.mode === 'gen_remove' || this.mode === 'bundled_models')) {
       hilog.info(DOMAIN, TAG,
         '%{public}s PROBE_NO_UI mode=%{public}s（gen_* 探针不加载 pages/Index，避免前台 runDue 抢任务）',
         MARK, this.mode);
@@ -156,7 +161,10 @@ export default class EntryAbility extends UIAbility {
     }
 
     const t0 = Date.now();
-    windowStage.loadContent('pages/Index', (err) => {
+    // Product pages open the core only after offline assets/defaults are ready.
+    // Explicit debug probes retain their isolated setup and never seed product defaults.
+    const page: string = !DEBUG_BUILD || this.mode.length === 0 ? 'pages/Startup' : 'pages/Index';
+    windowStage.loadContent(page, (err) => {
       if (err.code) {
         hilog.error(DOMAIN, TAG, '%{public}s loadContent failed %{public}s',
           MARK, JSON.stringify(err));

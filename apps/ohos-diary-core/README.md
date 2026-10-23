@@ -1,5 +1,9 @@
 # ArkTS NAPI 参考工程（#108 第二块）
 
+> **2026-10-24 产品打包更新**：HAP 现在随包携带 SenseVoice 转写模型、BGE 语义模型及其
+> 引擎，首次启动离线部署并校验；LLM 仍由用户配置。准备命令、配置保留与验收方式见
+> [鸿蒙随包本地模型](../../docs/product/鸿蒙随包本地模型.md)。下文 2026-10-18 的体积和矩阵是历史验收数据。
+
 把已经交付的 C ABI（`crates/diary_capi`，句柄 + JSON 进 / JSON 出）包成 ArkTS 能直接
 `import` 的模块，并给一个最小示例 Ability：**打开库 → coreInfo → 建草稿 → 保存 → 提交 →
 抽取 → 检索 → 排索引任务 → 跑任务 → 关闭**，结果全部打到 hilog。
@@ -51,6 +55,10 @@ CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR="$HOME/dt-ohos-napi" ./scripts/build-native.
 # 2. 转写引擎库（默认必需）：sherpa + ORT 进 entry/libs/arm64-v8a/，
 #    并校验 sha256、NEEDED、OrtGetApiBase@VERS_1.16.3（换库会在这里红）
 ./scripts/stage-sherpa.sh
+./scripts/stage-ort-1291.sh
+
+# 另从仓库根目录准备固定的转写/语义模型（源目录需已有清单对应的文件）：
+python3 ../../tools/stage_ohos_models.py --asr-dir /path/to/sense-voice
 
 # 3. HAP：ohpm install（本地 file: 依赖，离线）+ hvigorw assembleHap（约 14 秒）
 #    build-hap 默认调用 stage-sherpa.sh --check：缺库/版本不对直接构建失败。

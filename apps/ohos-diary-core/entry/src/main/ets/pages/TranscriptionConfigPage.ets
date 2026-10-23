@@ -7,8 +7,7 @@ import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketch
 // - `test_status` 由核心维护，保存后回到 `untested`，调用方写 `ok` 会被忽略；
 // - `providers.test` 会**真的加载模型并转写静音**（几秒），放在 TaskPool，不在 UI 线程。
 //
-// 当前没有「模型下载/导入」的产品接口：ModelDownload 需要调用方给 URL + bytes + sha256，
-// 而下载源不在仓库里。本页不伪造下载按钮，只显示模型目录状态。
+// 产品 HAP 随包带 SenseVoice，首次启动部署并校验；仍允许保留/指定自己的模型目录。
 
 import { common } from '@kit.AbilityKit';
 import {
@@ -369,8 +368,8 @@ export struct TranscriptionConfigPage {
               .onChange((value: string) => {
                 this.modelDir = value;
               })
-            Text('SenseVoice 模型不在 HAP 里，需要另外下载/导入到应用沙箱；当前没有产品下载源，' +
-              '本页不伪造「一键下载」。')
+            Text('安装包已带 SenseVoice 本地转写模型，首次启动会自动准备，无需另外下载。' +
+              '已有的自定义模型目录会保留。')
               .fontSize(11)
               .fontColor(SketchColors.muted)
               .width('100%')
