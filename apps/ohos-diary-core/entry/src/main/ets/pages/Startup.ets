@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BundledModels, ModelProgress } from '../models/BundledModels';
+import { appFilesDir } from '../session/AppDirectory';
 import { SketchColors, SketchFonts, CatMark, sketchButton, sketchOutline } from '../ui/Sketch';
 
 @Entry
@@ -31,9 +32,10 @@ struct Startup {
     this.running = true;
     this.failed = false;
     try {
-      await BundledModels.prepare(getContext(this) as common.UIAbilityContext, (value: ModelProgress) => {
+      const context = getContext(this) as common.UIAbilityContext;
+      await BundledModels.prepare(context, (value: ModelProgress) => {
         if (this.active) { this.completed = value.completed; this.total = value.total; }
-      });
+      }, appFilesDir(context));
       if (this.active) { this.openDiary(); }
     } catch (error) {
       hilog.error(0, 'DiaryModels', 'BUNDLED_MODELS_FAILED %{public}s', (error as Error).message);

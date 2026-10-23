@@ -30,6 +30,7 @@ import { ErrorBanner, InfoRow, LoadingRow, PageTitle, SectionTitle, StatePill } 
 @Component
 export struct ProfilePage {
   pathStack: NavPathStack = new NavPathStack();
+  @Prop diagnosticsOnly: boolean = false;
   @State info: LibraryInfo | null = null;
   @State indexStatus: IndexStatus | null = null;
   @State jobStatus: JobStatus | null = null;
@@ -486,7 +487,6 @@ export struct ProfilePage {
     .accessibilityText(`${label}，${description}`)
     .onClick(() => {
       if (route === 'schedule') { this.showSettings = !this.showSettings; }
-      else if (route === 'diagnostics') { this.showDiagnostics = !this.showDiagnostics; }
       else { this.pathStack.pushPathByName(route, ''); }
     })
     Divider().color(SketchColors.line)
@@ -756,41 +756,47 @@ export struct ProfilePage {
   build() {
     Scroll() {
       Column({ space: 20 }) {
-        PageTitle({ title: '我的小天地', subtitle: '你的记录安静地留在这台设备上。' })
-        Text('日记默认只保存在这台设备上；只有你主动配置的模型服务会收到交给它处理的材料。')
-          .fontSize(13).fontColor(SketchColors.text).padding(20)
-          .width('100%').backgroundColor(SketchColors.soft).drawModifier(sketchOutline())
-        ErrorBanner({ error: this.error, showReload: true, onReload: () => { this.load(); } })
-        if (this.loading && this.info === null) { LoadingRow() }
-        SketchCard() {
-          Text(this.info === null ? '最近记录 · 尚未读取' : `最近记录 · ${(this.info as LibraryInfo).capture_count} 条`)
-            .fontSize(17).fontColor(SketchColors.ink)
+        if (this.diagnosticsOnly) {
+          PageTitle({ title: '搜索索引', subtitle: '准备本地语义搜索，查看索引覆盖。' })
+          ErrorBanner({ error: this.error, showReload: true, onReload: () => { this.load(); } })
+          this.diagnosticsPanel()
+        } else {
+          PageTitle({ title: '我的小天地', subtitle: '你的记录安静地留在这台设备上。' })
+          Text('日记默认只保存在这台设备上；只有你主动配置的模型服务会收到交给它处理的材料。')
+            .fontSize(13).fontColor(SketchColors.text).padding(20)
+            .width('100%').backgroundColor(SketchColors.soft).drawModifier(sketchOutline())
+          ErrorBanner({ error: this.error, showReload: true, onReload: () => { this.load(); } })
+          if (this.loading && this.info === null) { LoadingRow() }
+          SketchCard() {
+            Text(this.info === null ? '最近记录 · 尚未读取' : `最近记录 · ${(this.info as LibraryInfo).capture_count} 条`)
+              .fontSize(17).fontColor(SketchColors.ink)
+          }
+          SketchCard() {
+            Column() {
+              SectionTitle({ text: '创作与整理' })
+              this.entry('风格偏好', '篇幅、语气与叙述方式', 'styles')
+              this.entry('模型服务', '配置 AI、模型和连接测试', 'llm')
+              this.entry('本地语音转写', '录音转文字的引擎与模型', 'transcription')
+              this.entry('整理时机', '安静地安排每天的整理', 'schedule')
+              this.entry('任务中心', '等待、运行与需要处理', 'jobs')
+            }.width('100%').alignItems(HorizontalAlign.Start)
+          }
+          if (this.showSettings) { this.settingsPanel() }
+          SketchCard() {
+            Column() {
+              SectionTitle({ text: '资料与应用' })
+              this.entry('搜索索引', '状态与语义索引重建', 'diagnostics')
+              this.entry('阅读导出', '按日期生成便于阅读的副本', 'export')
+              this.entry('存储与回收站', '原件、缓存、索引的边界', 'recycle')
+              Text('插件、完整备份与恢复、封面与加载动画仍在接入。')
+                .fontSize(13).fontColor(SketchColors.muted).padding({ top: 16 })
+            }.width('100%').alignItems(HorizontalAlign.Start)
+          }
+          Button(this.showDiagnostics ? '收起设备与诊断' : '设备与诊断')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
+            .onClick(() => { this.showDiagnostics = !this.showDiagnostics; })
+          if (this.showDiagnostics) { this.diagnosticsPanel() }
         }
-        SketchCard() {
-          Column() {
-            SectionTitle({ text: '创作与整理' })
-            this.entry('风格偏好', '篇幅、语气与叙述方式', 'styles')
-            this.entry('模型服务', '配置 AI、模型和连接测试', 'llm')
-            this.entry('本地语音转写', '录音转文字的引擎与模型', 'transcription')
-            this.entry('整理时机', '安静地安排每天的整理', 'schedule')
-            this.entry('任务中心', '等待、运行与需要处理', 'jobs')
-          }.width('100%').alignItems(HorizontalAlign.Start)
-        }
-        if (this.showSettings) { this.settingsPanel() }
-        SketchCard() {
-          Column() {
-            SectionTitle({ text: '资料与应用' })
-            this.entry('搜索索引', '状态与语义索引重建', 'diagnostics')
-            this.entry('阅读导出', '按日期生成便于阅读的副本', 'export')
-            this.entry('存储与回收站', '原件、缓存、索引的边界', 'recycle')
-            Text('插件、完整备份与恢复、封面与加载动画仍在接入。')
-              .fontSize(13).fontColor(SketchColors.muted).padding({ top: 16 })
-          }.width('100%').alignItems(HorizontalAlign.Start)
-        }
-        Button(this.showDiagnostics ? '收起设备与诊断' : '设备与诊断')
-          .attributeModifier(sketchButton).drawModifier(sketchOutline())
-          .onClick(() => { this.showDiagnostics = !this.showDiagnostics; })
-        if (this.showDiagnostics) { this.diagnosticsPanel() }
       }
       .width('100%').constraintSize({ maxWidth: 1240 })
       .padding({ left: 16, right: 16, top: 12, bottom: 30 }).alignItems(HorizontalAlign.Start)

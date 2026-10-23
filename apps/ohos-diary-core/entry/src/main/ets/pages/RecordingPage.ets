@@ -11,6 +11,7 @@ import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketch
 // 转写任务用 `jobs.runDue` 在 worker 里推进，不在 UI 线程加载模型。
 
 import { common } from '@kit.AbilityKit';
+import { appFilesDir } from '../session/AppDirectory';
 import {
   CommitParams,
   CommitResult,
@@ -170,7 +171,7 @@ export struct RecordingPage {
     }
     this.permissionDenied = false;
 
-    const opened: CoreOpenResult = CoreSession.open(context.filesDir);
+    const opened: CoreOpenResult = CoreSession.open(appFilesDir(context));
     if (opened.core === null) {
       this.phase = 'error';
       this.error = opened.error;

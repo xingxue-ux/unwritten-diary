@@ -444,7 +444,7 @@ export struct SearchPage {
             .backgroundColor(SketchColors.button)
             .fontColor(SketchColors.ink)
             .onClick(() => {
-              this.pathStack.pushPathByName('settings', '');
+              this.pathStack.pushPathByName('diagnostics', '');
             })
         }
         .width('100%')

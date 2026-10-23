@@ -10,6 +10,7 @@ import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketch
 // 产品 HAP 随包带 SenseVoice，首次启动部署并校验；仍允许保留/指定自己的模型目录。
 
 import { common } from '@kit.AbilityKit';
+import { appFilesDir } from '../session/AppDirectory';
 import {
   JobRunSummary,
   LibraryInfo,
@@ -49,7 +50,7 @@ export struct TranscriptionConfigPage {
   aboutToAppear(): void {
     const context = getContext(this) as common.UIAbilityContext;
     this.dbPath = databasePath(context);
-    this.filesDir = context.filesDir;
+    this.filesDir = appFilesDir(context);
     this.load();
   }
 

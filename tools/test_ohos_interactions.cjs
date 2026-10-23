@@ -186,8 +186,34 @@ async function llmConfiguration(){
   }
   page.secret='temporary';page.aboutToDisappear();assert.equal(page.secret,'');
 }
+async function isolatedFirstRunUi(){
+  for(const debug of [true,false]){
+    const removed=[];
+    const directory=load('session/AppDirectory.ets',{'BuildProfile':{default:{DEBUG:debug}},
+      '@kit.CoreFileKit':{fileIo:{accessSync:()=>true,rmdirSync:p=>removed.push(p)}}});
+    directory.selectFirstRunSession('fresh-20261024');
+    assert.equal(directory.appFilesDir({filesDir:'/app'}),debug?'/app/first-run-ui/fresh-20261024':'/app');
+    if(debug){directory.clearFirstRunSession({filesDir:'/app'});assert.deepEqual(removed,['/app/first-run-ui/fresh-20261024']);}
+    else assert.throws(()=>directory.clearFirstRunSession({filesDir:'/app'}),/未选择隔离测试目录/);
+    directory.selectFirstRunSession('../library');assert.equal(directory.appFilesDir({filesDir:'/app'}),'/app');
+    assert.throws(()=>directory.clearFirstRunSession({filesDir:'/app'}),/未选择隔离测试目录/);
+    directory.selectFirstRunSession('');assert.equal(directory.appFilesDir({filesDir:'/app'}),'/app');
+  }
+}
+async function resumedDiaryFeedback(){
+  const {DiaryPage}=load('pages/DiaryPage.ets',{'../ui/Errors':errorModule},{},true);
+  const page=new DiaryPage();page.waitingConfiguration=true;
+  page.acceptedNote='queued';page.runNote='waiting for configuration';
+  page.store={refresh:async()=>true,days:[],daysLoaded:true,daysTruncated:false,dayKey:'',day:null,
+    dayEmpty:true,currentVersionId:()=>null,candidateVersionIds:()=>[],candidatesOnly:()=>false,
+    waitingConfiguration:false,waitingConfigurationCount:0,jobsStatusKnown:true,error:empty,message:'',loading:false,working:false};
+  await page.reload();assert.equal(page.waitingConfiguration,false);
+  assert.equal(page.acceptedNote,'');assert.equal(page.runNote,'');
+  page.waitingConfiguration=true;page.runNote='waiting';page.store.jobsStatusKnown=false;
+  await page.reload();assert.equal(page.runNote,'waiting');
+}
 (async()=>{
-  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,editorState,searchTransitions,llmConfiguration]){
+  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,editorState,searchTransitions,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback]){
     await test();console.log('PASS '+test.name);
   }
 })().catch(e=>{console.error(e);process.exitCode=1;});

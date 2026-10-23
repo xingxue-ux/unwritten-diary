@@ -110,9 +110,14 @@ export struct DiaryPage {
     if (store === null) {
       return;
     }
+    const wasWaiting: boolean = this.waitingConfiguration;
     this.busy = true;
     await store.refresh();
     this.sync(store);
+    if (wasWaiting && store.jobsStatusKnown && !store.waitingConfiguration) {
+      this.acceptedNote = '';
+      this.runNote = '';
+    }
     this.busy = false;
     await this.readCurrentBody();
   }

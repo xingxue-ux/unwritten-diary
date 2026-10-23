@@ -10,6 +10,8 @@ import { TranscriptionVerify } from '../recording/TranscriptionVerify';
 import { HapBothVerify } from '../verify/HapBothVerify';
 import { CoreGateway } from '../ui/CoreGateway';
 import { verifyBundledModels } from '../verify/BundledModelsVerify';
+import { appFilesDir, clearFirstRunSession, selectFirstRunSession } from '../session/AppDirectory';
+import { BundledModels } from '../models/BundledModels';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryCore';
@@ -86,6 +88,7 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     const params = want.parameters;
+    let firstRunSession: string = '';
     if (params !== undefined && params !== null) {
       const value = params['verify_mode'];
       if (typeof value === 'string') {
@@ -103,7 +106,11 @@ export default class EntryAbility extends UIAbility {
       if (typeof order === 'string') {
         this.order = order;
       }
+      const session = params['qa_session'];
+      if (typeof session === 'string') { firstRunSession = session; }
     }
+    selectFirstRunSession(this.mode === 'first_run_ui' || this.mode === 'first_run_asr' ||
+      this.mode === 'first_run_cleanup' ? firstRunSession : '');
     hilog.info(DOMAIN, TAG, '%{public}s onCreate mode=%{public}s pid=%{public}d',
       MARK, this.mode, process.pid);
   }
@@ -121,6 +128,23 @@ export default class EntryAbility extends UIAbility {
       hilog.info(DOMAIN, TAG,
         '%{public}s PRODUCT_UI mode=(none) buildMode=%{public}s（未跑探针）',
         MARK, BuildProfile.BUILD_MODE_NAME);
+    } else if ((this.mode === 'first_run_ui' || this.mode === 'first_run_asr' || this.mode === 'first_run_cleanup') &&
+      appFilesDir(this.context) === filesDir) {
+      hilog.error(DOMAIN, TAG, 'FIRST_RUN invalid_session');
+      return;
+    } else if (this.mode === 'first_run_cleanup') {
+      try {
+        clearFirstRunSession(this.context);
+        hilog.info(DOMAIN, TAG, 'FIRST_RUN_CLEANED');
+      } catch (_) { hilog.error(DOMAIN, TAG, 'FIRST_RUN_CLEANUP_FAILED'); }
+      return;
+    } else if (this.mode === 'first_run_ui') {
+      hilog.info(DOMAIN, TAG, 'FIRST_RUN_UI isolated=true');
+    } else if (this.mode === 'first_run_asr') {
+      const isolated: string = appFilesDir(this.context);
+      BundledModels.prepare(this.context, () => {}, isolated)
+        .then(() => TranscriptionVerify.injectKnownWavAndCheck(isolated, this.baseUrl))
+        .catch(() => { hilog.error(DOMAIN, TAG, 'FIRST_RUN_ASR failed'); });
     } else if (this.mode === 'bundled_models') {
       verifyBundledModels(this.context).catch((err: Object) => {
         hilog.error(DOMAIN, TAG, 'BUNDLED_MODELS_ACCEPTANCE_FAILED %{public}s', (err as Error).message);
@@ -153,7 +177,8 @@ export default class EntryAbility extends UIAbility {
     // `jobs.runDue`（budget 1500 ms），与探针自己那一轮抢同两条任务——第一次真机
     // 验证时它把 waiting_configuration 的任务抢先跑掉，探针的摘要成了 processed=0。
     // 探针不需要界面；不加载页面也就没有前台驱动，队列只由探针自己推进。
-    if (DEBUG_BUILD && (this.mode === 'gen_remote' || this.mode === 'gen_remove' || this.mode === 'bundled_models')) {
+    if (DEBUG_BUILD && (this.mode === 'gen_remote' || this.mode === 'gen_remove' ||
+      this.mode === 'bundled_models' || this.mode === 'first_run_asr')) {
       hilog.info(DOMAIN, TAG,
         '%{public}s PROBE_NO_UI mode=%{public}s（gen_* 探针不加载 pages/Index，避免前台 runDue 抢任务）',
         MARK, this.mode);
@@ -163,7 +188,8 @@ export default class EntryAbility extends UIAbility {
     const t0 = Date.now();
     // Product pages open the core only after offline assets/defaults are ready.
     // Explicit debug probes retain their isolated setup and never seed product defaults.
-    const page: string = !DEBUG_BUILD || this.mode.length === 0 ? 'pages/Startup' : 'pages/Index';
+    const page: string = !DEBUG_BUILD || this.mode.length === 0 || this.mode === 'first_run_ui'
+      ? 'pages/Startup' : 'pages/Index';
     windowStage.loadContent(page, (err) => {
       if (err.code) {
         hilog.error(DOMAIN, TAG, '%{public}s loadContent failed %{public}s',

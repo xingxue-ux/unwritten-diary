@@ -54,6 +54,21 @@ const NON_RETRYABLE: string[] = [
 ];
 
 @Component
+struct JobCountChip {
+  @Prop label: string = '';
+  @Prop value: number = 0;
+  @Prop tone: string = '';
+
+  build() {
+    Column({ space: 2 }) {
+      Text(`${this.value}`).fontSize(18).fontWeight(FontWeight.Bold)
+        .fontColor(this.tone === 'warn' ? SketchColors.warning : SketchColors.text)
+      Text(this.label).fontSize(11).fontColor(SketchColors.muted)
+    }.width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Center)
+  }
+}
+
+@Component
 export struct JobsPage {
   pathStack: NavPathStack = new NavPathStack();
   @State jobs: Job[] = [];
@@ -338,61 +353,6 @@ export struct JobsPage {
     this.reload();
   }
 
-  private countOf(state: string): number {
-    const status: JobStatus | null = this.status;
-    if (status === null) {
-      return 0;
-    }
-    if (state === 'queued') {
-      return status.queued;
-    }
-    if (state === 'running') {
-      return status.running;
-    }
-    if (state === 'retry_wait') {
-      return status.retry_wait;
-    }
-    if (state === 'waiting_configuration') {
-      return status.waiting_configuration;
-    }
-    if (state === 'waiting_dependency') {
-      return status.waiting_dependency;
-    }
-    if (state === 'waiting_network') {
-      return status.waiting_network;
-    }
-    if (state === 'failed') {
-      return status.failed;
-    }
-    if (state === 'cancelled') {
-      return status.cancelled;
-    }
-    if (state === 'succeeded') {
-      return status.succeeded;
-    }
-    return 0;
-  }
-
-  @Builder
-  countChip(label: string, value: number, tone: string) {
-    Column({ space: 2 }) {
-      Text(`${value}`)
-        .fontSize(18)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(tone === 'warn'
-          ? SketchColors.warning
-          : (tone === 'alert'
-            ? SketchColors.alert
-            : SketchColors.text))
-      Text(label)
-        .fontSize(11)
-        .fontColor(SketchColors.muted)
-    }
-    .layoutWeight(1)
-    .padding({ top: 8, bottom: 8 })
-    .alignItems(HorizontalAlign.Center)
-  }
-
   @Builder
   filterButton(label: string, index: number) {
     Button(label)
@@ -590,10 +550,10 @@ export struct JobsPage {
       if (this.status !== null) {
         Column() {
           Row() {
-            this.countChip('处理中', this.countOf('queued') + this.countOf('running'), 'active')
-            this.countChip('等待', this.countOf('retry_wait') + this.countOf('waiting_dependency') + this.countOf('waiting_network'), 'muted')
-            this.countChip('需要处理', this.countOf('waiting_configuration') + this.countOf('failed'), 'warn')
-            this.countChip('完成', this.countOf('succeeded'), 'ok')
+            JobCountChip({ label: '处理中', value: this.status.queued + this.status.running }).layoutWeight(1)
+            JobCountChip({ label: '等待', value: this.status.retry_wait + this.status.waiting_dependency + this.status.waiting_network }).layoutWeight(1)
+            JobCountChip({ label: '需要处理', value: this.status.waiting_configuration + this.status.failed, tone: 'warn' }).layoutWeight(1)
+            JobCountChip({ label: '完成', value: this.status.succeeded }).layoutWeight(1)
           }
           .width('100%')
           Row({ space: 8 }) {

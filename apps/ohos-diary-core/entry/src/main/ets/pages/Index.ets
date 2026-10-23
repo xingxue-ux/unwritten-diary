@@ -139,13 +139,12 @@ struct Index {
         DiaryDayPage({ pathStack: this.pathStack, dayKey: param as string })
       }
       .title('日记', { backgroundColor: SketchColors.canvas })
-    } else if (name === 'settings') {
-      // 路由名保留 `settings`：SearchPage / JobsPage 已经在用它跳「我的」，
-      // 改路由名只会制造无谓的跨文件改动（本 PR 不动 SearchPage）。
+    } else if (name === 'settings' || name === 'diagnostics') {
+      // 旧 settings 入口保留；索引入口直接打开诊断面板，避免在「我的」中再次查找。
       NavDestination() {
-        ProfilePage({ pathStack: this.pathStack })
+        ProfilePage({ pathStack: this.pathStack, diagnosticsOnly: name === 'diagnostics' })
       }
-      .title('我的', { backgroundColor: SketchColors.canvas })
+      .title(name === 'diagnostics' ? '搜索索引' : '我的', { backgroundColor: SketchColors.canvas })
     } else if (name === 'jobs') {
       NavDestination() {
         JobsPage({ pathStack: this.pathStack })

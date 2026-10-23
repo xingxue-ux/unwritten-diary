@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { LengthMetrics } from '@kit.ArkUI';
 import { ProviderConfig, ProviderPreset, ProviderModelInfo, ProviderIdParams,
   SaveProviderParams, TestProviderParams, ProviderTestReport } from '../core/Models';
 import { CoreGateway, uiErrorOf } from '../ui/CoreGateway';
@@ -251,34 +252,52 @@ export struct LlmConfigPage {
     Column({ space: 12 }) {
       SectionTitle({ text: this.selected === null ? '添加模型服务' : '编辑模型服务' })
       TextInput({ text: this.label, placeholder: '服务名称，例如：我的 AI 服务' }).attributeModifier(sketchInput)
-        .enabled(!this.busy && !this.loading).onChange((v: string) => { this.label = v; this.dirty = true; })
+        .enabled(!this.busy && !this.loading).onChange((v: string) => {
+          if (this.label !== v) { this.label = v; this.dirty = true; }
+        })
       TextInput({ text: this.endpoint, placeholder: 'API 根地址，例如 https://服务地址/v1' }).attributeModifier(sketchInput)
-        .enabled(!this.busy && !this.loading).onChange((v: string) => { this.endpoint = v; this.models = []; this.dirty = true; })
+        .enabled(!this.busy && !this.loading).onChange((v: string) => {
+          if (this.endpoint !== v) { this.endpoint = v; this.models = []; this.dirty = true; }
+        })
       TextInput({ text: this.model, placeholder: '模型 ID（可手填，或保存后检测模型）' }).attributeModifier(sketchInput)
-        .enabled(!this.busy && !this.loading).onChange((v: string) => { this.model = v; this.dirty = true; })
+        .enabled(!this.busy && !this.loading).onChange((v: string) => {
+          if (this.model !== v) { this.model = v; this.dirty = true; }
+        })
       TextInput({ text: this.secret, placeholder: this.selected !== null && (this.selected as ProviderConfig).credential_ref !== null
         ? 'API Key 已保存，留空保留；输入新值替换' : 'API Key（本机回环服务可留空）' })
         .attributeModifier(sketchInput).type(InputType.Password).showPasswordIcon(false)
         .enableAutoFill(false).copyOption(CopyOptions.None)
-        .enabled(!this.busy && !this.loading).onChange((v: string) => { this.secret = v; this.dirty = true; })
+        .enabled(!this.busy && !this.loading).onChange((v: string) => {
+          if (this.secret !== v) { this.secret = v; this.dirty = true; }
+        })
       Text('API Key 保存在应用沙箱独立凭据文件中，目前未接入系统密钥库。界面不回显密钥。手机上的 localhost 指手机自身。')
         .fontSize(12).fontColor(SketchColors.muted)
-      Button(this.busy ? '处理中…' : '保存配置').attributeModifier(sketchButton).drawModifier(sketchOutline())
-        .enabled(!this.busy && !this.loading && this.loaded && (this.dirty || this.selected === null)).onClick(() => { this.save(); })
       if (this.selected !== null) {
         Text(this.dirty ? '有未保存修改，请先保存再测试。' : '检测模型会访问服务；连接测试会发送一段测试文字，可能计费，不发送你的日记。')
           .fontSize(12).fontColor(SketchColors.muted)
-        Button('检测可用模型').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.detectModels(); })
-        Button('测试文本生成连接').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.test(); })
-        Button((this.selected as ProviderConfig).enabled ? '停用服务' : '启用服务')
-          .attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.toggleEnabled(); })
-        Button('删除此服务及凭据').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.remove(); })
       }
+      Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
+        Button(this.busy ? '处理中…' : '保存配置').attributeModifier(sketchButton).drawModifier(sketchOutline())
+          .enabled(!this.busy && !this.loading && this.loaded && (this.dirty || this.selected === null)).onClick(() => { this.save(); })
+        if (this.selected !== null) {
+          Button('检测可用模型').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.detectModels(); })
+          Button('测试文本生成连接').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.test(); })
+          Button((this.selected as ProviderConfig).enabled ? '停用服务' : '启用服务')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.toggleEnabled(); })
+          Button('删除此服务及凭据').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.remove(); })
+        }
+      }.width('100%')
+      if (this.error.code.length > 0) {
+        ErrorBanner({ error: this.error, showReload: !this.busy && !this.loading,
+          onReload: () => { this.load(); } })
+      }
+      if (this.message.length > 0) { Text(this.message).fontColor(SketchColors.text).fontSize(14) }
       ForEach(this.models, (item: ProviderModelInfo) => {
         Button(item.id).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
           .onClick(() => { this.model = item.id; this.dirty = true; })
       }, (item: ProviderModelInfo) => item.id)
-    }.width('100%').padding(16).backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
+    }.width('100%').alignItems(HorizontalAlign.Start).padding(16)
+      .backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
   }
 
   build() {
@@ -289,28 +308,29 @@ export struct LlmConfigPage {
           Text('只有启用的服务可接收你主动交给 AI 处理的材料。保存配置不会发起模型请求；测试通过后请再启用。')
             .fontSize(14).fontColor(SketchColors.muted)
           if (this.loading) { LoadingRow({ text: '读取模型服务…' }) }
-          if (this.error.code.length > 0) {
-            ErrorBanner({ error: this.error, showReload: !this.busy && !this.loading,
-              onReload: () => { this.load(); } })
-          }
-          if (this.message.length > 0) { Text(this.message).fontColor(SketchColors.text).fontSize(14) }
+          Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
+            Button('添加自定义服务').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
+              .onClick(() => { this.newProvider(null); })
+            ForEach(this.presets, (preset: ProviderPreset) => {
+              Button('使用预设 · ' + preset.label).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
+                .onClick(() => { this.newProvider(preset); })
+            }, (preset: ProviderPreset) => preset.id)
+          }.width('100%')
           ForEach(this.providers, (provider: ProviderConfig) => {
             Column({ space: 6 }) {
-              Text(provider.label).fontSize(18).fontColor(SketchColors.ink)
+              Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
+                space: { main: LengthMetrics.vp(12), cross: LengthMetrics.vp(8) } }) {
+                Text(provider.label).fontSize(18).fontColor(SketchColors.ink)
+                StatePill({ text: provider.enabled ? '已启用' : '未启用', tone: provider.enabled ? 'ok' : 'muted' })
+                Text(provider.test_status === 'ok' ? '连接测试通过' : provider.test_status === 'failed' ? '连接测试失败' : '尚未验证文本生成')
+                  .fontSize(13).fontColor(SketchColors.muted)
+                Button('编辑配置').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
+                  .onClick(() => { this.edit(provider); })
+              }.width('100%')
               Text(provider.model === null ? '未指定模型' : provider.model).fontSize(13).fontColor(SketchColors.muted)
-              StatePill({ text: provider.enabled ? '已启用' : '未启用', tone: provider.enabled ? 'ok' : 'muted' })
-              Text(provider.test_status === 'ok' ? '连接测试通过' : provider.test_status === 'failed' ? '连接测试失败' : '尚未验证文本生成')
-                .fontSize(13).fontColor(SketchColors.muted)
-              Button('编辑配置').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
-                .onClick(() => { this.edit(provider); })
-            }.width('100%').padding(14).backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
-          }, (provider: ProviderConfig) => provider.id)
-          Button('添加自定义服务').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
-            .onClick(() => { this.newProvider(null); })
-          ForEach(this.presets, (preset: ProviderPreset) => {
-            Button('使用预设 · ' + preset.label).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
-              .onClick(() => { this.newProvider(preset); })
-          }, (preset: ProviderPreset) => preset.id)
+            }.width('100%').alignItems(HorizontalAlign.Start).padding(14)
+              .backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
+          }, (provider: ProviderConfig) => `${provider.id}-${provider.test_status}-${provider.enabled}-${provider.label}-${provider.model}`)
           this.form()
           Button('查看任务，继续等待中的生成').attributeModifier(sketchButton).drawModifier(sketchOutline())
             .onClick(() => { this.pathStack.pushPathByName('jobs', ''); })

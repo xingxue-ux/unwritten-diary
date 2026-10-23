@@ -5,10 +5,11 @@
 
 import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
+import { appFilesDir } from '../session/AppDirectory';
 
 /** 资料库文件的绝对路径（与 DiaryCore.openInDirectory 同一口径）。 */
 export function databasePath(context: common.UIAbilityContext): string {
-  const dir: string = context.filesDir;
+  const dir: string = appFilesDir(context);
   return `${dir}/library.sqlite`;
 }
 
