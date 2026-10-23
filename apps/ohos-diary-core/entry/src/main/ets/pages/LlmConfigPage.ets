@@ -6,7 +6,7 @@ import { EMPTY_UI_ERROR, UiError } from '../ui/Errors';
 import { databasePath, confirmAction } from '../ui/AppRuntime';
 import { AppState } from '../ui/AppState';
 import { ErrorBanner, SectionTitle, StatePill, LoadingRow } from '../ui/Common';
-import { SketchColors, sketchInput, sketchButton, sketchOutline } from '../ui/Sketch';
+import { SketchColors, SketchFonts, sketchInput, sketchButton, sketchOutline } from '../ui/Sketch';
 
 /** Remote LLM configuration. Opening/editing/saving never probes the network. */
 @Component
@@ -268,14 +268,14 @@ export struct LlmConfigPage {
       if (this.selected !== null) {
         Text(this.dirty ? '有未保存修改，请先保存再测试。' : '检测模型会访问服务；连接测试会发送一段测试文字，可能计费，不发送你的日记。')
           .fontSize(12).fontColor(SketchColors.muted)
-        Button('检测可用模型').attributeModifier(sketchButton).enabled(this.canProbe()).onClick(() => { this.detectModels(); })
-        Button('测试文本生成连接').attributeModifier(sketchButton).enabled(this.canProbe()).onClick(() => { this.test(); })
+        Button('检测可用模型').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.detectModels(); })
+        Button('测试文本生成连接').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.test(); })
         Button((this.selected as ProviderConfig).enabled ? '停用服务' : '启用服务')
-          .attributeModifier(sketchButton).enabled(this.canProbe()).onClick(() => { this.toggleEnabled(); })
-        Button('删除此服务及凭据').attributeModifier(sketchButton).enabled(this.canProbe()).onClick(() => { this.remove(); })
+          .attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.toggleEnabled(); })
+        Button('删除此服务及凭据').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.remove(); })
       }
       ForEach(this.models, (item: ProviderModelInfo) => {
-        Button(item.id).attributeModifier(sketchButton).enabled(!this.busy && !this.loading)
+        Button(item.id).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
           .onClick(() => { this.model = item.id; this.dirty = true; })
       }, (item: ProviderModelInfo) => item.id)
     }.width('100%').padding(16).backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
@@ -285,7 +285,7 @@ export struct LlmConfigPage {
     NavDestination() {
       Scroll() {
         Column({ space: 16 }) {
-          Text('让 AI 帮你整理日记').fontSize(24).fontColor(SketchColors.ink)
+          Text('让 AI 帮你整理日记').fontFamily(SketchFonts.display).fontSize(24).fontColor(SketchColors.ink)
           Text('只有启用的服务可接收你主动交给 AI 处理的材料。保存配置不会发起模型请求；测试通过后请再启用。')
             .fontSize(14).fontColor(SketchColors.muted)
           if (this.loading) { LoadingRow({ text: '读取模型服务…' }) }
@@ -301,20 +301,20 @@ export struct LlmConfigPage {
               StatePill({ text: provider.enabled ? '已启用' : '未启用', tone: provider.enabled ? 'ok' : 'muted' })
               Text(provider.test_status === 'ok' ? '连接测试通过' : provider.test_status === 'failed' ? '连接测试失败' : '尚未验证文本生成')
                 .fontSize(13).fontColor(SketchColors.muted)
-              Button('编辑配置').attributeModifier(sketchButton).enabled(!this.busy && !this.loading)
+              Button('编辑配置').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
                 .onClick(() => { this.edit(provider); })
             }.width('100%').padding(14).backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
           }, (provider: ProviderConfig) => provider.id)
-          Button('添加自定义服务').attributeModifier(sketchButton).enabled(!this.busy && !this.loading)
+          Button('添加自定义服务').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
             .onClick(() => { this.newProvider(null); })
           ForEach(this.presets, (preset: ProviderPreset) => {
-            Button('使用预设 · ' + preset.label).attributeModifier(sketchButton).enabled(!this.busy && !this.loading)
+            Button('使用预设 · ' + preset.label).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
               .onClick(() => { this.newProvider(preset); })
           }, (preset: ProviderPreset) => preset.id)
           this.form()
-          Button('查看任务，继续等待中的生成').attributeModifier(sketchButton)
+          Button('查看任务，继续等待中的生成').attributeModifier(sketchButton).drawModifier(sketchOutline())
             .onClick(() => { this.pathStack.pushPathByName('jobs', ''); })
-          Button('配置本地语音转写').attributeModifier(sketchButton)
+          Button('配置本地语音转写').attributeModifier(sketchButton).drawModifier(sketchOutline())
             .onClick(() => { this.pathStack.pushPathByName('transcription', ''); })
         }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
       }.width('100%').height('100%').align(Alignment.Top).backgroundColor(SketchColors.canvas)
