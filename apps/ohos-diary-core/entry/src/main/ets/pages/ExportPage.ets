@@ -53,10 +53,10 @@ export struct ExportPage {
           try { await fileIo.copyFile(source.fd, target.fd); }
           finally { await fileIo.close(target); }
         } finally { await fileIo.close(source); }
-        this.message = '阅读副本已保存到所选位置。这不是备份，不能用于恢复资料库。';
+        this.message = '日记副本已保存。';
       }
     } catch (_error) {
-      this.message = '副本没有保存到所选位置；应用内的导出文件仍保留，可以重试。';
+      this.message = '保存未完成，可重新选择位置。';
     } finally { this.busy = false; }
   }
 
@@ -64,20 +64,20 @@ export struct ExportPage {
     Scroll() {
       Column({ space: 20 }) {
         PageTitle({ title: '阅读导出', subtitle: '按日期生成便于阅读的副本。' })
-        Text('导出的文件便于阅读，不能用来恢复资料库；完整备份请用「备份与恢复」。')
+        Text('导出仅包含日记正文，不能用于恢复资料库。')
           .fontSize(15).fontColor(SketchColors.text).padding(20).backgroundColor(SketchColors.soft)
         SketchCard() {
           Column({ space: 16 }) {
-            Text('开始日期（YYYY-MM-DD）').fontSize(13).fontColor(SketchColors.muted)
-            TextInput({ text: this.from, placeholder: 'YYYY-MM-DD' }).attributeModifier(sketchInput).borderRadius(0)
+            Text('开始日期').fontSize(13).fontColor(SketchColors.muted)
+            TextInput({ text: this.from, placeholder: '年-月-日' }).attributeModifier(sketchInput).borderRadius(0)
               .backgroundColor(SketchColors.soft).fontColor(SketchColors.text).enabled(!this.busy)
               .onChange((text: string) => { this.from = text; })
-            Text('结束日期（YYYY-MM-DD）').fontSize(13).fontColor(SketchColors.muted)
-            TextInput({ text: this.to, placeholder: 'YYYY-MM-DD' }).attributeModifier(sketchInput).borderRadius(0)
+            Text('结束日期').fontSize(13).fontColor(SketchColors.muted)
+            TextInput({ text: this.to, placeholder: '年-月-日' }).attributeModifier(sketchInput).borderRadius(0)
               .backgroundColor(SketchColors.soft).fontColor(SketchColors.text).enabled(!this.busy)
               .onChange((text: string) => { this.to = text; })
             Flex({ wrap: FlexWrap.Wrap }) {
-              Button('Markdown').attributeModifier(sketchButton).drawModifier(sketchOutline()).margin({ right: 8 })
+              Button('保留排版').attributeModifier(sketchButton).drawModifier(sketchOutline()).margin({ right: 8 })
                 .backgroundColor(this.format === 'markdown' ? SketchColors.button : SketchColors.paper)
                 .enabled(!this.busy).onClick(() => { this.format = 'markdown'; })
               Button('纯文本').attributeModifier(sketchButton).drawModifier(sketchOutline())

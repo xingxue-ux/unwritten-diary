@@ -54,7 +54,7 @@ export function dayTitleAtOffset(offset: number): string {
 export function formatTime(iso: string): string {
   const date: Date = new Date(iso);
   if (isNaN(date.getTime())) {
-    return iso;
+    return '时间未知';
   }
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
@@ -63,7 +63,7 @@ export function formatTime(iso: string): string {
 export function formatDateTime(iso: string): string {
   const date: Date = new Date(iso);
   if (isNaN(date.getTime())) {
-    return iso;
+    return '时间未知';
   }
   return `${dayKeyOf(date)} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
@@ -82,15 +82,15 @@ export function formatDuration(ms: number): string {
 /** 字节 → 人话体积。 */
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) {
-    return `${bytes} B`;
+    return `${bytes} 字节`;
   }
   if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024).toFixed(1)} 千字节`;
   }
   if (bytes < 1024 * 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} 兆字节`;
   }
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} 吉字节`;
 }
 
 /** 幂等键：同一个用户动作复用一个；新的动作换新的。 */
@@ -110,12 +110,12 @@ export function captureStateLabel(state: string): string {
     return '草稿';
   }
   if (state === 'committed') {
-    return '已提交';
+    return '已收好';
   }
   if (state === 'trashed') {
     return '已移入回收站';
   }
-  return state;
+  return '状态未知';
 }
 
 /** 任务状态 → 文案（与核心 9 个 JobState 一一对应）。 */
@@ -147,7 +147,7 @@ export function jobStateLabel(state: string): string {
   if (state === 'cancelled') {
     return '已取消';
   }
-  return state;
+  return '状态未知';
 }
 
 /** 任务类型 → 领域文案；未知 kind 原样显示，不猜。 */
@@ -165,12 +165,15 @@ export function jobKindLabel(kind: string): string {
     return '正文提取';
   }
   if (kind === 'respond') {
-    return 'AI 处理';
+    return '智能整理';
   }
   if (kind === 'import') {
     return '导入';
   }
-  return kind;
+  if (kind === 'diary_generate') { return '日记整理'; }
+  if (kind === 'export') { return '阅读导出'; }
+  if (kind === 'backup') { return '资料备份'; }
+  return '其他任务';
 }
 
 /** 任务状态对应的视觉语气：ok / warn / alert / active / muted。 */
@@ -210,7 +213,7 @@ export function extractStatusLabel(status: string): string {
   if (status === 'stale') {
     return '需要更新';
   }
-  return status;
+  return '状态未知';
 }
 
 /** 抽取状态 → 语气。 */
@@ -244,7 +247,7 @@ export function coverageLabel(coverage: string): string {
   if (coverage === 'unavailable') {
     return '不可用';
   }
-  return coverage;
+  return '状态未知';
 }
 
 /** 日记版本的来源 → 文案（`DiaryVersion.origin` 的线上字符串）。 */
@@ -258,7 +261,7 @@ export function diaryOriginLabel(origin: string): string {
   if (origin === 'merge') {
     return '合并';
   }
-  return origin;
+  return '其他来源';
 }
 
 /** 日记版本来源的语气（只影响徽标文字颜色）。 */
@@ -292,7 +295,7 @@ export function hitSourceKindLabel(kind: string): string {
   if (kind === 'link') {
     return '链接';
   }
-  return kind;
+  return '其他';
 }
 
 /** 命中原因 → 徽标文案。 */
@@ -304,9 +307,9 @@ export function matchedByLabel(matchedBy: string): string {
     return '语义';
   }
   if (matchedBy === 'metadata') {
-    return '元数据';
+    return '材料信息';
   }
-  return matchedBy;
+  return '相关内容';
 }
 
 /** 检索阶段 → 文案；**phase 不是结束标志，翻页看 cursor**。 */
@@ -326,7 +329,7 @@ export function searchPhaseLabel(phase: string): string {
   if (phase === 'cancelled') {
     return '已取消';
   }
-  return phase;
+  return '状态未知';
 }
 
 /** 轻提示。失败只吞掉：提示失败不该影响主流程。 */

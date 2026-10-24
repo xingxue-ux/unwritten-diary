@@ -293,7 +293,7 @@ export struct DiaryDayPage {
       } else if (this.day === null) {
         if (this.error.code.length > 0) {
           // 读失败 ≠ 这一天没有内容。错误条已经在上面显示，这里不再摆空态。
-          Text('这一天的状态没有读出来：这不代表这一天没有成篇日记；原因见上面的错误。')
+          Text('暂时无法读取这一天的日记，请重试。')
             .fontSize(12)
             .fontColor(SketchColors.muted)
             .width('100%')
@@ -317,9 +317,9 @@ export struct DiaryDayPage {
                 // 只取第一页 50 条：有下一页时必须说「已显示前 N 版」，不能把 N 当总数。
                 value: this.versionsLoaded
                   ? (this.versionsHasMore
-                    ? `已显示前 ${this.versions.length} 版（还有更多） · revision ${this.day.revision}`
-                    : `${this.versions.length} 个 · revision ${this.day.revision}`)
-                  : `版本列表没有读出来 · revision ${this.day.revision}`,
+                    ? `已显示前 ${this.versions.length} 版（还有更多）`
+                    : `${this.versions.length} 个`)
+                  : `版本列表没有读出来`,
               })
             }
             .width('100%')
@@ -360,7 +360,7 @@ export struct DiaryDayPage {
             // ---------------------------------------------------------- 版本
             if (this.versions.length === 0 && !this.versionsLoaded && this.error.code.length > 0) {
               // 版本列表读失败：这不是「没有版本」，错误条已经在上面。
-              Text('版本列表没有读出来：这不代表这一天没有版本；原因见上面的错误。')
+              Text('暂时无法读取历史版本，请重试。')
                 .fontSize(12)
                 .fontColor(SketchColors.muted)
                 .width('100%')
@@ -368,7 +368,7 @@ export struct DiaryDayPage {
               EmptyState({
                 icon: '—',
                 title: '这一天还没有成篇日记',
-                hint: '有材料、但还没有成篇正文。生成接口（diary.generate）已就绪，生成按钮界面还没做，这里不能生成。',
+                hint: '可回到日记页，整理这一天的记录。',
               })
             } else {
               SectionTitle({
@@ -377,7 +377,7 @@ export struct DiaryDayPage {
                   : `版本（${this.versions.length}）`,
               })
               if (this.day.current_version_id === null) {
-                Text('这一天还没有指定当前版本；核心只给了候选版本。')
+                Text('请选择一版作为这一天的日记。')
                   .fontSize(12)
                   .fontColor(SketchColors.warning)
                   .width('100%')
@@ -388,13 +388,7 @@ export struct DiaryDayPage {
               }, (version: DiaryVersion) => `${version.id}-${this.isCurrent(version) ? 'current' : 'other'}`)
             }
 
-            Text('本页可以读正文、看版本、切换当前版本。编辑正文/合并版本（diary.saveEdit / ' +
-              'diary.merge）的 C ABI 已经接了，界面还没做；生成（diary.generate）的 C ABI 也已就绪，' +
-              '只差入口按钮。')
-              .fontSize(11)
-              .fontColor(SketchColors.muted)
-              .width('100%')
-              .padding({ bottom: 24 })
+
           }
           .width('100%')
           .padding({ left: 16, right: 16 })

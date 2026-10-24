@@ -17,6 +17,7 @@ import {
 import { CoreGateway, CoreRequest, uiErrorOf } from '../ui/CoreGateway';
 import { EMPTY_UI_ERROR, UiError } from '../ui/Errors';
 import { AppState } from '../ui/AppState';
+import { runSummary, timeZoneLabel } from '../ui/UserText';
 import { SettingsStore } from '../state/SettingsStore';
 import {
   databasePath,
@@ -131,11 +132,6 @@ export struct ProfilePage {
     return config === undefined ? null : config;
   }
 
-  private configFile(): ConfigFileReport | null {
-    const config: RuntimeConfig | null = this.runtimeConfig();
-    return config === null ? null : config.file;
-  }
-
   private semanticState(): string {
     const config: RuntimeConfig | null = this.runtimeConfig();
     return config === null ? 'unknown' : config.semantic.state;
@@ -144,10 +140,10 @@ export struct ProfilePage {
   private semanticStateLabel(): string {
     const state: string = this.semanticState();
     if (state === 'ready') {
-      return '模型已加载';
+      return '已准备好';
     }
     if (state === 'configured') {
-      return '已配置，待验证';
+      return '已准备，待检查';
     }
     if (state === 'absent') {
       return '未配置';
@@ -172,38 +168,6 @@ export struct ProfilePage {
     return 'muted';
   }
 
-  private semanticReason(): string {
-    const config: RuntimeConfig | null = this.runtimeConfig();
-    if (config === null || config.semantic.reason === null) {
-      return '—';
-    }
-    return config.semantic.reason;
-  }
-
-  private semanticModelDir(): string {
-    const config: RuntimeConfig | null = this.runtimeConfig();
-    if (config === null || config.semantic.modelDir === null) {
-      return '—';
-    }
-    return config.semantic.modelDir;
-  }
-
-  private semanticOrt(): string {
-    const config: RuntimeConfig | null = this.runtimeConfig();
-    if (config === null || config.semantic.ortDylib === null) {
-      return '—';
-    }
-    return config.semantic.ortDylib;
-  }
-
-  private semanticModelVersion(): string {
-    const config: RuntimeConfig | null = this.runtimeConfig();
-    if (config === null || config.semantic.modelVersion === null) {
-      return '—';
-    }
-    return config.semantic.modelVersion;
-  }
-
   private transcriptionState(): string {
     const config: RuntimeConfig | null = this.runtimeConfig();
     return config === null ? 'unknown' : config.transcription.state;
@@ -212,7 +176,7 @@ export struct ProfilePage {
   private transcriptionStateLabel(): string {
     const state: string = this.transcriptionState();
     if (state === 'ready') {
-      return '文件齐全（待测试）';
+      return '已准备，待检查';
     }
     if (state === 'configured') {
       return '已配置但不完整';
@@ -232,106 +196,6 @@ export struct ProfilePage {
       return 'warn';
     }
     return 'muted';
-  }
-
-  private transcriptionReason(): string {
-    const config: RuntimeConfig | null = this.runtimeConfig();
-    if (config === null || config.transcription.reason === null) {
-      return '—';
-    }
-    return config.transcription.reason;
-  }
-
-  private transcriptionConfigSource(): string {
-    const config: RuntimeConfig | null = this.runtimeConfig();
-    if (config === null) {
-      return '—';
-    }
-    return this.sourceLabel(config.transcription.configSource);
-  }
-
-  private transcriptionEngineLibSource(): string {
-    const config: RuntimeConfig | null = this.runtimeConfig();
-    if (config === null) {
-      return '—';
-    }
-    return this.sourceLabel(config.transcription.engineLibSource);
-  }
-
-  private transcriptionModelDir(): string {
-    const config: RuntimeConfig | null = this.runtimeConfig();
-    if (config === null || config.transcription.modelDir === null) {
-      return '—';
-    }
-    return config.transcription.modelDir;
-  }
-
-  private transcriptionEngineLib(): string {
-    const config: RuntimeConfig | null = this.runtimeConfig();
-    if (config === null || config.transcription.engineLib === null) {
-      return '—';
-    }
-    return config.transcription.engineLib;
-  }
-
-  private sourceLabel(source: string): string {
-    if (source === 'env') {
-      return '环境变量';
-    }
-    if (source === 'file') {
-      return 'core-config.json';
-    }
-    if (source === 'provider') {
-      return '转写 provider';
-    }
-    if (source === 'bundled') {
-      return '随包';
-    }
-    if (source === 'platform') {
-      return '平台按库名';
-    }
-    if (source === 'absent') {
-      return '未找到';
-    }
-    return source;
-  }
-
-  private configSourceLabel(): string {
-    const config: RuntimeConfig | null = this.runtimeConfig();
-    return config === null ? '—' : this.sourceLabel(config.semantic.configSource);
-  }
-
-  private configFileName(): string {
-    const file: ConfigFileReport | null = this.configFile();
-    if (file === null) {
-      return '—';
-    }
-    if (file.path === null) {
-      return '内存库（没有配置文件）';
-    }
-    return file.path;
-  }
-
-  private configFileState(): string {
-    const file: ConfigFileReport | null = this.configFile();
-    if (file === null) {
-      return '—';
-    }
-    if (!file.present) {
-      return file.error === null ? '没有配置文件（正常）' : `存在读取问题：${file.error}`;
-    }
-    if (file.error !== null) {
-      return `已读到，但解析有问题：${file.error}`;
-    }
-    return '已读取';
-  }
-
-  private ignoredFields(): string {
-    const file: ConfigFileReport | null = this.configFile();
-    if (file === null || file.ignoredFields.length === 0) {
-      return '—';
-    }
-    return file.ignoredFields.join('、');
   }
 
   private canRebuildSemantic(): boolean {
@@ -357,7 +221,7 @@ export struct ProfilePage {
       return;
     }
     const job: Job = jobResult.data as Job;
-    this.rebuildMessage = `已排队：${job.kind}（state=${jobStateLabel(job.state)}）；正在运行到期任务…`;
+    this.rebuildMessage = '正在整理搜索内容…';
     await this.runDueOnce();
   }
 
@@ -369,13 +233,11 @@ export struct ProfilePage {
     const runResult = await CoreGateway.call(this.dbPath, 'jobs.runDue', params);
     this.rebuilding = false;
     if (!runResult.ok) {
-      this.rebuildMessage = `${this.rebuildMessage}\n到期任务运行失败。`;
+      this.rebuildMessage = '整理未完成，请稍后重试。';
       this.rebuildError = uiErrorOf(runResult);
     } else {
       const summary = runResult.data as JobRunSummary;
-      this.rebuildMessage = `本轮：处理 ${summary.processed}，成功 ${summary.succeeded}，` +
-        `失败 ${summary.failed}，重试 ${summary.retrying}，积压 ${summary.due_backlog}。` +
-        (summary.due_backlog > 0 ? '还有积压，可以再跑一轮。' : '');
+      this.rebuildMessage = runSummary(summary);
       this.hasBacklog = summary.due_backlog > 0;
     }
     AppState.bumpDataVersion();
@@ -402,7 +264,7 @@ export struct ProfilePage {
 
   private defaultStyleLabel(): string {
     const styleId: string | null = this.currentSettings().default_style_id;
-    return styleId === null ? '未设置（新建日记跟随界面默认）' : styleId;
+    return styleId === null ? '未设置' : '已设置';
   }
 
   private async toggleAutoOrganize(isOn: boolean): Promise<void> {
@@ -433,31 +295,6 @@ export struct ProfilePage {
     await this.loadSettings();
   }
 
-  private nativeVersion(): string {
-    try {
-      return DiaryCore.version();
-    } catch (e) {
-      return '读取失败（核心库可能没有加载）';
-    }
-  }
-
-  private nativeLibraryDir(): string {
-    try {
-      return DiaryCore.nativeLibraryDir();
-    } catch (e) {
-      return '读取失败';
-    }
-  }
-
-  private openHandleCount(): string {
-    try {
-      return `${DiaryCore.openHandleCount()}`;
-    } catch (e) {
-      return '—';
-    }
-  }
-
-  /** 任务中心入口的一行摘要（不做状态判断，只是把 `jobs.status` 的数字摆出来）。 */
   private taskSummary(): string {
     if (this.jobStatus === null) {
       return '还没有读到队列计数';
@@ -497,7 +334,7 @@ export struct ProfilePage {
         SectionTitle({ text: '设置' })
 
         Column({ space: 4 }) {
-          this.section('整理与默认风格（settings.get / update）')
+          this.section('整理偏好')
           if (this.settingsError.code.length > 0) {
             ErrorBanner({
               error: this.settingsError,
@@ -538,9 +375,9 @@ export struct ProfilePage {
             .width('100%')
             InfoRow({
               label: '计划时间',
-              value: `${this.currentSettings().auto_organize_time}（本地时间；只是检查时机，不是完成承诺）`,
+              value: `${this.currentSettings().auto_organize_time}（本地时间）`,
             })
-            InfoRow({ label: '日记时区', value: this.currentSettings().diary_time_zone })
+            InfoRow({ label: '日记时区', value: timeZoneLabel(this.currentSettings().diary_time_zone) })
             InfoRow({ label: '默认风格', value: this.defaultStyleLabel() })
             if (this.currentSettings().default_style_id !== null) {
               Row({ space: 8 }) {
@@ -557,8 +394,7 @@ export struct ProfilePage {
               }
               .width('100%')
             }
-            Text('风格接口已就绪（styles.list / get / save），风格选择器界面还没做；这里只提供「清空」，不伪造选择器。' +
-              '改开关不会碰这个字段（省略 = 不改，只有「清空」才发显式 null）。')
+            Text('可在风格偏好中选择日记的篇幅和语气。')
               .fontSize(12)
               .fontColor(SketchColors.muted)
               .width('100%')
@@ -587,169 +423,39 @@ export struct ProfilePage {
 
   @Builder
   diagnosticsPanel() {
-    Column({ space: 12 }) {
-        SectionTitle({ text: '设备与诊断' })
-
-        Column({ space: 4 }) {
-          this.section('语义索引（indexes.status）')
-          if (this.indexError.code.length > 0) {
-            ErrorBanner({
-              error: this.indexError,
-              showReload: true,
-              onReload: () => {
-                this.load();
-              },
-            })
-          } else if (this.indexStatus === null) {
-            LoadingRow({ text: '读取索引状态…' })
+    Column({ space: 16 }) {
+      SketchCard() {
+        Column({ space: 12 }) {
+          SectionTitle({ text: '语义搜索' })
+          ErrorBanner({ error: this.indexError, showReload: true, onReload: () => { this.load(); } })
+          if (this.indexStatus === null) {
+            LoadingRow({ text: '正在读取搜索状态…' })
           } else {
-            Row({ space: 8 }) {
-              StatePill({
-                text: this.indexStatus.semantic_index_ready ? '语义索引就绪' : '语义索引未就绪',
-                tone: this.indexStatus.semantic_index_ready ? 'ok' : 'warn',
-              })
-              Text(`已嵌入 ${this.indexStatus.embedded_chunks} / ${this.indexStatus.total_chunks} 块`)
-                .fontSize(12)
-                .fontColor(SketchColors.muted)
+            StatePill({ text: this.indexStatus.semantic_index_ready ? '已准备好' : '需要整理内容',
+              tone: this.indexStatus.semantic_index_ready ? 'ok' : 'warn' })
+            Text(`已整理 ${this.indexStatus.embedded_chunks} 段，共 ${this.indexStatus.total_chunks} 段`)
+              .fontSize(13).fontColor(SketchColors.muted)
+            Text('新增记录后，可在这里更新搜索内容。').fontSize(13).fontColor(SketchColors.muted)
+            Button(this.rebuilding ? '整理中…' : '整理搜索内容').attributeModifier(sketchButton).drawModifier(sketchOutline())
+              .enabled(!this.rebuilding && this.canRebuildSemantic()).onClick(() => { this.rebuildSemantic(); })
+            if (this.hasBacklog) {
+              Button('继续整理').attributeModifier(sketchButton).drawModifier(sketchOutline())
+                .enabled(!this.rebuilding).onClick(() => { this.continueRunDue(); })
             }
-            .width('100%')
-            InfoRow({ label: '关键词覆盖', value: `${this.indexStatus.coverage}` })
-            InfoRow({ label: '索引模型', value: this.indexStatus.model_version === null ? '—' : this.indexStatus.model_version })
-            InfoRow({ label: '索引占用', value: formatBytes(this.indexStatus.index_bytes) })
-            InfoRow({
-              label: '片段',
-              value: `已索引 ${this.indexStatus.indexed_segments} / ${this.indexStatus.total_segments}，待处理 ${this.indexStatus.pending_segments}`,
-            })
-            if (this.indexStatus.reasons.length > 0) {
-              Column({ space: 4 }) {
-                Text('核心给出的原因（原样）：')
-                  .fontSize(12)
-                  .fontColor(SketchColors.muted)
-                  .width('100%')
-                ForEach(this.indexStatus.reasons, (reason: string, index: number) => {
-                  Text(`· ${reason}`)
-                    .fontSize(12)
-                    .fontColor(SketchColors.text)
-                    .width('100%')
-                }, (reason: string, index: number) => `${index}-${reason}`)
-              }
-              .width('100%')
-              .padding(10)
-              .backgroundColor(SketchColors.soft)
-              .borderRadius(0)
-            }
-            Row({ space: 8 }) {
-              Button(this.rebuilding ? '重建中…' : '一键重建语义索引')
-                .attributeModifier(sketchButton).drawModifier(sketchOutline())
-                .fontSize(13)
-                .enabled(!this.rebuilding && this.canRebuildSemantic())
-                .backgroundColor(SketchColors.button)
-                .fontColor(SketchColors.ink)
-                .onClick(() => {
-                  this.rebuildSemantic();
-                })
-              if (this.hasBacklog) {
-                Button('再跑一轮')
-                  .attributeModifier(sketchButton).drawModifier(sketchOutline())
-                  .fontSize(13)
-                  .enabled(!this.rebuilding)
-                  .backgroundColor(SketchColors.soft)
-                  .fontColor(SketchColors.text)
-                  .onClick(() => {
-                    this.continueRunDue();
-                  })
-              }
-            }
-            .width('100%')
-            if (!this.canRebuildSemantic()) {
-              Text('模型未配置或配置无效，不能重建。先按上面的原因修复 core-config.json。')
-                .fontSize(12)
-                .fontColor(SketchColors.warning)
-                .width('100%')
-            }
-            if (this.rebuildMessage.length > 0) {
-              Text(this.rebuildMessage)
-                .fontSize(12)
-                .fontColor(SketchColors.muted)
-                .width('100%')
-            }
-            if (this.rebuildError.code.length > 0) {
-              ErrorBanner({ error: this.rebuildError, showReload: false, onReload: () => {
-              } })
-            }
+            if (!this.canRebuildSemantic()) { Text('本地模型尚未就绪，请重新打开应用。').fontSize(13).fontColor(SketchColors.warning) }
+            ErrorBanner({ error: this.rebuildError })
+            if (this.rebuildMessage.length > 0) { Text(this.rebuildMessage).fontSize(13).fontColor(SketchColors.text) }
           }
-        }
-        .width('100%')
-        .padding(14)
-        .backgroundColor(SketchColors.paper)
-        .drawModifier(sketchOutline())
-        .alignItems(HorizontalAlign.Start)
-
-        // ---------------------------------------------------------- 诊断
-        Column({ space: 4 }) {
-          this.section('诊断')
-          if (this.info !== null) {
-            InfoRow({ label: 'API 版本', value: (this.info as LibraryInfo).api_version })
-            InfoRow({ label: '数据 schema', value: `${(this.info as LibraryInfo).data_schema_version}` })
-            InfoRow({ label: '构建版本', value: (this.info as LibraryInfo).build_version })
-            InfoRow({ label: '记录数', value: `${(this.info as LibraryInfo).capture_count}` })
-            InfoRow({ label: '资料库 ID', value: (this.info as LibraryInfo).library_id })
-            InfoRow({ label: '事件序号', value: `${(this.info as LibraryInfo).last_event_sequence}` })
-            InfoRow({ label: '恢复摘要', value: `待办任务 ${(this.info as LibraryInfo).recovery.pending_jobs}，未收尾录音 ${(this.info as LibraryInfo).recovery.open_recordings}` })
-            InfoRow({ label: '能力数', value: `${(this.info as LibraryInfo).capabilities.length} 项（core.info.capabilities）` })
-            Button(this.showCapabilities ? '收起能力清单' : '查看能力清单')
-              .attributeModifier(sketchButton).drawModifier(sketchOutline())
-              .fontSize(12)
-              .backgroundColor(SketchColors.soft)
-              .fontColor(SketchColors.text)
-              .onClick(() => {
-                this.showCapabilities = !this.showCapabilities;
-              })
-            if (this.showCapabilities) {
-              Column({ space: 2 }) {
-                ForEach((this.info as LibraryInfo).capabilities, (name: string, index: number) => {
-                  Text(name)
-                    .fontSize(11)
-                    .fontColor(SketchColors.muted)
-                    .width('100%')
-                }, (name: string, index: number) => `${index}-${name}`)
-              }
-              .width('100%')
-              .padding(8)
-              .backgroundColor(SketchColors.soft)
-              .borderRadius(0)
-            }
-            InfoRow({ label: '配置文件', value: this.configFileName() })
-            InfoRow({ label: '配置状态', value: this.configFileState() })
-            InfoRow({ label: '忽略字段', value: this.ignoredFields() })
-          } else {
-            Text('核心信息还没有读到。')
-              .fontSize(12)
-              .fontColor(SketchColors.muted)
-              .width('100%')
-          }
-          InfoRow({ label: 'C ABI 版本', value: this.nativeVersion() })
-          InfoRow({ label: '原生库目录', value: this.nativeLibraryDir() })
-          InfoRow({ label: '未关闭句柄', value: this.openHandleCount() })
-          Text('真未接的只有文件导入（imports.*）与插件（plugins.*）；风格（styles.*）、事件轮询（core.events）、' +
-            '备份恢复（backups.*）、记录移动/删除（captures.moveDay/trash/restore）的 C ABI 都已就绪，' +
-            '缺的是界面入口。本页不伪造这些入口。')
-            .fontSize(12)
-            .fontColor(SketchColors.muted)
-            .width('100%')
-            .padding({ top: 6 })
-        }
-        .width('100%')
-        .padding(14)
-        .backgroundColor(SketchColors.paper)
-        .drawModifier(sketchOutline())
-        .alignItems(HorizontalAlign.Start)
-
-        Text('状态说明：语义 state=ready 只表示模型加载过；索引是否覆盖全部块看本页的「语义索引」。')
-          .fontSize(11)
-          .fontColor(SketchColors.muted)
-          .width('100%')
-          .padding({ bottom: 24 })
+        }.width('100%').alignItems(HorizontalAlign.Start)
+      }
+      SketchCard() {
+        Column({ space: 12 }) {
+          SectionTitle({ text: '本地功能' })
+          InfoRow({ label: '语义搜索模型', value: this.semanticStateLabel() })
+          InfoRow({ label: '语音转写模型', value: this.transcriptionStateLabel() })
+          Text('本地模型随应用提供，无需另外下载。').fontSize(13).fontColor(SketchColors.muted)
+        }.width('100%').alignItems(HorizontalAlign.Start)
+      }
     }.width('100%')
   }
 
@@ -775,24 +481,22 @@ export struct ProfilePage {
             Column() {
               SectionTitle({ text: '创作与整理' })
               this.entry('风格偏好', '篇幅、语气与叙述方式', 'styles')
-              this.entry('模型服务', '配置 AI、模型和连接测试', 'llm')
-              this.entry('本地语音转写', '录音转文字的引擎与模型', 'transcription')
+              this.entry('模型服务', '设置智能整理服务', 'llm')
+              this.entry('本地语音转写', '离线把录音转成文字', 'transcription')
               this.entry('整理时机', '安静地安排每天的整理', 'schedule')
-              this.entry('任务中心', '等待、运行与需要处理', 'jobs')
+              this.entry('任务中心', '查看处理进度', 'jobs')
             }.width('100%').alignItems(HorizontalAlign.Start)
           }
           if (this.showSettings) { this.settingsPanel() }
           SketchCard() {
             Column() {
               SectionTitle({ text: '资料与应用' })
-              this.entry('搜索索引', '状态与语义索引重建', 'diagnostics')
+              this.entry('搜索索引', '让记录更容易找到', 'diagnostics')
               this.entry('阅读导出', '按日期生成便于阅读的副本', 'export')
-              this.entry('存储与回收站', '原件、缓存、索引的边界', 'recycle')
-              Text('插件、完整备份与恢复、封面与加载动画仍在接入。')
-                .fontSize(13).fontColor(SketchColors.muted).padding({ top: 16 })
+              this.entry('存储与回收站', '查看和恢复移除的记录', 'recycle')
             }.width('100%').alignItems(HorizontalAlign.Start)
           }
-          Button(this.showDiagnostics ? '收起设备与诊断' : '设备与诊断')
+          Button(this.showDiagnostics ? '收起本地功能' : '本地功能')
             .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .onClick(() => { this.showDiagnostics = !this.showDiagnostics; })
           if (this.showDiagnostics) { this.diagnosticsPanel() }

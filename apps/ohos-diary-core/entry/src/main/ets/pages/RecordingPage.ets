@@ -26,6 +26,7 @@ import { CoreGateway, uiErrorOf } from '../ui/CoreGateway';
 import { EMPTY_UI_ERROR, UiError, uiErrorFromThrown } from '../ui/Errors';
 import { CoreOpenResult, CoreSession } from '../ui/CoreSession';
 import { AppState } from '../ui/AppState';
+import { runSummary } from '../ui/UserText';
 import { databasePath, formatDuration, toast } from '../ui/AppRuntime';
 import { ensureMicrophonePermission, PermissionOutcome } from '../recording/MicPermission';
 import { RecorderOptions, RecordingCommitResult, VoiceRecorder } from '../recording/VoiceRecorder';
@@ -312,12 +313,11 @@ export struct RecordingPage {
     this.runningDue = false;
     if (!result.ok) {
       const mapped: UiError = uiErrorOf(result);
-      this.transcribeHint = `转写任务已排队；这次运行没有完成（${mapped.title}：${mapped.message}）`;
+      this.transcribeHint = '转写尚未完成，可稍后在片段页查看。';
       return;
     }
     const summary: JobRunSummary = result.data as JobRunSummary;
-    this.transcribeHint = `本轮任务：处理 ${summary.processed}，成功 ${summary.succeeded}，` +
-      `失败 ${summary.failed}，积压 ${summary.due_backlog}`;
+    this.transcribeHint = runSummary(summary);
     AppState.bumpDataVersion();
   }
 
@@ -337,13 +337,13 @@ export struct RecordingPage {
     if (state === 'recoverable') {
       return '已保存（不完整）';
     }
-    return state;
+    return '状态未知';
   }
 
   /** 提交结果的标题：成功就说成功，失败就明确说「音频已保存、记录仍是草稿」。 */
   private commitHeadline(): string {
     if (this.commitState === 'committed') {
-      return '已保存，已成篇';
+      return '录音已收好';
     }
     if (this.commitState === 'already_committed') {
       return '已保存（此前已提交）';
@@ -355,39 +355,13 @@ export struct RecordingPage {
   }
 
   private commitDetail(): string {
-    if (this.commitState === 'committed') {
-      return this.commitRevision >= 0
-        ? `记录已提交为正式记录（revision ${this.commitRevision}）。`
-        : '记录已提交为正式记录。';
+    if (this.commitState === 'committed' || this.commitState === 'already_committed') {
+      return '可在片段页查看录音和转写文字。';
     }
-    if (this.commitState === 'already_committed') {
-      return '核心按幂等处理：这条记录此前已经提交过；权威 revision 以详情页为准。';
-    }
-    if (this.commitState === 'failed') {
-      return '音频与来源已经落库，但提交没有成功。重试成功之前，这篇在「今日」仍显示为草稿。';
-    }
-    return '这次没有执行自动提交（例如从「上次录音未收尾」恢复保存）；可到详情页手动提交。';
+    return '音频已保留，收好记录后可参与日记整理。';
   }
 
   /** 从 `DiaryError code=… retryable=… message=…` 里只取错误码，单独显示给用户。 */
-  private commitErrorCode(): string {
-    const marker: string = 'code=';
-    const at: number = this.commitError.indexOf(marker);
-    if (at < 0) {
-      return '未知';
-    }
-    const rest: string = this.commitError.substring(at + marker.length);
-    const space: number = rest.indexOf(' ');
-    return space < 0 ? rest : rest.substring(0, space);
-  }
-
-  /**
-   * 提交失败后的重试入口。
-   *
-   * 用 finalize 返回的权威 revision 做 expected_revision；operation_id 由
-   * capture_id + revision 派生，重复点击不会重复提交（核心按操作幂等）。
-   * `invalid_state` 与 VoiceRecorder 同口径：说明此前已提交，按已提交处理。
-   */
   private async retryCommit(): Promise<void> {
     const finalized: RecordingFinalizeResult | null = this.finalized;
     if (finalized === null || this.commitRetrying) {
@@ -429,7 +403,7 @@ export struct RecordingPage {
     if (state === 'interrupted') {
       return '被系统中断';
     }
-    return state;
+    return '状态未知';
   }
 
   private segmentCount(): number {
@@ -450,26 +424,22 @@ export struct RecordingPage {
           StatePill({ text: this.recoveryStateLabel((this.recovery as RecordingRecovery).state), tone: 'warn' })
         }
         .width('100%')
-        Text(`已保存 ${formatDuration((this.recovery as RecordingRecovery).persisted_ms)}（已登记 ${(this.recovery as RecordingRecovery).closed_segment_indexes.length} 段）`)
+        Text(`已保存 ${formatDuration((this.recovery as RecordingRecovery).persisted_ms)}`)
           .fontSize(14)
           .fontColor(SketchColors.text)
           .width('100%')
         if (this.recoveryTail() > 0) {
-          Text(`崩溃前还有约 ${formatDuration(this.recoveryTail())} 未保存（不完整）；收到量只是最后一次上报值，实际可能更多。`)
+          Text(`录音不完整，约有 ${formatDuration(this.recoveryTail())} 未保存。`)
             .fontSize(12)
             .fontColor(SketchColors.warning)
             .width('100%')
         } else {
-          Text('没有可见的未登记尾巴；这不代表墙上时间一秒没少。')
+          Text('可恢复已保存的录音。')
             .fontSize(12)
             .fontColor(SketchColors.muted)
             .width('100%')
         }
         ForEach((this.recovery as RecordingRecovery).notes, (note: string, index: number) => {
-          Text(`· ${note}`)
-            .fontSize(12)
-            .fontColor(SketchColors.muted)
-            .width('100%')
         }, (note: string, index: number) => `${index}-${note}`)
         Row({ space: 8 }) {
           Button(this.recoverySaving ? '保存中…' : '保存已录部分')
@@ -523,20 +493,18 @@ export struct RecordingPage {
         }
         .width('100%')
         InfoRow({ label: '音频时长', value: formatDuration((this.finalized as RecordingFinalizeResult).logical_duration_ms) })
-        InfoRow({ label: '片段数', value: `${(this.finalized as RecordingFinalizeResult).segment_count}` })
         InfoRow({
           label: '转写任务',
-          value: (this.finalized as RecordingFinalizeResult).transcription_queued ? '已排队（finalize 同事务）' : '没有排队',
+          value: (this.finalized as RecordingFinalizeResult).transcription_queued ? '等待转写' : '没有排队',
         })
-        InfoRow({ label: '录音 ID', value: (this.finalized as RecordingFinalizeResult).recording_id })
         if ((this.finalized as RecordingFinalizeResult).state === 'recoverable') {
-          Text('这次录音不完整：核心只按已登记片段拼接；缺口如实标成 recoverable。')
+          Text('录音不完整，已保留可用部分。')
             .fontSize(12)
             .fontColor(SketchColors.warning)
             .width('100%')
         }
         if (this.interrupted) {
-          Text('录音被系统中断过（锁屏/来电/抢占），墙上时间可能少录；核心只能保证已登记片段。')
+          Text('录音曾被系统中断，部分声音可能缺失。')
             .fontSize(12)
             .fontColor(SketchColors.warning)
             .width('100%')
@@ -552,14 +520,6 @@ export struct RecordingPage {
             .fontColor(SketchColors.muted)
             .width('100%')
           if (this.commitState === 'failed') {
-            Text(`错误码：${this.commitErrorCode()}`)
-              .fontSize(12)
-              .fontColor(SketchColors.text)
-              .width('100%')
-            Text(this.commitError)
-              .fontSize(11)
-              .fontColor(SketchColors.muted)
-              .width('100%')
             Button(this.commitRetrying ? '重试中…' : '重试提交')
               .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(13)
@@ -632,11 +592,11 @@ export struct RecordingPage {
                 .fontWeight(FontWeight.Bold)
                 .fontColor(SketchColors.text)
                 .width('100%')
-              Text('录音期间屏幕会保持常亮（系统限制：熄屏会停止采集，且不会自动恢复）。')
+              Text('录音时请保持屏幕亮起，锁屏会中断录音。')
                 .fontSize(13)
                 .fontColor(SketchColors.muted)
                 .width('100%')
-              Text('停止后会先 finalize 保存音频，再自动提交成篇；提交失败会在这里显示错误码。')
+              Text('停止后自动保存并转成文字。')
                 .fontSize(13)
                 .fontColor(SketchColors.muted)
                 .width('100%')
@@ -689,7 +649,7 @@ export struct RecordingPage {
           }
 
           if (this.phase === 'preparing') {
-            LoadingRow({ text: '准备中：权限 / 草稿 / 录音票据 / 采集器…' })
+            LoadingRow({ text: '正在准备录音…' })
           }
 
           if (this.phase === 'recording') {
@@ -703,12 +663,8 @@ export struct RecordingPage {
                 .fontWeight(FontWeight.Bold)
                 .fontColor(SketchColors.text)
                 .width('100%')
-              Text(`已登记 ${this.segmentCount()} 段；已收到 ${formatDuration(this.elapsedMs)}`)
-                .fontSize(12)
-                .fontColor(SketchColors.muted)
-                .width('100%')
               if (this.elapsedMs > this.persistedMs) {
-                Text(`还有约 ${formatDuration(this.elapsedMs - this.persistedMs)} 未登记（进程崩溃会丢；时长以已登记为准）`)
+                Text(`正在保存最近 ${formatDuration(this.elapsedMs - this.persistedMs)} 的录音…`)
                   .fontSize(12)
                   .fontColor(SketchColors.warning)
                   .width('100%')
@@ -739,7 +695,7 @@ export struct RecordingPage {
                   .width('100%')
               }
               if (!this.bgTaskOk) {
-                Text('后台录音不可用（长时任务申请失败）；请保持应用在前台。')
+                Text('请保持应用在前台录音。')
                   .fontSize(12)
                   .fontColor(SketchColors.warning)
                   .width('100%')
@@ -753,7 +709,7 @@ export struct RecordingPage {
           }
 
           if (this.phase === 'stopping') {
-            LoadingRow({ text: '保存中：封闭最后一段 → 登记 → finalize…' })
+            LoadingRow({ text: '正在保存录音…' })
           }
 
           this.recoveryCard()
@@ -769,7 +725,7 @@ export struct RecordingPage {
 
           if (this.phase === 'error') {
             Column({ space: 8 }) {
-              Text(`当前录音：${this.segmentCount()} 个已登记片段`)
+              Text(`已保留 ${this.segmentCount()} 段录音`)
                 .fontSize(13)
                 .fontColor(SketchColors.muted)
                 .width('100%')
@@ -784,7 +740,7 @@ export struct RecordingPage {
                   })
               }
               if (this.finalizeAttempted && this.finalized === null) {
-                Text('最终化已经尝试过；不要再重复保存（核心可能报 invalid_state / integrity_failed）。')
+                Text('保存尚未确认，请到片段页查看录音。')
                   .fontSize(12)
                   .fontColor(SketchColors.warning)
                   .width('100%')
@@ -816,7 +772,7 @@ export struct RecordingPage {
             } })
           }
 
-          Text('平台限制：熄屏/锁屏时系统会强制停止采集，亮屏也不会自动续录；应用只能保持常亮，不能绕过。')
+          Text('录音中断后，需要重新开始录音。')
             .fontSize(11)
             .fontColor(SketchColors.muted)
             .width('100%')

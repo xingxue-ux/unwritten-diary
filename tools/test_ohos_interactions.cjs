@@ -136,7 +136,7 @@ async function searchTransitions(){
   assert.deepEqual(paths,[['capture','real-capture']]);
 }
 async function llmConfiguration(){
-  const calls=[];let saved=null;let secretReceived=null;let failList=false;let failSave=false;let confirmed=true;
+  const calls=[];let saved=null;let secretReceived=null;let failList=false;let failSave=false;let failTest=false;let confirmed=true;
   let provider={id:'llm',label:'Existing',adapter_id:'openai_compatible',endpoint:'https://example.com/v1',
     model:'model-a',capabilities:['generate_text'],credential_ref:'sec_existing',enabled:false,test_status:'untested'};
   const local={...provider,id:'asr',adapter_id:'sherpa_onnx',capabilities:['transcribe_audio']};
@@ -153,6 +153,7 @@ async function llmConfiguration(){
     }
     if(method==='providers.models')return ok([{id:'detected'}]);
     if(method==='providers.test'){
+      if(failTest)return {ok:false,data:null,error:{code:'authentication_failed',message:'HTTP 401',retryable:false}};
       assert.deepEqual(Array.from(params.scope),['generate_text']);
       provider={...provider,test_status:'ok'};return ok({message:null,actual_call_made:true});
     }
@@ -175,6 +176,7 @@ async function llmConfiguration(){
   await page.toggleEnabled();assert.equal(page.selected.enabled,false); // untested cannot enable
   await page.test();assert.equal(page.selected.test_status,'ok');await page.toggleEnabled();
   assert.equal(saved.enabled,true);assert.equal(saved.credential_ref,'sec_new');assert.equal(secretReceived,null);
+  failTest=true;await page.test();assert.equal(page.error.code,'authentication_failed');assert.equal(page.message,'');failTest=false;
   failList=true;await page.test();assert.equal(page.canProbe(),false);failList=false;await page.load();assert.equal(page.canProbe(),true);
   page.secret='never-echo-this';page.dirty=true;failSave=true;await page.save();
   assert.equal(page.secret,'');assert.equal(page.canProbe(),false);assert.ok(!page.message.includes('never-echo-this'));failSave=false;
@@ -211,9 +213,42 @@ async function resumedDiaryFeedback(){
   assert.equal(page.acceptedNote,'');assert.equal(page.runNote,'');
   page.waitingConfiguration=true;page.runNote='waiting';page.store.jobsStatusKnown=false;
   await page.reload();assert.equal(page.runNote,'waiting');
+  page.store.jobsStatusKnown=true;
+  page.store.generate=async()=>({job_id:'job'});
+  page.store.runDueJobs=async()=>{page.store.waitingConfiguration=true;page.store.message='请先配置模型服务。';};
+  page.store.openDay=async()=>true;
+  await page.generateAndRun();assert.equal(page.waitingConfiguration,true);
+  assert.equal(page.acceptedNote,'');assert.match(page.runNote,/配置/);
+}
+async function chineseSystemFeedback(){
+  const {toUiError}=load('ui/Errors.ets',{'../core/DiaryError':{DiaryError}});
+  for(const code of ['authentication_failed','network_unavailable','storage_full','model_unavailable','native_unavailable','future_service_error']){
+    const result=toUiError({code,message:'HTTP 401 at /private/library.sqlite: secret_value',retryable:true});
+    assert.equal(result.code,code);assert.equal(result.retryable,true);
+    assert.ok(!/[A-Za-z/]/.test(result.title+result.message+result.hint));
+    assert.ok((result.title+result.message+result.hint).length<50);
+  }
+  const runtime=load('ui/AppRuntime.ets',{});
+  for(const name of ['captureStateLabel','jobStateLabel','jobKindLabel','extractStatusLabel','coverageLabel','diaryOriginLabel','hitSourceKindLabel','matchedByLabel','searchPhaseLabel']){
+    assert.ok(!/[A-Za-z]/.test(runtime[name]('unrecognized_future_value')),name);
+  }
+  assert.notEqual(runtime.jobKindLabel('diary_generate'),runtime.jobKindLabel('unrecognized'));
+  const text=load('ui/UserText.ets',{'./Errors':{toUiError}});
+  assert.ok(!/[A-Za-z]/.test(text.presetLabel('DeepSeek')+text.modelLabel('deepseek-flash')+text.testStatusLabel('ok')));
+  assert.ok(!/[A-Za-z]/.test(text.timeZoneLabel('UTC')+text.timeZoneLabel('Asia/Shanghai')));
+}
+async function exportFeedbackHidesPaths(){
+  const ticket={dayCount:1,byteSize:123,path:'/private/exports/diary-20261024.md',packageTicket:'/private/exports/diary-20261024.md',
+    format:'markdown',dayKeys:['2026-10-24'],restorable:false};
+  const {ExportStore}=load('state/ExportStore.ets',{'../ui/Errors':errorModule,
+    '../ui/CoreGateway':{CoreGateway:{call:async()=>({ok:true,data:ticket})}}});
+  const store=new ExportStore('/private/library.sqlite');
+  assert.equal(await store.createExport({fromDayKey:'2026-10-24',toDayKey:'2026-10-24'}),ticket);
+  assert.equal(store.ticket.path,ticket.path);
+  assert.ok(!/[A-Za-z/]/.test(store.message));assert.ok(store.message.length<50);
 }
 (async()=>{
-  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,editorState,searchTransitions,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback]){
+  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,editorState,searchTransitions,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths]){
     await test();console.log('PASS '+test.name);
   }
 })().catch(e=>{console.error(e);process.exitCode=1;});

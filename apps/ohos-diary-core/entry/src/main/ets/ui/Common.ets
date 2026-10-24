@@ -41,7 +41,7 @@ export struct StatePill {
   }
 }
 
-/** 错误条：标题 + 核心原话 + 下一步建议；可选「重新加载」。 */
+/** 错误条：中文标题与下一步建议；可选「重新加载」。 */
 @Component
 export struct ErrorBanner {
   @Prop error: UiError = EMPTY_UI_ERROR;
@@ -57,19 +57,11 @@ export struct ErrorBanner {
           .fontWeight(FontWeight.Medium)
           .fontColor(SketchColors.alert)
           .width('100%')
-        Text(this.error.message)
-          .fontSize(14)
-          .fontColor(SketchColors.text)
-          .width('100%')
-        Text(this.error.hint)
-          .fontSize(12)
-          .fontColor(SketchColors.muted)
-          .width('100%')
-        if (this.error.code.length > 0) {
-          Text(`错误码：${this.error.code}${this.error.native ? '（调用没有发生）' : ''}`)
-            .fontSize(11)
-            .fontColor(SketchColors.muted)
-            .width('100%')
+        if (this.error.message.length > 0) {
+          Text(this.error.message).fontSize(14).fontColor(SketchColors.text).width('100%')
+        }
+        if (this.error.hint.length > 0) {
+          Text(this.error.hint).fontSize(12).fontColor(SketchColors.muted).width('100%')
         }
         if (this.showReload) {
           Button('重新加载')

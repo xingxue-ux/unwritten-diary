@@ -6,6 +6,7 @@ import { CoreGateway, uiErrorOf } from '../ui/CoreGateway';
 import { EMPTY_UI_ERROR, UiError } from '../ui/Errors';
 import { databasePath, confirmAction } from '../ui/AppRuntime';
 import { AppState } from '../ui/AppState';
+import { modelLabel, presetLabel } from '../ui/UserText';
 import { ErrorBanner, SectionTitle, StatePill, LoadingRow } from '../ui/Common';
 import { SketchColors, SketchFonts, sketchInput, sketchButton, sketchOutline } from '../ui/Sketch';
 
@@ -28,6 +29,7 @@ export struct LlmConfigPage {
   @State uncertain: boolean = false;
   @State error: UiError = EMPTY_UI_ERROR;
   @State message: string = '';
+  @State editingAddress: boolean = false;
   private dbPath: string = '';
   private active: boolean = true;
 
@@ -77,6 +79,7 @@ export struct LlmConfigPage {
     this.secret = '';
     this.models = [];
     this.dirty = false;
+    this.editingAddress = false;
   }
 
   private async mayDiscard(): Promise<boolean> {
@@ -93,14 +96,15 @@ export struct LlmConfigPage {
   private async newProvider(preset: ProviderPreset | null): Promise<void> {
     if (this.busy || this.loading || !await this.mayDiscard() || !this.active) { return; }
     this.selected = null;
-    this.label = preset === null ? '' : preset.label;
+    this.label = preset === null ? '' : presetLabel(preset.label);
     this.endpoint = preset === null ? '' : preset.endpoint;
     this.model = preset === null ? '' : preset.model;
     this.secret = '';
     this.models = [];
     this.dirty = preset !== null;
+    this.editingAddress = preset === null;
     this.error = EMPTY_UI_ERROR;
-    this.message = preset === null ? '' : '已填入预设，请核对服务地址和模型，再填写你自己的 API Key。';
+    this.message = preset === null ? '' : '请填写访问密钥，然后保存。';
   }
 
   private validation(message: string): void {
@@ -113,15 +117,15 @@ export struct LlmConfigPage {
     if (this.selected !== null && !this.dirty) { return; }
     const endpoint: string = this.endpoint.trim().replace(/\/+$/, '');
     if (this.label.trim().length === 0 || endpoint.length === 0) {
-      this.validation('服务名称和 API 根地址不能为空。'); return;
+      this.validation('请填写服务名称和访问地址。'); return;
     }
     if (!/^https?:\/\/[^\s/?#]+(?:\/[^\s?#]*)?$/i.test(endpoint) ||
       endpoint.includes('@') || /\/(chat\/completions|models|responses)$/i.test(endpoint)) {
-      this.validation('请填写 API 根地址，不带账号密码、查询参数或 /chat/completions、/models、/responses。'); return;
+      this.validation('地址格式不正确，请填写服务方提供的访问地址。'); return;
     }
     if (!/^https:\/\//i.test(endpoint) &&
       !/^http:\/\/(localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:\/|$)/i.test(endpoint)) {
-      this.validation('远程服务请使用 HTTPS；HTTP 仅允许本机回环地址。'); return;
+      this.validation('远程服务需要使用加密连接地址。'); return;
     }
     this.busy = true;
     this.error = EMPTY_UI_ERROR;
@@ -145,10 +149,10 @@ export struct LlmConfigPage {
     if (!result.ok) {
       this.error = uiErrorOf(result);
       this.uncertain = true;
-      this.message = '保存未确认成功；如本次更换了 API Key，请重新填写后保存。'; return;
+      this.message = '保存未完成，请重新填写密钥后重试。'; return;
     }
     this.adopt(result.data as ProviderConfig);
-    this.message = '已保存，当前未启用。可检测模型列表，填写模型后测试连接，再启用。';
+    this.message = '已保存。检查连接后即可启用。';
     AppState.bumpDataVersion();
     await this.load();
   }
@@ -167,12 +171,12 @@ export struct LlmConfigPage {
     if (!this.active) { return; }
     if (!result.ok) { this.error = uiErrorOf(result); return; }
     this.models = result.data as ProviderModelInfo[];
-    this.message = this.models.length === 0 ? '服务返回空模型列表，可手动填写准确模型 ID。' : '点击一个模型填入，保存后再测试连接。';
+    this.message = this.models.length === 0 ? '没有找到可用模型，请手动填写模型名称。' : '请选择模型，保存后检查连接。';
   }
 
   private async test(): Promise<void> {
     if (!this.canProbe()) { return; }
-    if (this.model.trim().length === 0) { this.validation('请先填写模型 ID 并保存。'); return; }
+    if (this.model.trim().length === 0) { this.validation('请先填写模型名称并保存。'); return; }
     this.busy = true;
     this.error = EMPTY_UI_ERROR;
     const id: string = (this.selected as ProviderConfig).id;
@@ -195,15 +199,16 @@ export struct LlmConfigPage {
       this.error = uiErrorOf(refreshed);
       this.message = '无法确认最新测试状态，请重新打开本页。'; return;
     }
-    if (!result.ok) { this.error = uiErrorOf(result); this.message = '连接测试未通过，请检查配置后重试。'; }
+    if (!result.ok) { this.error = uiErrorOf(result); this.message = ''; }
     else {
       const report: ProviderTestReport = result.data as ProviderTestReport;
       this.message = (this.selected as ProviderConfig).test_status === 'ok'
-        ? '文本生成测试通过，可启用服务。' : '测试未全部通过，请检查服务和模型。';
-      if (report.message !== null) { this.message += ' ' + report.message; }
+        ? '连接成功，可以启用服务。' : '测试未全部通过，请检查服务和模型。';
+
     }
     AppState.bumpDataVersion();
     await this.load();
+    if (!result.ok && this.active && !this.uncertain) { this.error = uiErrorOf(result); }
   }
 
   private async toggleEnabled(): Promise<void> {
@@ -224,7 +229,7 @@ export struct LlmConfigPage {
     if (!this.active) { return; }
     if (!result.ok) { this.error = uiErrorOf(result); return; }
     this.adopt(result.data as ProviderConfig);
-    this.message = config.enabled ? '已启用。日记生成可以使用此服务；已有等待任务可到任务中心继续。' : '已停用；配置和密钥仍保留。';
+    this.message = config.enabled ? '已启用，可开始整理日记。' : '已停用，配置和密钥已保留。';
     AppState.bumpDataVersion();
     await this.load();
   }
@@ -232,7 +237,7 @@ export struct LlmConfigPage {
   private async remove(): Promise<void> {
     if (!this.canProbe()) { return; }
     const id: string = (this.selected as ProviderConfig).id;
-    if (!await confirmAction('删除模型服务？', '移除配置及不再使用的凭据，不会删除日记。', '删除服务') || !this.active) { return; }
+    if (!await confirmAction('删除模型服务？', '将删除此服务和密钥，日记会保留。', '删除服务') || !this.active) { return; }
     if (!this.canProbe() || (this.selected as ProviderConfig).id !== id) { return; }
     this.busy = true;
     const params: ProviderIdParams = { provider_id: id };
@@ -242,7 +247,7 @@ export struct LlmConfigPage {
     if (!result.ok) { this.error = uiErrorOf(result); return; }
     this.dirty = false;
     await this.newProvider(null);
-    this.message = '已删除服务，日记内容保持不变。';
+    this.message = '服务已删除，日记已保留。';
     AppState.bumpDataVersion();
     await this.load();
   }
@@ -251,40 +256,45 @@ export struct LlmConfigPage {
   form() {
     Column({ space: 12 }) {
       SectionTitle({ text: this.selected === null ? '添加模型服务' : '编辑模型服务' })
-      TextInput({ text: this.label, placeholder: '服务名称，例如：我的 AI 服务' }).attributeModifier(sketchInput)
+      TextInput({ text: this.label, placeholder: '服务名称' }).attributeModifier(sketchInput)
         .enabled(!this.busy && !this.loading).onChange((v: string) => {
           if (this.label !== v) { this.label = v; this.dirty = true; }
         })
-      TextInput({ text: this.endpoint, placeholder: 'API 根地址，例如 https://服务地址/v1' }).attributeModifier(sketchInput)
+      Text('已选模型：' + modelLabel(this.model)).fontSize(13).fontColor(SketchColors.muted)
+      Button(this.editingAddress ? '收起地址和模型' : '修改地址和模型').attributeModifier(sketchButton).drawModifier(sketchOutline())
+        .enabled(!this.busy && !this.loading).onClick(() => { this.editingAddress = !this.editingAddress; })
+      if (this.editingAddress) {
+        TextInput({ text: this.endpoint, placeholder: '服务方提供的访问地址' }).attributeModifier(sketchInput)
         .enabled(!this.busy && !this.loading).onChange((v: string) => {
           if (this.endpoint !== v) { this.endpoint = v; this.models = []; this.dirty = true; }
         })
-      TextInput({ text: this.model, placeholder: '模型 ID（可手填，或保存后检测模型）' }).attributeModifier(sketchInput)
+      TextInput({ text: this.model, placeholder: '模型名称，也可保存后选择' }).attributeModifier(sketchInput)
         .enabled(!this.busy && !this.loading).onChange((v: string) => {
           if (this.model !== v) { this.model = v; this.dirty = true; }
         })
+      }
       TextInput({ text: this.secret, placeholder: this.selected !== null && (this.selected as ProviderConfig).credential_ref !== null
-        ? 'API Key 已保存，留空保留；输入新值替换' : 'API Key（本机回环服务可留空）' })
+        ? '密钥已保存，留空保留' : '访问密钥' })
         .attributeModifier(sketchInput).type(InputType.Password).showPasswordIcon(false)
         .enableAutoFill(false).copyOption(CopyOptions.None)
         .enabled(!this.busy && !this.loading).onChange((v: string) => {
           if (this.secret !== v) { this.secret = v; this.dirty = true; }
         })
-      Text('API Key 保存在应用沙箱独立凭据文件中，目前未接入系统密钥库。界面不回显密钥。手机上的 localhost 指手机自身。')
+      Text('密钥仅保存在本机，保存后不会显示。')
         .fontSize(12).fontColor(SketchColors.muted)
       if (this.selected !== null) {
-        Text(this.dirty ? '有未保存修改，请先保存再测试。' : '检测模型会访问服务；连接测试会发送一段测试文字，可能计费，不发送你的日记。')
+        Text(this.dirty ? '有未保存修改，请先保存再测试。' : '检查连接会发送测试文字，可能计费，不发送日记。')
           .fontSize(12).fontColor(SketchColors.muted)
       }
       Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
         Button(this.busy ? '处理中…' : '保存配置').attributeModifier(sketchButton).drawModifier(sketchOutline())
           .enabled(!this.busy && !this.loading && this.loaded && (this.dirty || this.selected === null)).onClick(() => { this.save(); })
         if (this.selected !== null) {
-          Button('检测可用模型').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.detectModels(); })
-          Button('测试文本生成连接').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.test(); })
+          Button('查找可用模型').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.detectModels(); })
+          Button('检查连接').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.test(); })
           Button((this.selected as ProviderConfig).enabled ? '停用服务' : '启用服务')
             .attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.toggleEnabled(); })
-          Button('删除此服务及凭据').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.remove(); })
+          Button('删除服务').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.remove(); })
         }
       }.width('100%')
       if (this.error.code.length > 0) {
@@ -292,8 +302,8 @@ export struct LlmConfigPage {
           onReload: () => { this.load(); } })
       }
       if (this.message.length > 0) { Text(this.message).fontColor(SketchColors.text).fontSize(14) }
-      ForEach(this.models, (item: ProviderModelInfo) => {
-        Button(item.id).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
+      ForEach(this.models, (item: ProviderModelInfo, index: number) => {
+        Button(modelLabel(item.id, index)).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
           .onClick(() => { this.model = item.id; this.dirty = true; })
       }, (item: ProviderModelInfo) => item.id)
     }.width('100%').alignItems(HorizontalAlign.Start).padding(16)
@@ -304,15 +314,15 @@ export struct LlmConfigPage {
     NavDestination() {
       Scroll() {
         Column({ space: 16 }) {
-          Text('让 AI 帮你整理日记').fontFamily(SketchFonts.display).fontSize(24).fontColor(SketchColors.ink)
-          Text('只有启用的服务可接收你主动交给 AI 处理的材料。保存配置不会发起模型请求；测试通过后请再启用。')
+          Text('让智能助手整理日记').fontFamily(SketchFonts.display).fontSize(24).fontColor(SketchColors.ink)
+          Text('只有启用后，服务才会接收需要整理的记录。')
             .fontSize(14).fontColor(SketchColors.muted)
           if (this.loading) { LoadingRow({ text: '读取模型服务…' }) }
           Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
             Button('添加自定义服务').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
               .onClick(() => { this.newProvider(null); })
             ForEach(this.presets, (preset: ProviderPreset) => {
-              Button('使用预设 · ' + preset.label).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
+              Button(presetLabel(preset.label)).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
                 .onClick(() => { this.newProvider(preset); })
             }, (preset: ProviderPreset) => preset.id)
           }.width('100%')
@@ -327,12 +337,12 @@ export struct LlmConfigPage {
                 Button('编辑配置').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
                   .onClick(() => { this.edit(provider); })
               }.width('100%')
-              Text(provider.model === null ? '未指定模型' : provider.model).fontSize(13).fontColor(SketchColors.muted)
+              Text(modelLabel(provider.model)).fontSize(13).fontColor(SketchColors.muted)
             }.width('100%').alignItems(HorizontalAlign.Start).padding(14)
               .backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
           }, (provider: ProviderConfig) => `${provider.id}-${provider.test_status}-${provider.enabled}-${provider.label}-${provider.model}`)
           this.form()
-          Button('查看任务，继续等待中的生成').attributeModifier(sketchButton).drawModifier(sketchOutline())
+          Button('查看待办任务').attributeModifier(sketchButton).drawModifier(sketchOutline())
             .onClick(() => { this.pathStack.pushPathByName('jobs', ''); })
           Button('配置本地语音转写').attributeModifier(sketchButton).drawModifier(sketchOutline())
             .onClick(() => { this.pathStack.pushPathByName('transcription', ''); })

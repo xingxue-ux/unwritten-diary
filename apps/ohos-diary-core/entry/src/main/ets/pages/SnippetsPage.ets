@@ -399,7 +399,7 @@ export struct SnippetsPage {
         if (row.extractionError.code.length > 0) {
           // 逐条抽取失败：不能只把它藏进类型标签，原因与重试都要在行内可见。
           Row({ space: 8 }) {
-            Text(`来源状态没读出来（${row.extractionError.code}）：${row.extractionError.message}`)
+            Text('暂时无法读取记录，请重试。')
               .fontSize(12)
               .fontColor(SketchColors.warning)
               .layoutWeight(1)
@@ -459,7 +459,7 @@ export struct SnippetsPage {
         Column() {
           PageTitle({
             title: '留下的片段',
-            subtitle: `${dayLabelAtOffset(this.dayOffset)} · 留下的片段（原始记录与转写状态）`,
+            subtitle: `${dayLabelAtOffset(this.dayOffset)}留下的记录`,
           })
         }
         .layoutWeight(1)
@@ -541,7 +541,7 @@ export struct SnippetsPage {
           } else if (this.rows.length === 0) {
             // 一次都没读成功：这是「读失败」，不是「今天没有片段」。
             ListItem() {
-              Text('这一天的片段没有读出来：这不代表今天没有片段；原因见上面的错误。')
+              Text('暂时无法读取这一天的片段，请重试。')
                 .fontSize(12)
                 .fontColor(SketchColors.muted)
                 .width('100%')

@@ -266,19 +266,14 @@ export struct SearchPage {
   }
 
   private semanticBanner(): string {
-    if (this.indexStatus === null) {
+    if (this.indexStatus === null || this.mode === 'keyword') {
       return '';
     }
     const status: IndexStatus = this.indexStatus;
     if (status.semantic_index_ready) {
       return '';
     }
-    const base: string = `语义索引未完全就绪：已嵌入 ${status.embedded_chunks} / ${status.total_chunks} 块。` +
-      '语义/混合模式仍会检索已嵌入的块，结果可能不全（不是「没有结果」）。';
-    if (status.reasons.length > 0) {
-      return `${base}\n${status.reasons[0]}`;
-    }
-    return base;
+    return '部分记录尚未整理，语义搜索结果可能不全。';
   }
 
   @Builder
@@ -338,7 +333,7 @@ export struct SearchPage {
       }
       .width('100%')
       if (hit.title !== null && hit.title.length > 0) {
-        Text(hit.title)
+        Text(hit.source_kind === 'file' ? '文件记录' : hit.title)
           .fontSize(14)
           .fontWeight(FontWeight.Medium)
           .fontColor(SketchColors.text)
@@ -438,7 +433,7 @@ export struct SearchPage {
           }
           .width('100%')
           .alignItems(VerticalAlign.Top)
-          Button('去设置查看/重建语义索引')
+          Button('整理搜索内容')
             .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(12)
             .backgroundColor(SketchColors.button)
@@ -456,7 +451,7 @@ export struct SearchPage {
       }
 
       if (this.statusError.code.length > 0) {
-        Text(`索引状态读取失败（${this.statusError.code}）；搜索仍可继续，但无法判断语义覆盖。`)
+        Text('暂时无法读取搜索状态，请稍后重试。')
           .fontSize(12)
           .fontColor(SketchColors.muted)
           .width('100%')
@@ -522,24 +517,21 @@ export struct SearchPage {
 
       if (this.warnings.length > 0) {
         Column({ space: 6 }) {
-          ForEach(this.warnings, (warning: string, index: number) => {
-            this.warningBox(warning)
-          }, (warning: string, index: number) => `${index}-${warning}`)
+          this.warningBox('部分内容未参与搜索，可整理后重试。')
         }
         .width('100%')
         .padding({ left: 16, right: 16 })
       }
 
       if (this.loading) {
-        LoadingRow({ text: '正在检索…（语义/混合可能要加载模型）' })
+        LoadingRow({ text: '正在搜索…' })
       } else if (this.results.length === 0) {
         if (this.searched) {
           if (this.error.code.length > 0) {
             // `error` 有值 = 这次检索**没有完整完成**（`search.start` 失败，或混合升级
             // 失败）。这时不能说「没有结果 / 换一个关键词」：那是把失败说成「库里没有」，
             // 用户会白改关键词。错误条已经在上面显示，这里只补一句边界说明。
-            Text('这次检索没有完成，结果不代表「没有匹配的内容」；原因见上面的错误。' +
-              '可以重试搜索，或先确认索引状态。')
+            Text('搜索未完成，请重试。')
               .fontSize(12)
               .fontColor(SketchColors.muted)
               .width('100%')
@@ -549,9 +541,9 @@ export struct SearchPage {
               icon: '—',
               title: '没有结果',
               hint: this.warnings.length > 0
-                ? '原因见上方的核心提示；不要把「没有结果」当成「没有内容」。'
+                ? '部分内容未参与搜索，可整理后重试。'
                 : (this.mode === 'semantic' && this.indexStatus !== null && !this.semanticReady()
-                  ? '语义索引还没有可用向量；先到设置页确认模型与重建状态。'
+                  ? '请先整理搜索内容。'
                   : '换一个关键词，或切换检索模式。'),
             })
           }
@@ -559,7 +551,7 @@ export struct SearchPage {
           EmptyState({
             icon: '⌕',
             title: '搜一搜已经记下的内容',
-            hint: '输入关键词后按回车。切换「语义/混合」会走不同的检索路径。',
+            hint: '输入想找的内容，然后点击搜索。',
           })
         }
       } else {

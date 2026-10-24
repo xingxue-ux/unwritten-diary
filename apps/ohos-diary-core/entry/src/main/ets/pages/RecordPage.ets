@@ -185,7 +185,7 @@ export struct RecordPage {
     this.savedAt = receipt.saved_at;
     this.savedState = 'draft';
     this.savedText = savedText;
-    this.message = receipt.durable ? '草稿已保存。' : '核心没有确认落盘（durable=false），先别离开这一页。';
+    this.message = receipt.durable ? '草稿已保存。' : '保存尚未确认，请暂时留在本页。';
 
     if (submit) {
       const commitParams: CommitParams = {
@@ -205,7 +205,7 @@ export struct RecordPage {
       const result: CommitResult = committed.data as CommitResult;
       this.revision = result.capture.revision;
       this.savedState = 'committed';
-      this.message = '已收好（提交为正式记录），可以在「片段」里看到它。';
+      this.message = '已收好，可在片段页查看。';
     } else {
       toast('草稿已保存');
     }

@@ -26,7 +26,7 @@ import {
 import { DiaryStore } from '../state/DiaryStore';
 import { CoreGateway, CoreResult, uiErrorOf } from '../ui/CoreGateway';
 import { EMPTY_UI_ERROR, UiError } from '../ui/Errors';
-import { databasePath } from '../ui/AppRuntime';
+import { databasePath, formatDateTime } from '../ui/AppRuntime';
 import { EmptyState, ErrorBanner, LoadingRow, PageTitle, SectionTitle, StatePill } from '../ui/Common';
 
 /**
@@ -160,8 +160,9 @@ export struct DiaryPage {
       this.busy = false;
       return;
     }
-    this.acceptedNote = '已受理，要跑任务才会生成。';
+    this.acceptedNote = '正在整理日记…';
     await store.runDueJobs();
+    this.acceptedNote = '';
     this.sync(store);
     // runDueJobs 的说明在下面这次 openDay 里会被 store 清掉（它清 message），先留住原话。
     this.runNote = store.message;
@@ -214,11 +215,11 @@ export struct DiaryPage {
       this.clearBody();
       return;
     }
-    await this.readBody(id, `当前版本 ${id}`);
+    await this.readBody(id, '当前日记');
   }
 
   private async previewBody(versionId: string): Promise<void> {
-    await this.readBody(versionId, `候选版本 ${versionId}`);
+    await this.readBody(versionId, '候选日记');
   }
 
   private async reloadBody(): Promise<void> {
@@ -254,7 +255,7 @@ export struct DiaryPage {
     }
     if (!result.ok) {
       const failure: UiError = uiErrorOf(result);
-      this.bodyError = `${failure.message}（${failure.code}）`;
+      this.bodyError = failure.title;
       return;
     }
     const version: DiaryVersion = result.data as DiaryVersion;
@@ -336,16 +337,14 @@ export struct DiaryPage {
   @Builder
   statusStrip() {
     Column({ space: 6 }) {
-      Button('配置 AI 模型服务').attributeModifier(sketchButton).drawModifier(sketchOutline())
+      Button('配置模型服务').attributeModifier(sketchButton).drawModifier(sketchOutline())
         .onClick(() => { this.pathStack.pushPathByName('llm', ''); })
       if (this.waitingConfiguration) {
-        Text('还没配置模型服务，不是生成失败')
+        Text('请先配置模型服务')
           .fontSize(SketchType.section)
           .fontColor(SketchColors.ink)
           .width('100%')
-        Text(`队列里有 ${this.waitingCount} 个任务停在 waiting_configuration` +
-          '（requires_user_action=true；这是「全队列」口径，含语义索引等本地模型任务，' +
-          '不是「这一天这次生成」的结论）。配置好后任务会自动继续，不用重新发起。')
+        Text(`有 ${this.waitingCount} 项任务等待配置，完成配置后可继续。`)
           .fontSize(SketchType.caption)
           .fontColor(SketchColors.muted)
           .width('100%')
@@ -360,7 +359,7 @@ export struct DiaryPage {
         })
       }
       if (!this.jobsStatusKnown && this.storeError.code.length > 0) {
-        Text('队列状态这次没读出来：现在无法判断有没有任务在等配置模型服务（原因见上面的错误）。')
+        Text('暂时无法读取任务状态，请刷新。')
           .fontSize(SketchType.caption)
           .fontColor(SketchColors.muted)
           .width('100%')
@@ -411,7 +410,7 @@ export struct DiaryPage {
       if (this.day === null) {
         Text(this.dayEmpty
           ? '这一天还没有材料，也没有成篇日记。'
-          : '这一天的状态没有读出来（原因见上面的错误）。')
+          : '暂时无法读取这一天，请刷新。')
           .fontSize(SketchType.body)
           .fontColor(SketchColors.muted)
           .width('100%')
@@ -420,9 +419,6 @@ export struct DiaryPage {
         if (this.currentVersionId.length > 0) {
           Row({ space: 8 }) {
             StatePill({ text: '当前版本', tone: 'ok' })
-            Text(this.currentVersionId)
-              .fontSize(SketchType.body)
-              .fontColor(SketchColors.ink)
           }
           .width('100%')
         } else if (this.candidatesOnly) {
@@ -433,7 +429,7 @@ export struct DiaryPage {
               .fontColor(SketchColors.ink)
           }
           .width('100%')
-          Text('候选不是当前：采用其中一版（下面的「采用为当前」）才会成为这一天的正文。')
+          Text('请选择喜欢的一版作为这一天的日记。')
             .fontSize(SketchType.caption)
             .fontColor(SketchColors.muted)
             .width('100%')
@@ -452,7 +448,7 @@ export struct DiaryPage {
           .fontSize(SketchType.caption)
           .fontColor(SketchColors.text)
           .width('100%')
-        Text(this.day === null ? '' : `最近更新：${(this.day as DiaryDay).updated_at}`)
+        Text(this.day === null ? '' : `最近更新：${formatDateTime((this.day as DiaryDay).updated_at)}`)
           .fontSize(SketchType.caption)
           .fontColor(SketchColors.muted)
           .width('100%')
@@ -465,7 +461,7 @@ export struct DiaryPage {
             .onClick(() => {
               this.generateAndRun();
             })
-          Text('先受理，再在任务完成后查看正文。')
+          Text('整理完成后即可阅读。')
             .fontSize(SketchType.caption)
             .fontColor(SketchColors.muted)
             .layoutWeight(1)
@@ -500,7 +496,7 @@ export struct DiaryPage {
           .width('100%')
 
           if (this.bodyError.length > 0) {
-            Text(`正文没有读出来：${this.bodyError}`)
+            Text('暂时无法读取正文，请重试。')
               .fontSize(SketchType.caption)
               .fontColor(SketchColors.ink)
               .width('100%')
@@ -531,7 +527,7 @@ export struct DiaryPage {
   @Builder
   candidateRow(versionId: string) {
     Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
-      Text(versionId)
+      Text('候选日记')
         .fontSize(SketchType.caption)
         .fontColor(SketchColors.text)
         .width('100%')

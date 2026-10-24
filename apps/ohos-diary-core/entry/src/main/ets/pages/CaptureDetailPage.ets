@@ -166,7 +166,7 @@ export struct CaptureDetailPage {
       return '转写正在进行；稍后回到这条记录再看。';
     }
     if (source.extracted.status === 'failed') {
-      return '这次提取/转写失败；原因见下面的覆盖说明与错误码。';
+      return '处理未完成，请稍后重试。';
     }
     return '这条来源还没有可显示的正文。';
   }
@@ -192,7 +192,7 @@ export struct CaptureDetailPage {
     const committed: CommitResult = result.data as CommitResult;
     this.capture = committed.capture;
     AppState.bumpDataVersion();
-    toast('已提交为正式记录');
+    toast('记录已收好');
     await this.reload();
   }
 
@@ -225,13 +225,13 @@ export struct CaptureDetailPage {
         .width('100%')
         .lineHeight(23)
       if (source.extracted !== null && source.extracted.coverage_reason !== null) {
-        Text(source.extracted.coverage_reason)
+        Text('部分内容暂时无法读取。')
           .fontSize(12)
           .fontColor(SketchColors.warning)
           .width('100%')
       }
       if (source.extracted !== null && source.extracted.error_code !== null) {
-        Text(`错误码：${source.extracted.error_code}`)
+        Text('处理未完成，请稍后重试。')
           .fontSize(12)
           .fontColor(SketchColors.alert)
           .width('100%')
@@ -263,10 +263,6 @@ export struct CaptureDetailPage {
         .backgroundColor(SketchColors.soft)
         .borderRadius(0)
       }
-      Text(`来源 ID：${source.sourceId}`)
-        .fontSize(10)
-        .fontColor(SketchColors.muted)
-        .width('100%')
     }
     .width('100%')
     .padding(14)
@@ -317,10 +313,7 @@ export struct CaptureDetailPage {
               }
               .width('100%')
               InfoRow({ label: '按天', value: (this.capture as Capture).day_key })
-              InfoRow({ label: '时区', value: `${(this.capture as Capture).time_zone}（UTC${(this.capture as Capture).utc_offset_minutes >= 0 ? '+' : ''}${(this.capture as Capture).utc_offset_minutes} 分钟）` })
-              InfoRow({ label: 'revision', value: `${(this.capture as Capture).revision}` })
               InfoRow({ label: '来源数', value: `${(this.capture as Capture).ordered_source_ids.length}` })
-              InfoRow({ label: '记录 ID', value: (this.capture as Capture).id })
             }
             .width('100%')
             .padding(14)
@@ -335,12 +328,11 @@ export struct CaptureDetailPage {
                   .fontWeight(FontWeight.Medium)
                   .fontColor(SketchColors.text)
                   .width('100%')
-                Text('这条记录还没有提交。录音停止后会自动提交一次；如果当时提交失败，录音页会显示错误码。' +
-                  '也可以在这里用 captures.commit 手动提交。')
+                Text('这条记录还是草稿，收好后可参与日记整理。')
                   .fontSize(12)
                   .fontColor(SketchColors.muted)
                   .width('100%')
-                Button(this.commitBusy ? '提交中…' : '提交为正式记录')
+                Button(this.commitBusy ? '提交中…' : '收好记录')
                   .attributeModifier(sketchButton).drawModifier(sketchOutline())
                   .fontSize(13)
                   .enabled(!this.commitBusy)
@@ -380,12 +372,12 @@ export struct CaptureDetailPage {
               .alignItems(HorizontalAlign.Start)
             }
 
-            SectionTitle({ text: '来源与转写（sources.extract）' })
+            SectionTitle({ text: '记录内容' })
             if (this.sources.length === 0) {
               EmptyState({
                 icon: '·',
                 title: '这条记录还没有来源',
-                hint: '纯文字草稿在提交后才会生成文字来源；录音来源会在 finalize 后出现。',
+                hint: '收好记录后，可在这里查看。',
               })
             } else {
               ForEach(this.sources, (source: SourceView, index: number) => {

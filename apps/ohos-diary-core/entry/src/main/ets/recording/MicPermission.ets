@@ -50,7 +50,7 @@ export async function ensureMicrophonePermission(
       MARK, MICROPHONE);
   } catch (e) {
     const be = e as BusinessError;
-    outcome.message = `查询权限状态失败：${be.code} ${be.message}`;
+    outcome.message = '暂时无法检查权限，请重试。';
     hilog.warn(DOMAIN, TAG, '%{public}s PERM checkFailed code=%{public}d message=%{public}s',
       MARK, be.code, be.message);
   }
@@ -70,7 +70,7 @@ export async function ensureMicrophonePermission(
   } catch (e) {
     const be = e as BusinessError;
     outcome.granted = false;
-    outcome.message = `请求权限失败：${be.code} ${be.message}`;
+    outcome.message = '未能获得麦克风权限，请在系统设置中授权。';
     hilog.error(DOMAIN, TAG, '%{public}s PERM requestFailed code=%{public}d message=%{public}s',
       MARK, be.code, be.message);
     return outcome;

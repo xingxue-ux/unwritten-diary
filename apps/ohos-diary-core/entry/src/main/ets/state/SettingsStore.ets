@@ -188,7 +188,7 @@ export class SettingsStore {
   async setDefaultStyle(styleId: string): Promise<boolean> {
     const trimmed: string = styleId.trim();
     if (trimmed.length === 0) {
-      this.message = '默认风格 id 不能为空；要清空请用「清空默认风格」。';
+      this.message = '请选择默认风格。';
       return false;
     }
     const patch: SettingsPatch = { default_style_id: trimmed };
