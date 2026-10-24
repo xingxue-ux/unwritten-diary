@@ -573,9 +573,41 @@ async function styleProfilesStayIndependent(){
   await page.useStyle(first);assert.equal(activeId,first);
   assert.equal(records.get(second).tone,'平实书面');
 }
+async function scheduleSettingsCanChange(){
+  const updates=[];let dialog=null;
+  let saved={auto_organize_enabled:false,auto_organize_time:'22:30',
+    diary_time_zone:'UTC',default_style_id:'sty_custom',revision:1};
+  const gateway={call:async(db,method,params)=>{
+    if(method==='settings.get')return {ok:true,data:{...saved}};
+    assert.equal(method,'settings.update');assert.equal(params.expected_revision,saved.revision);
+    assert.equal(Object.hasOwn(params.settings,'default_style_id'),false);
+    const input=params.settings;
+    if(input.auto_organize_time!==saved.auto_organize_time)updates.push(['time',input.auto_organize_time]);
+    if(input.diary_time_zone!==saved.diary_time_zone)updates.push(['zone',input.diary_time_zone]);
+    if(input.auto_organize_enabled!==saved.auto_organize_enabled)updates.push(['enabled',input.auto_organize_enabled]);
+    saved={...saved,...input,revision:saved.revision+1};return {ok:true,data:{...saved}};
+  }};
+  const {SettingsStore}=load('state/SettingsStore.ets',{
+    '../ui/CoreGateway':{CoreGateway:gateway,uiErrorOf:r=>r.error},
+    '../ui/Errors':errorModule});
+  const store=new SettingsStore('db');
+  const {SchedulePage}=load('pages/SchedulePage.ets',{
+    '../ui/Errors':errorModule,
+    '../state/SettingsStore':{SettingsStore},
+    '../ui/AppState':{AppState:{bumpDataVersion:noop}}},
+    {TimePickerDialog:{show:options=>{dialog=options;}}},true);
+  const page=new SchedulePage();page.store=store;await page.load();
+  page.pickTime();assert.equal(dialog.useMilitaryTime,true);
+  dialog.onAccept({hour:8,minute:5});await new Promise(setImmediate);
+  await page.saveZone('Asia/Shanghai');await page.toggleAutoOrganize(true);
+  assert.deepEqual(updates,[['time','08:05'],['zone','Asia/Shanghai'],['enabled',true]]);
+  assert.equal(page.settings.auto_organize_time,'08:05');assert.equal(saved.default_style_id,'sty_custom');
+  assert.equal(page.zoneLabel('Asia/Shanghai'),'中国标准时间');
+  await page.saveZone('Asia/Shanghai');assert.equal(updates.length,3);
+}
 (async()=>{
   const failed=[];
-  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,recordingStartsOnEntry,recordingAgainStartsImmediately,editorState,directRecordSave,searchTransitions,automaticHybridSearch,hybridQueryReplacement,searchCancelsPendingRequest,searchEmptyQueryInvalidatesOld,searchPaginationRetryClearsError,searchExpiredCursorRestarts,searchResultsDoNotDuplicateOriginal,searchEditsDiscardStaleResults,searchRefreshesAfterDataChanges,searchHybridDoesNotReportEmptyWhilePending,searchUpgradeExpiryRetryIsBounded,searchCancellationKeepsLoadedPages,searchIndexStatusIgnoresStaleResponse,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths,styleProfilesStayIndependent]){
+  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,recordingStartsOnEntry,recordingAgainStartsImmediately,editorState,directRecordSave,searchTransitions,automaticHybridSearch,hybridQueryReplacement,searchCancelsPendingRequest,searchEmptyQueryInvalidatesOld,searchPaginationRetryClearsError,searchExpiredCursorRestarts,searchResultsDoNotDuplicateOriginal,searchEditsDiscardStaleResults,searchRefreshesAfterDataChanges,searchHybridDoesNotReportEmptyWhilePending,searchUpgradeExpiryRetryIsBounded,searchCancellationKeepsLoadedPages,searchIndexStatusIgnoresStaleResponse,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths,styleProfilesStayIndependent,scheduleSettingsCanChange]){
     try{await test();console.log('PASS '+test.name);}catch(e){failed.push(test.name);console.error('FAIL '+test.name+': '+e.message);}
   }
   assert.equal(failed.length,0,failed.join(', '));

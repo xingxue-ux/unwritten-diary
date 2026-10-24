@@ -16,6 +16,7 @@ import { RecordingPage } from './RecordingPage';
 import { SearchPage } from './SearchPage';
 import { JobsPage } from './JobsPage';
 import { ProfilePage } from './ProfilePage';
+import { SchedulePage } from './SchedulePage';
 import { RecyclePage } from './RecyclePage';
 import { TranscriptionConfigPage } from './TranscriptionConfigPage';
 import { LlmConfigPage } from './LlmConfigPage';
@@ -160,6 +161,11 @@ struct Index {
         StylesPage()
       }
       .title('风格偏好', { backgroundColor: SketchColors.canvas })
+    } else if (name === 'schedule') {
+      NavDestination() {
+        SchedulePage()
+      }
+      .title('整理时机', { backgroundColor: SketchColors.canvas })
     } else if (name === 'export') {
       NavDestination() {
         ExportPage()
