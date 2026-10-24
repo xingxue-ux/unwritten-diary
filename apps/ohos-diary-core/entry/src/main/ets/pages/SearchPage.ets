@@ -4,7 +4,7 @@ import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketch
 // 用到的 C ABI：`search.start`、`search.nextPage`、`search.upgrade`、`search.cancel`、
 // `indexes.status`（显示语义索引覆盖，不拿它挡搜索）。
 //
-// 三个必须如实处理的点：
+// 必须如实处理的点：
 // 1. `semantic_index_ready == false` **不等于**没有语义结果：已嵌入的块仍会被检索，
 //    覆盖不全只在 `warnings` 里说；结果照常显示，另外加一条覆盖提示；
 // 2. keyword 的 `phase` 可能是 `keyword_ready`（还有下一页），不恒为 `done`；
@@ -38,6 +38,8 @@ import { EmptyState, ErrorBanner, LoadingRow, PageTitle, StatePill } from '../ui
 @Component
 export struct SearchPage {
   pathStack: NavPathStack = new NavPathStack();
+  @Prop @Watch('onVisibilityChanged') visible: boolean = true;
+  @StorageLink('ohosDataVersion') @Watch('onDataVersionChanged') dataVersion: number = 0;
   @State query: string = '';
   @State mode: string = 'keyword';
   @State results: SearchHit[] = [];
@@ -60,15 +62,61 @@ export struct SearchPage {
 
   private dbPath: string = '';
   private seq: number = 0;
+  private statusSeq: number = 0;
+  private ready: boolean = false;
+  private refreshPending: boolean = false;
 
   aboutToAppear(): void {
     const context = getContext(this) as common.UIAbilityContext;
     this.dbPath = databasePath(context);
+    this.ready = true;
     this.loadIndexStatus();
   }
 
+  aboutToDisappear(): void {
+    this.ready = false;
+    this.statusSeq++;
+    this.cancelSession(this.resetRequest());
+  }
+
+  onVisibilityChanged(): void {
+    if (!this.ready) { return; }
+    if (this.visible) {
+      this.loadIndexStatus();
+      if (this.refreshPending) {
+        this.refreshPending = false;
+        if (this.searched && this.query.trim().length > 0) { this.startSearch(); }
+      }
+    } else if (this.loading || this.loadingMore || this.upgrading) {
+      this.refreshPending = true;
+      this.cancelSession(this.resetRequest());
+    }
+  }
+
+  onDataVersionChanged(): void {
+    if (!this.ready) { return; }
+    const searchAgain: boolean = this.searched && this.phase !== 'cancelled' && this.query.trim().length > 0;
+    if (this.visible) {
+      this.refreshPending = false;
+      this.loadIndexStatus();
+      if (searchAgain) { this.startSearch(); }
+      else if (this.searched) {
+        this.cancelSession(this.resetRequest());
+        this.clearResults();
+        this.searched = false;
+      }
+    } else {
+      this.cancelSession(this.resetRequest());
+      this.clearResults();
+      this.searched = searchAgain;
+      this.refreshPending = searchAgain;
+    }
+  }
+
   private async loadIndexStatus(): Promise<void> {
+    const token: number = ++this.statusSeq;
     const result = await CoreGateway.call(this.dbPath, 'indexes.status', null);
+    if (!this.ready || token !== this.statusSeq) { return; }
     if (!result.ok) {
       this.statusError = uiErrorOf(result);
       return;
@@ -77,19 +125,57 @@ export struct SearchPage {
     this.indexStatus = result.data as IndexStatus;
   }
 
-  private async cancelPrevious(): Promise<void> {
-    const previous: string = this.sessionId;
-    this.sessionId = '';
-    if (previous.length === 0) {
+  private async cancelSession(session: string): Promise<void> {
+    if (session.length === 0) {
       return;
     }
-    const params: SearchSessionParams = { session_id: previous };
+    const params: SearchSessionParams = { session_id: session };
     await CoreGateway.call(this.dbPath, 'search.cancel', params);
   }
 
-  private async startSearch(): Promise<void> {
+  private resetRequest(): string {
+    const previous: string = this.sessionId;
+    this.seq++;
+    this.sessionId = '';
+    this.loading = false;
+    this.loadingMore = false;
+    this.upgrading = false;
+    this.cancelling = false;
+    this.cursor = '';
+    this.hasMore = false;
+    return previous;
+  }
+
+  private clearResults(): void {
+    this.results = [];
+    this.warnings = [];
+    this.phase = '';
+    this.indexCoverage = '';
+    this.error = EMPTY_UI_ERROR;
+    this.upgradeAttempted = false;
+  }
+
+  private updateQuery(value: string): void {
+    const changed: boolean = this.query.trim() !== value.trim();
+    this.query = value;
+    this.error = EMPTY_UI_ERROR;
+    if (!changed) { return; }
+    this.cancelSession(this.resetRequest());
+    this.clearResults();
+    this.searched = false;
+    this.refreshPending = false;
+  }
+
+  private async startSearch(restarted: boolean = false): Promise<void> {
     const text: string = this.query.trim();
+    const mode: string = this.mode;
+    const previous: string = this.resetRequest();
+    const token: number = this.seq;
+    this.clearResults();
+    this.refreshPending = false;
     if (text.length === 0) {
+      this.searched = false;
+      this.cancelSession(previous);
       this.error = {
         code: 'invalid_argument',
         title: '还没有输入内容',
@@ -100,29 +186,16 @@ export struct SearchPage {
       };
       return;
     }
-    this.seq++;
-    const token: number = this.seq;
     this.loading = true;
-    this.loadingMore = false;
-    this.upgrading = false;
-    this.cancelling = false;
-    this.error = EMPTY_UI_ERROR;
     this.searched = true;
-    this.upgradeAttempted = false;
-    this.results = [];
-    this.warnings = [];
-    this.phase = '';
-    this.indexCoverage = '';
-    this.cursor = '';
-    this.hasMore = false;
-    await this.cancelPrevious();
+    await this.cancelSession(previous);
     if (token !== this.seq) {
       return;
     }
     this.queryRevision++;
     const request: SearchRequestParams = {
       query: text,
-      mode: this.mode,
+      mode: mode,
       page_size: 20,
     };
     const params: SearchParams = {
@@ -131,6 +204,7 @@ export struct SearchPage {
     };
     const result = await CoreGateway.call(this.dbPath, 'search.start', params);
     if (token !== this.seq) {
+      if (result.ok) { await this.cancelSession((result.data as SearchSnapshot).session_id); }
       return;
     }
     this.loading = false;
@@ -139,8 +213,8 @@ export struct SearchPage {
       return;
     }
     this.applySnapshot(result.data as SearchSnapshot, false);
-    if (this.mode === 'hybrid' && this.phase === 'keyword_ready') {
-      await this.upgrade();
+    if (mode === 'hybrid' && this.phase === 'keyword_ready') {
+      await this.upgrade(!restarted);
       if (token !== this.seq) {
         return;
       }
@@ -157,7 +231,26 @@ export struct SearchPage {
     this.cursor = snapshot.cursor === null ? '' : snapshot.cursor;
     this.hasMore = snapshot.cursor !== null;
     this.queryRevision = snapshot.query_revision;
-    this.results = append ? this.results.concat(snapshot.results) : snapshot.results;
+    const merged: SearchHit[] = append ? this.results.slice() : [];
+    // 原文同时命中记录和它的文字来源时只展示一份；不同来源的命中仍保留。
+    for (const hit of snapshot.results) {
+      const index: number = merged.findIndex((item: SearchHit) => item.hit_id === hit.hit_id ||
+        (item.capture_id === hit.capture_id && item.source_kind === 'text' && hit.source_kind === 'text' &&
+          item.snippet !== null && item.snippet === hit.snippet && (item.source_id === null || hit.source_id === null)));
+      if (index < 0) {
+        merged.push(hit);
+      } else {
+        const previous: SearchHit = merged[index];
+        const display: SearchHit = previous.source_id !== null && hit.source_id === null ? previous : hit;
+        const matched: string[] = [];
+        for (const value of previous.matched_by.concat(hit.matched_by)) {
+          if (matched.indexOf(value) < 0) { matched.push(value); }
+        }
+        display.matched_by = matched;
+        merged[index] = display;
+      }
+    }
+    this.results = merged;
   }
 
   private async loadMore(): Promise<void> {
@@ -168,6 +261,7 @@ export struct SearchPage {
       return;
     }
     this.loadingMore = true;
+    this.error = EMPTY_UI_ERROR;
     const token: number = this.seq;
     const params: SearchNextPageParams = {
       session_id: this.sessionId,
@@ -179,13 +273,17 @@ export struct SearchPage {
     }
     this.loadingMore = false;
     if (!result.ok) {
+      if (result.error !== null && (result.error.code === 'search_expired' || result.error.code === 'cursor_expired')) {
+        await this.startSearch(true);
+        return;
+      }
       this.error = uiErrorOf(result);
       return;
     }
     this.applySnapshot(result.data as SearchSnapshot, true);
   }
 
-  private async upgrade(): Promise<void> {
+  private async upgrade(allowRestart: boolean = true): Promise<void> {
     if (this.sessionId.length === 0 || this.upgrading || this.loadingMore || this.loading || this.cancelling) {
       return;
     }
@@ -200,6 +298,10 @@ export struct SearchPage {
     }
     this.upgrading = false;
     if (!result.ok) {
+      if (allowRestart && result.error !== null && (result.error.code === 'search_expired' || result.error.code === 'cursor_expired')) {
+        await this.startSearch(true);
+        return;
+      }
       this.error = uiErrorOf(result);
       return;
     }
@@ -207,24 +309,20 @@ export struct SearchPage {
   }
 
   private async cancel(): Promise<void> {
-    if (this.sessionId.length === 0 || this.cancelling) {
+    if (this.cancelling || (!this.loading && !this.upgrading && !this.loadingMore && this.sessionId.length === 0)) {
       return;
     }
-    const token: number = ++this.seq;
+    const previous: string = this.resetRequest();
+    const token: number = this.seq;
     this.cancelling = true;
-    this.loadingMore = false;
-    this.upgrading = false;
-    const params: SearchSessionParams = { session_id: this.sessionId };
-    const result = await CoreGateway.call(this.dbPath, 'search.cancel', params);
+    this.phase = 'cancelled';
+    this.error = EMPTY_UI_ERROR;
+    this.refreshPending = false;
+    await this.cancelSession(previous);
     if (token !== this.seq) {
       return;
     }
     this.cancelling = false;
-    if (!result.ok) {
-      this.error = uiErrorOf(result);
-      return;
-    }
-    this.applySnapshot(result.data as SearchSnapshot, false);
   }
 
   private setMode(mode: string): void {
@@ -234,6 +332,10 @@ export struct SearchPage {
     this.mode = mode;
     if (this.searched && this.query.trim().length > 0) {
       this.startSearch();
+    } else {
+      this.cancelSession(this.resetRequest());
+      this.clearResults();
+      this.searched = false;
     }
   }
 
@@ -281,7 +383,12 @@ export struct SearchPage {
     if (this.mode === 'hybrid' && this.phase === 'keyword_ready' && this.upgradeAttempted) {
       return '当前仅有关键词结果';
     }
+    if (this.phase.length === 0 && this.error.code.length > 0) { return '搜索未完成'; }
     return searchPhaseLabel(this.phase);
+  }
+
+  private waitingForResults(): boolean {
+    return this.loading || (this.upgrading && this.results.length === 0);
   }
 
   private semanticBanner(): string {
@@ -414,7 +521,7 @@ export struct SearchPage {
           .fontSize(15)
           .backgroundColor(SketchColors.soft)
           .onChange((value: string) => {
-            this.query = value;
+            this.updateQuery(value);
           })
           .onSubmit(() => {
             this.startSearch();
@@ -507,7 +614,7 @@ export struct SearchPage {
               .fontColor(SketchColors.muted)
           }
           Blank()
-          if (this.phase !== 'cancelled' && this.sessionId.length > 0) {
+          if (this.phase !== 'cancelled' && (this.loading || this.upgrading || this.loadingMore || this.sessionId.length > 0)) {
             Button('取消本次搜索')
               .enabled(!this.cancelling)
               .attributeModifier(sketchButton).drawModifier(sketchOutline())
@@ -531,11 +638,13 @@ export struct SearchPage {
         .padding({ left: 16, right: 16 })
       }
 
-      if (this.loading) {
-        LoadingRow({ text: '正在搜索…' })
+      if (this.waitingForResults()) {
+        LoadingRow({ text: this.upgrading ? '正在结合语义搜索…' : '正在搜索…' })
       } else if (this.results.length === 0) {
         if (this.searched) {
-          if (this.error.code.length > 0) {
+          if (this.phase === 'cancelled') {
+            EmptyState({ icon: '—', title: '搜索已取消', hint: '可以修改内容后重新搜索。' })
+          } else if (this.error.code.length > 0) {
             // `error` 有值 = 这次检索**没有完整完成**（`search.start` 失败，或混合升级
             // 失败）。这时不能说「没有结果 / 换一个关键词」：那是把失败说成「库里没有」，
             // 用户会白改关键词。错误条已经在上面显示，这里只补一句边界说明。
@@ -569,9 +678,9 @@ export struct SearchPage {
               this.resultCard(hit)
             }
           }, (hit: SearchHit) => hit.hit_id)
-          if (this.loadingMore) {
+          if (this.loadingMore || this.upgrading) {
             ListItem() {
-              LoadingRow({ text: '加载下一页…' })
+              LoadingRow({ text: this.upgrading ? '正在结合语义搜索…' : '加载下一页…' })
             }
           } else if (this.hasMore) {
             ListItem() {
@@ -587,7 +696,7 @@ export struct SearchPage {
             }
           } else {
             ListItem() {
-              Text('没有更多了')
+              Text(this.phase === 'cancelled' ? '已停止加载' : '没有更多了')
                 .fontSize(12)
                 .fontColor(SketchColors.muted)
                 .width('100%')

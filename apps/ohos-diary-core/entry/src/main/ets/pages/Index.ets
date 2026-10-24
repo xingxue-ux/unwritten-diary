@@ -236,7 +236,7 @@ struct Index {
               .visibility(this.currentTab === 1 ? Visibility.Visible : Visibility.None)
 
               Column() {
-                SearchPage({ pathStack: this.pathStack })
+                SearchPage({ pathStack: this.pathStack, visible: this.currentTab === 2 })
               }
               .width('100%')
               .height('100%')

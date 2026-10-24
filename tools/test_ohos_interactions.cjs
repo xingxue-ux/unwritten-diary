@@ -22,7 +22,7 @@ function load(file,modules,globals={},page=false){
     const cut=source.indexOf('  @Builder');
     source=source.slice(0,cut>=0?cut:source.indexOf('  build()'))+'\n}\n';
     source=source.replace('@Component','').replace('export struct ','export class ')
-      .replace(/@(State|StorageProp\([^)]*\)|StorageLink\([^)]*\)|Watch\([^)]*\))\s*/g,'');
+      .replace(/@(State|Prop|StorageProp\([^)]*\)|StorageLink\([^)]*\)|Watch\([^)]*\))\s*/g,'');
   }
   const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.CommonJS}}).outputText;
   const ctx={exports:{},require:name=>modules[name]||{},console,Date,Math,Error,Map,ArrayBuffer,Uint8Array,
@@ -215,21 +215,26 @@ async function directRecordSave(){
   }
 }
 function snapshot(phase,results,cursor){
-  return {session_id:'s',phase,results,cursor,index_coverage:'complete',warnings:[],query_revision:1};
+  return {session_id:'s',phase,results:results.map(x=>typeof x==='string'?searchHit(x):x),cursor,index_coverage:'complete',warnings:[],query_revision:1};
+}
+function searchHit(id,fields={}){
+  return {hit_id:id,group_id:'source-'+id,capture_id:'capture-'+id,source_id:'source-'+id,
+    source_kind:'text',matched_by:['keyword'],coverage:'complete',revision_id:null,
+    day_key:'2026-10-24',title:null,snippet:id,highlights:[],locator:null,...fields};
 }
 async function searchTransitions(){
   const next=deferred(),up=deferred(),cancel=deferred(),calls=[];
   const {SearchPage}=load('pages/SearchPage.ets',{'../ui/Errors':errorModule,
     '../ui/CoreGateway':{CoreGateway:{call:(db,method)=>{calls.push(method);
       return method==='search.nextPage'?next.promise:method==='search.upgrade'?up.promise:cancel.promise;}}}},{},true);
-  const page=new SearchPage();page.sessionId='s';page.hasMore=true;page.cursor='k-cursor';page.results=['k1'];
+  const page=new SearchPage();page.sessionId='s';page.hasMore=true;page.cursor='k-cursor';page.results=[searchHit('k1')];
   const paging=page.loadMore();await page.upgrade();assert.deepEqual(calls,['search.nextPage']);
   next.resolve({ok:true,data:snapshot('keyword_ready',['k2'],'k-next')});await paging;
   const upgrading=page.upgrade();await page.loadMore();
   assert.deepEqual(calls,['search.nextPage','search.upgrade']);
   const cancelling=page.cancel();cancel.resolve({ok:true,data:snapshot('cancelled',[],null)});await cancelling;
   up.resolve({ok:true,data:snapshot('hybrid_ready',['h1'],'h-next')});await upgrading;
-  assert.equal(page.phase,'cancelled');assert.equal(page.results.length,0);
+  assert.equal(page.phase,'cancelled');assert.equal(page.results.length,2);
   const paths=[];page.pathStack={pushPathByName:(...args)=>paths.push(args)};
   page.openHit({capture_id:'real-capture',source_id:'source'});
   assert.deepEqual(paths,[['capture','real-capture']]);
@@ -256,12 +261,12 @@ async function automaticHybridSearch(){
     }
     await entered.promise;
     assert.equal(page.upgrading,true);assert.equal(page.resultStatus(),'正在结合语义搜索…');
-    assert.equal(page.results[0],'k1');await page.loadMore();assert.ok(!calls.includes('search.nextPage'));
+    assert.equal(page.results[0].hit_id,'k1');await page.loadMore();assert.ok(!calls.includes('search.nextPage'));
     up.resolve(outcome==='failed'?{ok:false,error:{code:'model_unavailable'}}:
       {ok:true,data:outcome==='fused'?snapshot('hybrid_ready',['h1'],'h-cursor'):snapshot('keyword_ready',['k1'],'k-cursor')});
     await searching;
     assert.equal(calls.filter(x=>x==='search.upgrade').length,1);
-    assert.equal(page.upgrading,false);assert.equal(page.results[0],outcome==='fused'?'h1':'k1');
+    assert.equal(page.upgrading,false);assert.equal(page.results[0].hit_id,outcome==='fused'?'h1':'k1');
     assert.equal(page.cursor,outcome==='fused'?'h-cursor':'k-cursor');
     if(outcome!=='fused')assert.equal(page.resultStatus(),'当前仅有关键词结果');
     if(outcome==='failed')assert.equal(page.error.code,'model_unavailable');
@@ -282,8 +287,141 @@ async function hybridQueryReplacement(){
   page.mode='keyword';page.query='second';await page.startSearch();
   up.resolve({ok:true,data:snapshot('hybrid_ready',['old-result'],null)});await previous;
   assert.deepEqual(cancelled,['first']);assert.equal(page.sessionId,'second');
-  assert.equal(page.results[0],'second');assert.equal(page.phase,'keyword_ready');
+  assert.equal(page.results[0].hit_id,'second');assert.equal(page.phase,'keyword_ready');
   assert.equal(page.upgrading,false);
+}
+function searchPageEnv(gateway){
+  const {SearchPage}=load('pages/SearchPage.ets',{'../ui/Errors':errorModule,
+    '../ui/AppRuntime':{databasePath:()=>'/qa/library.sqlite',searchPhaseLabel:x=>x},
+    '../ui/CoreGateway':{uiErrorOf:r=>r.error,CoreGateway:{call:async(db,method,params)=>{
+      if(method==='indexes.status')return {ok:true,data:{semantic_index_ready:true}};
+      return gateway(method,params);
+    }}}},{getContext:()=>({})},true);
+  return new SearchPage();
+}
+async function searchCancelsPendingRequest(){
+  const pending=deferred(),cancelled=[];
+  const page=searchPageEnv(async(method,params)=>{
+    if(method==='search.start')return pending.promise;
+    if(method==='search.cancel'){cancelled.push(params.session_id);return {ok:true};}
+  });
+  page.query='旧查询';const searching=page.startSearch();await new Promise(setImmediate);
+  await page.cancel();assert.equal(page.loading,false);assert.equal(page.phase,'cancelled');
+  pending.resolve({ok:true,data:snapshot('done',['late'],null)});await searching;
+  assert.equal(page.results.length,0);assert.deepEqual(cancelled,['s']);
+}
+async function searchEmptyQueryInvalidatesOld(){
+  const pending=deferred(),cancelled=[];
+  const page=searchPageEnv(async(method,params)=>{
+    if(method==='search.start')return pending.promise;
+    if(method==='search.cancel'){cancelled.push(params.session_id);return {ok:true};}
+  });
+  page.query='旧查询';const searching=page.startSearch();await new Promise(setImmediate);
+  page.query='';await page.startSearch();
+  pending.resolve({ok:true,data:snapshot('done',['old'],null)});await searching;
+  assert.equal(page.results.length,0);assert.equal(page.sessionId,'');assert.equal(page.loading,false);
+  assert.deepEqual(cancelled,['s']);
+}
+async function searchPaginationRetryClearsError(){
+  let attempt=0;
+  const page=searchPageEnv(async()=>++attempt===1?{ok:false,error:{code:'network_unavailable'}}:
+    {ok:true,data:snapshot('done',['next'],null)});
+  page.sessionId='s';page.hasMore=true;page.cursor='cursor';page.results=[searchHit('first')];
+  await page.loadMore();assert.notEqual(page.error.code,'');
+  await page.loadMore();assert.equal(page.error.code,'');assert.equal(page.results.length,2);
+}
+async function searchExpiredCursorRestarts(){
+  for(const code of ['search_expired','cursor_expired']){
+    let starts=0;const page=searchPageEnv(async method=>{
+      if(method==='search.start')return {ok:true,data:snapshot('keyword_ready',[++starts===1?'old':'fresh'],'next')};
+      if(method==='search.nextPage')return {ok:false,error:{code}};
+      return {ok:true};
+    });
+    page.query='散步';await page.startSearch();await page.loadMore();
+    assert.equal(starts,2,code);assert.equal(page.results[0].hit_id,'fresh');assert.equal(page.error.code,'');
+  }
+}
+async function searchResultsDoNotDuplicateOriginal(){
+  const same={capture_id:'capture',snippet:'今天在河边散步。'};
+  const capture=searchHit('capture',{...same,source_id:null});
+  const source=searchHit('source',{...same,matched_by:['semantic']});
+  const differentSource=searchHit('different-source',same);
+  const page=searchPageEnv(async()=>({ok:true}));
+  page.applySnapshot(snapshot('keyword_ready',[capture,source],'next'),false);
+  assert.equal(page.results.length,1);assert.equal(page.results[0].source_id,source.source_id);
+  assert.deepEqual(Array.from(page.results[0].matched_by).sort(),['keyword','semantic']);
+  page.applySnapshot(snapshot('done',[source,differentSource],null),true);
+  assert.equal(page.results.length,2,'different original sources must remain available');
+}
+async function searchEditsDiscardStaleResults(){
+  const pending=deferred(),cancelled=[];
+  const page=searchPageEnv(async(method,params)=>{
+    if(method==='search.start')return pending.promise;
+    if(method==='search.cancel'){cancelled.push(params.session_id);return {ok:true};}
+  });
+  page.query='旧查询';const searching=page.startSearch();await new Promise(setImmediate);
+  page.updateQuery('新查询');
+  pending.resolve({ok:true,data:snapshot('done',['old'],null)});await searching;
+  assert.equal(page.query,'新查询');assert.equal(page.results.length,0);assert.equal(page.searched,false);
+  assert.deepEqual(cancelled,['s']);
+  page.error={code:'invalid_argument'};page.updateQuery('再换一个词');assert.equal(page.error.code,'');
+}
+async function searchRefreshesAfterDataChanges(){
+  let starts=0;const page=searchPageEnv(async method=>{
+    if(method==='search.start')return {ok:true,data:snapshot('done',['version-'+(++starts)],null)};
+    return {ok:true};
+  });
+  page.aboutToAppear();page.query='散步';await page.startSearch();
+  page.visible=false;page.onVisibilityChanged();page.onDataVersionChanged();
+  await new Promise(setImmediate);assert.equal(starts,1);assert.equal(page.results.length,0);
+  page.visible=true;page.onVisibilityChanged();await new Promise(setImmediate);
+  assert.equal(starts,2);assert.equal(page.results[0].hit_id,'version-2');
+  page.onDataVersionChanged();await new Promise(setImmediate);
+  assert.equal(starts,3);assert.equal(page.results[0].hit_id,'version-3');
+  await page.cancel();page.onDataVersionChanged();await new Promise(setImmediate);
+  assert.equal(starts,3);assert.equal(page.results.length,0,'cancelled cached snippets must not survive data changes');
+  page.aboutToDisappear();
+}
+async function searchHybridDoesNotReportEmptyWhilePending(){
+  const upgrade=deferred(),entered=deferred();
+  const page=searchPageEnv(async method=>{
+    if(method==='search.start')return {ok:true,data:snapshot('keyword_ready',[],null)};
+    if(method==='search.upgrade'){entered.resolve();return upgrade.promise;}
+    return {ok:true};
+  });
+  page.mode='hybrid';page.query='沿河漫步';const searching=page.startSearch();await entered.promise;
+  assert.equal(page.waitingForResults(),true);
+  upgrade.resolve({ok:true,data:snapshot('done',['semantic'],null)});await searching;
+  assert.equal(page.waitingForResults(),false);assert.equal(page.results[0].hit_id,'semantic');
+}
+async function searchUpgradeExpiryRetryIsBounded(){
+  let starts=0,upgrades=0;
+  const page=searchPageEnv(async method=>{
+    if(method==='search.start')return {ok:true,data:{...snapshot('keyword_ready',['keyword'],null),session_id:'session-'+(++starts)}};
+    if(method==='search.upgrade'){upgrades++;return {ok:false,error:{code:'search_expired'}};}
+    return {ok:true};
+  });
+  page.query='散步';page.mode='hybrid';await page.startSearch();
+  assert.equal(starts,2);assert.equal(upgrades,2);assert.equal(page.error.code,'search_expired');
+  assert.equal(page.upgrading,false);assert.equal(page.results[0].hit_id,'keyword');
+}
+async function searchCancellationKeepsLoadedPages(){
+  const page=searchPageEnv(async()=>({ok:true,data:snapshot('cancelled',['last-page'],null)}));
+  page.applySnapshot(snapshot('keyword_ready',['first-page'],'next'),false);
+  page.applySnapshot(snapshot('keyword_ready',['second-page'],'next2'),true);
+  await page.cancel();
+  assert.deepEqual(Array.from(page.results,x=>x.hit_id),['first-page','second-page']);
+  assert.equal(page.hasMore,false);assert.equal(page.phase,'cancelled');
+}
+async function searchIndexStatusIgnoresStaleResponse(){
+  const older=deferred();let requests=0;
+  const {SearchPage}=load('pages/SearchPage.ets',{'../ui/Errors':errorModule,
+    '../ui/CoreGateway':{CoreGateway:{call:async()=>++requests===1?older.promise:
+      {ok:true,data:{semantic_index_ready:true}}}}},{},true);
+  const page=new SearchPage();page.ready=true;
+  const first=page.loadIndexStatus();await page.loadIndexStatus();
+  older.resolve({ok:true,data:{semantic_index_ready:false}});await first;
+  assert.equal(page.indexStatus.semantic_index_ready,true);
 }
 async function llmConfiguration(){
   const calls=[];let saved=null;let secretReceived=null;let failList=false;let failSave=false;let failTest=false;let confirmed=true;
@@ -398,7 +536,9 @@ async function exportFeedbackHidesPaths(){
   assert.ok(!/[A-Za-z/]/.test(store.message));assert.ok(store.message.length<50);
 }
 (async()=>{
-  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,recordingStartsOnEntry,recordingAgainStartsImmediately,editorState,directRecordSave,searchTransitions,automaticHybridSearch,hybridQueryReplacement,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths]){
-    await test();console.log('PASS '+test.name);
+  const failed=[];
+  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,recordingStartsOnEntry,recordingAgainStartsImmediately,editorState,directRecordSave,searchTransitions,automaticHybridSearch,hybridQueryReplacement,searchCancelsPendingRequest,searchEmptyQueryInvalidatesOld,searchPaginationRetryClearsError,searchExpiredCursorRestarts,searchResultsDoNotDuplicateOriginal,searchEditsDiscardStaleResults,searchRefreshesAfterDataChanges,searchHybridDoesNotReportEmptyWhilePending,searchUpgradeExpiryRetryIsBounded,searchCancellationKeepsLoadedPages,searchIndexStatusIgnoresStaleResponse,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths]){
+    try{await test();console.log('PASS '+test.name);}catch(e){failed.push(test.name);console.error('FAIL '+test.name+': '+e.message);}
   }
+  assert.equal(failed.length,0,failed.join(', '));
 })().catch(e=>{console.error(e);process.exitCode=1;});
