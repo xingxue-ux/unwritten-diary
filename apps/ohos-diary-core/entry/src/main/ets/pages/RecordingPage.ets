@@ -343,22 +343,22 @@ export struct RecordingPage {
   /** 提交结果的标题：成功就说成功，失败就明确说「音频已保存、记录仍是草稿」。 */
   private commitHeadline(): string {
     if (this.commitState === 'committed') {
-      return '录音已收好';
+      return '录音已保存';
     }
     if (this.commitState === 'already_committed') {
-      return '已保存（此前已提交）';
+      return '录音已保存';
     }
     if (this.commitState === 'failed') {
-      return '音频已保存，但这篇仍是草稿';
+      return '音频已保留，记录保存未完成';
     }
-    return '已保存，未提交';
+    return '音频已保留，记录待保存';
   }
 
   private commitDetail(): string {
     if (this.commitState === 'committed' || this.commitState === 'already_committed') {
       return '可在片段页查看录音和转写文字。';
     }
-    return '音频已保留，收好记录后可参与日记整理。';
+    return '音频已保留，请重试保存。';
   }
 
   /** 从 `DiaryError code=… retryable=… message=…` 里只取错误码，单独显示给用户。 */
@@ -393,7 +393,7 @@ export struct RecordingPage {
     this.commitError = '';
     this.commitRevision = committed.capture.revision;
     AppState.bumpDataVersion();
-    toast('已提交为正式记录');
+    toast('记录已保存');
   }
 
   private recoveryStateLabel(state: string): string {
@@ -520,7 +520,7 @@ export struct RecordingPage {
             .fontColor(SketchColors.muted)
             .width('100%')
           if (this.commitState === 'failed') {
-            Button(this.commitRetrying ? '重试中…' : '重试提交')
+            Button(this.commitRetrying ? '保存中…' : '重试保存')
               .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(13)
               .enabled(!this.commitRetrying)

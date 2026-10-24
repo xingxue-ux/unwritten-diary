@@ -9,7 +9,7 @@ import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketch
 //   拿它判断「有没有在跑」会撒谎；
 // - 每条的真实转写状态来自 `sources.extract(ordered_source_ids[0])` 的
 //   `status` / `coverage` / `coverage_reason`；
-// - `state=draft` 的条目显式标「未提交」，不写成「已保存」来掩盖；
+// - `state=draft` 的条目显式标「待保存」，不写成「已保存」来掩盖；
 // - `state=trashed` 的记录**不出现在这一页**：`captures.list` 不过滤状态，客户端用
 //   `selectActiveCaptures()` 筛掉回收站（核心不改口径，回收站页负责另一半）；
 // - 逐条 `sources.extract` 失败时显示「转写状态未知」+ 行内原因与重试，不当成空记录。
@@ -433,7 +433,7 @@ export struct SnippetsPage {
             Text('·')
               .fontSize(12)
               .fontColor(SketchColors.muted)
-            Text('未提交')
+            Text('待保存')
               .fontSize(12)
               .fontColor(SketchColors.warning)
           }

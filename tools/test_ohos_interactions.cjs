@@ -115,6 +115,48 @@ async function editorState(){
       assert.equal(page.captureId,'');assert.equal(page.text,'unsaved edit');}
   }
 }
+async function directRecordSave(){
+  for(const outcome of ['saved','fragment','not-durable','commit-failed','write-failed']){
+    const calls=[];let bumps=0;
+    const original=outcome==='fragment'?'  今天，河边……然后  ':'今天在河边散步。';
+    const {RecordPage}=load('pages/RecordPage.ets',{
+      '../ui/Errors':errorModule,'../ui/AppState':{AppState:{bumpDataVersion:()=>bumps++}},
+      '../recording/VoiceRecorder':{readTimeZone:()=> 'Asia/Shanghai'},
+      '../ui/AppRuntime':{newOperationId:x=>x},
+      '../ui/CoreGateway':{uiErrorOf:r=>r.error,CoreGateway:{call:async(db,method,params)=>{
+        calls.push(method);
+        if(method==='captures.createDraft')return {ok:true,data:{id:'capture',revision:3}};
+        if(method==='captures.saveDraft'){
+          assert.equal(params.capture_id,'capture');assert.equal(params.expected_revision,3);
+          assert.equal(params.text,original);
+          return outcome==='write-failed'?{ok:false,error:{code:'storage_full'}}:
+            {ok:true,data:{revision:4,durable:outcome!=='not-durable',saved_at:'2026-10-24T05:30:00Z'}};
+        }
+        if(method==='captures.commit'){
+          assert.equal(params.capture_id,'capture');assert.equal(params.expected_revision,4);
+          return outcome==='commit-failed'?{ok:false,error:{code:'storage_full'}}:
+            {ok:true,data:{capture:{id:'capture',revision:5,state:'committed'}}};
+        }
+        throw new Error('Unexpected '+method);
+      }}}},{},true);
+    const page=new RecordPage();page.text=original;
+    await page.save();
+    assert.equal(page.busy,false);assert.equal(page.text,original);
+    assert.deepEqual(calls,['saved','fragment','commit-failed'].includes(outcome)
+      ?['captures.createDraft','captures.saveDraft','captures.commit']
+      :['captures.createDraft','captures.saveDraft']);
+    if(outcome==='saved'||outcome==='fragment'){
+      assert.equal(page.savedState,'committed');assert.equal(page.revision,5);
+      assert.equal(page.stateLabel(),'已保存');assert.equal(page.canSave(),false);assert.equal(bumps,1);
+      await page.save();assert.equal(calls.length,3);
+    }else{
+      assert.notEqual(page.savedState,'committed');
+      if(outcome==='not-durable'){assert.equal(page.savedAt,'');assert.match(page.message,/尚未确认/);}
+      else assert.equal(page.error.code,'storage_full');
+      if(outcome==='commit-failed')assert.match(page.message,/内容已保留/);
+    }
+  }
+}
 function snapshot(phase,results,cursor){
   return {session_id:'s',phase,results,cursor,index_coverage:'complete',warnings:[],query_revision:1};
 }
@@ -299,7 +341,7 @@ async function exportFeedbackHidesPaths(){
   assert.ok(!/[A-Za-z/]/.test(store.message));assert.ok(store.message.length<50);
 }
 (async()=>{
-  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,editorState,searchTransitions,automaticHybridSearch,hybridQueryReplacement,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths]){
+  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,editorState,directRecordSave,searchTransitions,automaticHybridSearch,hybridQueryReplacement,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths]){
     await test();console.log('PASS '+test.name);
   }
 })().catch(e=>{console.error(e);process.exitCode=1;});

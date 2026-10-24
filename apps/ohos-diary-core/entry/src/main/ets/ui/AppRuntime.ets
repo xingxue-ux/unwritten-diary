@@ -102,15 +102,15 @@ export function newOperationId(prefix: string): string {
 /**
  * 记录状态 → 徽标文案（契约 §4.2 的 `state.*` 槽位）。
  *
- * `draft` 的徽标是「**草稿**」——「未提交」只能作为副标题/解释，不能替代徽标；
+ * `draft` 表示保存流程尚未完成，用「待保存」说明；不要求用户补全内容；
  * `trashed` 是「**已移入回收站**」，不是「已删除」（它是可逆状态，写「已删除」会诱发误清理）。
  */
 export function captureStateLabel(state: string): string {
   if (state === 'draft') {
-    return '草稿';
+    return '待保存';
   }
   if (state === 'committed') {
-    return '已收好';
+    return '已保存';
   }
   if (state === 'trashed') {
     return '已移入回收站';

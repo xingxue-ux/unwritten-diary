@@ -3,8 +3,7 @@ import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketch
 // 记录（契约 §2.1）：新建一条原始记录——写下来，或者说一段。
 //
 // 这一页承担从旧「今日」页拆出来的新建职责：
-// - **文字**：`captures.createDraft` → `captures.saveDraft`（「保存草稿」），
-//   「收好」再 `captures.commit` 提交成正式记录（出现在「片段」里）；
+// - **文字**：「保存」依次创建、持久化并提交为正式记录，零散原文也直接保存；
 // - **录音**：跳到现有的 `RecordingPage`（真实采集链路：prepare → 分片 → finalize）。
 //
 // 不虚构状态：
@@ -29,8 +28,8 @@ import { AppState } from '../ui/AppState';
 import {
   databasePath,
   dayTitleAtOffset,
+  formatDateTime,
   newOperationId,
-  toast,
 } from '../ui/AppRuntime';
 import { readTimeZone } from '../recording/VoiceRecorder';
 import { ErrorBanner, InfoRow, PageTitle, SectionTitle, StatePill } from '../ui/Common';
@@ -97,7 +96,7 @@ export struct RecordPage {
     this.error = EMPTY_UI_ERROR;
     this.message = dirty
       ? '这条记录已在其他页面更新。未保存的修改已保留，可另存为新记录。'
-      : (capture.state === 'committed' ? '这条记录已提交，可以再写一条。' : '已刷新到最新草稿。');
+      : (capture.state === 'committed' ? '这条记录已保存，可以再写一条。' : '已刷新记录，请重试保存。');
   }
 
   private savePreservedAsNew(): void {
@@ -112,10 +111,10 @@ export struct RecordPage {
 
   private stateLabel(): string {
     if (this.savedState === 'draft') {
-      return '草稿';
+      return '待保存';
     }
     if (this.savedState === 'committed') {
-      return '已提交';
+      return '已保存';
     }
     return '未保存';
   }
@@ -131,12 +130,12 @@ export struct RecordPage {
   }
 
   /**
-   * 保存（`submit = false`）或收好（`submit = true`）。
+   * 一次点击直接保存为正式记录，不判断文字是否完整，也不改写原文。
    *
    * 第一次保存先 `captures.createDraft`（核心的 createDraft 只收时间与时区，不收正文），
    * 再按返回的 `revision` 写正文；提交用保存后的 revision，不猜。
    */
-  private async save(submit: boolean): Promise<void> {
+  private async save(): Promise<void> {
     if (!this.canSave()) {
       return;
     }
@@ -182,33 +181,35 @@ export struct RecordPage {
     }
     const receipt: DraftSaveResult = saved.data as DraftSaveResult;
     this.revision = receipt.revision;
-    this.savedAt = receipt.saved_at;
+    this.savedAt = receipt.durable ? receipt.saved_at : '';
     this.savedState = 'draft';
     this.savedText = savedText;
-    this.message = receipt.durable ? '草稿已保存。' : '保存尚未确认，请暂时留在本页。';
-
-    if (submit) {
-      const commitParams: CommitParams = {
-        capture_id: this.captureId,
-        expected_revision: this.revision,
-        operation_id: newOperationId('op-ohos-commit'),
-      };
-      const committed = await CoreGateway.call(this.dbPath, 'captures.commit', commitParams);
-      if (!committed.ok) {
-        this.busy = false;
-        this.error = uiErrorOf(committed);
-        if (this.error.code === 'revision_conflict' || this.error.code === 'invalid_state') {
-          await this.refreshCapture();
-        }
-        return;
-      }
-      const result: CommitResult = committed.data as CommitResult;
-      this.revision = result.capture.revision;
-      this.savedState = 'committed';
-      this.message = '已收好，可在片段页查看。';
-    } else {
-      toast('草稿已保存');
+    this.message = receipt.durable ? '' : '保存尚未确认，请暂时留在本页。';
+    if (!receipt.durable) {
+      this.busy = false;
+      AppState.bumpDataVersion();
+      return;
     }
+
+    const commitParams: CommitParams = {
+      capture_id: this.captureId,
+      expected_revision: this.revision,
+      operation_id: newOperationId('op-ohos-commit'),
+    };
+    const committed = await CoreGateway.call(this.dbPath, 'captures.commit', commitParams);
+    if (!committed.ok) {
+      this.busy = false;
+      this.message = '内容已保留，请重试保存。';
+      this.error = uiErrorOf(committed);
+      if (this.error.code === 'revision_conflict' || this.error.code === 'invalid_state') {
+        await this.refreshCapture();
+      }
+      return;
+    }
+    const result: CommitResult = committed.data as CommitResult;
+    this.revision = result.capture.revision;
+    this.savedState = 'committed';
+    this.message = '已保存，可在片段页查看。';
     this.busy = false;
     AppState.bumpDataVersion();
   }
@@ -283,19 +284,21 @@ export struct RecordPage {
           }
           .width('100%')
           Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-            Button(this.busy ? '保存中…' : '保存草稿')
+            Button(this.busy ? '保存中…' : (this.savedState === 'committed' ? '已保存' : '保存'))
               .attributeModifier(sketchButton).drawModifier(sketchOutline())
+              .backgroundColor(SketchColors.button)
               .enabled(this.canSave())
-              .onClick(() => { this.save(false); })
+              .onClick(() => { this.save(); })
             Button('录音')
               .attributeModifier(sketchButton).drawModifier(sketchOutline())
+              .enabled(!this.busy)
               .onClick(() => { this.pathStack.pushPathByName('recording', ''); })
           }
           if (this.message.length > 0) {
             Text(this.message).fontSize(13).fontColor(SketchColors.muted).width('100%')
           }
           if (this.savedAt.length > 0) {
-            InfoRow({ label: '保存时间', value: this.savedAt })
+            InfoRow({ label: '保存时间', value: formatDateTime(this.savedAt) })
           }
           ErrorBanner({ error: this.error, showReload: !this.busy, onReload: () => { this.refreshCapture(); } })
         }
@@ -314,13 +317,6 @@ export struct RecordPage {
           Button('查看这条').attributeModifier(sketchButton).drawModifier(sketchOutline())
             .onClick(() => { this.pathStack.pushPathByName('capture', this.captureId); })
         }
-      } else {
-        Button(this.busy ? '收好中…' : '收好这一刻')
-          .attributeModifier(sketchButton).drawModifier(sketchOutline())
-          .width('100%')
-          .backgroundColor(SketchColors.button)
-          .enabled(this.canSave())
-          .onClick(() => { this.save(true); })
       }
     }
     .width('100%')

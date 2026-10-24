@@ -192,7 +192,7 @@ export struct CaptureDetailPage {
     const committed: CommitResult = result.data as CommitResult;
     this.capture = committed.capture;
     AppState.bumpDataVersion();
-    toast('记录已收好');
+    toast('记录已保存');
     await this.reload();
   }
 
@@ -323,16 +323,16 @@ export struct CaptureDetailPage {
 
             if ((this.capture as Capture).state === 'draft') {
               Column({ space: 8 }) {
-                Text('未提交（草稿）')
+                Text('待保存')
                   .fontSize(15)
                   .fontWeight(FontWeight.Medium)
                   .fontColor(SketchColors.text)
                   .width('100%')
-                Text('这条记录还是草稿，收好后可参与日记整理。')
+                Text('保存尚未完成，原文已保留。')
                   .fontSize(12)
                   .fontColor(SketchColors.muted)
                   .width('100%')
-                Button(this.commitBusy ? '提交中…' : '收好记录')
+                Button(this.commitBusy ? '保存中…' : '保存记录')
                   .attributeModifier(sketchButton).drawModifier(sketchOutline())
                   .fontSize(13)
                   .enabled(!this.commitBusy)
@@ -358,7 +358,7 @@ export struct CaptureDetailPage {
             if ((this.capture as Capture).draft_text.trim().length > 0) {
               Column({ space: 6 }) {
                 // 已提交的记录，正文已经不是草稿；标题必须跟着状态走（G4）。
-                SectionTitle({ text: (this.capture as Capture).state === 'draft' ? '草稿正文' : '正文' })
+                SectionTitle({ text: '原文' })
                 Text((this.capture as Capture).draft_text)
                   .fontSize(16)
                   .fontColor(SketchColors.text)
@@ -377,7 +377,7 @@ export struct CaptureDetailPage {
               EmptyState({
                 icon: '·',
                 title: '这条记录还没有来源',
-                hint: '收好记录后，可在这里查看。',
+                hint: '保存记录后，可在这里查看。',
               })
             } else {
               ForEach(this.sources, (source: SourceView, index: number) => {
