@@ -228,6 +228,22 @@ export struct RecordPage {
     this.preservedText = '';
   }
 
+  private openRecording(): void {
+    if (!this.busy && this.pathStack.getAllPathName().indexOf('recording') < 0) {
+      this.pathStack.pushPathByName('recording', '');
+    }
+  }
+
+  @Builder
+  recordingButton() {
+    Button('开始录音')
+      .attributeModifier(sketchButton).drawModifier(sketchOutline())
+      .width('100%').height(64).fontSize(20).fontWeight(FontWeight.Medium)
+      .backgroundColor(SketchColors.ink).fontColor(SketchColors.paper)
+      .enabled(!this.busy)
+      .onClick(() => { this.openRecording(); })
+  }
+
   @Builder
   introduction() {
     Column({ space: 18 }) {
@@ -258,6 +274,9 @@ export struct RecordPage {
   @Builder
   editor() {
     Column({ space: 20 }) {
+      if (this.desktop) {
+        this.recordingButton()
+      }
       SketchCard({ contentPadding: this.desktop ? 28 : 21 }) {
         Column({ space: 16 }) {
           Text('此刻的记录')
@@ -266,7 +285,7 @@ export struct RecordPage {
             .fontColor(SketchColors.ink)
           Divider().color(SketchColors.ink).strokeWidth(0.8)
           TextArea({ text: this.text, placeholder: '今天路过花店，看到一束很明亮的橘色花…' }).attributeModifier(sketchArea)
-            .height(this.desktop ? 295 : 220)
+            .height(220)
             .width('100%')
             .fontSize(18)
             .fontColor(SketchColors.text)
@@ -289,10 +308,6 @@ export struct RecordPage {
               .backgroundColor(SketchColors.button)
               .enabled(this.canSave())
               .onClick(() => { this.save(); })
-            Button('录音')
-              .attributeModifier(sketchButton).drawModifier(sketchOutline())
-              .enabled(!this.busy)
-              .onClick(() => { this.pathStack.pushPathByName('recording', ''); })
           }
           if (this.message.length > 0) {
             Text(this.message).fontSize(13).fontColor(SketchColors.muted).width('100%')
@@ -335,6 +350,7 @@ export struct RecordPage {
           .alignItems(VerticalAlign.Top)
           .width('100%')
         } else {
+          Column() { this.recordingButton() }.margin({ bottom: 24 })
           this.introduction()
           Column() { this.editor() }.margin({ top: 24 })
         }

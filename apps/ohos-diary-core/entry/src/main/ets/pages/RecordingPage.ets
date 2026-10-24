@@ -72,10 +72,13 @@ export struct RecordingPage {
   private startSeq: number = 0;
 
   aboutToAppear(): void {
+    if (this.active) {
+      return;
+    }
     this.active = true;
     this.context = getContext(this) as common.UIAbilityContext;
     this.dbPath = databasePath(this.context);
-    this.loadRecovery();
+    this.enterRecording();
   }
 
   aboutToDisappear(): void {
@@ -134,6 +137,50 @@ export struct RecordingPage {
       return;
     }
     this.recovery = result.data as RecordingRecovery;
+  }
+
+  private async enterRecording(): Promise<void> {
+    const token: number = this.startSeq;
+    // 先读取旧会话，避免把刚创建的本次录音误识别成待恢复录音。
+    await this.loadRecovery();
+    if (!this.active || token !== this.startSeq) {
+      return;
+    }
+    await this.startRecording();
+  }
+
+  private async recordAgain(): Promise<void> {
+    if (!this.active || this.phase === 'preparing' || this.phase === 'recording' || this.phase === 'stopping') {
+      return;
+    }
+    const token: number = ++this.startSeq;
+    this.phase = 'preparing';
+    this.stopTimer();
+    try {
+      if (this.recorder !== null) {
+        await this.recorder.abort();
+      }
+    } catch (e) {
+      if (this.active && token === this.startSeq) {
+        this.phase = 'error';
+        this.error = uiErrorFromThrown(e as Object);
+      }
+      return;
+    }
+    if (!this.active || token !== this.startSeq) {
+      return;
+    }
+    this.recorder = null;
+    this.finalized = null;
+    this.phase = 'idle';
+    this.error = EMPTY_UI_ERROR;
+    this.transcribeHint = '';
+    this.finalizeAttempted = false;
+    this.commitState = '';
+    this.commitRevision = -1;
+    this.commitError = '';
+    this.commitRetryError = EMPTY_UI_ERROR;
+    await this.enterRecording();
   }
 
   private async startRecording(): Promise<void> {
@@ -558,17 +605,7 @@ export struct RecordingPage {
             .backgroundColor(SketchColors.soft)
             .fontColor(SketchColors.text)
             .onClick(() => {
-              this.finalized = null;
-              this.phase = 'idle';
-              this.error = EMPTY_UI_ERROR;
-              this.transcribeHint = '';
-              this.recorder = null;
-              this.finalizeAttempted = false;
-              this.commitState = '';
-              this.commitRevision = -1;
-              this.commitError = '';
-              this.commitRetryError = EMPTY_UI_ERROR;
-              this.loadRecovery();
+              this.recordAgain();
             })
         }
         .width('100%')
@@ -600,16 +637,18 @@ export struct RecordingPage {
                 .fontSize(13)
                 .fontColor(SketchColors.muted)
                 .width('100%')
-              Button('开始录音')
-                .attributeModifier(sketchButton).drawModifier(sketchOutline())
-                .fontSize(16)
-                .height(48)
-                .width('100%')
-                .backgroundColor(SketchColors.button)
-                .fontColor(SketchColors.ink)
-                .onClick(() => {
-                  this.startRecording();
-                })
+              if (this.phase === 'aborted') {
+                Button('重新录音')
+                  .attributeModifier(sketchButton).drawModifier(sketchOutline())
+                  .fontSize(16)
+                  .height(48)
+                  .width('100%')
+                  .backgroundColor(SketchColors.button)
+                  .fontColor(SketchColors.ink)
+                  .onClick(() => {
+                    this.startRecording();
+                  })
+              }
               if (this.permissionDenied) {
                 Column({ space: 6 }) {
                   Text('需要麦克风权限')
@@ -751,10 +790,7 @@ export struct RecordingPage {
                 .backgroundColor(SketchColors.soft)
                 .fontColor(SketchColors.text)
                 .onClick(() => {
-                  this.phase = 'idle';
-                  this.error = EMPTY_UI_ERROR;
-                  this.recorder = null;
-                  this.finalizeAttempted = false;
+                  this.recordAgain();
                 })
             }
             .width('100%')

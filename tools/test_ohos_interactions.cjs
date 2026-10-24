@@ -102,6 +102,63 @@ async function leaveDuringPermission(){
   page.aboutToDisappear();permission.resolve({granted:true});await pending;
   assert.equal(opened,0);assert.equal(page.recorder,null);
 }
+function recordingPageEnv(recover,permission,events){
+  const {RecordingPage}=load('pages/RecordingPage.ets',{
+    '../ui/Errors':errorModule,
+    '../ui/AppRuntime':{databasePath:()=>'/qa/library.sqlite'},
+    '../session/AppDirectory':{appFilesDir:()=>'/qa'},
+    '../ui/CoreGateway':{CoreGateway:{call:async()=>{events.push('recover');return recover;}}},
+    '../recording/MicPermission':{ensureMicrophonePermission:async()=>{events.push('permission');return permission;}},
+    '../ui/CoreSession':{CoreSession:{open:()=>{events.push('open');return {core:{}};}}},
+    '../recording/VoiceRecorder':{RecorderOptions:class{},VoiceRecorder:class{
+      async start(){events.push('start');}async abort(){events.push('abort');}
+      receivedMs(){return 0;}persistedMs(){return 0;}
+      keepScreenResult(){return {ok:true};}taskResult(){return {ok:true};}
+    }}},{getContext:()=>({}),setInterval:()=>1,clearInterval:noop},true);
+  return new RecordingPage();
+}
+async function recordingStartsOnEntry(){
+  const recovered={ok:true,data:{recording_id:null}};
+  for(const outcome of ['granted','denied','leave-recovery','leave-permission']){
+    const recovery=deferred(),permission=deferred(),events=[];
+    const page=recordingPageEnv(recovery.promise,permission.promise,events);
+    page.aboutToAppear();page.aboutToAppear();
+    assert.deepEqual(events,['recover']);
+    if(outcome==='leave-recovery')page.aboutToDisappear();
+    recovery.resolve(recovered);await new Promise(setImmediate);
+    if(outcome==='leave-recovery'){assert.deepEqual(events,['recover']);continue;}
+    assert.equal(page.phase,'preparing');assert.deepEqual(events,['recover','permission']);
+    if(outcome==='leave-permission')page.aboutToDisappear();
+    permission.resolve({granted:outcome!=='denied',message:'需要麦克风权限'});
+    await new Promise(setImmediate);
+    if(outcome==='granted'){
+      assert.equal(page.phase,'recording');await page.startRecording();
+      assert.deepEqual(events,['recover','permission','open','start']);page.aboutToDisappear();
+    }else{
+      assert.ok(!events.includes('open'));
+      if(outcome==='denied'){assert.equal(page.phase,'idle');assert.equal(page.permissionDenied,true);}
+    }
+  }
+  const paths=[];
+  const {RecordPage}=load('pages/RecordPage.ets',{'../ui/Errors':errorModule},{},true);
+  const page=new RecordPage();page.pathStack={getAllPathName:()=>paths.map(x=>x[0]),pushPathByName:(...args)=>paths.push(args)};
+  page.openRecording();page.openRecording();page.busy=true;page.openRecording();assert.deepEqual(paths,[['recording','']]);
+}
+async function recordingAgainStartsImmediately(){
+  for(const outcome of ['ready','cleanup-failed','leave']){
+    const events=[],gate=deferred();
+    const page=recordingPageEnv({ok:true,data:{recording_id:null}},{granted:true},events);
+    page.active=true;page.context={};page.phase='saved';page.finalized={capture_id:'previous'};
+    page.recorder={abort:async()=>{events.push('cleanup');await gate.promise;if(outcome==='cleanup-failed')throw new Error('cleanup failed');}};
+    const pending=page.recordAgain();await page.recordAgain();assert.deepEqual(events,['cleanup']);
+    if(outcome==='leave')page.aboutToDisappear();
+    gate.resolve();await pending;
+    if(outcome==='ready'){
+      assert.equal(page.phase,'recording');assert.equal(page.finalized,null);
+      assert.deepEqual(events,['cleanup','recover','permission','open','start']);page.aboutToDisappear();
+    }else{assert.ok(!events.includes('start'));if(outcome==='cleanup-failed')assert.equal(page.phase,'error');}
+  }
+}
 async function editorState(){
   for(const dirty of [false,true]){
     const {RecordPage}=load('pages/RecordPage.ets',{
@@ -341,7 +398,7 @@ async function exportFeedbackHidesPaths(){
   assert.ok(!/[A-Za-z/]/.test(store.message));assert.ok(store.message.length<50);
 }
 (async()=>{
-  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,editorState,directRecordSave,searchTransitions,automaticHybridSearch,hybridQueryReplacement,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths]){
+  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,recordingStartsOnEntry,recordingAgainStartsImmediately,editorState,directRecordSave,searchTransitions,automaticHybridSearch,hybridQueryReplacement,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths]){
     await test();console.log('PASS '+test.name);
   }
 })().catch(e=>{console.error(e);process.exitCode=1;});
