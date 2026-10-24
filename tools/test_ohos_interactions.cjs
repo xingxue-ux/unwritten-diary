@@ -535,9 +535,47 @@ async function exportFeedbackHidesPaths(){
   assert.equal(store.ticket.path,ticket.path);
   assert.ok(!/[A-Za-z/]/.test(store.message));assert.ok(store.message.length<50);
 }
+async function styleProfilesStayIndependent(){
+  let nextId=0,activeId='sty_default';
+  const records=new Map([['sty_default',{id:'sty_default',label:'默认风格',revision:1,
+    lengthPreference:null,person:null,tone:null,emotionalTemperature:null,rhetoricLevel:null,
+    examples:[],bannedExpressions:[]}]]);
+  const store={styles:Array.from(records.values()),error:empty,message:'',conflicted:false,current:null,
+    refresh:async()=>{store.styles=Array.from(records.values());},
+    saveStyle:async(input,revision)=>{
+      const old=records.get(input.id);
+      assert.equal(revision,old?old.revision:0);
+      const saved={...input,revision:revision+1};records.set(saved.id,saved);
+      store.styles=Array.from(records.values());store.message='已保存';return saved;
+    }};
+  const settings={settings:{default_style_id:null},error:empty,message:'',
+    refresh:async()=>{},setDefaultStyle:async id=>{
+      assert.ok(records.has(id));activeId=id;settings.settings={default_style_id:id};return true;
+    }};
+  const {StylesPage}=load('pages/StylesPage.ets',{
+    '../ui/Errors':errorModule,
+    '../state/StyleStore':{DEFAULT_STYLE_ID:'sty_default'},
+    '../ui/AppRuntime':{newOperationId:()=>`style-${++nextId}`},
+    '../ui/AppState':{AppState:{bumpDataVersion:noop}}},{},true);
+  const page=new StylesPage();page.store=store;page.settings=settings;await page.load();
+  assert.equal(page.selectedId,'sty_default');
+  page.createStyle();page.label='日常随记';page.applyPreset(1);page.tone='轻柔一点';page.toneCustom=true;
+  await page.save();const first=page.selectedId;
+  assert.equal(records.get(first).tone,'轻柔一点');assert.equal(activeId,'sty_default');
+  page.createStyle();page.label='周末小记';page.applyPreset(2);await page.saveAndUse();
+  const second=page.selectedId;assert.notEqual(first,second);assert.equal(activeId,second);
+  assert.equal(records.get(first).tone,'轻柔一点');
+  page.editStyle(records.get(first));page.label='日常随记修改';page.temperature='含蓄一些';
+  page.editStyle(records.get(second));assert.equal(page.label,'周末小记');
+  page.editStyle(records.get(first));assert.equal(page.label,'日常随记修改');
+  await page.save();assert.equal(records.get(first).emotionalTemperature,'含蓄一些');
+  assert.equal(records.get(second).label,'周末小记');assert.equal(activeId,second);
+  await page.useStyle(first);assert.equal(activeId,first);
+  assert.equal(records.get(second).tone,'平实书面');
+}
 (async()=>{
   const failed=[];
-  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,recordingStartsOnEntry,recordingAgainStartsImmediately,editorState,directRecordSave,searchTransitions,automaticHybridSearch,hybridQueryReplacement,searchCancelsPendingRequest,searchEmptyQueryInvalidatesOld,searchPaginationRetryClearsError,searchExpiredCursorRestarts,searchResultsDoNotDuplicateOriginal,searchEditsDiscardStaleResults,searchRefreshesAfterDataChanges,searchHybridDoesNotReportEmptyWhilePending,searchUpgradeExpiryRetryIsBounded,searchCancellationKeepsLoadedPages,searchIndexStatusIgnoresStaleResponse,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths]){
+  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,recordingStartsOnEntry,recordingAgainStartsImmediately,editorState,directRecordSave,searchTransitions,automaticHybridSearch,hybridQueryReplacement,searchCancelsPendingRequest,searchEmptyQueryInvalidatesOld,searchPaginationRetryClearsError,searchExpiredCursorRestarts,searchResultsDoNotDuplicateOriginal,searchEditsDiscardStaleResults,searchRefreshesAfterDataChanges,searchHybridDoesNotReportEmptyWhilePending,searchUpgradeExpiryRetryIsBounded,searchCancellationKeepsLoadedPages,searchIndexStatusIgnoresStaleResponse,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths,styleProfilesStayIndependent]){
     try{await test();console.log('PASS '+test.name);}catch(e){failed.push(test.name);console.error('FAIL '+test.name+': '+e.message);}
   }
   assert.equal(failed.length,0,failed.join(', '));
