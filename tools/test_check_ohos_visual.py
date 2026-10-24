@@ -39,6 +39,10 @@ class VisualParityTest(unittest.TestCase):
         (self.root / visual.RES / 'rawfile/fonts/DiaryDisplay-AppSubset.ttf').write_bytes(b'wrong font')
         self.assertTrue(any('font:' in error for error in visual.check(self.root)))
 
+    def test_new_ui_character_requires_display_glyph(self) -> None:
+        self.change(visual.ETS / 'pages/RecordPage.ets', '此刻的记录', '此刻的齉录')
+        self.assertTrue(any('font coverage:' in error for error in visual.check(self.root)))
+
     def test_license_is_required(self) -> None:
         (self.root / visual.RES / 'rawfile/fonts/OFL.txt').unlink()
         self.assertTrue(any('OFL.txt' in error for error in visual.check(self.root)))

@@ -218,8 +218,8 @@ export struct DiaryPage {
     await this.readBody(id, '当前日记');
   }
 
-  private async previewBody(versionId: string): Promise<void> {
-    await this.readBody(versionId, '候选日记');
+  private async previewBody(versionId: string, label: string): Promise<void> {
+    await this.readBody(versionId, label);
   }
 
   private async reloadBody(): Promise<void> {
@@ -471,8 +471,8 @@ export struct DiaryPage {
         // ---- 候选版本：每版一行，可看正文、可显式采用 ----
         if (this.candidateVersionIds.length > 0) {
           SectionTitle({ text: '候选版本（未采用）' })
-          ForEach(this.candidateVersionIds, (versionId: string) => {
-            this.candidateRow(versionId)
+          ForEach(this.candidateVersionIds, (versionId: string, index: number) => {
+            this.candidateRow(versionId, index)
           }, (versionId: string) => versionId)
         }
 
@@ -525,9 +525,9 @@ export struct DiaryPage {
   }
 
   @Builder
-  candidateRow(versionId: string) {
+  candidateRow(versionId: string, index: number) {
     Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
-      Text('候选日记')
+      Text(`候选日记 ${index + 1}`)
         .fontSize(SketchType.caption)
         .fontColor(SketchColors.text)
         .width('100%')
@@ -537,7 +537,7 @@ export struct DiaryPage {
         .attributeModifier(sketchButton).drawModifier(sketchOutline()).margin({ right: 8, top: 8 })
         .enabled(!this.busy)
         .onClick(() => {
-          this.previewBody(versionId);
+          this.previewBody(versionId, `候选日记 ${index + 1}`);
         })
       Button('采用为当前')
         .attributeModifier(sketchButton).drawModifier(sketchOutline()).margin({ right: 8, top: 8 })
@@ -556,16 +556,20 @@ export struct DiaryPage {
         Text(day.day_key)
           .fontSize(SketchType.section)
           .fontColor(SketchColors.ink)
+        Blank()
+        Text(this.dayKey === day.day_key ? '已打开' : '点开')
+          .fontSize(SketchType.caption)
+          .fontColor(SketchColors.muted)
+      }
+      .width('100%')
+
+      Row({ space: 8 }) {
         if (day.current_version_id !== null) {
           StatePill({ text: '当前', tone: 'ok' })
         }
         if (day.candidate_version_ids.length > 0) {
           StatePill({ text: `候选 ${day.candidate_version_ids.length}`, tone: 'warn' })
         }
-        Blank()
-        Text(this.dayKey === day.day_key ? '（已打开）' : '点开')
-          .fontSize(SketchType.caption)
-          .fontColor(SketchColors.muted)
       }
       .width('100%')
 
@@ -586,9 +590,8 @@ export struct DiaryPage {
 
   @Builder
   listHeading() {
-    Row({ space: 8 }) {
+    Column({ space: 2 }) {
       SectionTitle({ text: '留下的日子' })
-      Blank()
       if (this.daysTruncated) {
         Text('还有未加载的日子')
           .fontSize(SketchType.caption)
@@ -596,6 +599,7 @@ export struct DiaryPage {
       }
     }
     .width('100%')
+    .alignItems(HorizontalAlign.Start)
   }
 
   @Builder

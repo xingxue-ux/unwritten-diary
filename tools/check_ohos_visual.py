@@ -5,12 +5,55 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import re
+import struct
 
 from check_ui_parity import strip_comments
 
 ETS = Path('apps/ohos-diary-core/entry/src/main/ets')
 FLUTTER = Path('apps/diary_app/lib/src')
 RES = ETS.parent / 'resources'
+LITERAL = re.compile(r'''(['"`])((?:\\.|(?!\1)[^\\])*)\1''')
+
+
+def font_codepoints(path: Path) -> set[int]:
+    """Read the bundled TrueType font's Unicode BMP cmap without dependencies."""
+    data = path.read_bytes()
+    table_count = struct.unpack_from('>H', data, 4)[0]
+    cmap_offset = next(
+        offset for index in range(table_count)
+        for tag, _checksum, offset, _length in [struct.unpack_from('>4sIII', data, 12 + 16 * index)]
+        if tag == b'cmap'
+    )
+    encoding_count = struct.unpack_from('>H', data, cmap_offset + 2)[0]
+    for index in range(encoding_count):
+        platform, encoding, relative = struct.unpack_from('>HHI', data, cmap_offset + 4 + 8 * index)
+        base = cmap_offset + relative
+        if (platform, encoding) not in ((0, 3), (3, 1)) or struct.unpack_from('>H', data, base)[0] != 4:
+            continue
+        segments = struct.unpack_from('>H', data, base + 6)[0] // 2
+        ends = base + 14
+        starts = ends + 2 * segments + 2
+        deltas = starts + 2 * segments
+        ranges = deltas + 2 * segments
+        result: set[int] = set()
+        for segment in range(segments):
+            start = struct.unpack_from('>H', data, starts + 2 * segment)[0]
+            end = struct.unpack_from('>H', data, ends + 2 * segment)[0]
+            delta = struct.unpack_from('>h', data, deltas + 2 * segment)[0]
+            offset = struct.unpack_from('>H', data, ranges + 2 * segment)[0]
+            for codepoint in range(start, min(end, 0xFFFE) + 1):
+                if offset == 0:
+                    glyph = (codepoint + delta) & 0xFFFF
+                else:
+                    glyph = struct.unpack_from(
+                        '>H', data, ranges + 2 * segment + offset + 2 * (codepoint - start)
+                    )[0]
+                    if glyph:
+                        glyph = (glyph + delta) & 0xFFFF
+                if glyph:
+                    result.add(codepoint)
+        return result
+    raise ValueError('Unicode BMP cmap format 4 not found')
 
 
 def check(root: Path) -> list[str]:
@@ -78,6 +121,22 @@ def check(root: Path) -> list[str]:
             styled = len(re.findall(r'\.attributeModifier\(sketchButton\)', source))
             if buttons != styled:
                 failures.append(f'buttons: {page.name} has {buttons} buttons but {styled} shared styles')
+    font_path = root / 'apps/diary_app/assets/fonts/DiaryDisplay-AppSubset.ttf'
+    if font_path.is_file():
+        try:
+            covered = font_codepoints(font_path)
+            ui_chars = {
+                ord(char)
+                for page in (root / ETS).rglob('*.ets')
+                for literal in LITERAL.findall(strip_comments(page.read_text(encoding='utf-8-sig')))
+                for char in literal[1]
+                if 0x4E00 <= ord(char) <= 0x9FFF
+            }
+            missing = ui_chars - covered
+            if missing:
+                failures.append('font coverage: missing UI characters ' + ''.join(chr(char) for char in sorted(missing)))
+        except (ValueError, StopIteration, struct.error) as exc:
+            failures.append(f'font coverage: unreadable Unicode cmap ({exc})')
     for icon in ('bell', 'record', 'diary', 'search', 'snippets', 'profile'):
         read(RES / f'base/media/sketch_{icon}.svg')
     return failures
