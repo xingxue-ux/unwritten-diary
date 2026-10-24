@@ -679,7 +679,7 @@ pub(crate) fn transcription_choice(core: &crate::Core) -> Result<TranscriptionCh
         let Some(adapter) = crate::provider::adapter::adapter_for(&provider.adapter_id) else {
             continue;
         };
-        if !adapter.is_local() {
+        if !matches!(adapter, crate::provider::adapter::Adapter::Local(_)) {
             continue;
         }
         let model_override = provider
@@ -704,6 +704,32 @@ pub(crate) fn transcription_choice(core: &crate::Core) -> Result<TranscriptionCh
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_llm_does_not_shadow_asr_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = crate::Core::open_in_memory_at(dir.path()).unwrap();
+        let llm = Provider {
+            id: super::super::local_llm::BUILTIN_ID.to_owned(),
+            label: "本机整理".to_owned(),
+            adapter_id: super::super::local_llm::ADAPTER_ID.to_owned(),
+            endpoint: None,
+            model: Some("missing/model.gguf".to_owned()),
+            capabilities: [ProviderCapability::GenerateText].into_iter().collect(),
+            credential_ref: None,
+            enabled: true,
+            test_status: ProviderTestStatus::Untested,
+        };
+        core.save_provider(&llm, None).unwrap();
+        assert_eq!(transcription_choice(&core).unwrap().provider_id, None);
+        let mut asr = builtin_provider(None);
+        asr.id = "my_asr".to_owned();
+        core.save_provider(&asr, None).unwrap();
+        assert_eq!(
+            transcription_choice(&core).unwrap().provider_id.as_deref(),
+            Some("my_asr")
+        );
+    }
 
     /// OHOS 的「沙箱 vs 安装目录」判定：沙箱路径要拒，`libs/arm64` 要放行。
     ///
