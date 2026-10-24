@@ -135,6 +135,57 @@ async function searchTransitions(){
   page.openHit({capture_id:'real-capture',source_id:'source'});
   assert.deepEqual(paths,[['capture','real-capture']]);
 }
+async function automaticHybridSearch(){
+  for(const outcome of ['fused','unavailable','failed','keyword','semantic']){
+    const up=deferred(),entered=deferred(),calls=[];
+    const {SearchPage}=load('pages/SearchPage.ets',{'../ui/Errors':errorModule,
+      '../ui/CoreGateway':{uiErrorOf:r=>r.error,CoreGateway:{call:async(db,method,params)=>{
+        calls.push(method);
+        if(method==='indexes.status')return {ok:true,data:{semantic_index_ready:true}};
+        if(method==='search.start'){
+          assert.equal(params.request.mode,outcome==='keyword'||outcome==='semantic'?outcome:'hybrid');
+          return {ok:true,data:snapshot(outcome==='semantic'?'done':'keyword_ready',['k1'],'k-cursor')};
+        }
+        if(method==='search.upgrade'){entered.resolve();return up.promise;}
+        throw new Error('Unexpected '+method);
+      }}}},{},true);
+    const page=new SearchPage();page.query='散步';
+    page.mode=outcome==='keyword'||outcome==='semantic'?outcome:'hybrid';
+    const searching=page.startSearch();
+    if(page.mode!=='hybrid'){
+      await searching;assert.ok(!calls.includes('search.upgrade'));continue;
+    }
+    await entered.promise;
+    assert.equal(page.upgrading,true);assert.equal(page.resultStatus(),'正在结合语义搜索…');
+    assert.equal(page.results[0],'k1');await page.loadMore();assert.ok(!calls.includes('search.nextPage'));
+    up.resolve(outcome==='failed'?{ok:false,error:{code:'model_unavailable'}}:
+      {ok:true,data:outcome==='fused'?snapshot('hybrid_ready',['h1'],'h-cursor'):snapshot('keyword_ready',['k1'],'k-cursor')});
+    await searching;
+    assert.equal(calls.filter(x=>x==='search.upgrade').length,1);
+    assert.equal(page.upgrading,false);assert.equal(page.results[0],outcome==='fused'?'h1':'k1');
+    assert.equal(page.cursor,outcome==='fused'?'h-cursor':'k-cursor');
+    if(outcome!=='fused')assert.equal(page.resultStatus(),'当前仅有关键词结果');
+    if(outcome==='failed')assert.equal(page.error.code,'model_unavailable');
+  }
+}
+async function hybridQueryReplacement(){
+  const up=deferred(),entered=deferred(),cancelled=[];
+  const {SearchPage}=load('pages/SearchPage.ets',{'../ui/Errors':errorModule,
+    '../ui/CoreGateway':{CoreGateway:{call:async(db,method,params)=>{
+      if(method==='indexes.status')return {ok:true,data:{semantic_index_ready:true}};
+      if(method==='search.start')return {ok:true,data:{...snapshot('keyword_ready',[params.request.query],null),session_id:params.request.query}};
+      if(method==='search.upgrade'){entered.resolve();return up.promise;}
+      if(method==='search.cancel'){cancelled.push(params.session_id);return {ok:true,data:snapshot('cancelled',[],null)};}
+      throw new Error('Unexpected '+method);
+    }}}},{},true);
+  const page=new SearchPage();page.mode='hybrid';page.query='first';
+  const previous=page.startSearch();await entered.promise;
+  page.mode='keyword';page.query='second';await page.startSearch();
+  up.resolve({ok:true,data:snapshot('hybrid_ready',['old-result'],null)});await previous;
+  assert.deepEqual(cancelled,['first']);assert.equal(page.sessionId,'second');
+  assert.equal(page.results[0],'second');assert.equal(page.phase,'keyword_ready');
+  assert.equal(page.upgrading,false);
+}
 async function llmConfiguration(){
   const calls=[];let saved=null;let secretReceived=null;let failList=false;let failSave=false;let failTest=false;let confirmed=true;
   let provider={id:'llm',label:'Existing',adapter_id:'openai_compatible',endpoint:'https://example.com/v1',
@@ -248,7 +299,7 @@ async function exportFeedbackHidesPaths(){
   assert.ok(!/[A-Za-z/]/.test(store.message));assert.ok(store.message.length<50);
 }
 (async()=>{
-  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,editorState,searchTransitions,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths]){
+  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,editorState,searchTransitions,automaticHybridSearch,hybridQueryReplacement,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths]){
     await test();console.log('PASS '+test.name);
   }
 })().catch(e=>{console.error(e);process.exitCode=1;});

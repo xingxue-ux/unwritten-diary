@@ -9,8 +9,8 @@ import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketch
 //    覆盖不全只在 `warnings` 里说；结果照常显示，另外加一条覆盖提示；
 // 2. keyword 的 `phase` 可能是 `keyword_ready`（还有下一页），不恒为 `done`；
 //    能不能翻页看 **cursor**，phase 不是结束标志；
-// 3. hybrid 的 `start` 只算关键词阶段；`upgrade` 成功才 `hybrid_ready`，
-//    升不了级时仍停在 `keyword_ready`，不能把标签写成「混合结果」；
+// 3. hybrid 的 `start` 只算关键词阶段；界面自动调用 `upgrade` 完成混合检索，
+//    升不了级时仍停在 `keyword_ready`，如实显示只有关键词结果；
 // 4. `error` 有值时**不显示「没有结果」**：检索失败不等于库里没有匹配内容。
 
 import { common } from '@kit.AbilityKit';
@@ -139,6 +139,12 @@ export struct SearchPage {
       return;
     }
     this.applySnapshot(result.data as SearchSnapshot, false);
+    if (this.mode === 'hybrid' && this.phase === 'keyword_ready') {
+      await this.upgrade();
+      if (token !== this.seq) {
+        return;
+      }
+    }
     // 语义就绪度可能在这次查询之后变化（自动重建/换模型），顺手刷新一次。
     this.loadIndexStatus();
   }
@@ -263,6 +269,19 @@ export struct SearchPage {
 
   private semanticReady(): boolean {
     return this.indexStatus !== null && this.indexStatus.semantic_index_ready;
+  }
+
+  private resultStatus(): string {
+    if (this.loading) {
+      return '正在搜索…';
+    }
+    if (this.upgrading) {
+      return '正在结合语义搜索…';
+    }
+    if (this.mode === 'hybrid' && this.phase === 'keyword_ready' && this.upgradeAttempted) {
+      return '当前仅有关键词结果';
+    }
+    return searchPhaseLabel(this.phase);
   }
 
   private semanticBanner(): string {
@@ -472,7 +491,7 @@ export struct SearchPage {
 
       if (this.searched) {
         Row({ space: 8 }) {
-          Text(`阶段：${searchPhaseLabel(this.phase)}`)
+          Text(this.resultStatus())
             .fontSize(12)
             .fontColor(SketchColors.muted)
           if (this.indexCoverage.length > 0) {
@@ -488,17 +507,6 @@ export struct SearchPage {
               .fontColor(SketchColors.muted)
           }
           Blank()
-          if (this.mode === 'hybrid' && this.phase === 'keyword_ready' && !this.upgradeAttempted) {
-            Button(this.upgrading ? '融合中…' : '升级为混合检索')
-              .attributeModifier(sketchButton).drawModifier(sketchOutline())
-              .fontSize(12)
-              .enabled(!this.upgrading && !this.loadingMore && !this.loading && !this.cancelling)
-              .backgroundColor(SketchColors.soft)
-              .fontColor(SketchColors.text)
-              .onClick(() => {
-                this.upgrade();
-              })
-          }
           if (this.phase !== 'cancelled' && this.sessionId.length > 0) {
             Button('取消本次搜索')
               .enabled(!this.cancelling)
