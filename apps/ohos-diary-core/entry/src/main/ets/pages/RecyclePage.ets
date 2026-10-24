@@ -1,4 +1,5 @@
-// ⚠️ 临时功能界面：UI 将由对方按 Windows 版重做。
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchOutline } from '../ui/Sketch';
+// 与 Windows 共用视觉组件，业务语义由现有 Store 提供。
 // 只做「把 RecycleStore 的状态显示出来 + 把按钮点下去」，请勿在此加业务逻辑。
 //
 // 数据与并发全在 `state/RecycleStore.ets`：本页只把 store 的字段镜像到 @State，
@@ -31,8 +32,7 @@ import { EMPTY_UI_ERROR, UiError } from '../ui/Errors';
 import { RecycleStore } from '../state/RecycleStore';
 import { AppState } from '../ui/AppState';
 import { confirmAction, databasePath, formatDateTime } from '../ui/AppRuntime';
-import { EmptyState, ErrorBanner, LoadingRow, PageTitle, StatePill } from '../ui/Common';
-import { SketchCard, SketchColors, SketchType } from '../ui/Sketch';
+import { EmptyState, ErrorBanner, LoadingRow, PageTitle, SectionTitle, StatePill } from '../ui/Common';
 
 @Component
 export struct RecyclePage {
@@ -152,17 +152,16 @@ export struct RecyclePage {
     // store 对 invalid_state（令牌过期 / 预览后清单变了）不写 error，只写 message。
     // 这句话必须让用户知道**没有删成功**，并且下一步是重新预览，不是重试。
     if (this.preview === null) {
-      this.purgeNote = '永久删除没有发生，记录没有被删除：预览令牌已作废，请重新预览后再确认。';
+      this.purgeNote = '记录尚未删除，请重新预览。';
     } else {
-      this.purgeNote = '永久删除没有发生，记录没有被删除：旧预览令牌已作废，已重新读取最新的清理影响；' +
-        '请核对上面的清单后再确认。';
+      this.purgeNote = '删除范围已更新，请重新确认。';
     }
   }
 
   private purgeConfirmText(preview: PurgePreview, deleteVersions: boolean): string {
     const referencing: number = preview.diary_versions_still_referencing.length;
     let text: string = `会永久删除这条记录，以及原件 ${preview.asset_ids.length} 个、` +
-      `派生内容 ${preview.derived_content_ids.length} 个、AI 回应 ${preview.ai_response_ids.length} 个。`;
+      `派生内容 ${preview.derived_content_ids.length} 个、整理结果 ${preview.ai_response_ids.length} 个。`;
     if (deleteVersions) {
       text += `同时删除 ${referencing} 个有可判定关联的日记版本。`;
     } else {
@@ -249,9 +248,9 @@ export struct RecyclePage {
   /** 第 ① 类的口径说明：必须跟开关同一步更新（别让界面说「默认保留」却删了版本）。 */
   private referencingNote(): string {
     if (this.deleteDiaryVersions) {
-      return '开关已打开（delete_diary_versions=true）：它们会随这次清理一起删除；只删有可判定关联的版本。';
+      return '这些关联版本会一并删除。';
     }
-    return '默认保留、这次不删除（delete_diary_versions=false）；打开下面的开关才会删它们。';
+    return '这些关联版本会保留。';
   }
 
   // ---------------------------------------------------------------- 组件
@@ -266,7 +265,7 @@ export struct RecyclePage {
           .width('100%')
       } else {
         ForEach(ids, (id: string, index: number) => {
-          Text(`· ${id}`)
+          Text('关联日记')
             .fontSize(SketchType.caption)
             .fontColor(SketchColors.text)
             .width('100%')
@@ -290,7 +289,7 @@ export struct RecyclePage {
         .fontSize(SketchType.caption)
         .fontColor(SketchColors.muted)
         .width('100%')
-      this.idList(ids)
+
     }
     .width('100%')
     .padding({ top: 6, bottom: 6 })
@@ -307,192 +306,26 @@ export struct RecyclePage {
   @Builder
   previewPanel() {
     if (this.preview !== null) {
-      Column({ space: 6 }) {
-        Text('永久删除预览（还没有删除任何东西）')
-          .fontSize(SketchType.section)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(SketchColors.ink)
-          .width('100%')
-
-        Text(`记录 ${this.previewCaptureId()}`)
-          .fontSize(SketchType.caption)
-          .fontColor(SketchColors.muted)
-          .width('100%')
-
-        Text('预览令牌：一次性，绑定这条记录；过期或预览后内容变了就会作废，必须重新预览。')
-          .fontSize(SketchType.caption)
-          .fontColor(SketchColors.muted)
-          .width('100%')
-
-        Text(`会随记录一起删除：原件 ${this.previewCount(5)} 个、` +
-          `派生内容 ${this.previewCount(6)} 个、AI 回应 ${this.previewCount(7)} 个。`)
-          .fontSize(SketchType.caption)
-          .fontColor(SketchColors.text)
-          .width('100%')
-
-        // ① 有可判定关联的版本：删不删由开关决定（说明直接读状态，不经过 Builder 参数）。
-        Column({ space: 2 }) {
-          Text(`① 仍引用这条记录的日记版本：${this.previewCount(1)} 个`)
-            .fontSize(SketchType.body)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(SketchColors.ink)
-            .width('100%')
-          Text(this.referencingNote())
-            .fontSize(SketchType.caption)
-            .fontColor(SketchColors.muted)
-            .width('100%')
-          if (this.previewCount(1) === 0) {
-            Text('（无）')
-              .fontSize(SketchType.caption)
-              .fontColor(SketchColors.muted)
-              .width('100%')
-          } else {
-            ForEach(this.previewIds(1), (id: string, index: number) => {
-              Text(`· ${id}`)
-                .fontSize(SketchType.caption)
-                .fontColor(SketchColors.text)
-                .width('100%')
-            }, (id: string, index: number) => `ref-${index}-${id}`)
-          }
-        }
-        .width('100%')
-        .padding({ top: 6, bottom: 6 })
-        .alignItems(HorizontalAlign.Start)
-
-        // ② 派生版本：永远不删，必须告诉用户它们还在。
-        Column({ space: 2 }) {
-          Text(`② 由这些版本派生的日记版本：${this.previewCount(2)} 个`)
-            .fontSize(SketchType.body)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(SketchColors.ink)
-            .width('100%')
-          Text('不删除，仍然保留；它们的正文可能仍含这条记录的文字，清理后仍能读到。')
-            .fontSize(SketchType.caption)
-            .fontColor(SketchColors.muted)
-            .width('100%')
-          if (this.previewCount(2) === 0) {
-            Text('（无）')
-              .fontSize(SketchType.caption)
-              .fontColor(SketchColors.muted)
-              .width('100%')
-          } else {
-            ForEach(this.previewIds(2), (id: string, index: number) => {
-              Text(`· ${id}`)
-                .fontSize(SketchType.caption)
-                .fontColor(SketchColors.text)
-                .width('100%')
-            }, (id: string, index: number) => `derived-${index}-${id}`)
-          }
-        }
-        .width('100%')
-        .padding({ top: 6, bottom: 6 })
-        .alignItems(HorizontalAlign.Start)
-
-        // ③ 归属未定：判不出来就不删，也不许假装没有。
-        Column({ space: 2 }) {
-          Text(`③ 无法确定归属的日记版本：${this.previewCount(3)} 个`)
-            .fontSize(SketchType.body)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(SketchColors.ink)
-            .width('100%')
-          Text(`有 ${this.previewCount(3)} 份版本无法确定归属，未删除；判不出来就不删。`)
-            .fontSize(SketchType.caption)
-            .fontColor(SketchColors.muted)
-            .width('100%')
-          if (this.previewCount(3) === 0) {
-            Text('（无）')
-              .fontSize(SketchType.caption)
-              .fontColor(SketchColors.muted)
-              .width('100%')
-          } else {
-            ForEach(this.previewIds(3), (id: string, index: number) => {
-              Text(`· ${id}`)
-                .fontSize(SketchType.caption)
-                .fontColor(SketchColors.text)
-                .width('100%')
-            }, (id: string, index: number) => `undetermined-${index}-${id}`)
-          }
-        }
-        .width('100%')
-        .padding({ top: 6, bottom: 6 })
-        .alignItems(HorizontalAlign.Start)
-
-        // ④ 输入快照：purge 不删（#161 方案 A），正文可能仍有这条记录的文字。
-        Column({ space: 2 }) {
-          Text(`④ 清理后仍保留的输入快照：${this.previewCount(4)} 份`)
-            .fontSize(SketchType.body)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(SketchColors.ink)
-            .width('100%')
-          Text('不删除；快照正文可能仍含这条记录的文字。永久清理不等于「所有副本里的字节都消失」。')
-            .fontSize(SketchType.caption)
-            .fontColor(SketchColors.muted)
-            .width('100%')
-          if (this.previewCount(4) === 0) {
-            Text('（无）')
-              .fontSize(SketchType.caption)
-              .fontColor(SketchColors.muted)
-              .width('100%')
-          } else {
-            ForEach(this.previewIds(4), (id: string, index: number) => {
-              Text(`· ${id}`)
-                .fontSize(SketchType.caption)
-                .fontColor(SketchColors.text)
-                .width('100%')
-            }, (id: string, index: number) => `snapshot-${index}-${id}`)
-          }
-        }
-        .width('100%')
-        .padding({ top: 6, bottom: 6 })
-        .alignItems(HorizontalAlign.Start)
-
+      Column({ space: 12 }) {
+        SectionTitle({ text: '永久删除预览' })
+        Text(`将删除原件 ${this.previewCount(5)} 个、关联内容 ${this.previewCount(6)} 个、整理结果 ${this.previewCount(7)} 个。`)
+          .fontSize(13).fontColor(SketchColors.text)
+        Text(`直接关联的日记版本：${this.previewCount(1)} 个`).fontSize(14).fontColor(SketchColors.ink)
+        Text(this.referencingNote()).fontSize(13).fontColor(SketchColors.muted)
+        Text(`衍生版本：${this.previewCount(2)} 个，将保留。`).fontSize(13).fontColor(SketchColors.text)
+        Text(`归属不明的版本：${this.previewCount(3)} 个，将保留。`).fontSize(13).fontColor(SketchColors.text)
+        Text(`历史整理材料：${this.previewCount(4)} 份，将保留。`).fontSize(13).fontColor(SketchColors.text)
+        Text('保留的日记和历史材料中，可能仍有这条记录的文字。').fontSize(13).fontColor(SketchColors.warning)
         Row({ space: 10 }) {
-          Column({ space: 2 }) {
-            Text('同时删除日记版本（delete_diary_versions）')
-              .fontSize(SketchType.body)
-              .fontColor(SketchColors.ink)
-              .width('100%')
-            Text('默认关。开启只影响上面第 ① 类；第 ②③ 类无论开关如何都不会被删除。')
-              .fontSize(SketchType.caption)
-              .fontColor(SketchColors.muted)
-              .width('100%')
-          }
-          .layoutWeight(1)
-          .alignItems(HorizontalAlign.Start)
-
-          Toggle({ type: ToggleType.Switch, isOn: this.deleteDiaryVersions })
-            .enabled(!this.busy)
-            .onChange((isOn: boolean) => {
-              this.deleteDiaryVersions = isOn;
-              this.purgeNote = '';
-            })
-        }
-        .width('100%')
-        .padding({ top: 6 })
-
-        Button(this.busy ? '处理中…' : (this.deleteDiaryVersions
-          ? '确认永久删除（同时删除第 ① 类版本）'
-          : '确认永久删除（保留日记版本）'))
-          .fontSize(SketchType.body)
-          .height(40)
-          .width('100%')
-          .enabled(!this.busy)
-          .backgroundColor($r('sys.color.ohos_id_color_alert'))
-          .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
-          .onClick(() => {
-            this.doPurge();
-          })
-
-        Text('永久删除不可逆：先看清上面四类清单，再点确认。')
-          .fontSize(SketchType.caption)
-          .fontColor($r('sys.color.ohos_id_color_alert'))
-          .width('100%')
-      }
-      .width('100%')
-      .padding(12)
-      .backgroundColor(SketchColors.soft)
-      .border({ width: 1, color: SketchColors.line })
-      .alignItems(HorizontalAlign.Start)
+          Text('同时删除直接关联的日记版本').fontSize(14).fontColor(SketchColors.ink).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.deleteDiaryVersions }).selectedColor(SketchColors.ink)
+            .enabled(!this.busy).onChange((isOn: boolean) => { this.deleteDiaryVersions = isOn; this.purgeNote = ''; })
+        }.width('100%')
+        Button(this.busy ? '删除中…' : '永久删除').attributeModifier(sketchButton).drawModifier(sketchOutline())
+          .fontColor(SketchColors.alert).enabled(!this.busy).onClick(() => { this.doPurge(); })
+        Text('删除后无法恢复。').fontSize(13).fontColor(SketchColors.alert)
+      }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
+        .backgroundColor(SketchColors.soft).drawModifier(sketchOutline())
     }
   }
 
@@ -502,9 +335,6 @@ export struct RecyclePage {
       Column({ space: 6 }) {
         Row({ space: 8 }) {
           StatePill({ text: '回收站', tone: 'alert' })
-          Text(`revision ${capture.revision}`)
-            .fontSize(SketchType.caption)
-            .fontColor(SketchColors.muted)
           Blank()
           Text(formatDateTime(capture.updated_at))
             .fontSize(SketchType.caption)
@@ -521,27 +351,27 @@ export struct RecyclePage {
 
         // trashed 状态是只读的（核心的写入口对回收站报 invalid_state），所以
         // updated_at 就是移入回收站的时间。
-        Text(`移入时间：${formatDateTime(capture.updated_at)} · id ${capture.id}`)
+        Text(`移入时间：${formatDateTime(capture.updated_at)}`)
           .fontSize(SketchType.caption)
           .fontColor(SketchColors.muted)
           .width('100%')
 
         Row({ space: 8 }) {
           Button('恢复')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(SketchType.caption)
-            .height(34)
             .enabled(!this.busy)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.doRestore(capture);
             })
           Button('预览永久删除')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(SketchType.caption)
-            .height(34)
             .enabled(!this.busy)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.doPreview(capture);
             })
@@ -562,14 +392,14 @@ export struct RecyclePage {
   purgeResultCard(result: PurgeResult) {
     SketchCard() {
       Column({ space: 4 }) {
-        Text('最近一次永久清理结果（核心原样）')
+        Text('清理结果')
           .fontSize(SketchType.section)
           .fontWeight(FontWeight.Medium)
           .fontColor(SketchColors.ink)
           .width('100%')
         Text(`已清理：原件 ${result.purged_asset_ids.length} 个、` +
           `派生内容 ${result.purged_derived_content_ids.length} 个、` +
-          `AI 回应 ${result.purged_ai_response_ids.length} 个。`)
+          `整理结果 ${result.purged_ai_response_ids.length} 个。`)
           .fontSize(SketchType.caption)
           .fontColor(SketchColors.text)
           .width('100%')
@@ -606,17 +436,17 @@ export struct RecyclePage {
           Column() {
             PageTitle({
               title: '回收站',
-              subtitle: '移入回收站的记录（state === trashed）。恢复会把记录放回移入前的状态。',
+              subtitle: '可恢复记录，也可永久删除。',
             })
           }
           .layoutWeight(1)
           .alignItems(HorizontalAlign.Start)
           Button(this.busy ? '处理中…' : '刷新')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(SketchType.caption)
-            .height(34)
             .enabled(!this.busy)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.reload();
             })
@@ -652,10 +482,10 @@ export struct RecyclePage {
 
       if (this.truncated) {
         Column() {
-          Text(`记录很多：这次只扫描了前 ${this.scanned} 条，回收站列表不完整（truncated=true）；` +
+          Text(`记录很多：这次只扫描了前 ${this.scanned} 条，回收站列表尚未加载完整；` +
             '后面的记录没有检查，不能当作「回收站只有这些」。')
             .fontSize(SketchType.caption)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
             .padding(10)
             .backgroundColor(SketchColors.soft)
@@ -675,9 +505,9 @@ export struct RecyclePage {
 
       if (this.previewStale) {
         Column() {
-          Text('预览令牌已作废：要永久删除，请重新预览后再确认；记录没有被删除。')
+          Text('记录尚未删除，请重新预览。')
             .fontSize(SketchType.caption)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
             .padding(10)
             .backgroundColor(SketchColors.soft)
@@ -689,7 +519,7 @@ export struct RecyclePage {
         Column() {
           Text(this.purgeNote)
             .fontSize(SketchType.body)
-            .fontColor($r('sys.color.ohos_id_color_alert'))
+            .fontColor(SketchColors.alert)
             .width('100%')
             .padding(10)
             .backgroundColor(SketchColors.soft)
@@ -715,7 +545,7 @@ export struct RecyclePage {
                 title: '回收站是空的',
                 hint: '移入回收站的记录会出现在这里；恢复后回到移入前的状态。',
               })
-              Text(`这次扫描了 ${this.scanned} 条记录，其中 state === 'trashed' 的 0 条。`)
+              Text('这里没有需要清理的记录。')
                 .fontSize(SketchType.caption)
                 .fontColor(SketchColors.muted)
                 .width('100%')
@@ -728,7 +558,7 @@ export struct RecyclePage {
           // 一次都没扫成功：这是「读失败」，不是「回收站是空的」。
           // 错误条已经在上面显示；这里既不报 0 条，也不说空。
           ListItem() {
-            Text('回收站没有读出来：这不代表回收站是空的；原因见上面的错误。')
+            Text('暂时无法读取回收站，请重试。')
               .fontSize(SketchType.caption)
               .fontColor(SketchColors.muted)
               .width('100%')

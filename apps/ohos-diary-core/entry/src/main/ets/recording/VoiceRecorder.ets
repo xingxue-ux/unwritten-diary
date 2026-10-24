@@ -111,6 +111,8 @@ export class VoiceRecorder {
   private errorText: string = '';
   /** 采集器被系统中断（锁屏/来电/抢占）时置位；停止时写进 end_reason，不假装没发生。 */
   private interrupted: boolean = false;
+  private cancelled: boolean = false;
+  private failure: DiaryError | null = null;
 
   private startRequestedMs: number = 0;
   private capturerStartRequestedMs: number = 0;
@@ -198,6 +200,16 @@ export class VoiceRecorder {
     return this.errorText;
   }
 
+  lastError(): DiaryError | null {
+    return this.failure;
+  }
+
+  private ensureStarting(): void {
+    if (this.cancelled) {
+      throw new DiaryError('invalid_state', '录音已取消');
+    }
+  }
+
   /** 这次录音是否被系统中断过（锁屏、来电、焦点被抢）。 */
   wasInterrupted(): boolean {
     return this.interrupted;
@@ -215,6 +227,7 @@ export class VoiceRecorder {
     if (this.phase !== 'idle') {
       throw new DiaryError('invalid_state', `录音器已经是 ${this.phase}，不能重复开始`);
     }
+    this.phase = 'preparing';
     this.startRequestedMs = nowUptimeMs();
     const now = new Date();
     const timeZone = readTimeZone();
@@ -243,10 +256,12 @@ export class VoiceRecorder {
 
       // 长时任务先申请（这时 Ability 还在前台）；失败不阻断前台录音，但如实记录。
       this.bgTask = await this.continuous.start(this.context);
+      this.ensureStarting();
 
       // 录音期间保持屏幕常亮：熄屏会被系统强制 STOP 采集（见文档 §7.3）。
       // 失败不阻断录音，但结果如实暴露；停止/异常/abort 都会关掉。
       this.keepScreen = await this.screen.enable(this.context);
+      this.ensureStarting();
       hilog.info(DOMAIN, TAG, '%{public}s KEEP_SCREEN_ON ok=%{public}s code=%{public}d message=%{public}s',
         MARK, this.keepScreen.ok ? 'true' : 'false',
         this.keepScreen.error_code, this.keepScreen.error_message);
@@ -269,6 +284,7 @@ export class VoiceRecorder {
         capturerInfo: capturerInfo,
       };
       this.capturer = await audio.createAudioCapturer(capturerOptions);
+      this.ensureStarting();
       this.capturer.on('readData', (buffer: ArrayBuffer) => {
         this.handleReadData(buffer);
       });
@@ -279,6 +295,8 @@ export class VoiceRecorder {
           this.interrupted = true;
           hilog.warn(DOMAIN, TAG, '%{public}s CAPTURE INTERRUPTED state=%{public}d phase=%{public}s',
             MARK, state, this.phase);
+          this.fail('interrupted', new DiaryError('invalid_state',
+            '录音被系统中断，采集已停止。请保存已录部分。'));
         } else {
           hilog.info(DOMAIN, TAG, '%{public}s CAPTURE state=%{public}d phase=%{public}s',
             MARK, state, this.phase);
@@ -291,7 +309,14 @@ export class VoiceRecorder {
 
       this.reportState('recording', 0, 0, '');
       this.capturerStartRequestedMs = nowUptimeMs();
-      await this.capturer.start();
+      const startingCapturer: audio.AudioCapturer = this.capturer;
+      await startingCapturer.start();
+      if (this.cancelled) {
+        // abort may have released the field while start() was still pending.
+        // Dispose this local instance again after start settles as well.
+        await this.disposeCapturer(startingCapturer);
+      }
+      this.ensureStarting();
       this.phase = 'recording';
       this.lastProgressUptimeMs = nowUptimeMs();
       hilog.info(DOMAIN, TAG, '%{public}s START recording=%{public}s sampleRate=%{public}d channels=%{public}d bits=%{public}d segmentMs=%{public}d bgTask=%{public}s',
@@ -300,9 +325,10 @@ export class VoiceRecorder {
     } catch (e) {
       hilog.error(DOMAIN, TAG, '%{public}s START failed %{public}s',
         MARK, describeError(e as Object));
-      this.phase = 'error';
+      this.phase = this.cancelled ? 'aborted' : 'error';
+      this.failure = DiaryError.fromThrown(e as Object);
       this.errorText = describeError(e as Object);
-      this.cleanupAfterFailure();
+      await this.cleanupAfterFailure();
       throw DiaryError.fromThrown(e as Object);
     }
   }
@@ -428,6 +454,7 @@ export class VoiceRecorder {
 
   /** 放弃：停采集、删掉当前半截片段、停长时任务；**不**最终化（留给下次启动 recover）。 */
   async abort(): Promise<void> {
+    this.cancelled = true;
     hilog.warn(DOMAIN, TAG, '%{public}s ABORT phase=%{public}s segments=%{public}d',
       MARK, this.phase, this.segmentCount());
     this.phase = 'aborted';
@@ -619,6 +646,10 @@ export class VoiceRecorder {
       return;
     }
     this.capturer = null;
+    await this.disposeCapturer(capturer);
+  }
+
+  private async disposeCapturer(capturer: audio.AudioCapturer): Promise<void> {
     try {
       await capturer.stop();
     } catch (e) {
@@ -635,6 +666,7 @@ export class VoiceRecorder {
 
   private fail(where: string, raw: Object): void {
     this.phase = 'error';
+    this.failure = DiaryError.fromThrown(raw);
     this.errorText = describeError(raw);
     hilog.error(DOMAIN, TAG, '%{public}s ERROR[%{public}s] %{public}s',
       MARK, where, this.errorText);
@@ -657,19 +689,8 @@ export class VoiceRecorder {
     });
   }
 
-  private cleanupAfterFailure(): void {
-    const capturer = this.capturer;
-    this.capturer = null;
-    if (capturer !== null) {
-      capturer.stop().catch((e: Object) => {
-        hilog.warn(DOMAIN, TAG, '%{public}s CLEANUP stop failed %{public}s',
-          MARK, describeError(e));
-      });
-      capturer.release().catch((e: Object) => {
-        hilog.warn(DOMAIN, TAG, '%{public}s CLEANUP release failed %{public}s',
-          MARK, describeError(e));
-      });
-    }
+  private async cleanupAfterFailure(): Promise<void> {
+    await this.stopCapturer();
     if (this.writer !== null) {
       this.writer.abort();
       this.writer = null;
@@ -684,7 +705,7 @@ export class VoiceRecorder {
       hilog.warn(DOMAIN, TAG, '%{public}s DRAFT_LEAK capture=%{public}s sources=0 draftText=empty action=left_in_place reason=core_has_no_safe_delete',
         MARK, this.captureId);
     }
-    this.releaseHold().catch((e: Object) => {
+    await this.releaseHold().catch((e: Object) => {
       hilog.warn(DOMAIN, TAG, '%{public}s CLEANUP release hold failed %{public}s',
         MARK, describeError(e));
     });

@@ -927,12 +927,16 @@ fn ai_body_is_marked_and_distinguishable_from_user_text() {
     let mut core = new_core(dir.path());
     core.set_transport_for_test(transport as Arc<dyn Transport>);
     save_provider(&mut core);
-    capture_with_text(&mut core, "用户写的记录。", "op-a");
+    let original = "  嗯，河边……然后，晚风  ";
+    let capture_id = capture_with_text(&mut core, original, "op-a");
 
     core.generate_diary("2026-10-16", None, DiaryGenerationReason::Manual, "op-gen")
         .unwrap();
     drive(&mut core);
     let version = versions(&core)[0].clone();
+
+    assert_eq!(core.get_capture(&capture_id).unwrap().draft_text, original);
+    assert!(user_material_contains(&path, original));
 
     // 来源标记：origin + 生成信息 + 快照，一个都不少。
     assert_eq!(version.origin, DiaryVersionOrigin::Generated);

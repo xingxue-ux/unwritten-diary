@@ -11,9 +11,18 @@ REM   2) **不要**把带 signingConfigs 的 build-profile.json5 提交进仓库
 REM
 REM 用法：把本文件放在工程根目录后双击，或在 cmd 里 `build-hap-windows.bat`。
 chcp 65001 >nul
-cd /d "%~dp0..\.."
+cd /d "%~dp0.."
 set DEVECO=E:\huawei\DevEco Studio
 set DEVECO_SDK_HOME=%DEVECO%\sdk
+set JAVA_HOME=%DEVECO%\jbr
 set PATH=%DEVECO%\tools\node;%PATH%
+python ..\..\tools\stage_ohos_models.py --check
+if errorlevel 1 exit /b 1
+for %%L in (libdiary_capi.so libdiary_napi.so libc++_shared.so libsherpa-onnx-c-api.so libonnxruntime.so libonnxruntime-diary-1.29.1.so libdiary_llm.so libdiary_llm_dotprod.so) do (
+  if not exist "entry\libs\arm64-v8a\%%L" (
+    echo Missing native runtime: %%L. Run the native staging/build scripts first.
+    exit /b 1
+  )
+)
 call "%DEVECO%\tools\hvigor\bin\hvigorw.bat" --mode module -p product=default -p module=entry@default -p buildMode=debug assembleHap --no-daemon
 echo EXITCODE=%ERRORLEVEL%

@@ -64,6 +64,9 @@ jobs:
           # 先跑检查器自测：证明「4 入口会红、5 入口会绿、缺 key 会红、缺壳跳过」。
           # 这样真实检查红/跳过时，都能看出脚本本身没坏。
           python3 tools/test_check_ui_parity.py
+          python3 tools/test_check_ohos_visual.py
+          python3 tools/check_ohos_visual.py
+          python3 tools/test_stage_ohos_models.py
       # 诊断包隐私/确定性测试：之前只在本地手动跑，Windows 上的 time.tzset
       # 硬红一直没被 CI 发现。它只用 Python 标准库，几秒钟，跟 docs 一起跑。
       - name: 诊断包隐私与 zip 确定性测试
@@ -136,6 +139,10 @@ jobs:
       # 不能把「跳过」当「通过」。
       - name: 校验 ArkTS 语法与作用域（pages/ui 除外，CI 不允许跳过）
         run: python3 tools/check_arkts_scope.py --require-tsc
+      - name: 鸿蒙交互回归（录音、草稿、检索与 LLM 配置）
+        run: NODE_PATH="$(npm root -g)" node tools/test_ohos_interactions.cjs
+      - name: 随包模型部署回归
+        run: NODE_PATH="$(npm root -g)" node tools/test_ohos_bundled_models.cjs
 
 
   dart:

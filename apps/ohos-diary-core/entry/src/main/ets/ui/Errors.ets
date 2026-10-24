@@ -18,7 +18,7 @@ export interface CoreErrorInfo {
   retryable: boolean;
 }
 
-/** 界面直接渲染的错误：标题、原样原因、下一步建议。 */
+/** 界面直接渲染的错误：标题与简洁的操作建议。 */
 export interface UiError {
   code: string;
   title: string;
@@ -44,105 +44,37 @@ export function toUiError(info: CoreErrorInfo): UiError {
   const code: string = info.code;
   const retryable: boolean = info.retryable;
   const native: boolean = code === 'native_unavailable';
-  let title: string = '操作没有完成';
-  let hint: string = '如果反复出现，请到「设置 → 诊断」查看版本与能力信息。';
+  let title: string = '操作未完成';
+  let hint: string = '请稍后重试。';
   switch (code) {
-    case 'not_found':
-      title = '没有找到这条内容';
-      hint = '它可能已被清理或删除；返回列表刷新后再试。';
-      break;
-    case 'invalid_state':
-      title = '当前状态不允许这个操作';
-      hint = '数据可能已在别处更新；刷新后按当前状态操作，不要直接重试。';
-      break;
-    case 'invalid_argument':
-      title = '请求参数不合法';
-      hint = '可能是界面与核心版本不匹配；请到「设置 → 诊断」核对版本。';
-      break;
-    case 'revision_conflict':
-      title = '内容已被修改';
-      hint = '你读到的是旧版本；刷新后重新查看，再决定是否保存。';
-      break;
-    case 'idempotency_conflict':
-      title = '同一次操作的内容变了';
-      hint = '这次提交不能安全重放；请重新发起一次新的操作。';
-      break;
-    case 'storage_full':
-      title = '存储空间不足';
-      hint = '本次保存/录音没有完成；清理空间后再试，不要立刻重试。';
-      break;
-    case 'asset_missing':
-      title = '原件不在';
-      hint = '这条内容引用的文件已被移动或删除；已有文字仍可查看。';
-      break;
-    case 'permission_denied':
-      title = '没有权限';
-      hint = '到系统设置授权后返回；不要反复弹权限框。';
-      break;
-    case 'integrity_failed':
-      title = '材料不完整';
-      hint = '哈希或字节数对不上，核心没有保存；保留暂存并重新选择材料，不要自动重试。';
-      break;
-    case 'unsupported_format':
-      title = '格式暂不支持';
-      hint = '文件已保留，但正文还不能提取；目前只能按文件名和时间找到它。';
-      break;
-    case 'search_expired':
-      title = '搜索已过期';
-      hint = '索引在查询期间变了；重新发起同一查询。';
-      break;
-    case 'cursor_expired':
-      title = '翻页位置已过期';
-      hint = '结果集换代后旧游标不能再用；从第一页重新搜索/加载。';
-      break;
-    case 'provider_not_configured':
-      title = '还没有配置好';
-      hint = '需要先配置转写/语义/AI 服务；到设置页完成配置后再试。';
-      break;
-    case 'authentication_failed':
-      title = '认证失败';
-      hint = '服务拒绝了当前凭据；检查密钥或重新配置，不要重试。';
-      break;
-    case 'network_unavailable':
-      title = '网络不可用';
-      hint = '材料已保存在本机；任务会自动退避重试，也可以等网络恢复后手动运行。';
-      break;
-    case 'rate_limited':
-      title = '请求太频繁';
-      hint = '服务正在限流；稍后再试，不要连点。';
-      break;
-    case 'quota_exceeded':
-      title = '额度不足';
-      hint = '服务额度已经用完；处理后才能继续，重试不会成功。';
-      break;
-    case 'provider_timeout':
-      title = '服务超时';
-      hint = '这次调用没有在预期时间内返回；可以有限次重试。';
-      break;
-    case 'model_unavailable':
-      title = '模型不可用';
-      hint = '模型文件或运行库不对；关键词检索仍可用。到设置页核对模型状态，不要只重试。';
-      break;
-    case 'corrupted_backup':
-      title = '备份损坏';
-      hint = '备份包无法读取；换一份备份，不要覆盖现有资料库。';
-      break;
-    case 'incompatible_backup':
-      title = '备份版本不兼容';
-      hint = '这份备份来自不兼容的版本；使用对应版本的备份。';
-      break;
-    case 'native_unavailable':
-      title = '核心库没有加载';
-      hint = '这次调用没有发生（打包/部署问题，不是操作错误）；到「设置 → 诊断」查看原生库与版本。';
-      break;
-    default:
-      break;
+    case 'not_found': title = '内容已不存在'; hint = '请返回列表刷新。'; break;
+    case 'invalid_state': title = '暂时无法操作'; hint = '请刷新后再试。'; break;
+    case 'invalid_argument': title = '填写内容有误'; hint = '请检查后重试。'; break;
+    case 'revision_conflict': title = '内容已更新'; hint = '请刷新后再保存。'; break;
+    case 'idempotency_conflict': title = '操作未完成'; hint = '请重新操作。'; break;
+    case 'storage_full': title = '存储空间不足'; hint = '请清理空间后重试。'; break;
+    case 'asset_missing': title = '原始材料已丢失'; hint = '已有文字仍可查看。'; break;
+    case 'permission_denied': title = '缺少必要权限'; hint = '请在系统设置中授权。'; break;
+    case 'integrity_failed': title = '材料不完整'; hint = '请重新选择材料。'; break;
+    case 'unsupported_format': title = '暂不支持此格式'; hint = '请使用其他格式。'; break;
+    case 'search_expired': case 'cursor_expired': title = '搜索结果已更新'; hint = '请重新搜索。'; break;
+    case 'provider_not_configured': title = '服务尚未就绪'; hint = '请先完成模型服务配置。'; break;
+    case 'authentication_failed': title = '访问密钥无效'; hint = '请检查或更换密钥。'; break;
+    case 'network_unavailable': title = '网络连接失败'; hint = '请检查网络后重试。'; break;
+    case 'rate_limited': title = '服务繁忙'; hint = '请稍后再试。'; break;
+    case 'quota_exceeded': title = '服务额度不足'; hint = '请补充额度后继续。'; break;
+    case 'provider_timeout': title = '服务响应超时'; hint = '请稍后重试。'; break;
+    case 'model_unavailable': title = '模型暂不可用'; hint = '请检查模型设置。'; break;
+    case 'corrupted_backup': title = '备份无法读取'; hint = '请选择其他备份。'; break;
+    case 'incompatible_backup': title = '备份版本不兼容'; hint = '请更新应用后再试。'; break;
+    case 'native_unavailable': title = '应用暂时无法使用'; hint = '请重新打开应用。'; break;
+    default: break;
   }
   return {
     code: code,
     title: title,
-    // 核心 message 是用户可读的，原样带出；空时用标题兜底。
-    message: info.message.length > 0 ? info.message : title,
+    // 原始错误仅留在调用结果中，展示层不回显路径、接口名或服务响应。
+    message: '',
     hint: hint,
     retryable: retryable,
     native: native,

@@ -1,3 +1,4 @@
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchOutline } from '../ui/Sketch';
 // 日记某一天（契约 §2.2 / §4.3）：读正文、看版本列表、切换当前版本。
 //
 // 数据全部来自 C ABI：
@@ -202,7 +203,7 @@ export struct DiaryDayPage {
       Row({ space: 8 }) {
         Text(formatDateTime(version.created_at))
           .fontSize(13)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
         StatePill({
           text: diaryOriginLabel(version.origin),
           tone: diaryOriginTone(version.origin),
@@ -213,11 +214,11 @@ export struct DiaryDayPage {
         Blank()
         if (!this.isCurrent(version)) {
           Button(this.switching ? '切换中…' : '设为当前')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(12)
-            .height(30)
             .enabled(!this.switching)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.setCurrent(version);
             })
@@ -227,20 +228,20 @@ export struct DiaryDayPage {
 
       Text(version.body.length > 0 ? version.body : '（这一版正文为空）')
         .fontSize(14)
-        .fontColor($r('sys.color.ohos_id_color_text_primary'))
+        .fontColor(SketchColors.text)
         .maxLines(this.selectedVersionId === version.id ? 100 : 2)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
 
       Text(this.selectedVersionId === version.id ? '点一下收起' : '点一下看全文')
         .fontSize(11)
-        .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+        .fontColor(SketchColors.muted)
         .width('100%')
     }
     .width('100%')
     .padding(12)
-    .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-    .borderRadius(12)
+    .backgroundColor(SketchColors.paper)
+    .drawModifier(sketchOutline())
     .alignItems(HorizontalAlign.Start)
     .onClick(() => {
       this.selectedVersionId = this.selectedVersionId === version.id ? '' : version.id;
@@ -256,10 +257,10 @@ export struct DiaryDayPage {
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
         Button('刷新')
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
           .fontSize(13)
-          .height(34)
-          .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .backgroundColor(SketchColors.soft)
+          .fontColor(SketchColors.text)
           .onClick(() => {
             this.refresh();
           })
@@ -292,9 +293,9 @@ export struct DiaryDayPage {
       } else if (this.day === null) {
         if (this.error.code.length > 0) {
           // 读失败 ≠ 这一天没有内容。错误条已经在上面显示，这里不再摆空态。
-          Text('这一天的状态没有读出来：这不代表这一天没有成篇日记；原因见上面的错误。')
+          Text('暂时无法读取这一天的日记，请重试。')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
             .padding({ left: 16, right: 16 })
         } else {
@@ -316,15 +317,15 @@ export struct DiaryDayPage {
                 // 只取第一页 50 条：有下一页时必须说「已显示前 N 版」，不能把 N 当总数。
                 value: this.versionsLoaded
                   ? (this.versionsHasMore
-                    ? `已显示前 ${this.versions.length} 版（还有更多） · revision ${this.day.revision}`
-                    : `${this.versions.length} 个 · revision ${this.day.revision}`)
-                  : `版本列表没有读出来 · revision ${this.day.revision}`,
+                    ? `已显示前 ${this.versions.length} 版（还有更多）`
+                    : `${this.versions.length} 个`)
+                  : `版本列表没有读出来`,
               })
             }
             .width('100%')
             .padding(14)
-            .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-            .borderRadius(14)
+            .backgroundColor(SketchColors.paper)
+            .drawModifier(sketchOutline())
             .alignItems(HorizontalAlign.Start)
 
             // ---------------------------------------------------------- 当前正文
@@ -342,32 +343,32 @@ export struct DiaryDayPage {
                 Text((this.current as DiaryVersion).body)
                   .fontSize(17)
                   .lineHeight(28)
-                  .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                  .fontColor(SketchColors.text)
                   .width('100%')
                 Text(`更新于 ${formatDateTime((this.current as DiaryVersion).created_at)}`)
                   .fontSize(11)
-                  .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                  .fontColor(SketchColors.muted)
                   .width('100%')
               }
               .width('100%')
               .padding(14)
-              .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-              .borderRadius(14)
+              .backgroundColor(SketchColors.paper)
+              .drawModifier(sketchOutline())
               .alignItems(HorizontalAlign.Start)
             }
 
             // ---------------------------------------------------------- 版本
             if (this.versions.length === 0 && !this.versionsLoaded && this.error.code.length > 0) {
               // 版本列表读失败：这不是「没有版本」，错误条已经在上面。
-              Text('版本列表没有读出来：这不代表这一天没有版本；原因见上面的错误。')
+              Text('暂时无法读取历史版本，请重试。')
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
             } else if (this.versions.length === 0) {
               EmptyState({
                 icon: '—',
                 title: '这一天还没有成篇日记',
-                hint: '有材料、但还没有成篇正文。生成接口（diary.generate）已就绪，生成按钮界面还没做，这里不能生成。',
+                hint: '可回到日记页，整理这一天的记录。',
               })
             } else {
               SectionTitle({
@@ -376,9 +377,9 @@ export struct DiaryDayPage {
                   : `版本（${this.versions.length}）`,
               })
               if (this.day.current_version_id === null) {
-                Text('这一天还没有指定当前版本；核心只给了候选版本。')
+                Text('请选择一版作为这一天的日记。')
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_warning'))
+                  .fontColor(SketchColors.warning)
                   .width('100%')
               }
               ForEach(this.versions, (version: DiaryVersion) => {
@@ -387,13 +388,7 @@ export struct DiaryDayPage {
               }, (version: DiaryVersion) => `${version.id}-${this.isCurrent(version) ? 'current' : 'other'}`)
             }
 
-            Text('本页可以读正文、看版本、切换当前版本。编辑正文/合并版本（diary.saveEdit / ' +
-              'diary.merge）的 C ABI 已经接了，界面还没做；生成（diary.generate）的 C ABI 也已就绪，' +
-              '只差入口按钮。')
-              .fontSize(11)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
-              .width('100%')
-              .padding({ bottom: 24 })
+
           }
           .width('100%')
           .padding({ left: 16, right: 16 })
@@ -404,6 +399,6 @@ export struct DiaryDayPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('sys.color.ohos_id_color_background'))
+    .backgroundColor(SketchColors.canvas)
   }
 }

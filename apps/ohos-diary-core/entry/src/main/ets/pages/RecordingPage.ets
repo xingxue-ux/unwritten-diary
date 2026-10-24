@@ -1,3 +1,4 @@
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchOutline } from '../ui/Sketch';
 // 录音页：复用 `recording/VoiceRecorder.ets`（权限 / 常亮 / 分片 / 崩溃恢复）。
 //
 // 停止后的真实流程：
@@ -10,6 +11,7 @@
 // 转写任务用 `jobs.runDue` 在 worker 里推进，不在 UI 线程加载模型。
 
 import { common } from '@kit.AbilityKit';
+import { appFilesDir } from '../session/AppDirectory';
 import {
   CommitParams,
   CommitResult,
@@ -24,6 +26,7 @@ import { CoreGateway, uiErrorOf } from '../ui/CoreGateway';
 import { EMPTY_UI_ERROR, UiError, uiErrorFromThrown } from '../ui/Errors';
 import { CoreOpenResult, CoreSession } from '../ui/CoreSession';
 import { AppState } from '../ui/AppState';
+import { runSummary } from '../ui/UserText';
 import { databasePath, formatDuration, toast } from '../ui/AppRuntime';
 import { ensureMicrophonePermission, PermissionOutcome } from '../recording/MicPermission';
 import { RecorderOptions, RecordingCommitResult, VoiceRecorder } from '../recording/VoiceRecorder';
@@ -65,14 +68,22 @@ export struct RecordingPage {
   private timer: number = -1;
   private context: common.UIAbilityContext | null = null;
   private dbPath: string = '';
+  private active: boolean = false;
+  private startSeq: number = 0;
 
   aboutToAppear(): void {
+    if (this.active) {
+      return;
+    }
+    this.active = true;
     this.context = getContext(this) as common.UIAbilityContext;
     this.dbPath = databasePath(this.context);
-    this.loadRecovery();
+    this.enterRecording();
   }
 
   aboutToDisappear(): void {
+    this.active = false;
+    this.startSeq++;
     this.stopTimer();
     const recorder: VoiceRecorder | null = this.recorder;
     if (recorder !== null && (this.phase === 'recording' || this.phase === 'preparing')) {
@@ -92,6 +103,14 @@ export struct RecordingPage {
       }
       this.elapsedMs = recorder.receivedMs();
       this.persistedMs = recorder.persistedMs();
+      this.interrupted = recorder.wasInterrupted();
+      if (recorder.currentPhase() === 'error') {
+        this.phase = 'error';
+        const failure = recorder.lastError();
+        this.error = uiErrorFromThrown(failure === null ? new Error(recorder.error()) : failure);
+        this.refreshHoldHints(recorder);
+        this.stopTimer();
+      }
     }, 250);
   }
 
@@ -120,7 +139,54 @@ export struct RecordingPage {
     this.recovery = result.data as RecordingRecovery;
   }
 
+  private async enterRecording(): Promise<void> {
+    const token: number = this.startSeq;
+    // 先读取旧会话，避免把刚创建的本次录音误识别成待恢复录音。
+    await this.loadRecovery();
+    if (!this.active || token !== this.startSeq) {
+      return;
+    }
+    await this.startRecording();
+  }
+
+  private async recordAgain(): Promise<void> {
+    if (!this.active || this.phase === 'preparing' || this.phase === 'recording' || this.phase === 'stopping') {
+      return;
+    }
+    const token: number = ++this.startSeq;
+    this.phase = 'preparing';
+    this.stopTimer();
+    try {
+      if (this.recorder !== null) {
+        await this.recorder.abort();
+      }
+    } catch (e) {
+      if (this.active && token === this.startSeq) {
+        this.phase = 'error';
+        this.error = uiErrorFromThrown(e as Object);
+      }
+      return;
+    }
+    if (!this.active || token !== this.startSeq) {
+      return;
+    }
+    this.recorder = null;
+    this.finalized = null;
+    this.phase = 'idle';
+    this.error = EMPTY_UI_ERROR;
+    this.transcribeHint = '';
+    this.finalizeAttempted = false;
+    this.commitState = '';
+    this.commitRevision = -1;
+    this.commitError = '';
+    this.commitRetryError = EMPTY_UI_ERROR;
+    await this.enterRecording();
+  }
+
   private async startRecording(): Promise<void> {
+    if (!this.active) {
+      return;
+    }
     if (this.phase === 'preparing' || this.phase === 'recording' || this.phase === 'stopping') {
       return;
     }
@@ -128,6 +194,8 @@ export struct RecordingPage {
     if (context === null) {
       return;
     }
+    const token: number = ++this.startSeq;
+    this.phase = 'preparing';
     this.error = EMPTY_UI_ERROR;
     this.finalized = null;
     this.transcribeHint = '';
@@ -140,15 +208,20 @@ export struct RecordingPage {
     this.permissionMessage = '';
 
     const permission: PermissionOutcome = await ensureMicrophonePermission(context);
+    if (!this.active || token !== this.startSeq) {
+      return;
+    }
     if (!permission.granted) {
+      this.phase = 'idle';
       this.permissionDenied = true;
       this.permissionMessage = permission.message;
       return;
     }
     this.permissionDenied = false;
 
-    const opened: CoreOpenResult = CoreSession.open(context.filesDir);
+    const opened: CoreOpenResult = CoreSession.open(appFilesDir(context));
     if (opened.core === null) {
+      this.phase = 'error';
       this.error = opened.error;
       return;
     }
@@ -157,12 +230,19 @@ export struct RecordingPage {
     this.phase = 'preparing';
     try {
       await recorder.start();
+      if (!this.active || token !== this.startSeq) {
+        await recorder.abort();
+        return;
+      }
       this.phase = 'recording';
       this.elapsedMs = recorder.receivedMs();
       this.persistedMs = recorder.persistedMs();
       this.refreshHoldHints(recorder);
       this.startTimer();
     } catch (e) {
+      if (!this.active || token !== this.startSeq) {
+        return;
+      }
       this.phase = 'error';
       this.error = uiErrorFromThrown(e as Object);
       this.refreshHoldHints(recorder);
@@ -280,12 +360,11 @@ export struct RecordingPage {
     this.runningDue = false;
     if (!result.ok) {
       const mapped: UiError = uiErrorOf(result);
-      this.transcribeHint = `转写任务已排队；这次运行没有完成（${mapped.title}：${mapped.message}）`;
+      this.transcribeHint = '转写尚未完成，可稍后在片段页查看。';
       return;
     }
     const summary: JobRunSummary = result.data as JobRunSummary;
-    this.transcribeHint = `本轮任务：处理 ${summary.processed}，成功 ${summary.succeeded}，` +
-      `失败 ${summary.failed}，积压 ${summary.due_backlog}`;
+    this.transcribeHint = runSummary(summary);
     AppState.bumpDataVersion();
   }
 
@@ -305,57 +384,31 @@ export struct RecordingPage {
     if (state === 'recoverable') {
       return '已保存（不完整）';
     }
-    return state;
+    return '状态未知';
   }
 
   /** 提交结果的标题：成功就说成功，失败就明确说「音频已保存、记录仍是草稿」。 */
   private commitHeadline(): string {
     if (this.commitState === 'committed') {
-      return '已保存，已成篇';
+      return '录音已保存';
     }
     if (this.commitState === 'already_committed') {
-      return '已保存（此前已提交）';
+      return '录音已保存';
     }
     if (this.commitState === 'failed') {
-      return '音频已保存，但这篇仍是草稿';
+      return '音频已保留，记录保存未完成';
     }
-    return '已保存，未提交';
+    return '音频已保留，记录待保存';
   }
 
   private commitDetail(): string {
-    if (this.commitState === 'committed') {
-      return this.commitRevision >= 0
-        ? `记录已提交为正式记录（revision ${this.commitRevision}）。`
-        : '记录已提交为正式记录。';
+    if (this.commitState === 'committed' || this.commitState === 'already_committed') {
+      return '可在片段页查看录音和转写文字。';
     }
-    if (this.commitState === 'already_committed') {
-      return '核心按幂等处理：这条记录此前已经提交过；权威 revision 以详情页为准。';
-    }
-    if (this.commitState === 'failed') {
-      return '音频与来源已经落库，但提交没有成功。重试成功之前，这篇在「今日」仍显示为草稿。';
-    }
-    return '这次没有执行自动提交（例如从「上次录音未收尾」恢复保存）；可到详情页手动提交。';
+    return '音频已保留，请重试保存。';
   }
 
   /** 从 `DiaryError code=… retryable=… message=…` 里只取错误码，单独显示给用户。 */
-  private commitErrorCode(): string {
-    const marker: string = 'code=';
-    const at: number = this.commitError.indexOf(marker);
-    if (at < 0) {
-      return '未知';
-    }
-    const rest: string = this.commitError.substring(at + marker.length);
-    const space: number = rest.indexOf(' ');
-    return space < 0 ? rest : rest.substring(0, space);
-  }
-
-  /**
-   * 提交失败后的重试入口。
-   *
-   * 用 finalize 返回的权威 revision 做 expected_revision；operation_id 由
-   * capture_id + revision 派生，重复点击不会重复提交（核心按操作幂等）。
-   * `invalid_state` 与 VoiceRecorder 同口径：说明此前已提交，按已提交处理。
-   */
   private async retryCommit(): Promise<void> {
     const finalized: RecordingFinalizeResult | null = this.finalized;
     if (finalized === null || this.commitRetrying) {
@@ -387,7 +440,7 @@ export struct RecordingPage {
     this.commitError = '';
     this.commitRevision = committed.capture.revision;
     AppState.bumpDataVersion();
-    toast('已提交为正式记录');
+    toast('记录已保存');
   }
 
   private recoveryStateLabel(state: string): string {
@@ -397,7 +450,7 @@ export struct RecordingPage {
     if (state === 'interrupted') {
       return '被系统中断';
     }
-    return state;
+    return '状态未知';
   }
 
   private segmentCount(): number {
@@ -414,47 +467,43 @@ export struct RecordingPage {
           Text('上次录音未收尾')
             .fontSize(15)
             .fontWeight(FontWeight.Medium)
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .fontColor(SketchColors.text)
           StatePill({ text: this.recoveryStateLabel((this.recovery as RecordingRecovery).state), tone: 'warn' })
         }
         .width('100%')
-        Text(`已保存 ${formatDuration((this.recovery as RecordingRecovery).persisted_ms)}（已登记 ${(this.recovery as RecordingRecovery).closed_segment_indexes.length} 段）`)
+        Text(`已保存 ${formatDuration((this.recovery as RecordingRecovery).persisted_ms)}`)
           .fontSize(14)
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .fontColor(SketchColors.text)
           .width('100%')
         if (this.recoveryTail() > 0) {
-          Text(`崩溃前还有约 ${formatDuration(this.recoveryTail())} 未保存（不完整）；收到量只是最后一次上报值，实际可能更多。`)
+          Text(`录音不完整，约有 ${formatDuration(this.recoveryTail())} 未保存。`)
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
         } else {
-          Text('没有可见的未登记尾巴；这不代表墙上时间一秒没少。')
+          Text('可恢复已保存的录音。')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
         }
         ForEach((this.recovery as RecordingRecovery).notes, (note: string, index: number) => {
-          Text(`· ${note}`)
-            .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
-            .width('100%')
         }, (note: string, index: number) => `${index}-${note}`)
         Row({ space: 8 }) {
           Button(this.recoverySaving ? '保存中…' : '保存已录部分')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(34)
             .enabled(!this.recoverySaving && (this.recovery as RecordingRecovery).closed_segment_indexes.length > 0)
-            .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+            .backgroundColor(SketchColors.button)
+            .fontColor(SketchColors.ink)
             .onClick(() => {
               this.saveRecovery();
             })
           Button('稍后')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(34)
             .enabled(!this.recoverySaving)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.recovery = null;
             })
@@ -469,8 +518,8 @@ export struct RecordingPage {
       .padding(14)
       // 同 S2：warning_transparent 在本机主题下是不透明红，不能再当卡片底色；
       // 警告信息用正常文字色，warning 只留给 StatePill / 具体风险句子。
-      .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-      .borderRadius(14)
+      .backgroundColor(SketchColors.soft)
+      .borderRadius(0)
       .alignItems(HorizontalAlign.Start)
     }
   }
@@ -483,7 +532,7 @@ export struct RecordingPage {
           Text('已保存')
             .fontSize(18)
             .fontWeight(FontWeight.Bold)
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .fontColor(SketchColors.text)
           StatePill({
             text: this.finalizeStateLabel((this.finalized as RecordingFinalizeResult).state),
             tone: (this.finalized as RecordingFinalizeResult).state === 'saved' ? 'ok' : 'warn',
@@ -491,49 +540,39 @@ export struct RecordingPage {
         }
         .width('100%')
         InfoRow({ label: '音频时长', value: formatDuration((this.finalized as RecordingFinalizeResult).logical_duration_ms) })
-        InfoRow({ label: '片段数', value: `${(this.finalized as RecordingFinalizeResult).segment_count}` })
         InfoRow({
           label: '转写任务',
-          value: (this.finalized as RecordingFinalizeResult).transcription_queued ? '已排队（finalize 同事务）' : '没有排队',
+          value: (this.finalized as RecordingFinalizeResult).transcription_queued ? '等待转写' : '没有排队',
         })
-        InfoRow({ label: '录音 ID', value: (this.finalized as RecordingFinalizeResult).recording_id })
         if ((this.finalized as RecordingFinalizeResult).state === 'recoverable') {
-          Text('这次录音不完整：核心只按已登记片段拼接；缺口如实标成 recoverable。')
+          Text('录音不完整，已保留可用部分。')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
         }
         if (this.interrupted) {
-          Text('录音被系统中断过（锁屏/来电/抢占），墙上时间可能少录；核心只能保证已登记片段。')
+          Text('录音曾被系统中断，部分声音可能缺失。')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
         }
         Column({ space: 4 }) {
           Text(this.commitHeadline())
             .fontSize(15)
             .fontWeight(FontWeight.Medium)
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .fontColor(SketchColors.text)
             .width('100%')
           Text(this.commitDetail())
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
           if (this.commitState === 'failed') {
-            Text(`错误码：${this.commitErrorCode()}`)
-              .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_primary'))
-              .width('100%')
-            Text(this.commitError)
-              .fontSize(11)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
-              .width('100%')
-            Button(this.commitRetrying ? '重试中…' : '重试提交')
+            Button(this.commitRetrying ? '保存中…' : '重试保存')
+              .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(13)
-              .height(34)
               .enabled(!this.commitRetrying)
-              .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-              .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+              .backgroundColor(SketchColors.button)
+              .fontColor(SketchColors.ink)
               .onClick(() => {
                 this.retryCommit();
               })
@@ -548,43 +587,33 @@ export struct RecordingPage {
         if (this.transcribeHint.length > 0) {
           Text(this.transcribeHint)
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
         }
         Row({ space: 8 }) {
           Button('回到今日')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(36)
-            .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+            .backgroundColor(SketchColors.button)
+            .fontColor(SketchColors.ink)
             .onClick(() => {
               this.pathStack.pop();
             })
           Button('再录一条')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(36)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
-              this.finalized = null;
-              this.phase = 'idle';
-              this.error = EMPTY_UI_ERROR;
-              this.transcribeHint = '';
-              this.recorder = null;
-              this.finalizeAttempted = false;
-              this.commitState = '';
-              this.commitRevision = -1;
-              this.commitError = '';
-              this.commitRetryError = EMPTY_UI_ERROR;
-              this.loadRecovery();
+              this.recordAgain();
             })
         }
         .width('100%')
       }
       .width('100%')
       .padding(14)
-      .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-      .borderRadius(14)
+      .backgroundColor(SketchColors.paper)
+      .drawModifier(sketchOutline())
       .alignItems(HorizontalAlign.Start)
     }
   }
@@ -598,128 +627,128 @@ export struct RecordingPage {
               Text('说一条')
                 .fontSize(28)
                 .fontWeight(FontWeight.Bold)
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                .fontColor(SketchColors.text)
                 .width('100%')
-              Text('录音期间屏幕会保持常亮（系统限制：熄屏会停止采集，且不会自动恢复）。')
+              Text('录音时请保持屏幕亮起，锁屏会中断录音。')
                 .fontSize(13)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
-              Text('停止后会先 finalize 保存音频，再自动提交成篇；提交失败会在这里显示错误码。')
+              Text('停止后自动保存并转成文字。')
                 .fontSize(13)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
-              Button('开始录音')
-                .fontSize(16)
-                .height(48)
-                .width('100%')
-                .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
-                .onClick(() => {
-                  this.startRecording();
-                })
+              if (this.phase === 'aborted') {
+                Button('重新录音')
+                  .attributeModifier(sketchButton).drawModifier(sketchOutline())
+                  .fontSize(16)
+                  .height(48)
+                  .width('100%')
+                  .backgroundColor(SketchColors.button)
+                  .fontColor(SketchColors.ink)
+                  .onClick(() => {
+                    this.startRecording();
+                  })
+              }
               if (this.permissionDenied) {
                 Column({ space: 6 }) {
                   Text('需要麦克风权限')
                     .fontSize(15)
                     .fontWeight(FontWeight.Medium)
-                    .fontColor($r('sys.color.ohos_id_color_alert'))
+                    .fontColor(SketchColors.alert)
                     .width('100%')
                   Text(this.permissionMessage.length > 0 ? this.permissionMessage : '系统没有授予麦克风权限。')
                     .fontSize(13)
-                    .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                    .fontColor(SketchColors.text)
                     .width('100%')
                   Text('请到系统设置 → 应用 → 不写日记 → 权限 → 麦克风 打开，然后回来重新检查。')
                     .fontSize(12)
-                    .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                    .fontColor(SketchColors.muted)
                     .width('100%')
                   Button('重新检查权限')
+                    .attributeModifier(sketchButton).drawModifier(sketchOutline())
                     .fontSize(13)
-                    .height(34)
-                    .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                    .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                    .backgroundColor(SketchColors.soft)
+                    .fontColor(SketchColors.text)
                     .onClick(() => {
                       this.startRecording();
                     })
                 }
                 .width('100%')
                 .padding(14)
-                .backgroundColor($r('sys.color.ohos_id_color_alert_transparent'))
-                .borderRadius(14)
+                .backgroundColor(SketchColors.soft)
+                .borderRadius(0)
                 .alignItems(HorizontalAlign.Start)
               }
             }
             .width('100%')
             .padding(14)
-            .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-            .borderRadius(14)
+            .backgroundColor(SketchColors.paper)
+            .drawModifier(sketchOutline())
             .alignItems(HorizontalAlign.Start)
           }
 
           if (this.phase === 'preparing') {
-            LoadingRow({ text: '准备中：权限 / 草稿 / 录音票据 / 采集器…' })
+            LoadingRow({ text: '正在准备录音…' })
           }
 
           if (this.phase === 'recording') {
             Column({ space: 10 }) {
               Text('录音中')
                 .fontSize(15)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
               Text(formatDuration(this.persistedMs))
                 .fontSize(40)
                 .fontWeight(FontWeight.Bold)
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
-                .width('100%')
-              Text(`已登记 ${this.segmentCount()} 段；已收到 ${formatDuration(this.elapsedMs)}`)
-                .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.text)
                 .width('100%')
               if (this.elapsedMs > this.persistedMs) {
-                Text(`还有约 ${formatDuration(this.elapsedMs - this.persistedMs)} 未登记（进程崩溃会丢；时长以已登记为准）`)
+                Text(`正在保存最近 ${formatDuration(this.elapsedMs - this.persistedMs)} 的录音…`)
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_warning'))
+                  .fontColor(SketchColors.warning)
                   .width('100%')
               }
               Button('停止并保存')
+                .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(16)
                 .height(46)
                 .width('100%')
-                .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+                .backgroundColor(SketchColors.button)
+                .fontColor(SketchColors.ink)
                 .onClick(() => {
                   this.stopRecording();
                 })
               Button('放弃录音')
+                .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(13)
-                .height(36)
                 .width('100%')
-                .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                .backgroundColor(SketchColors.soft)
+                .fontColor(SketchColors.text)
                 .onClick(() => {
                   this.abortRecording();
                 })
               if (!this.keepScreenOk) {
                 Text('无法保持屏幕常亮；熄屏可能中断录音。')
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_warning'))
+                  .fontColor(SketchColors.warning)
                   .width('100%')
               }
               if (!this.bgTaskOk) {
-                Text('后台录音不可用（长时任务申请失败）；请保持应用在前台。')
+                Text('请保持应用在前台录音。')
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_warning'))
+                  .fontColor(SketchColors.warning)
                   .width('100%')
               }
             }
             .width('100%')
             .padding(16)
-            .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-            .borderRadius(14)
+            .backgroundColor(SketchColors.paper)
+            .drawModifier(sketchOutline())
             .alignItems(HorizontalAlign.Start)
           }
 
           if (this.phase === 'stopping') {
-            LoadingRow({ text: '保存中：封闭最后一段 → 登记 → finalize…' })
+            LoadingRow({ text: '正在保存录音…' })
           }
 
           this.recoveryCard()
@@ -735,36 +764,33 @@ export struct RecordingPage {
 
           if (this.phase === 'error') {
             Column({ space: 8 }) {
-              Text(`当前录音：${this.segmentCount()} 个已登记片段`)
+              Text(`已保留 ${this.segmentCount()} 段录音`)
                 .fontSize(13)
-                .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
               if (this.segmentCount() > 0 && this.finalized === null && !this.finalizeAttempted) {
                 Button('保存已录部分')
+                  .attributeModifier(sketchButton).drawModifier(sketchOutline())
                   .fontSize(13)
-                  .height(36)
-                  .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-                  .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+                  .backgroundColor(SketchColors.button)
+                  .fontColor(SketchColors.ink)
                   .onClick(() => {
                     this.stopRecording();
                   })
               }
               if (this.finalizeAttempted && this.finalized === null) {
-                Text('最终化已经尝试过；不要再重复保存（核心可能报 invalid_state / integrity_failed）。')
+                Text('保存尚未确认，请到片段页查看录音。')
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_warning'))
+                  .fontColor(SketchColors.warning)
                   .width('100%')
               }
               Button('重新开始')
+                .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(13)
-                .height(36)
-                .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                .backgroundColor(SketchColors.soft)
+                .fontColor(SketchColors.text)
                 .onClick(() => {
-                  this.phase = 'idle';
-                  this.error = EMPTY_UI_ERROR;
-                  this.recorder = null;
-                  this.finalizeAttempted = false;
+                  this.recordAgain();
                 })
             }
             .width('100%')
@@ -782,9 +808,9 @@ export struct RecordingPage {
             } })
           }
 
-          Text('平台限制：熄屏/锁屏时系统会强制停止采集，亮屏也不会自动续录；应用只能保持常亮，不能绕过。')
+          Text('录音中断后，需要重新开始录音。')
             .fontSize(11)
-            .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            .fontColor(SketchColors.muted)
             .width('100%')
             .padding({ top: 8, bottom: 24 })
         }
@@ -796,9 +822,9 @@ export struct RecordingPage {
       // Scroll 的 align 默认是 Center：内容不足一屏时会被垂直居中（真机 02 截图）。
       // 显式 Top，内容从顶部开始排。
       .align(Alignment.Top)
-      .backgroundColor($r('sys.color.ohos_id_color_background'))
+      .backgroundColor(SketchColors.canvas)
     }
-    .title('录音')
+    .title('录音', { backgroundColor: SketchColors.canvas })
     .onBackPressed(() => {
       if (this.phase === 'preparing' || this.phase === 'recording' || this.phase === 'stopping') {
         toast('录音还没结束；请先「停止并保存」或「放弃录音」。');

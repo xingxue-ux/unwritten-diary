@@ -255,7 +255,7 @@ fn enabled_organize_produces_a_candidate_and_keeps_the_current_body_untouched() 
     let snapshot = snapshot_body(&core, candidate.source_snapshot_id.as_deref().unwrap());
     assert_eq!(snapshot["organize"]["template_id"], "merge_by_theme");
     assert_eq!(snapshot["organize"]["params"]["themeCount"], "3");
-    assert_eq!(snapshot["prompt_version"], "b4e-1");
+    assert_eq!(snapshot["prompt_version"], diary_core::ORGANIZE_PROMPT_VERSION);
     assert!(snapshot["organize"]["rule_hash"].as_str().unwrap().len() == 64);
 }
 

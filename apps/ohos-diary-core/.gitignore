@@ -8,3 +8,6 @@ local.properties
 
 # 原生产物：由 scripts/build-native.sh 现场编出来，二进制不进仓库
 entry/libs/
+
+# 固定清单的随包本地模型，由 tools/stage_ohos_models.py 校验后生成。
+entry/src/main/resources/rawfile/bundled_models/

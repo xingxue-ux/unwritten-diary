@@ -19,6 +19,7 @@
 pub mod adapter;
 pub mod endpoint;
 pub mod local_engine;
+pub mod local_llm;
 pub mod models;
 pub mod normalize;
 pub mod presets;
@@ -218,11 +219,11 @@ pub(crate) fn list(core: &Core) -> Result<Vec<Provider>> {
 /// 多引一个依赖不划算。**不校验主机能不能解析**——那是连接测试的事。
 fn normalize_endpoint(endpoint: &str) -> Result<String> {
     let trimmed = endpoint.trim();
-    let (scheme, rest) = trimmed.split_once("://").ok_or_else(|| {
-        CoreError::InvalidArgument {
+    let (scheme, rest) = trimmed
+        .split_once("://")
+        .ok_or_else(|| CoreError::InvalidArgument {
             reason: format!("endpoint「{endpoint}」缺少协议前缀（要写 http:// 或 https://）"),
-        }
-    })?;
+        })?;
     let scheme = scheme.to_ascii_lowercase();
     if scheme != "http" && scheme != "https" {
         return Err(CoreError::InvalidArgument {
@@ -316,15 +317,14 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
             reason: "服务配置需要一个显示名（label）".to_owned(),
         });
     }
-    let adapter = adapter::adapter_for(&config.adapter_id).ok_or_else(|| {
-        CoreError::InvalidArgument {
+    let adapter =
+        adapter::adapter_for(&config.adapter_id).ok_or_else(|| CoreError::InvalidArgument {
             reason: format!(
                 "没有标识为「{}」的协议适配器；内置的有：{}",
                 config.adapter_id,
                 adapter::builtin_adapter_ids().join("、")
             ),
-        }
-    })?;
+        })?;
     // 本地引擎没有 endpoint 也没有密钥：给它配一个 http:// 地址是配置错误，
     // 如实拒绝（而不是存下来一个永远不会被用的字段，让用户以为配上了什么）。
     if adapter.is_local() {
@@ -795,6 +795,9 @@ fn evaluate(
     // 本地引擎：没有 endpoint、没有密钥，改为**本机资源就绪**这一条。
     // 「缺什么、怎么办」由引擎的就绪结论直接给出（带路径的那种）。
     if adapter.is_local() {
+        if matches!(adapter, adapter::Adapter::LocalLlm) {
+            return Ok(local_llm::readiness(provider.model.as_deref()).map_err(|e| e.to_string()));
+        }
         return match local_engine::readiness_for(core, provider.model.as_deref()) {
             Ok(readiness) if readiness.ready => Ok(Ok(())),
             Ok(readiness) => Ok(Err(local_engine::blocked_message(&readiness))),
@@ -835,6 +838,9 @@ fn evaluate(
 /// 本机引擎这条路的「下一步」：与 HTTP 那条路的措辞不同，因为要做的事不同
 /// （补模型目录/引擎库，而不是配 endpoint 与密钥）。
 fn local_next_step(capability: ProviderCapability) -> String {
+    if capability == ProviderCapability::GenerateText {
+        return "请重新打开应用准备本机模型，或在模型服务中启用已配置的在线服务".to_owned();
+    }
     format!(
         "本机引擎不需要 endpoint 与密钥：把模型目录（model.int8.onnx 与 tokens.txt）放到随包位置 \
          {}，或用 {} 指定目录、{} 指定引擎库；也可以在设置里保存一条 adapter={} 的服务配置，\
@@ -942,7 +948,7 @@ pub(crate) fn capability_gate_for_with(
     if local_only {
         providers.retain(|provider| {
             adapter::adapter_for(&provider.adapter_id)
-                .map(|adapter| adapter.is_local())
+                .map(|adapter| matches!(adapter, adapter::Adapter::Local(_)))
                 .unwrap_or(false)
         });
     }
@@ -957,11 +963,16 @@ pub(crate) fn capability_gate_for_with(
     let consider_builtin = capability == ProviderCapability::TranscribeAudio
         && !providers.iter().any(|provider| {
             adapter::adapter_for(&provider.adapter_id)
-                .map(|adapter| adapter.is_local())
+                .map(|adapter| matches!(adapter, adapter::Adapter::Local(_)))
                 .unwrap_or(false)
         });
     if consider_builtin {
         providers.push(local_engine::builtin_provider(core.config_file()));
+    }
+    // Explicitly enabled, tested online services take precedence over the
+    // bundled default. The local model remains available without credentials.
+    if capability == ProviderCapability::GenerateText {
+        providers.sort_by_key(|p| p.id == local_llm::BUILTIN_ID);
     }
 
     if providers.is_empty() {
@@ -1177,7 +1188,7 @@ pub(crate) fn test(
     // 走到这里的只可能是 HTTP 适配器（本机引擎在上面就返回了）。
     let adapter = match adapter {
         adapter::Adapter::Http(adapter) => adapter,
-        adapter::Adapter::Local(_) => {
+        adapter::Adapter::Local(_) | adapter::Adapter::LocalLlm => {
             return Err(CoreError::InvalidState {
                 entity: "服务配置",
                 id: provider_id.to_owned(),
@@ -1385,18 +1396,34 @@ fn test_local(
     let mut probe_note = None;
     let mut failure: Option<CoreError> = None;
     if !probed.is_empty() {
-        match local_engine::config_for(core, provider.model.as_deref()) {
-            Ok(config) => {
-                // 一次探针覆盖范围内所有本机能力：它验的是「同一个引擎能不能跑」。
-                match core.asr_engine().probe(&config) {
-                    Ok(message) => {
-                        calls = 1;
-                        probe_note = Some(message);
-                    }
-                    Err(error) => failure = Some(error),
+        if matches!(adapter, adapter::Adapter::LocalLlm) {
+            match local_llm::generate(
+                provider.model.as_deref(),
+                &adapter::GenerateRequest {
+                    prompt: "只回复：好".to_owned(),
+                    system: None,
+                },
+            ) {
+                Ok(_) => {
+                    calls = 1;
+                    probe_note = Some("本机整理可用".to_owned());
                 }
+                Err(error) => failure = Some(error),
             }
-            Err(error) => failure = Some(error),
+        } else {
+            match local_engine::config_for(core, provider.model.as_deref()) {
+                Ok(config) => {
+                    // 一次探针覆盖范围内所有本机能力：它验的是「同一个引擎能不能跑」。
+                    match core.asr_engine().probe(&config) {
+                        Ok(message) => {
+                            calls = 1;
+                            probe_note = Some(message);
+                        }
+                        Err(error) => failure = Some(error),
+                    }
+                }
+                Err(error) => failure = Some(error),
+            }
         }
     }
 
@@ -1774,11 +1801,19 @@ fn respond_once(core: &mut Core, response_id: &str) -> std::result::Result<(), C
             reason: format!("服务「{}」的适配器不在本构建里", provider.label),
         }
     })?;
-    // 本地引擎没有「生成文本」这个能力（`capabilities()` 里就没有它），所以闸门
-    // 不可能把 `respond` 指到本机引擎上。这里再挡一次是防御：绕过闸门也不能走进
-    // 一个不存在的 HTTP 调用。
+    // Local generation never fetches a secret or enters the HTTP transport.
     let adapter = match adapter {
         adapter::Adapter::Http(adapter) => adapter,
+        adapter::Adapter::LocalLlm => {
+            let outcome = local_llm::generate(
+                provider.model.as_deref(),
+                &adapter::GenerateRequest {
+                    prompt: request_text,
+                    system: None,
+                },
+            )?;
+            return write_response(core, response_id, outcome);
+        }
         adapter::Adapter::Local(engine) => {
             return Err(CoreError::ProviderNotConfigured {
                 reason: format!(
@@ -1790,11 +1825,10 @@ fn respond_once(core: &mut Core, response_id: &str) -> std::result::Result<(), C
             })
         }
     };
-    let secret = provider_secret(core, &provider)?.ok_or_else(|| {
-        CoreError::ProviderNotConfigured {
+    let secret =
+        provider_secret(core, &provider)?.ok_or_else(|| CoreError::ProviderNotConfigured {
             reason: format!("服务「{}」还没有可用的密钥", provider.label),
-        }
-    })?;
+        })?;
 
     // 提示词与上下文拼装是 B4b 的事（风格、快照、来源取舍）。这一片如实只把
     // 用户自己的请求文字发出去，`capture_ids` 作为来源记录下来，不擅自编提示词。
@@ -1816,7 +1850,14 @@ fn respond_once(core: &mut Core, response_id: &str) -> std::result::Result<(), C
         return Err(error);
     }
     let outcome = adapter.parse_generate(&response, Some(&secret))?;
+    write_response(core, response_id, outcome)
+}
 
+fn write_response(
+    core: &mut Core,
+    response_id: &str,
+    outcome: adapter::GenerateOutcome,
+) -> Result<()> {
     let now_text = support::to_iso(now());
     core.conn.execute(
         "UPDATE ai_responses SET body = ?1, model = COALESCE(?2, model), state = 'ready', \
@@ -1905,7 +1946,6 @@ fn pinned_provider(core: &Core, response_id: &str) -> Result<Option<String>> {
         .optional()?;
     Ok(provider_id.flatten())
 }
-
 /// 配置变了以后重评队列：能跑的放回 `queued`，不能跑的停在
 /// `waiting_configuration` 并写清「在等什么」。
 ///
