@@ -156,6 +156,16 @@ export struct StylesPage {
     this.rhetoricCustom = false;
   }
 
+  private presetMatches(kind: number): boolean {
+    if (this.lengthCustom || this.personCustom || this.toneCustom ||
+      this.temperatureCustom || this.rhetoricCustom) { return false; }
+    return this.lengthPreference === (kind === 2 ? '简短一些' : '随内容') &&
+      this.person === '沿用原文' &&
+      this.tone === (kind === 1 ? '日常口语' : (kind === 2 ? '平实书面' : '沿用原文')) &&
+      this.temperature === '保留原样' &&
+      this.rhetoric === (kind === 1 ? '稍加润色' : '朴素直写');
+  }
+
   private lines(value: string): string[] {
     return value.split('\n').map((line: string) => line.trim()).filter((line: string) => line.length > 0);
   }
@@ -210,29 +220,6 @@ export struct StylesPage {
     if (await this.save()) { await this.useStyle(this.selectedId); }
   }
 
-  @Builder
-  choiceField(title: string, value: string, custom: boolean, options: string[],
-    select: (text: string, custom: boolean) => void, write: (text: string) => void) {
-    Text(title).fontSize(14).fontColor(SketchColors.text).width('100%')
-    Flex({ wrap: FlexWrap.Wrap }) {
-      ForEach(options, (option: string) => {
-        Button(option).attributeModifier(sketchButton).drawModifier(sketchOutline())
-          .backgroundColor(!custom && value === option ? SketchColors.button : SketchColors.paper)
-          .margin({ right: 8, bottom: 8 }).enabled(!this.busy)
-          .onClick(() => { select(option, false); })
-      }, (option: string) => option)
-      Button('自己填写').attributeModifier(sketchButton).drawModifier(sketchOutline())
-        .backgroundColor(custom ? SketchColors.button : SketchColors.paper)
-        .margin({ bottom: 8 }).enabled(!this.busy)
-        .onClick(() => { select('', true); })
-    }
-    if (custom) {
-      TextInput({ text: value, placeholder: '写下你的偏好' }).attributeModifier(sketchInput)
-        .fontSize(15).fontColor(SketchColors.text).backgroundColor(SketchColors.soft)
-        .borderRadius(0).constraintSize({ minHeight: 48 }).enabled(!this.busy).onChange(write)
-    }
-  }
-
   build() {
     Scroll() {
       Column({ space: 20 }) {
@@ -276,33 +263,29 @@ export struct StylesPage {
                 .fontSize(13).fontColor(SketchColors.muted)
               Flex({ wrap: FlexWrap.Wrap }) {
                 Button('保留原话').attributeModifier(sketchButton).drawModifier(sketchOutline()).margin({ right: 8, bottom: 8 })
+                  .backgroundColor(this.presetMatches(0) ? SketchColors.ink : SketchColors.paper)
+                  .fontColor(this.presetMatches(0) ? SketchColors.paper : SketchColors.ink)
                   .enabled(!this.busy).onClick(() => { this.applyPreset(0); })
                 Button('自然成篇').attributeModifier(sketchButton).drawModifier(sketchOutline()).margin({ right: 8, bottom: 8 })
+                  .backgroundColor(this.presetMatches(1) ? SketchColors.ink : SketchColors.paper)
+                  .fontColor(this.presetMatches(1) ? SketchColors.paper : SketchColors.ink)
                   .enabled(!this.busy).onClick(() => { this.applyPreset(1); })
                 Button('简洁记录').attributeModifier(sketchButton).drawModifier(sketchOutline()).margin({ bottom: 8 })
+                  .backgroundColor(this.presetMatches(2) ? SketchColors.ink : SketchColors.paper)
+                  .fontColor(this.presetMatches(2) ? SketchColors.paper : SketchColors.ink)
                   .enabled(!this.busy).onClick(() => { this.applyPreset(2); })
               }
               Text('也可以逐项调整。').fontSize(13).fontColor(SketchColors.muted)
-              this.choiceField('篇幅', this.lengthPreference, this.lengthCustom,
-                ['随内容', '简短一些', '保留细节'],
-                (text: string, custom: boolean) => { this.lengthPreference = text; this.lengthCustom = custom; },
-                (text: string) => { this.lengthPreference = text; })
-              this.choiceField('叙述人称', this.person, this.personCustom,
-                ['沿用原文', '用“我”叙述', '少用人称'],
-                (text: string, custom: boolean) => { this.person = text; this.personCustom = custom; },
-                (text: string) => { this.person = text; })
-              this.choiceField('语气', this.tone, this.toneCustom,
-                ['沿用原文', '日常口语', '平实书面'],
-                (text: string, custom: boolean) => { this.tone = text; this.toneCustom = custom; },
-                (text: string) => { this.tone = text; })
-              this.choiceField('情绪表达', this.temperature, this.temperatureCustom,
-                ['保留原样', '含蓄一些', '直接一些'],
-                (text: string, custom: boolean) => { this.temperature = text; this.temperatureCustom = custom; },
-                (text: string) => { this.temperature = text; })
-              this.choiceField('修辞程度', this.rhetoric, this.rhetoricCustom,
-                ['朴素直写', '稍加润色', '更有文采'],
-                (text: string, custom: boolean) => { this.rhetoric = text; this.rhetoricCustom = custom; },
-                (text: string) => { this.rhetoric = text; })
+              StyleChoiceField({ title: '篇幅', options: ['随内容', '简短一些', '保留细节'],
+                disabled: this.busy, value: $lengthPreference, custom: $lengthCustom })
+              StyleChoiceField({ title: '叙述人称', options: ['沿用原文', '用“我”叙述', '少用人称'],
+                disabled: this.busy, value: $person, custom: $personCustom })
+              StyleChoiceField({ title: '语气', options: ['沿用原文', '日常口语', '平实书面'],
+                disabled: this.busy, value: $tone, custom: $toneCustom })
+              StyleChoiceField({ title: '情绪表达', options: ['保留原样', '含蓄一些', '直接一些'],
+                disabled: this.busy, value: $temperature, custom: $temperatureCustom })
+              StyleChoiceField({ title: '修辞程度', options: ['朴素直写', '稍加润色', '更有文采'],
+                disabled: this.busy, value: $rhetoric, custom: $rhetoricCustom })
               Text('参考示例（每行一条）').fontSize(13).fontColor(SketchColors.muted)
               TextArea({ text: this.examples }).attributeModifier(sketchArea).height(120).borderRadius(0)
                 .fontColor(SketchColors.text).backgroundColor(SketchColors.soft).enabled(!this.busy)
@@ -327,5 +310,40 @@ export struct StylesPage {
       .width('100%').constraintSize({ maxWidth: 1000 }).padding(24).alignItems(HorizontalAlign.Start)
     }
     .width('100%').height('100%').backgroundColor(SketchColors.canvas)
+  }
+}
+
+@Component
+struct StyleChoiceField {
+  @Prop title: string = '';
+  @Prop options: string[] = [];
+  @Prop disabled: boolean = false;
+  @Link value: string;
+  @Link custom: boolean;
+
+  build() {
+    Column({ space: 4 }) {
+      Text(this.title).fontSize(14).fontColor(SketchColors.text).width('100%')
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(this.options, (option: string) => {
+          Button(option).attributeModifier(sketchButton).drawModifier(sketchOutline())
+            .backgroundColor(!this.custom && this.value === option ? SketchColors.ink : SketchColors.paper)
+            .fontColor(!this.custom && this.value === option ? SketchColors.paper : SketchColors.ink)
+            .margin({ right: 8, bottom: 8 }).enabled(!this.disabled)
+            .onClick(() => { this.value = option; this.custom = false; })
+        }, (option: string) => option)
+        Button('自己填写').attributeModifier(sketchButton).drawModifier(sketchOutline())
+          .backgroundColor(this.custom ? SketchColors.ink : SketchColors.paper)
+          .fontColor(this.custom ? SketchColors.paper : SketchColors.ink)
+          .margin({ bottom: 8 }).enabled(!this.disabled)
+          .onClick(() => { this.value = ''; this.custom = true; })
+      }
+      if (this.custom) {
+        TextInput({ text: this.value, placeholder: '写下你的偏好' }).attributeModifier(sketchInput)
+          .fontSize(15).fontColor(SketchColors.text).backgroundColor(SketchColors.soft)
+          .borderRadius(0).constraintSize({ minHeight: 48 }).enabled(!this.disabled)
+          .onChange((text: string) => { this.value = text; })
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
   }
 }
