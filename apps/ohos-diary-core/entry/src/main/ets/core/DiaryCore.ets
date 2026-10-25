@@ -542,11 +542,6 @@ export class DiaryCore {
     return this.invokeData('providers.list', null) as ProviderConfig[];
   }
 
-  /** `providers.selectGeneration`：只选择一个整理服务，保留配置与密钥，不测试连接。 */
-  selectGenerationProvider(params: ProviderIdParams): ProviderConfig {
-    return this.invokeData('providers.selectGeneration', params) as ProviderConfig;
-  }
-
   /**
    * `providers.presets`：内置预设表（静态数据，不读库、不出网、不含密钥）。
    *
