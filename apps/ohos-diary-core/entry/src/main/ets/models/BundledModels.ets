@@ -25,7 +25,6 @@ export interface ModelProgress {
 const RESOURCE_ROOT: string = 'bundled_models';
 const ASR_REL: string = 'asr/sense-voice-int8';
 const BGE_REL: string = 'semantic/bge-small-zh-v1.5-ours';
-const LLM_REL: string = 'llm/qwen3.5-0.8b-q4_0/model.gguf';
 const BUILTIN_ASR: string = 'builtin_local_asr';
 const CHUNK_BYTES: number = 1024 * 1024;
 
@@ -39,12 +38,12 @@ export class BundledModels {
     const content = await context.resourceManager.getRawFileContent(`${RESOURCE_ROOT}/manifest.json`);
     const text: string = new util.TextDecoder('utf-8').decodeWithStream(content);
     const manifest: ModelManifest = JSON.parse(text) as ModelManifest;
-    if (manifest.version !== 1 || manifest.files.length !== 5) {
+    if (manifest.version !== 1 || manifest.files.length !== 4) {
       throw new Error('随包模型清单不完整');
     }
     let total: number = 0;
     for (const file of manifest.files) {
-      if (!/^(asr|semantic|llm)\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(file.path) ||
+      if (!/^(asr|semantic)\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(file.path) ||
         file.path.includes('..') || file.bytes <= 0 || !/^[a-f0-9]{64}$/.test(file.sha256)) {
         throw new Error('随包模型清单无效');
       }
@@ -68,13 +67,6 @@ export class BundledModels {
     if (!BundledModels.exists(marker)) {
       await BundledModels.asrDefault(filesDir, `${root}/${ASR_REL}`);
       await BundledModels.writeAtomic(marker, '{"version":1}\n');
-    }
-    // Separate marker upgrades existing installations without reseeding ASR or
-    // re-enabling a user's later choice on every restart.
-    const llmMarker: string = `${root}/llm-defaults-ready.json`;
-    if (!BundledModels.exists(llmMarker)) {
-      await BundledModels.llmDefault(filesDir, `${root}/${LLM_REL}`);
-      await BundledModels.writeAtomic(llmMarker, '{"version":1}\n');
     }
     hilog.info(0, 'DiaryModels', 'BUNDLED_MODELS_READY files=%{public}d bytes=%{public}d',
       manifest.files.length, total);
@@ -205,22 +197,5 @@ export class BundledModels {
       if (provider.id === BUILTIN_ASR && provider.test_status === 'ok') { return; }
     }
     throw new Error('随包转写模型测试未通过');
-  }
-
-  private static async llmDefault(filesDir: string, path: string): Promise<void> {
-    const db: string = `${filesDir}/library.sqlite`;
-    const listed = await CoreGateway.call(db, 'providers.list', null);
-    if (!listed.ok) { throw new Error('读取本机整理配置失败'); }
-    for (const provider of listed.data as ProviderConfig[]) {
-      if (provider.id === 'builtin_local_llm') { return; }
-    }
-    const config: ProviderConfig = {
-      id: 'builtin_local_llm', label: '本机整理', adapter_id: 'llama_cpp',
-      endpoint: null, model: path, capabilities: ['generate_text'],
-      credential_ref: null, enabled: true, test_status: 'untested',
-    };
-    const params: SaveProviderParams = { config: config, secret: null };
-    const saved = await CoreGateway.call(db, 'providers.save', params);
-    if (!saved.ok) { throw new Error('设置本机整理失败，请重试'); }
   }
 }

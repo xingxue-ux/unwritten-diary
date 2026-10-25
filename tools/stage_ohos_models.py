@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage the pinned ASR/embedding/LLM models for an offline OHOS installation."""
+"""Stage the pinned local ASR/embedding models for an offline OHOS installation."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,6 @@ RAW = ROOT / 'apps/ohos-diary-core/entry/src/main/resources/rawfile/bundled_mode
 GROUPS = (
     ('asr/sense-voice-int8', 'sense-voice-small-int8-2024-07-17.json', 'asr'),
     ('semantic/bge-small-zh-v1.5-ours', 'bge-small-zh-v1.5.json', 'bge'),
-    ('llm/qwen3.5-0.8b-q4_0', 'qwen3.5-0.8b-q4_0.json', 'llm'),
 )
 
 
@@ -51,24 +50,23 @@ def check(destination: Path = RAW, root: Path = ROOT) -> dict:
         raise ValueError('Bundled model inventory does not match models/manifest')
     for item in expected['files']:
         verify(destination / item['path'], item)
-    for name in ('SenseVoice-LICENSE-MIT.txt', 'BGE-LICENSE-MIT.txt', 'Qwen-LICENSE-Apache-2.0.txt', 'llama.cpp-LICENSE-MIT.txt', 'NOTICE.md'):
+    for name in ('SenseVoice-LICENSE-MIT.txt', 'BGE-LICENSE-MIT.txt', 'NOTICE.md'):
         if not (destination / name).is_file():
             raise ValueError(f'Missing model notice: {name}')
     allowed = {item['path'] for item in expected['files']} | {
-        'manifest.json', 'SenseVoice-LICENSE-MIT.txt', 'BGE-LICENSE-MIT.txt',
-        'Qwen-LICENSE-Apache-2.0.txt', 'llama.cpp-LICENSE-MIT.txt', 'NOTICE.md'}
+        'manifest.json', 'SenseVoice-LICENSE-MIT.txt', 'BGE-LICENSE-MIT.txt', 'NOTICE.md'}
     actual = {path.relative_to(destination).as_posix() for path in destination.rglob('*') if path.is_file()}
     if actual - allowed:
         raise ValueError(f'Unexpected bundled files (not pinned runtime models): {sorted(actual - allowed)}')
     return expected
 
 
-def stage(asr: Path, bge: Path, destination: Path = RAW, root: Path = ROOT, llm: Path | None = None) -> dict:
+def stage(asr: Path, bge: Path, destination: Path = RAW, root: Path = ROOT) -> dict:
     manifest = inventory(root)
     # Validate every source before copying anything to the build inputs.
     sources = []
     for group, _, key in GROUPS:
-        source = {'asr': asr, 'bge': bge, 'llm': llm or root / 'models/llm/qwen3.5-0.8b-q4_0'}[key]
+        source = asr if key == 'asr' else bge
         for item in manifest['files']:
             if item['path'].startswith(group + '/'):
                 path = source / Path(item['path']).relative_to(group)
@@ -85,8 +83,6 @@ def stage(asr: Path, bge: Path, destination: Path = RAW, root: Path = ROOT, llm:
     for source, name in (
         ('sense-voice-LICENSE-MIT.txt', 'SenseVoice-LICENSE-MIT.txt'),
         ('bge-small-zh-v1.5-LICENSE-MIT.txt', 'BGE-LICENSE-MIT.txt'),
-        ('qwen3.5-LICENSE-Apache-2.0.txt', 'Qwen-LICENSE-Apache-2.0.txt'),
-        ('llama.cpp-LICENSE-MIT.txt', 'llama.cpp-LICENSE-MIT.txt'),
         ('ohos-local-models-NOTICE.md', 'NOTICE.md'),
     ):
         shutil.copyfile(root / 'models/manifest' / source, destination / name)
@@ -100,14 +96,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--asr-dir', type=Path, default=Path(os.environ.get('DIARY_ASR_MODEL_DIR', ROOT / 'models/asr/sense-voice-int8')))
     parser.add_argument('--bge-dir', type=Path, default=ROOT / 'models/bge-small-zh-v1.5-ours')
-    parser.add_argument('--llm-dir', type=Path, default=ROOT / 'models/llm/qwen3.5-0.8b-q4_0')
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
     try:
-        manifest = check() if args.check else stage(args.asr_dir, args.bge_dir, llm=args.llm_dir)
+        manifest = check() if args.check else stage(args.asr_dir, args.bge_dir)
     except (OSError, ValueError, KeyError) as error:
         parser.exit(1, f'[FAIL] {error}\nStage the pinned models with --asr-dir and --bge-dir before building HAP.\n')
-    print(f'[PASS] {len(manifest["files"])} pinned local model files, {sum(f["bytes"] for f in manifest["files"]):,} bytes; ASR, embedding and Q4 LLM.')
+    print(f'[PASS] {len(manifest["files"])} pinned local model files, {sum(f["bytes"] for f in manifest["files"]):,} bytes; no LLM weights.')
     return 0
 
 

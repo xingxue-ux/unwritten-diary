@@ -14,8 +14,7 @@ function environment() {
   const state = {opens: 0, closes: 0, failWrite: false, corruptResource: false, testFails: false};
   let nextFd = 1;
   const names = ['asr/sense-voice-int8/model.int8.onnx', 'asr/sense-voice-int8/tokens.txt',
-    'semantic/bge-small-zh-v1.5-ours/model_quantized.onnx', 'semantic/bge-small-zh-v1.5-ours/tokenizer.json',
-    'llm/qwen3.5-0.8b-q4_0/model.gguf'];
+    'semantic/bge-small-zh-v1.5-ours/model_quantized.onnx', 'semantic/bge-small-zh-v1.5-ours/tokenizer.json'];
   const inventory = {version: 1, files: names.map((name, index) => {
     const bytes = Buffer.alloc(index === 0 ? 2 * 1024 * 1024 + 31 : 100 + index, index + 1);
     resources.set('bundled_models/' + name, bytes);
@@ -52,15 +51,14 @@ function environment() {
     assert.equal(db, '/app/library.sqlite');
     if (method === 'providers.list') return {ok: true, data: providers.map(p => ({...p}))};
     if (method === 'providers.save') {
-      assert.ok(['sherpa_onnx', 'llama_cpp'].includes(params.config.adapter_id));
+      assert.equal(params.config.adapter_id, 'sherpa_onnx');
       assert.equal(params.secret, null);
-      providers = [...providers.filter(p => p.id !== params.config.id), params.config];
-      return {ok: true, data: params.config};
+      providers = [params.config]; return {ok: true, data: params.config};
     }
     if (method === 'providers.test') {
       assert.deepEqual(Array.from(params.scope), ['transcribe_audio']);
       if (state.testFails) return {ok: false};
-      providers.find(p => p.id === params.provider_id).test_status = 'ok'; return {ok: true};
+      providers[0].test_status = 'ok'; return {ok: true};
     }
     throw new Error('Unexpected API ' + method);
   }};
@@ -99,7 +97,7 @@ function environment() {
 
 async function firstInstall() {
   const env = environment(); await env.prepare();
-  assert.equal(env.state.opens, 5); assert.equal(env.state.closes, 5); assert.equal(env.handles.size, 0);
+  assert.equal(env.state.opens, 4); assert.equal(env.state.closes, 4); assert.equal(env.handles.size, 0);
   for (const file of env.inventory.files) assert.equal(digest(env.files.get(`${base}/${file.path}`)), file.sha256);
   const config = JSON.parse(env.files.get('/app/core-config.json'));
   assert.equal(config.ortDylib, '/native/libonnxruntime-diary-1.29.1.so');
@@ -107,33 +105,19 @@ async function firstInstall() {
   assert.equal(config.asrModelDir, undefined); // explicit provider selection keeps priority
   assert.ok(env.files.has(marker));
   assert.equal(env.calls.find(c => c.method === 'providers.save').params.config.model, asr);
-  const local = env.calls.find(c => c.method === 'providers.save' && c.params.config.adapter_id === 'llama_cpp');
-  assert.equal(local.params.config.model, `${base}/llm/qwen3.5-0.8b-q4_0/model.gguf`);
-  assert.equal(local.params.config.enabled, true);
-  assert.equal(local.params.config.credential_ref, null);
-  assert.ok(env.files.has(`${base}/llm-defaults-ready.json`));
-  assert.equal(env.calls.filter(c => c.method === 'providers.test').length, 1); // no LLM warm-up on startup
 }
 async function restartPreservesChoice() {
   const env = environment(); await env.prepare();
   const calls = env.calls.length;
   env.providers([{id: 'builtin_local_asr', adapter_id: 'sherpa_onnx', model: asr, enabled: false}]);
-  await env.prepare(); assert.equal(env.calls.length, calls); assert.equal(env.state.opens, 5);
+  await env.prepare(); assert.equal(env.calls.length, calls); assert.equal(env.state.opens, 4);
 }
 async function customConfiguration() {
   const env = environment(), text = '{"model_dir":"/custom/embed","ort_dylib":"/custom/ort","asrModelDir":"/custom/asr","extra":42}';
   env.files.set('/app/core-config.json', Buffer.from(text));
   env.providers([{id: 'mine', adapter_id: 'sherpa_onnx', model: '/custom/asr', enabled: false}]);
   await env.prepare(); assert.equal(env.files.get('/app/core-config.json').toString(), text);
-  assert.equal(env.calls.filter(c => c.method === 'providers.save' && c.params.config.adapter_id === 'sherpa_onnx').length, 0);
-  assert.equal(env.calls.filter(c => c.method === 'providers.save' && c.params.config.adapter_id === 'llama_cpp').length, 1);
-}
-async function upgradePreservesDisabledLlm() {
-  const env = environment();
-  env.providers([{id: 'builtin_local_llm', adapter_id: 'llama_cpp', model: '/custom/model.gguf', enabled: false}]);
-  await env.prepare();
-  assert.equal(env.calls.filter(c => c.method === 'providers.save' && c.params.config.id === 'builtin_local_llm').length, 0);
-  assert.ok(env.files.has(`${base}/llm-defaults-ready.json`));
+  assert.deepEqual(env.calls.map(c => c.method), ['providers.list']);
 }
 async function interruptedCopy() {
   const env = environment(), destination = `${base}/${env.inventory.files[0].path}`;
@@ -165,7 +149,7 @@ async function unsafeManifest() {
   await assert.rejects(env.prepare(), /清单无效/); assert.equal(env.files.size, 0);
 }
 (async () => {
-  for (const test of [firstInstall, restartPreservesChoice, customConfiguration, upgradePreservesDisabledLlm, interruptedCopy,
+  for (const test of [firstInstall, restartPreservesChoice, customConfiguration, interruptedCopy,
     corruptResource, invalidConfiguration, failedLocalTestRetries, unsafeManifest]) {
     await test(); console.log('PASS ' + test.name);
   }

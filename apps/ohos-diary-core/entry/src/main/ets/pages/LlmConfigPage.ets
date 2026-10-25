@@ -15,7 +15,6 @@ import { SketchColors, SketchFonts, sketchInput, sketchButton, sketchOutline } f
 export struct LlmConfigPage {
   pathStack: NavPathStack = new NavPathStack();
   @State providers: ProviderConfig[] = [];
-  @State localProvider: ProviderConfig | null = null;
   @State presets: ProviderPreset[] = [];
   @State models: ProviderModelInfo[] = [];
   @State selected: ProviderConfig | null = null;
@@ -53,10 +52,6 @@ export struct LlmConfigPage {
     if (!result.ok) { this.error = uiErrorOf(result); this.uncertain = true; return; }
     this.providers = (result.data as ProviderConfig[]).filter((p: ProviderConfig) =>
       p.adapter_id === 'openai_compatible' && p.capabilities.includes('generate_text'));
-    this.localProvider = null;
-    for (const provider of result.data as ProviderConfig[]) {
-      if (provider.id === 'builtin_local_llm') { this.localProvider = provider; }
-    }
     if (this.selected !== null && !this.dirty) {
       const id: string = (this.selected as ProviderConfig).id;
       let found: boolean = false;
@@ -239,24 +234,6 @@ export struct LlmConfigPage {
     await this.load();
   }
 
-  private async toggleLocal(): Promise<void> {
-    if (this.busy || this.loading || this.localProvider === null) { return; }
-    const current: ProviderConfig = this.localProvider as ProviderConfig;
-    const config: ProviderConfig = { id: current.id, label: current.label,
-      adapter_id: current.adapter_id, endpoint: null, model: current.model,
-      capabilities: current.capabilities, credential_ref: null,
-      enabled: !current.enabled, test_status: current.test_status };
-    this.busy = true;
-    const params: SaveProviderParams = { config: config, secret: null };
-    const saved = await CoreGateway.call(this.dbPath, 'providers.save', params);
-    this.busy = false;
-    if (!this.active) { return; }
-    if (!saved.ok) { this.error = uiErrorOf(saved); return; }
-    this.message = config.enabled ? '已启用本机整理。' : '已停用本机整理。';
-    AppState.bumpDataVersion();
-    await this.load();
-  }
-
   private async remove(): Promise<void> {
     if (!this.canProbe()) { return; }
     const id: string = (this.selected as ProviderConfig).id;
@@ -338,23 +315,7 @@ export struct LlmConfigPage {
       Scroll() {
         Column({ space: 16 }) {
           Text('让智能助手整理日记').fontFamily(SketchFonts.display).fontSize(24).fontColor(SketchColors.ink)
-          if (this.localProvider !== null) {
-            Column({ space: 10 }) {
-              Row({ space: 12 }) {
-                Text('本机整理').fontSize(18).fontColor(SketchColors.ink)
-                StatePill({ text: (this.localProvider as ProviderConfig).enabled ? '已启用' : '未启用',
-                  tone: (this.localProvider as ProviderConfig).enabled ? 'ok' : 'muted' })
-              }
-              Text('模型已随包准备，无需密钥，可离线整理。').fontSize(14).fontColor(SketchColors.muted)
-              Text('优先保留原句，适合简单整理。').fontSize(13).fontColor(SketchColors.muted)
-              Button((this.localProvider as ProviderConfig).enabled ? '停用本机整理' : '启用本机整理')
-                .attributeModifier(sketchButton).drawModifier(sketchOutline())
-                .enabled(!this.busy && !this.loading).onClick(() => { this.toggleLocal(); })
-            }.width('100%').alignItems(HorizontalAlign.Start).padding(16)
-              .backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
-          }
-          SectionTitle({ text: '在线整理（可选）' })
-          Text('启用在线服务后优先使用，只有整理时才会发送相关记录。')
+          Text('只有启用后，服务才会接收需要整理的记录。')
             .fontSize(14).fontColor(SketchColors.muted)
           if (this.loading) { LoadingRow({ text: '读取模型服务…' }) }
           Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {

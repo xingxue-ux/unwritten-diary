@@ -94,7 +94,7 @@ PY
 if [[ -z "${SKIP_NATIVE:-}" ]]; then
   "$HERE/scripts/build-native.sh"
 fi
-for so in libdiary_capi.so libdiary_napi.so libc++_shared.so libdiary_llm.so libdiary_llm_dotprod.so; do
+for so in libdiary_capi.so libdiary_napi.so libc++_shared.so; do
   [[ -f "$HERE/entry/libs/arm64-v8a/$so" ]] \
     || { echo "缺少 entry/libs/arm64-v8a/$so（先跑 scripts/build-native.sh）" >&2; exit 1; }
 done
@@ -134,7 +134,7 @@ fi
 # ── 0a2. 两种构建都必须保留产品联网权限
 check_internet_permission
 
-# 产品包必须含三组固定本地模型；不会以缺模型的包冒充离线产品。
+# 产品包必须含两组固定本地模型；不会以缺模型的包冒充离线产品。
 python3 "$HERE/../../tools/stage_ohos_models.py" --check
 
 # ── 0b. ohpm install（依赖是本地 file: 目录，不需要联网）
