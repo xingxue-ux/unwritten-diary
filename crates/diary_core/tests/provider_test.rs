@@ -32,19 +32,14 @@ fn generation_selection_is_exclusive_and_preserves_credentials_and_asr() {
     let asr = core
         .save_provider(&local_provider_config("asr", None), None)
         .unwrap();
-    let local = Provider {
-        id: "builtin_local_llm".into(),
-        label: "本机整理".into(),
-        adapter_id: "llama_cpp".into(),
-        endpoint: None,
-        model: Some("/test/model.gguf".into()),
-        capabilities: [ProviderCapability::GenerateText].into_iter().collect(),
-        credential_ref: None,
-        enabled: false,
-        test_status: ProviderTestStatus::Untested,
-    };
-    core.save_provider(&local, None).unwrap();
-    core.select_generation_provider(&local.id).unwrap();
+    // 两个在线候选：切换要原子、互斥，而且不动另一个的密钥与模型。
+    let second = core
+        .save_provider(
+            &provider_config("second", &[ProviderCapability::GenerateText], false),
+            Some("second-secret"),
+        )
+        .unwrap();
+    core.select_generation_provider(&second.id).unwrap();
     let rows = core.list_providers().unwrap();
     let stopped = rows.iter().find(|p| p.id == online.id).unwrap();
     assert!(!stopped.enabled);
@@ -71,6 +66,32 @@ fn generation_selection_is_exclusive_and_preserves_credentials_and_asr() {
     assert!(core.select_generation_provider("missing").is_err());
     assert!(core.select_generation_provider(&asr.id).is_err());
     assert_eq!(core.list_providers().unwrap(), before);
+}
+
+/// 日记生成的服务选择只接受**在线**服务。
+///
+/// 这条与本机整理移除直接相关：`sherpa_onnx` 只做转写/语义检索，
+/// `capabilities()` 里没有 `generate_text`。即使一条本机配置行手写声明了
+/// `generate_text`，`providers.selectGeneration` 也必须拒绝——否则界面会说
+/// 「正在使用」而执行者根本不会用它。
+#[test]
+fn generation_selection_rejects_local_engine_even_if_it_declares_generate_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let mut local = local_provider_config("local_generate", Some("/nonexistent/model-dir"));
+    local.capabilities = [ProviderCapability::GenerateText].into_iter().collect();
+    local.enabled = false;
+    // 保存不校验「适配器是否真的实现了这个能力」：那是闸门与选择时的职责。
+    core.save_provider(&local, None).unwrap();
+    let error = core.select_generation_provider("local_generate").unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    assert!(
+        format!("{error:?}").contains("在线服务"),
+        "错误消息要说清需要在线服务：{error:?}"
+    );
+    let rows = core.list_providers().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(!rows[0].enabled, "被拒绝的选择不能顺手把这条服务启用");
 }
 
 #[test]

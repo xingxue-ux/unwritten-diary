@@ -682,6 +682,15 @@ pub(crate) fn transcription_choice(core: &crate::Core) -> Result<TranscriptionCh
         if !matches!(adapter, crate::provider::adapter::Adapter::Local(_)) {
             continue;
         }
+        // 只声明了别的能力（例如手写的 `generate_text`）的本机行不该被转写挑中：
+        // 闸门会因为它没声明 `transcribe_audio` 而拒绝，执行者却会去读它的模型目录
+        // ——那正是「闸门说不可用、执行者说能用」的抖动。两处用同一个判据。
+        if !provider
+            .capabilities
+            .contains(&ProviderCapability::TranscribeAudio)
+        {
+            continue;
+        }
         let model_override = provider
             .model
             .as_deref()
@@ -705,22 +714,28 @@ pub(crate) fn transcription_choice(core: &crate::Core) -> Result<TranscriptionCh
 mod tests {
     use super::*;
 
+    /// 一条只声明 `generate_text` 的本机配置行**不能**顶掉转写选择。
+    ///
+    /// 本机引擎不实现生成（随包 `local_llm` 已移除），但用户/旧版本仍可能留下一行
+    /// 声称 `generate_text` 的本机配置。转写挑选与闸门用同一个判据（必须声明
+    /// `transcribe_audio`），否则会出现「闸门说不可用、执行者去读它的模型目录」。
     #[test]
-    fn local_llm_does_not_shadow_asr_selection() {
+    fn generation_only_local_row_does_not_shadow_transcription() {
         let dir = tempfile::tempdir().unwrap();
         let mut core = crate::Core::open_in_memory_at(dir.path()).unwrap();
-        let llm = Provider {
-            id: super::super::local_llm::BUILTIN_ID.to_owned(),
-            label: "本机整理".to_owned(),
-            adapter_id: super::super::local_llm::ADAPTER_ID.to_owned(),
+        let row = Provider {
+            id: "generation_only_local".to_owned(),
+            label: "只声明生成的本机行".to_owned(),
+            adapter_id: SHERPA_ONNX.to_owned(),
             endpoint: None,
-            model: Some("missing/model.gguf".to_owned()),
+            model: Some("missing/model-dir".to_owned()),
             capabilities: [ProviderCapability::GenerateText].into_iter().collect(),
             credential_ref: None,
             enabled: true,
             test_status: ProviderTestStatus::Untested,
         };
-        core.save_provider(&llm, None).unwrap();
+        core.save_provider(&row, None).unwrap();
+        // 它不被挑中：选择回落到内建引擎（None），不是那行手写配置。
         assert_eq!(transcription_choice(&core).unwrap().provider_id, None);
         let mut asr = builtin_provider(None);
         asr.id = "my_asr".to_owned();

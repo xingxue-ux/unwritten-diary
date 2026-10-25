@@ -836,12 +836,12 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
                     &mut caller,
                     ERR_PROVIDER,
                     "provider_not_configured",
-                    format!("服务「{provider_id}」的适配器不在本构建里"),
+                    crate::provider::missing_adapter_reason(provider_config),
                 ));
             };
             let adapter = match adapter {
                 adapter::Adapter::Http(adapter) => adapter,
-                adapter::Adapter::Local(_) | adapter::Adapter::LocalLlm => {
+                adapter::Adapter::Local(_) => {
                     return Ok(fail(
                         &mut caller,
                         ERR_PROVIDER,

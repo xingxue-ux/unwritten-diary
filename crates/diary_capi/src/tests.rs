@@ -1347,7 +1347,8 @@ fn providers_select_generation_switches_with_both_parameter_spellings() {
             handle,
             "providers.save",
             json!({"config": {
-                "id": id, "label": id, "adapter_id": "llama_cpp", "model": "/test/model.gguf",
+                "id": id, "label": id, "adapter_id": "openai_compatible",
+                "endpoint": "http://127.0.0.1:11434/v1", "model": "qwen-test",
                 "capabilities": ["generate_text"], "enabled": false, "test_status": "untested"
             }}),
         ));
@@ -5161,6 +5162,116 @@ fn captures_move_day_updates_the_day_and_list_days_sees_it() {
         "invalid_state",
     );
     assert!(message.contains("回收站"), "{message}");
+
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 老库兼容：`adapter_id = llama_cpp` 的旧「本机整理」配置行。
+///
+/// 随包本机整理已移除，这个适配器不在本构建里。这条配置**不会被静默删除**：
+/// - `providers.list` 照常列出它（不因为适配器不存在而报错）；
+/// - `providers.selectGeneration` 明确拒绝，并说清「改用在线服务」；
+/// - `providers.test` 报 `provider_not_configured`，原因同样是「不再提供」；
+/// - `diary.generate` + `jobs.runDue` 停在 `waiting_configuration`（不崩溃、不假成功、
+///   不消耗尝试次数），`diary.getDay` 照常可读。
+#[test]
+fn legacy_local_llm_provider_row_is_reported_not_silently_deleted() {
+    let (dir, path, handle) = open_temp("legacy-local-llm");
+    // 旧版本写下的那一行（升级前真实存在于用户库里）。
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO providers (id, label, adapter_id, endpoint, model, \
+             declared_capabilities, verified_capabilities, credential_ref, enabled, \
+             test_status, created_at, updated_at) \
+             VALUES ('builtin_local_llm', '本机整理', 'llama_cpp', NULL, \
+             '/data/storage/el2/base/haps/entry/files/bundled-models/v1/llm/qwen3.5-0.8b-q4_0/model.gguf', \
+             '[\"generate_text\"]', '[]', NULL, 1, 'untested', \
+             '2026-10-25T00:00:00Z', '2026-10-25T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    }
+
+    // list：不因为没有适配器而报错；行还在。
+    let rows = expect_ok(&call(handle, "providers.list", json!(null)));
+    let legacy = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == json!("builtin_local_llm"))
+        .expect("旧配置要如实列出，不能静默删除");
+    assert_eq!(legacy["adapter_id"], json!("llama_cpp"));
+    assert_eq!(legacy["enabled"], json!(true));
+
+    // 选择它：明确拒绝，并说清需要在线服务（不是「未知方法/内部错误」）。
+    let message = expect_error(
+        &call(
+            handle,
+            "providers.selectGeneration",
+            json!({"provider_id": "builtin_local_llm"}),
+        ),
+        "invalid_argument",
+    );
+    assert!(message.contains("在线"), "要说清改用在线服务：{message}");
+    assert!(message.contains("旧版本"), "要认出这是旧版本的本机整理：{message}");
+
+    // 连接测试：provider_not_configured，原因一致。
+    let test_message = expect_error(
+        &call(
+            handle,
+            "providers.test",
+            json!({"provider_id": "builtin_local_llm", "scope": ["generate_text"]}),
+        ),
+        "provider_not_configured",
+    );
+    assert!(
+        test_message.contains("旧版本") && test_message.contains("在线"),
+        "连接测试也要说人话：{test_message}"
+    );
+
+    // 生成：受理后停在等配置，不消耗尝试次数、不写假正文。
+    seed_capture_at(
+        handle,
+        "op-legacy-capture",
+        "2026-10-25T02:00:00Z",
+        "今天去公园散步。",
+    );
+    let ticket = expect_ok(&call(
+        handle,
+        "diary.generate",
+        json!({
+            "day_key": "2026-10-25",
+            "reason": "manual",
+            "operation_id": "op-legacy-generate",
+        }),
+    ));
+    run_due(handle);
+    let job = expect_ok(&call(handle, "jobs.get", json!({"job_id": ticket["job_id"]})));
+    assert_eq!(job["state"], json!("waiting_configuration"), "{job}");
+    assert_eq!(job["error_code"], json!("provider_not_configured"), "{job}");
+    assert_eq!(job["attempt_count"], json!(0), "等配置不算一次尝试：{job}");
+    assert_eq!(job["requires_user_action"], json!(true), "{job}");
+    assert!(
+        job["attention_key"]
+            .as_str()
+            .is_some_and(|key| key.starts_with("job-config:")),
+        "要能深链到配置页：{job}"
+    );
+
+    // 这一天照常可读：没有版本，也没有空正文冒充成功。
+    let day = expect_ok(&call(handle, "diary.getDay", json!({"day_key": "2026-10-25"})));
+    assert_eq!(day["current_version_id"], json!(null));
+    assert_eq!(day["candidate_version_ids"], json!([]));
+
+    // 旧配置仍在：我们只解释它不能用，不替用户删配置。
+    let rows = expect_ok(&call(handle, "providers.list", json!(null)));
+    assert!(rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["id"] == json!("builtin_local_llm")));
 
     assert_eq!(diary_close(handle), 0);
     std::fs::remove_dir_all(dir).unwrap();
