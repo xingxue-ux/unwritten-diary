@@ -25,8 +25,7 @@ export interface ModelProgress {
 const RESOURCE_ROOT: string = 'bundled_models';
 const ASR_REL: string = 'asr/sense-voice-int8';
 const BGE_REL: string = 'semantic/bge-small-zh-v1.5-ours';
-/** 旧版本随包的「本机整理」模型目录（Qwen3.5-0.8B）。升级时清掉，回收 563 MB。 */
-const LEGACY_LLM_REL: string = 'llm';
+const LLM_REL: string = 'llm/qwen3.5-0.8b-q4_0/model.gguf';
 const BUILTIN_ASR: string = 'builtin_local_asr';
 const CHUNK_BYTES: number = 1024 * 1024;
 
@@ -40,13 +39,12 @@ export class BundledModels {
     const content = await context.resourceManager.getRawFileContent(`${RESOURCE_ROOT}/manifest.json`);
     const text: string = new util.TextDecoder('utf-8').decodeWithStream(content);
     const manifest: ModelManifest = JSON.parse(text) as ModelManifest;
-    // 两组本地能力（转写 + 语义检索）。日记生成不随包，所以清单里没有 llm 组。
-    if (manifest.version !== 1 || manifest.files.length !== 4) {
+    if (manifest.version !== 1 || manifest.files.length !== 5) {
       throw new Error('随包模型清单不完整');
     }
     let total: number = 0;
     for (const file of manifest.files) {
-      if (!/^(asr|semantic)\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(file.path) ||
+      if (!/^(asr|semantic|llm)\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(file.path) ||
         file.path.includes('..') || file.bytes <= 0 || !/^[a-f0-9]{64}$/.test(file.sha256)) {
         throw new Error('随包模型清单无效');
       }
@@ -71,13 +69,12 @@ export class BundledModels {
       await BundledModels.asrDefault(filesDir, `${root}/${ASR_REL}`);
       await BundledModels.writeAtomic(marker, '{"version":1}\n');
     }
-    // 日记生成已不随包：回收旧版本留下的本机整理权重目录（约 563 MB）。
-    // **不动**旧的那条 provider 配置行：那是用户资料库的一部分，界面上会如实列出
-    // 「旧版本的本机整理，已不再支持」并让用户自己删。清理失败不阻断启动。
-    const cleanupMarker: string = `${root}/legacy-local-llm-model-cleaned-v1.json`;
-    if (!BundledModels.exists(cleanupMarker)) {
-      const cleaned: boolean = await BundledModels.cleanupLegacyLocalModel(root);
-      if (cleaned) { await BundledModels.writeAtomic(cleanupMarker, '{"version":1}\n'); }
+    // Separate marker upgrades existing installations without reseeding ASR or
+    // re-enabling a user's later choice on every restart.
+    const llmMarker: string = `${root}/llm-defaults-ready.json`;
+    if (!BundledModels.exists(llmMarker)) {
+      await BundledModels.llmDefault(filesDir, `${root}/${LLM_REL}`);
+      await BundledModels.writeAtomic(llmMarker, '{"version":1}\n');
     }
     const selectionMarker: string = `${root}/llm-selection-ready.json`;
     if (!BundledModels.exists(selectionMarker)) {
@@ -215,46 +212,38 @@ export class BundledModels {
     throw new Error('随包转写模型测试未通过');
   }
 
-  /**
-   * 回收上一版随包的本机整理**权重目录**（`bundled-models/v1/llm/`，约 563 MB）。
-   *
-   * 只删我们自己在沙箱里铺的模型文件，**不删资料库里的 provider 配置行**：
-   * 那条 `adapter_id = llama_cpp` 的 `builtin_local_llm` 会继续出现在「模型服务」页，
-   * 标成「旧版本的本机整理（已不再支持）」，由用户自己决定删不删。静默删配置是
-   * 不可接受的——升级不该让用户看见一个配置凭空消失。
-   *
-   * 返回 true 表示可以记「已清理」；失败返回 false，下次启动重试。
-   */
-  private static async cleanupLegacyLocalModel(root: string): Promise<boolean> {
-    const legacy: string = `${root}/${LEGACY_LLM_REL}`;
-    if (!BundledModels.exists(legacy)) { return true; }
-    try {
-      fs.rmdirSync(legacy);
-      hilog.info(0, 'DiaryModels', 'LEGACY_LOCAL_LLM_MODEL_CLEANED path=%{public}s', legacy);
-      return true;
-    } catch (_) {
-      hilog.warn(0, 'DiaryModels', 'LEGACY_LOCAL_LLM_MODEL_CLEANUP_FAILED');
-      return false;
+  private static async llmDefault(filesDir: string, path: string): Promise<void> {
+    const db: string = `${filesDir}/library.sqlite`;
+    const listed = await CoreGateway.call(db, 'providers.list', null);
+    if (!listed.ok) { throw new Error('读取本机整理配置失败'); }
+    for (const provider of listed.data as ProviderConfig[]) {
+      if (provider.id === 'builtin_local_llm') { return; }
     }
+    const config: ProviderConfig = {
+      id: 'builtin_local_llm', label: '本机整理', adapter_id: 'llama_cpp',
+      endpoint: null, model: path, capabilities: ['generate_text'],
+      credential_ref: null, enabled: !(listed.data as ProviderConfig[]).some((p: ProviderConfig) =>
+        p.enabled && p.capabilities.includes('generate_text')), test_status: 'untested',
+    };
+    const params: SaveProviderParams = { config: config, secret: null };
+    const saved = await CoreGateway.call(db, 'providers.save', params);
+    if (!saved.ok) { throw new Error('设置本机整理失败，请重试'); }
   }
 
-  // One-time repair of the previous release's independent switches: keep at most
-  // one enabled generation service, preserving its test-status / creation-order
-  // priority. Listing and selecting configurations never probes the network.
-  // 本机整理已移除，这里只在剩下的在线服务里选一个。
+  // One-time repair of the previous release's independent switches. Preserve
+  // its test-status / creation-order priority, with the bundled default last.
+  // Listing and selecting configurations never probes the network.
   private static async normalizeLlmSelection(filesDir: string): Promise<void> {
     const db: string = `${filesDir}/library.sqlite`;
     const listed = await CoreGateway.call(db, 'providers.list', null);
     if (!listed.ok) { throw new Error('读取整理方式失败，请重试'); }
-    // 只考虑本构建真的支持、而且声明了 generate_text 的服务：旧版
-    // `builtin_local_llm`（adapter llama_cpp）不能被选中，否则 prepare 会失败。
     const enabled: ProviderConfig[] = (listed.data as ProviderConfig[]).filter((p: ProviderConfig) =>
-      p.enabled && p.capabilities.includes('generate_text') && p.adapter_id === 'openai_compatible');
+      p.enabled && p.capabilities.includes('generate_text'));
     if (enabled.length <= 1) { return; }
     const statuses: string[] = ['ok', 'untested', 'failed'];
     for (const status of statuses) {
       const peers: ProviderConfig[] = enabled.filter((p: ProviderConfig) => p.test_status === status);
-      const preferred: ProviderConfig | undefined = peers[0];
+      const preferred: ProviderConfig | undefined = peers.find((p: ProviderConfig) => p.id !== 'builtin_local_llm') || peers[0];
       if (preferred !== undefined) {
         const params: ProviderIdParams = { provider_id: preferred.id };
         const selected = await CoreGateway.call(db, 'providers.selectGeneration', params);

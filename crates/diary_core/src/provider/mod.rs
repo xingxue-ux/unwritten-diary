@@ -19,6 +19,7 @@
 pub mod adapter;
 pub mod endpoint;
 pub mod local_engine;
+pub mod local_llm;
 pub mod models;
 pub mod normalize;
 pub mod presets;
@@ -208,54 +209,18 @@ pub(crate) fn list(core: &Core) -> Result<Vec<Provider>> {
     stored_providers(core)
 }
 
-/// 已从本构建移除的适配器标识：旧版本随包的本机整理（Qwen + llama.cpp）。
-///
-/// 老用户的库里可能还留着一条 `adapter_id = llama_cpp` 的 `builtin_local_llm`。
-/// 我们**不静默删除**这条配置（那是用户资料库的一部分），而是让每个入口都用
-/// [`missing_adapter_reason`] 如实说明「它已经不能用、下一步改用在线服务」。
-pub(crate) const REMOVED_LOCAL_LLM_ADAPTER: &str = "llama_cpp";
-
-/// 一条配置引用了本构建没有的适配器时，给用户看的说明。
-///
-/// 对旧版本的本机整理单独措辞：说清「已不再随应用提供」，并给出唯一可行的下一步。
-/// 其它未知适配器沿用原来的简短说法（插件带来的适配器将来可能由插件注册）。
-pub(crate) fn missing_adapter_reason(provider: &Provider) -> String {
-    if provider.adapter_id == REMOVED_LOCAL_LLM_ADAPTER {
-        format!(
-            "「{}」是旧版本随包的本机整理，适配器「{}」已不再随本应用提供；\
-             它不会再生成本地日记，请添加一个在线模型服务并使用它",
-            provider.label, provider.adapter_id
-        )
-    } else {
-        format!(
-            "服务「{}」用的适配器「{}」不在本构建里",
-            provider.label, provider.adapter_id
-        )
-    }
-}
-
 /// Atomically choose one diary-generation service without rewriting its model,
 /// credentials or test verdict. Transcription-only providers are independent.
-///
-/// **只接受在线服务**：随包本机整理（Qwen3.5 + llama.cpp）已移除，本机引擎
-/// （`sherpa_onnx`）只做转写与语义检索，`capabilities()` 里没有 `generate_text`。
-/// 就算一条本机配置行手写声明了 `generate_text`，这里也明确拒绝——闸门、
-/// 执行者与界面对「日记生成」说的是同一件事：需要一个在线服务。
 pub(crate) fn select_generation(core: &mut Core, provider_id: &str) -> Result<Provider> {
     let tx = core.conn.transaction()?;
     let mut selected = load_provider(&tx, provider_id)?;
     let capability = ProviderCapability::GenerateText;
-    let adapter = adapter::adapter_for(&selected.adapter_id).ok_or_else(|| {
-        CoreError::InvalidArgument {
-            reason: missing_adapter_reason(&selected),
-        }
-    })?;
-    if adapter.is_local()
-        || !adapter.capabilities().contains(&capability)
-        || !selected.capabilities.contains(&capability)
+    if !selected.capabilities.contains(&capability)
+        || !adapter::adapter_for(&selected.adapter_id)
+            .is_some_and(|adapter| adapter.capabilities().contains(&capability))
     {
         return Err(CoreError::InvalidArgument {
-            reason: "日记生成需要一个在线服务；本机引擎只做转写与检索".to_owned(),
+            reason: "请选择支持日记整理的模型服务".to_owned(),
         });
     }
     let rows = {
@@ -828,7 +793,10 @@ fn evaluate(
         return Ok(Err(format!("服务「{}」没有启用", provider.label)));
     }
     let Some(adapter) = adapter::adapter_for(&provider.adapter_id) else {
-        return Ok(Err(missing_adapter_reason(provider)));
+        return Ok(Err(format!(
+            "服务「{}」用的适配器「{}」不在本构建里",
+            provider.label, provider.adapter_id
+        )));
     };
     if !adapter.capabilities().contains(&capability) {
         return Ok(Err(format!(
@@ -863,10 +831,10 @@ fn evaluate(
 
     // 本地引擎：没有 endpoint、没有密钥，改为**本机资源就绪**这一条。
     // 「缺什么、怎么办」由引擎的就绪结论直接给出（带路径的那种）。
-    //
-    // 本机引擎只做转写与语义检索，`capabilities()` 里没有 `generate_text`，
-    // 所以日记生成永远走不到这里（上面那条能力检查已经拒绝）。
     if adapter.is_local() {
+        if matches!(adapter, adapter::Adapter::LocalLlm) {
+            return Ok(local_llm::readiness(provider.model.as_deref()).map_err(|e| e.to_string()));
+        }
         return match local_engine::readiness_for(core, provider.model.as_deref()) {
             Ok(readiness) if readiness.ready => Ok(Ok(())),
             Ok(readiness) => Ok(Err(local_engine::blocked_message(&readiness))),
@@ -908,9 +876,7 @@ fn evaluate(
 /// （补模型目录/引擎库，而不是配 endpoint 与密钥）。
 fn local_next_step(capability: ProviderCapability) -> String {
     if capability == ProviderCapability::GenerateText {
-        // 本机引擎只做转写/检索；生成日记必须有一个在线服务。
-        return "本机引擎不生成日记：请在「我的 → 模型服务」里添加一个在线服务，                测试通过后点「使用此服务」"
-            .to_owned();
+        return "请重新打开应用准备本机模型，或在模型服务中启用已配置的在线服务".to_owned();
     }
     format!(
         "本机引擎不需要 endpoint 与密钥：把模型目录（model.int8.onnx 与 tokens.txt）放到随包位置 \
@@ -1040,6 +1006,12 @@ pub(crate) fn capability_gate_for_with(
     if consider_builtin {
         providers.push(local_engine::builtin_provider(core.config_file()));
     }
+    // Explicitly enabled, tested online services take precedence over the
+    // bundled default. The local model remains available without credentials.
+    if capability == ProviderCapability::GenerateText {
+        providers.sort_by_key(|p| p.id == local_llm::BUILTIN_ID);
+    }
+
     if providers.is_empty() {
         let reason = if stored.is_empty() {
             if local_only {
@@ -1241,7 +1213,10 @@ pub(crate) fn test(
     };
     let adapter = adapter::adapter_for(&provider.adapter_id).ok_or_else(|| {
         CoreError::ProviderNotConfigured {
-            reason: missing_adapter_reason(&provider),
+            reason: format!(
+                "服务「{}」的适配器「{}」不在本构建里",
+                provider.label, provider.adapter_id
+            ),
         }
     })?;
     if adapter.is_local() {
@@ -1250,7 +1225,7 @@ pub(crate) fn test(
     // 走到这里的只可能是 HTTP 适配器（本机引擎在上面就返回了）。
     let adapter = match adapter {
         adapter::Adapter::Http(adapter) => adapter,
-        adapter::Adapter::Local(_) => {
+        adapter::Adapter::Local(_) | adapter::Adapter::LocalLlm => {
             return Err(CoreError::InvalidState {
                 entity: "服务配置",
                 id: provider_id.to_owned(),
@@ -1458,18 +1433,34 @@ fn test_local(
     let mut probe_note = None;
     let mut failure: Option<CoreError> = None;
     if !probed.is_empty() {
-        match local_engine::config_for(core, provider.model.as_deref()) {
-            Ok(config) => {
-                // 一次探针覆盖范围内所有本机能力：它验的是「同一个引擎能不能跑」。
-                match core.asr_engine().probe(&config) {
-                    Ok(message) => {
-                        calls = 1;
-                        probe_note = Some(message);
-                    }
-                    Err(error) => failure = Some(error),
+        if matches!(adapter, adapter::Adapter::LocalLlm) {
+            match local_llm::generate(
+                provider.model.as_deref(),
+                &adapter::GenerateRequest {
+                    prompt: "只回复：好".to_owned(),
+                    system: None,
+                },
+            ) {
+                Ok(_) => {
+                    calls = 1;
+                    probe_note = Some("本机整理可用".to_owned());
                 }
+                Err(error) => failure = Some(error),
             }
-            Err(error) => failure = Some(error),
+        } else {
+            match local_engine::config_for(core, provider.model.as_deref()) {
+                Ok(config) => {
+                    // 一次探针覆盖范围内所有本机能力：它验的是「同一个引擎能不能跑」。
+                    match core.asr_engine().probe(&config) {
+                        Ok(message) => {
+                            calls = 1;
+                            probe_note = Some(message);
+                        }
+                        Err(error) => failure = Some(error),
+                    }
+                }
+                Err(error) => failure = Some(error),
+            }
         }
     }
 
@@ -1844,11 +1835,22 @@ fn respond_once(core: &mut Core, response_id: &str) -> std::result::Result<(), C
     )?;
     let adapter = adapter::adapter_for(&provider.adapter_id).ok_or_else(|| {
         CoreError::ProviderNotConfigured {
-            reason: missing_adapter_reason(&provider),
+            reason: format!("服务「{}」的适配器不在本构建里", provider.label),
         }
     })?;
+    // Local generation never fetches a secret or enters the HTTP transport.
     let adapter = match adapter {
         adapter::Adapter::Http(adapter) => adapter,
+        adapter::Adapter::LocalLlm => {
+            let outcome = local_llm::generate(
+                provider.model.as_deref(),
+                &adapter::GenerateRequest {
+                    prompt: request_text,
+                    system: None,
+                },
+            )?;
+            return write_response(core, response_id, outcome);
+        }
         adapter::Adapter::Local(engine) => {
             return Err(CoreError::ProviderNotConfigured {
                 reason: format!(

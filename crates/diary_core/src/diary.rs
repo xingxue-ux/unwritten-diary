@@ -1865,27 +1865,29 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
     )?;
     let protocol = adapter::adapter_for(&provider.adapter_id).ok_or_else(|| {
         CoreError::ProviderNotConfigured {
-            reason: provider::missing_adapter_reason(&provider),
+            reason: format!("服务「{}」的适配器不在本构建里", provider.label),
         }
     })?;
-    // 日记生成只走在线服务：本机引擎（sherpa_onnx）只做转写与语义检索，
-    // `capabilities()` 里没有 `generate_text`，闸门本来就不会选它；这里再挡一次，
-    // 免得一条手写的本机配置被当成生成服务。
+    // ASR and local text generation remain separate capabilities.
     if let adapter::Adapter::Local(engine) = protocol {
         return Err(CoreError::ProviderNotConfigured {
             reason: format!(
-                "服务「{}」是本机引擎「{}」，它不生成日记；\
-                     日记生成需要一个在线服务",
+                "服务「{}」是本机引擎「{}」，它不实现 generate_text；\
+                     日记生成要配一个支持 generate_text 的服务",
                 provider.label,
                 engine.id()
             ),
         });
     }
-    let secret = provider::provider_secret(core, &provider)?.ok_or_else(|| {
-        CoreError::ProviderNotConfigured {
-            reason: format!("服务「{}」还没有可用的密钥", provider.label),
-        }
-    })?;
+    let secret = if protocol.is_local() {
+        String::new()
+    } else {
+        provider::provider_secret(core, &provider)?.ok_or_else(|| {
+            CoreError::ProviderNotConfigured {
+                reason: format!("服务「{}」还没有可用的密钥", provider.label),
+            }
+        })?
+    };
 
     let body_json: String = core.conn.query_row(
         "SELECT body FROM diary_source_snapshots WHERE id = ?1",
@@ -1918,7 +1920,21 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
     let excluded_trashed = usable.trashed_capture_ids.len() as i64;
     let freeze = snapshot_freeze(&snapshot)?;
     let style = snapshot.style.profile.as_ref();
-    let plan = plan_generation(&day_key, &materials, freeze.as_ref(), style)?;
+    let local = matches!(protocol, adapter::Adapter::LocalLlm);
+    let local_originals: Vec<String> = if local {
+        let readable: Vec<SnapshotMaterial> = materials.iter().filter(|m| m.processed && !m.text.trim().is_empty()).cloned().collect();
+        batch_materials(&readable).iter().map(|batch| batch.iter().map(|m| m.text.trim()).collect::<Vec<_>>().join("\n\n")).collect()
+    } else { Vec::new() };
+    let plan = if local {
+        if local_originals.is_empty() || local_originals.len() > MAX_INTERMEDIATE_CALLS {
+            return Err(CoreError::InvalidArgument { reason: "这次可整理的文字为空或内容过多，请调整后重试".to_owned() });
+        }
+        let mut preferences = freeze.as_ref().map(|f| format!("\n整理偏好：{}", f.rule)).unwrap_or_default();
+        if let Some(style) = style {
+            if let Some(instruction) = crate::styles::style_instruction(style) { preferences.push_str(&instruction); }
+        }
+        GenerationPlan { calls: local_originals.iter().map(|text| provider::local_llm::diary_request(text, &preferences)).collect(), steps: 1, intermediate_calls: 0 }
+    } else { plan_generation(&day_key, &materials, freeze.as_ref(), style)? };
 
     let account = CallAccount {
         generation_id,
@@ -1929,8 +1945,21 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
     let mut last_model: Option<String> = None;
     let mut provenance: Vec<ProvenanceLink> = Vec::new();
     let mut unmatched_facts = 0_i64;
+    let mut conservative_fallback = false;
 
-    let mut text = if plan.steps == 1 {
+    let mut text = if local {
+        let mut paragraphs = Vec::new();
+        for (request, original) in plan.calls.iter().zip(&local_originals) {
+            let outcome = call_generate(core, &provider, protocol, &secret, request, &account, calls_made)?;
+            calls_made += 1;
+            last_model = outcome.model;
+            let (checked, kept) = provider::local_llm::conservative_edit(original, &outcome.text);
+            conservative_fallback |= kept;
+            paragraphs.push(checked);
+        }
+        attach_material_links(&mut provenance, &materials);
+        paragraphs.join("\n\n")
+    } else if plan.steps == 1 {
         let request = plan
             .calls
             .first()
@@ -2029,7 +2058,7 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
     let steps = plan.steps;
     let intermediate_calls = plan.intermediate_calls;
     let mut repair_calls = 0_i64;
-    if looks_like_structured_output(&text) {
+    if !local && looks_like_structured_output(&text) {
         // 不合规就**尝试一次**修复；修不好就如实失败，不把 JSON / 围栏当日记展示。
         let request = repair_request(&text, freeze.as_ref(), style);
         let outcome = call_generate(
@@ -2097,6 +2126,10 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
     generation_info
         .generation_options
         .insert("modelCalls".to_owned(), calls_made.to_string());
+    if local {
+        generation_info.generation_options.insert("localPolicy".to_owned(), "conservative-edit-v1".to_owned());
+        generation_info.generation_options.insert("keptOriginal".to_owned(), conservative_fallback.to_string());
+    }
     generation_info
         .generation_options
         .insert("unmatchedFacts".to_owned(), unmatched_facts.to_string());
@@ -2244,6 +2277,21 @@ fn call_generate(
 
     let protocol = match protocol {
         adapter::Adapter::Http(protocol) => protocol,
+        adapter::Adapter::LocalLlm => {
+            let outcome = provider::local_llm::generate(provider.model.as_deref(), request);
+            let record = match &outcome {
+                Ok(value) => CallOutcome::ok(&provider.id, value.model.as_deref()),
+                Err(error) => CallOutcome::failed(&provider.id, error.code().wire()),
+            };
+            organize::record_call(
+                core,
+                account.generation_id,
+                account.day_key,
+                account.reason,
+                record,
+            )?;
+            return outcome;
+        }
         adapter::Adapter::Local(_) => {
             return Err(CoreError::ProviderNotConfigured {
                 reason: "所选本机服务不支持日记整理".to_owned(),

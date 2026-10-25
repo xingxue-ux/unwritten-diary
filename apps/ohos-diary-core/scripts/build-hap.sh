@@ -94,7 +94,7 @@ PY
 if [[ -z "${SKIP_NATIVE:-}" ]]; then
   "$HERE/scripts/build-native.sh"
 fi
-for so in libdiary_capi.so libdiary_napi.so libc++_shared.so; do
+for so in libdiary_capi.so libdiary_napi.so libc++_shared.so libdiary_llm.so libdiary_llm_dotprod.so; do
   [[ -f "$HERE/entry/libs/arm64-v8a/$so" ]] \
     || { echo "缺少 entry/libs/arm64-v8a/$so（先跑 scripts/build-native.sh）" >&2; exit 1; }
 done

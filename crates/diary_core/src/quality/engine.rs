@@ -325,7 +325,7 @@ impl GenerateEngine for OpenAiCompatibleGenerateEngine {
     fn generate(&self, request: &GenerateRequest) -> Result<GeneratedText> {
         let adapter = adapter::adapter_for(&self.provider.adapter_id).ok_or_else(|| {
             CoreError::ProviderNotConfigured {
-                reason: crate::provider::missing_adapter_reason(&self.provider),
+                reason: format!("适配器 {} 不在本构建里", self.provider.adapter_id),
             }
         })?;
         // `adapter_for` 自 #103 起返回 `Adapter`（HTTP 协议或本机引擎）这一层枚举。
@@ -333,6 +333,19 @@ impl GenerateEngine for OpenAiCompatibleGenerateEngine {
         // 把这条量测路径指到本机上；这里与 `provider::test`/执行者用同一个口径再挡一次。
         let adapter = match adapter {
             adapter::Adapter::Http(adapter) => adapter,
+            adapter::Adapter::LocalLlm => {
+                let outcome = crate::provider::local_llm::generate(
+                    self.provider.model.as_deref(),
+                    &AdapterGenerateRequest {
+                        prompt: request.prompt.clone(),
+                        system: request.system.clone(),
+                    },
+                )?;
+                return Ok(GeneratedText {
+                    text: outcome.text,
+                    model: outcome.model,
+                });
+            }
             adapter::Adapter::Local(engine) => {
                 return Err(CoreError::ProviderNotConfigured {
                     reason: format!(
