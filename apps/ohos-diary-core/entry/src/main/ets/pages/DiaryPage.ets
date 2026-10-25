@@ -153,7 +153,16 @@ export struct DiaryPage {
     this.acceptedNote = '';
     this.runNote = '';
     this.busy = true;
-    const ticket: DiaryGenerationTicket | null = await store.generate(dayKey);
+    // 这一天已经有版本（当前或候选）时必须用 `regenerate`。
+    //
+    // 核心按**快照哈希**去重（`diary.rs` 的 `existing_generation`）：同一份输入快照只要
+    // 生成过一次并产出版本，`reason = manual` 就会直接返回**旧票据**、不排新任务——
+    // 材料没变时「整理这一天」看起来点了没反应，候选也不会增加。`regenerate` 是核心
+    // 文档里「用户明确要再来一版」的唯一例外，只有它能绕过这道去重。
+    const hasVersions: boolean = this.hasAnyVersion();
+    const ticket: DiaryGenerationTicket | null = hasVersions
+      ? await store.regenerate(dayKey)
+      : await store.generate(dayKey);
     this.sync(store);
     if (ticket === null) {
       // 没受理：原因已经由 store 写进 error / message，原样显示，页面不另编一套。
@@ -183,6 +192,11 @@ export struct DiaryPage {
     this.sync(store);
     this.busy = false;
     await this.readCurrentBody();
+  }
+
+  /** 这一天有没有任何版本（当前或候选）。只读两个 store 结论，不自己猜。 */
+  private hasAnyVersion(): boolean {
+    return this.currentVersionId.length > 0 || this.candidateVersionIds.length > 0;
   }
 
   /** store → 页面 `@State` 的唯一同步点。 */
@@ -455,13 +469,15 @@ export struct DiaryPage {
 
         // ---- 生成：先受理，再跑任务 ----
         Row({ space: 8 }) {
-          Button('整理这一天')
+          Button(this.hasAnyVersion() ? '再来一版' : '整理这一天')
             .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .enabled(!this.busy)
             .onClick(() => {
               this.generateAndRun();
             })
-          Text('整理完成后即可阅读。')
+          Text(this.hasAnyVersion()
+            ? '已有一版，再整理会新增一个候选版本；采用它才会替换当前正文。'
+            : '整理完成后即可阅读。')
             .fontSize(SketchType.caption)
             .fontColor(SketchColors.muted)
             .layoutWeight(1)
