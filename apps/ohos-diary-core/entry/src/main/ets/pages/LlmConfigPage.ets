@@ -302,8 +302,8 @@ export struct LlmConfigPage {
           onReload: () => { this.load(); } })
       }
       if (this.message.length > 0) { Text(this.message).fontColor(SketchColors.text).fontSize(14) }
-      ForEach(this.models, (item: ProviderModelInfo, index: number) => {
-        Button(modelLabel(item.id, index)).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
+      ForEach(this.models, (item: ProviderModelInfo) => {
+        Button(modelLabel(item.id)).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
           .onClick(() => { this.model = item.id; this.dirty = true; })
       }, (item: ProviderModelInfo) => item.id)
     }.width('100%').alignItems(HorizontalAlign.Start).padding(16)

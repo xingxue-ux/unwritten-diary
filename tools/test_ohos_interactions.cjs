@@ -522,7 +522,18 @@ async function chineseSystemFeedback(){
   }
   assert.notEqual(runtime.jobKindLabel('diary_generate'),runtime.jobKindLabel('unrecognized'));
   const text=load('ui/UserText.ets',{'./Errors':{toUiError}});
-  assert.ok(!/[A-Za-z]/.test(text.presetLabel('DeepSeek')+text.modelLabel('deepseek-flash')+text.testStatusLabel('ok')));
+  assert.ok(!/[A-Za-z]/.test(text.presetLabel('DeepSeek')+text.testStatusLabel('ok')));
+  // Model configuration must preserve identities, including future vendors and
+  // models whose IDs happen to contain the old classification keywords.
+  assert.equal(text.modelLabel(null),'未选择模型');
+  assert.equal(text.modelLabel(''),'未选择模型');
+  assert.equal(text.modelLabel('deepseek-chat'),'快速模型（deepseek-chat）');
+  assert.equal(text.modelLabel('deepseek-flash'),'快速模型（deepseek-flash）');
+  assert.equal(text.modelLabel('deepseek-v4-pro'),'专业模型（deepseek-v4-pro）');
+  assert.equal(text.modelLabel('deepseek-reasoner'),'推理模型（deepseek-reasoner）');
+  for(const id of ['deepseek-future-model','vendor/flash-next','vendor/pro-next','vendor/reasoner-next','Vendor/Case-Sensitive-Model']){
+    assert.equal(text.modelLabel(id),id);
+  }
   assert.ok(!/[A-Za-z]/.test(text.timeZoneLabel('UTC')+text.timeZoneLabel('Asia/Shanghai')));
 }
 async function exportFeedbackHidesPaths(){
