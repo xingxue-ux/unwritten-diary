@@ -166,6 +166,12 @@ export struct LlmConfigPage {
     return !this.busy && !this.loading && !this.dirty && !this.uncertain && this.selected !== null;
   }
 
+  private selectedInUse(): boolean {
+    if (this.selected === null) { return false; }
+    const id: string = (this.selected as ProviderConfig).id;
+    return this.providers.some((p: ProviderConfig) => p.id === id && p.enabled);
+  }
+
   private async detectModels(): Promise<void> {
     if (!this.canProbe()) { return; }
     this.busy = true;
@@ -313,9 +319,9 @@ export struct LlmConfigPage {
         if (this.selected !== null) {
           Button('查找可用模型').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.detectModels(); })
           Button('检查连接').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.test(); })
-          Button((this.selected as ProviderConfig).enabled ? '正在使用' : '使用此服务')
+          Button(this.selectedInUse() ? '正在使用' : '使用此服务')
             .attributeModifier(sketchButton).drawModifier(sketchOutline())
-            .enabled(this.canProbe() && !(this.selected as ProviderConfig).enabled).onClick(() => { this.toggleEnabled(); })
+            .enabled(this.canProbe() && !this.selectedInUse()).onClick(() => { this.toggleEnabled(); })
           Button('删除服务').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.remove(); })
         }
       }.width('100%')

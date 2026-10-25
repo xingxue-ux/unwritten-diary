@@ -475,14 +475,16 @@ async function llmConfiguration(){
   await page.test();assert.equal(page.selected.test_status,'ok');await page.toggleEnabled();
   assert.equal(page.selected.enabled,true);assert.equal(page.selected.credential_ref,'sec_new');
   assert.equal(page.localProvider.enabled,false);assert.equal(secretReceived,null);
-  await page.toggleLocal();assert.equal(page.localProvider.enabled,true);assert.equal(page.selected.enabled,false);
+  page.model='unsaved-model';page.dirty=true;
+  await page.toggleLocal();assert.equal(page.localProvider.enabled,true);assert.equal(page.selectedInUse(),false);
+  assert.equal(page.model,'unsaved-model');assert.equal(page.dirty,true);
   const selectedCalls=calls.length;await page.toggleLocal();assert.equal(calls.length,selectedCalls);
   // The card switches directly, without entering or overwriting the edit form.
   await page.useOnline(otherOnline);assert.equal(page.localProvider.enabled,false);
   assert.equal(page.providers.find(p=>p.id==='other-online').enabled,true);assert.equal(page.selected.id,'llm');
   failSelect=true;await page.toggleLocal();assert.equal(page.localProvider.enabled,false);
   assert.equal(page.providers.find(p=>p.id==='other-online').enabled,true);failSelect=false;
-  await page.toggleEnabled();assert.equal(page.selected.enabled,true);
+  page.dirty=false;await page.load();await page.toggleEnabled();assert.equal(page.selected.enabled,true);
   failTest=true;await page.test();assert.equal(page.error.code,'authentication_failed');assert.equal(page.message,'');failTest=false;
   failList=true;await page.test();assert.equal(page.canProbe(),false);failList=false;await page.load();assert.equal(page.canProbe(),true);
   page.secret='never-echo-this';page.dirty=true;failSave=true;await page.save();
