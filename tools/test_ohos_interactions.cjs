@@ -428,13 +428,15 @@ async function llmConfiguration(){
   let provider={id:'llm',label:'Existing',adapter_id:'openai_compatible',endpoint:'https://example.com/v1',
     model:'model-a',capabilities:['generate_text'],credential_ref:'sec_existing',enabled:false,test_status:'untested'};
   const local={...provider,id:'asr',adapter_id:'sherpa_onnx',capabilities:['transcribe_audio']};
-  let localLlm={...provider,id:'builtin_local_llm',adapter_id:'llama_cpp',enabled:true,credential_ref:null};
+  // 本机整理已移除：列表里只剩在线服务（本机转写行仍要保留，不能被当成整理服务）。
+  const legacy={...provider,id:'builtin_local_llm',adapter_id:'llama_cpp',capabilities:['generate_text'],
+    enabled:false,credential_ref:null};
   let otherOnline={...provider,id:'other-online',test_status:'ok'};
   const ok=data=>({ok:true,data,error:null});
   const failed={ok:false,data:null,error:{code:'network_unavailable',message:'offline',retryable:true}};
   const gateway={call:async(db,method,params)=>{
     calls.push(method);
-    if(method==='providers.list')return failList?failed:ok([provider,local,localLlm,otherOnline]);
+    if(method==='providers.list')return failList?failed:ok([provider,local,legacy,otherOnline]);
     if(method==='providers.presets')return ok([]);
     if(method==='providers.save'){
       saved=JSON.parse(JSON.stringify(params.config));secretReceived=params.secret;
@@ -446,9 +448,8 @@ async function llmConfiguration(){
       if(failSelect)return failed;
       assert.deepEqual(Object.keys(params),['provider_id']);
       provider={...provider,enabled:provider.id===params.provider_id};
-      localLlm={...localLlm,enabled:localLlm.id===params.provider_id};
       otherOnline={...otherOnline,enabled:otherOnline.id===params.provider_id};
-      return ok([provider,localLlm,otherOnline].find(p=>p.id===params.provider_id));
+      return ok([provider,otherOnline].find(p=>p.id===params.provider_id));
     }
     if(method==='providers.test'){
       if(failTest)return {ok:false,data:null,error:{code:'authentication_failed',message:'HTTP 401',retryable:false}};
@@ -464,6 +465,10 @@ async function llmConfiguration(){
     '../ui/AppState':{AppState:{bumpDataVersion:noop}}},{},true);
   const page=new LlmConfigPage();await page.load();
   assert.deepEqual(calls,['providers.list','providers.presets']);assert.equal(page.providers.length,2);
+  // 旧版本留下的本机整理：列在单独的「已不再支持」里，不混进在线服务，也不静默删掉。
+  assert.equal(page.unsupported.length,1);assert.equal(page.unsupported[0].id,'builtin_local_llm');
+  const beforeRemove=calls.length;await page.removeUnsupported(legacy);
+  assert.equal(calls[beforeRemove],'providers.remove');assert.match(page.message,/旧配置已删除/);
   page.adopt(provider);page.label='Renamed';page.dirty=true;await page.save();
   assert.equal(saved.credential_ref,'sec_existing');assert.equal(secretReceived,null);assert.equal(saved.enabled,false);
   page.secret='new-test-secret';page.dirty=true;await page.save();
@@ -474,15 +479,13 @@ async function llmConfiguration(){
   await page.toggleEnabled();assert.equal(page.selected.enabled,false); // untested cannot enable
   await page.test();assert.equal(page.selected.test_status,'ok');await page.toggleEnabled();
   assert.equal(page.selected.enabled,true);assert.equal(page.selected.credential_ref,'sec_new');
-  assert.equal(page.localProvider.enabled,false);assert.equal(secretReceived,null);
+  assert.equal(secretReceived,null);
   page.model='unsaved-model';page.dirty=true;
-  await page.toggleLocal();assert.equal(page.localProvider.enabled,true);assert.equal(page.selectedInUse(),false);
-  assert.equal(page.model,'unsaved-model');assert.equal(page.dirty,true);
-  const selectedCalls=calls.length;await page.toggleLocal();assert.equal(calls.length,selectedCalls);
   // The card switches directly, without entering or overwriting the edit form.
-  await page.useOnline(otherOnline);assert.equal(page.localProvider.enabled,false);
-  assert.equal(page.providers.find(p=>p.id==='other-online').enabled,true);assert.equal(page.selected.id,'llm');
-  failSelect=true;await page.toggleLocal();assert.equal(page.localProvider.enabled,false);
+  await page.useOnline(otherOnline);
+  assert.equal(page.providers.find(p=>p.id==='other-online').enabled,true);
+  assert.equal(page.model,'unsaved-model');assert.equal(page.dirty,true);
+  failSelect=true;await page.useOnline(provider);
   assert.equal(page.providers.find(p=>p.id==='other-online').enabled,true);failSelect=false;
   page.dirty=false;await page.load();await page.toggleEnabled();assert.equal(page.selected.enabled,true);
   failTest=true;await page.test();assert.equal(page.error.code,'authentication_failed');assert.equal(page.message,'');failTest=false;
@@ -512,8 +515,13 @@ async function isolatedFirstRunUi(){
   }
 }
 async function resumedDiaryFeedback(){
-  const {DiaryPage}=load('pages/DiaryPage.ets',{'../ui/Errors':errorModule},{},true);
-  const page=new DiaryPage();page.waitingConfiguration=true;
+  let providers=[];
+  const gateway={CoreGateway:{call:async(db,method)=>{
+    if(method==='providers.list')return {ok:true,data:providers.map(p=>({...p}))};
+    return {ok:false,data:null,error:{...empty,code:'native_unavailable',message:'unexpected '+method}};
+  }}};
+  const {DiaryPage}=load('pages/DiaryPage.ets',{'../ui/Errors':errorModule,'../ui/CoreGateway':gateway},{},true);
+  const page=new DiaryPage();page.dbPath='/app/library.sqlite';page.waitingConfiguration=true;
   page.acceptedNote='queued';page.runNote='waiting for configuration';
   page.store={refresh:async()=>true,days:[],daysLoaded:true,daysTruncated:false,dayKey:'',day:null,
     dayEmpty:true,currentVersionId:()=>null,candidateVersionIds:()=>[],candidatesOnly:()=>false,
@@ -523,10 +531,16 @@ async function resumedDiaryFeedback(){
   page.waitingConfiguration=true;page.runNote='waiting';page.store.jobsStatusKnown=false;
   await page.reload();assert.equal(page.runNote,'waiting');
   page.store.jobsStatusKnown=true;
-  page.store.generate=async()=>({job_id:'job'});
+  let generated=0;
+  page.store.generate=async()=>{generated++;return {job_id:'job'};};
   page.store.runDueJobs=async()=>{page.store.waitingConfiguration=true;page.store.message='请先配置模型服务。';};
   page.store.openDay=async()=>true;
-  await page.generateAndRun();assert.equal(page.waitingConfiguration,true);
+  // 没有在线服务：不排一条注定卡在 waiting_configuration 的任务，直接说人话并给入口。
+  await page.generateAndRun();
+  assert.equal(generated,0);assert.equal(page.needModelService,true);assert.equal(page.busy,false);
+  providers=[{id:'online',adapter_id:'openai_compatible',capabilities:['generate_text'],enabled:true,test_status:'ok'}];
+  await page.generateAndRun();assert.equal(generated,1);assert.equal(page.needModelService,false);
+  assert.equal(page.waitingConfiguration,true);
   assert.equal(page.acceptedNote,'');assert.match(page.runNote,/配置/);
 }
 async function chineseSystemFeedback(){

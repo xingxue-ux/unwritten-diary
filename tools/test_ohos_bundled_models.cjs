@@ -13,9 +13,9 @@ function environment() {
   const files = new Map(), handles = new Map(), calls = [], resources = new Map(), directories = new Set();
   const state = {opens: 0, closes: 0, failWrite: false, corruptResource: false, testFails: false, selectFails: false};
   let nextFd = 1;
+  // 日记生成不随包：只有转写（ASR）与语义检索（BGE）两组。
   const names = ['asr/sense-voice-int8/model.int8.onnx', 'asr/sense-voice-int8/tokens.txt',
-    'semantic/bge-small-zh-v1.5-ours/model_quantized.onnx', 'semantic/bge-small-zh-v1.5-ours/tokenizer.json',
-    'llm/qwen3.5-0.8b-q4_0/model.gguf'];
+    'semantic/bge-small-zh-v1.5-ours/model_quantized.onnx', 'semantic/bge-small-zh-v1.5-ours/tokenizer.json'];
   const inventory = {version: 1, files: names.map((name, index) => {
     const bytes = Buffer.alloc(index === 0 ? 2 * 1024 * 1024 + 31 : 100 + index, index + 1);
     resources.set('bundled_models/' + name, bytes);
@@ -26,8 +26,14 @@ function environment() {
   let providers = [originalProvider];
   const io = {
     OpenMode: {CREATE: 1, READ_WRITE: 2, TRUNC: 4}, WhenceType: {SEEK_SET: 0},
-    accessSync: name => files.has(name) || directories.has(name), statSync: name => ({size: files.get(name).length}),
+    accessSync: name => files.has(name) || directories.has(name) ||
+      [...files.keys()].some(key => key.startsWith(name + '/')),
+    statSync: name => ({size: files.get(name).length}),
     mkdirSync: name => {if (directories.has(name)) throw new Error('File exists'); directories.add(name);},
+    rmdirSync: name => {
+      for (const key of [...files.keys()]) if (key.startsWith(name + '/')) files.delete(key);
+      for (const key of [...directories]) if (key === name || key.startsWith(name + '/')) directories.delete(key);
+    },
     unlinkSync: name => files.delete(name),
     open: async name => {files.set(name, Buffer.alloc(0)); const fd = nextFd++; handles.set(fd, {name, position: 0}); return {fd};},
     lseek: (fd, offset) => {handles.get(fd).position = offset;},
@@ -52,7 +58,7 @@ function environment() {
     assert.equal(db, '/app/library.sqlite');
     if (method === 'providers.list') return {ok: true, data: providers.map(p => ({...p}))};
     if (method === 'providers.save') {
-      assert.ok(['sherpa_onnx', 'llama_cpp'].includes(params.config.adapter_id));
+      assert.equal(params.config.adapter_id, 'sherpa_onnx');
       assert.equal(params.secret, null);
       providers = [...providers.filter(p => p.id !== params.config.id), params.config];
       return {ok: true, data: params.config};
@@ -61,6 +67,10 @@ function environment() {
       assert.deepEqual(Array.from(params.scope), ['transcribe_audio']);
       if (state.testFails) return {ok: false};
       providers.find(p => p.id === params.provider_id).test_status = 'ok'; return {ok: true};
+    }
+    if (method === 'providers.remove') {
+      providers = providers.filter(p => p.id !== params.provider_id);
+      return {ok: true, data: null};
     }
     if (method === 'providers.selectGeneration') {
       if (state.selectFails) return {ok: false};
@@ -100,12 +110,14 @@ function environment() {
   const context = {exports: {}, require: name => modules[name] || {}, ArrayBuffer, Uint8Array, Error, JSON, Math};
   vm.runInNewContext(js, context);
   const prepare = () => context.exports.BundledModels.prepare({filesDir: '/app', resourceManager: manager}, () => {});
-  return {prepare, files, calls, state, inventory, providers: value => {providers = value;}, handles};
+  return {prepare, files, calls, state, inventory,
+    providers: value => {if (value === undefined) return providers.map(p => ({...p})); providers = value;},
+    handles};
 }
 
 async function firstInstall() {
   const env = environment(); await env.prepare();
-  assert.equal(env.state.opens, 5); assert.equal(env.state.closes, 5); assert.equal(env.handles.size, 0);
+  assert.equal(env.state.opens, 4); assert.equal(env.state.closes, 4); assert.equal(env.handles.size, 0);
   for (const file of env.inventory.files) assert.equal(digest(env.files.get(`${base}/${file.path}`)), file.sha256);
   const config = JSON.parse(env.files.get('/app/core-config.json'));
   assert.equal(config.ortDylib, '/native/libonnxruntime-diary-1.29.1.so');
@@ -113,18 +125,19 @@ async function firstInstall() {
   assert.equal(config.asrModelDir, undefined); // explicit provider selection keeps priority
   assert.ok(env.files.has(marker));
   assert.equal(env.calls.find(c => c.method === 'providers.save').params.config.model, asr);
-  const local = env.calls.find(c => c.method === 'providers.save' && c.params.config.adapter_id === 'llama_cpp');
-  assert.equal(local.params.config.model, `${base}/llm/qwen3.5-0.8b-q4_0/model.gguf`);
-  assert.equal(local.params.config.enabled, true);
-  assert.equal(local.params.config.credential_ref, null);
-  assert.ok(env.files.has(`${base}/llm-defaults-ready.json`));
-  assert.equal(env.calls.filter(c => c.method === 'providers.test').length, 1); // no LLM warm-up on startup
+  // 日记生成不随包：不再种任何 generate_text 配置行，也不预热生成模型。
+  assert.equal(env.calls.filter(c => c.method === 'providers.save' && c.params.config.capabilities.includes('generate_text')).length, 0);
+  assert.equal(env.calls.filter(c => c.method === 'providers.selectGeneration').length, 0);
+  assert.equal(env.calls.filter(c => c.method === 'providers.test').length, 1);
+  assert.equal(env.calls.filter(c => c.method === 'providers.remove').length, 0);
+  assert.ok(env.files.has(`${base}/legacy-local-llm-model-cleaned-v1.json`));
+  assert.equal([...env.files.keys()].some(p => p.includes('/llm/')), false);
 }
 async function restartPreservesChoice() {
   const env = environment(); await env.prepare();
   const calls = env.calls.length;
   env.providers([{id: 'builtin_local_asr', adapter_id: 'sherpa_onnx', model: asr, enabled: false}]);
-  await env.prepare(); assert.equal(env.calls.length, calls); assert.equal(env.state.opens, 5);
+  await env.prepare(); assert.equal(env.calls.length, calls); assert.equal(env.state.opens, 4);
 }
 async function customConfiguration() {
   const env = environment(), text = '{"model_dir":"/custom/embed","ort_dylib":"/custom/ort","asrModelDir":"/custom/asr","extra":42}';
@@ -132,29 +145,40 @@ async function customConfiguration() {
   env.providers([{id: 'mine', adapter_id: 'sherpa_onnx', model: '/custom/asr', enabled: false}]);
   await env.prepare(); assert.equal(env.files.get('/app/core-config.json').toString(), text);
   assert.equal(env.calls.filter(c => c.method === 'providers.save' && c.params.config.adapter_id === 'sherpa_onnx').length, 0);
-  assert.equal(env.calls.filter(c => c.method === 'providers.save' && c.params.config.adapter_id === 'llama_cpp').length, 1);
+  assert.equal(env.calls.filter(c => c.method === 'providers.save').length, 0);
 }
-async function upgradePreservesDisabledLlm() {
+async function upgradeCleansOldModelButKeepsConfig() {
   const env = environment();
-  env.providers([{id: 'builtin_local_llm', adapter_id: 'llama_cpp', model: '/custom/model.gguf', enabled: false}]);
+  env.files.set(`${base}/llm/qwen3.5-0.8b-q4_0/model.gguf`, Buffer.from('stale 563 MB'));
+  const legacy = {id: 'builtin_local_llm', adapter_id: 'llama_cpp', model: `${base}/llm/qwen3.5-0.8b-q4_0/model.gguf`,
+    capabilities: ['generate_text'], enabled: true, test_status: 'untested'};
+  env.providers([legacy]);
   await env.prepare();
-  assert.equal(env.calls.filter(c => c.method === 'providers.save' && c.params.config.id === 'builtin_local_llm').length, 0);
-  assert.ok(env.files.has(`${base}/llm-defaults-ready.json`));
+  // 旧的 563 MB 权重回收；但**配置行不删**（升级不该让配置凭空消失）。
+  assert.equal(env.files.has(`${base}/llm/qwen3.5-0.8b-q4_0/model.gguf`), false);
+  assert.equal(env.calls.filter(c => c.method === 'providers.remove').length, 0);
+  assert.ok(env.providers().some(p => p.id === 'builtin_local_llm'), '旧配置必须还在');
+  assert.ok(env.files.has(`${base}/legacy-local-llm-model-cleaned-v1.json`));
+  // 没有可用的在线服务可切换：不许去选那条旧配置（否则 prepare 会失败）。
+  assert.equal(env.calls.filter(c => c.method === 'providers.selectGeneration').length, 0);
 }
-async function upgradePreservesOnlineSelection() {
+async function upgradeKeepsOnlineSelection() {
   const env = environment();
-  env.providers([{id: 'online', adapter_id: 'openai_compatible', capabilities: ['generate_text'],
-    enabled: true, test_status: 'ok', credential_ref: 'keep-key'}]);
+  env.providers([
+    {id: 'builtin_local_llm', adapter_id: 'llama_cpp', capabilities: ['generate_text'], enabled: true, test_status: 'untested'},
+    {id: 'online', adapter_id: 'openai_compatible', capabilities: ['generate_text'],
+      enabled: true, test_status: 'ok', credential_ref: 'keep-key'}]);
   await env.prepare();
-  const local = env.calls.find(c => c.method === 'providers.save' && c.params.config.id === 'builtin_local_llm');
-  assert.equal(local.params.config.enabled, false);
+  // 两条都保留；旧配置不会被选中，在线服务保持启用、密钥与测试结论不动。
+  assert.equal(env.calls.filter(c => c.method === 'providers.remove').length, 0);
+  assert.ok(env.providers().some(p => p.id === 'builtin_local_llm'), '旧配置必须还在');
+  const online = env.providers().find(p => p.id === 'online');
+  assert.equal(online.enabled, true); assert.equal(online.credential_ref, 'keep-key');
   assert.equal(env.calls.filter(c => c.method === 'providers.selectGeneration').length, 0);
 }
 async function repairDualSelectionRetriesAndRunsOnce() {
   const env = environment();
-  env.files.set(`${base}/llm-defaults-ready.json`, Buffer.from('{}'));
   env.providers([
-    {id: 'builtin_local_llm', adapter_id: 'llama_cpp', capabilities: ['generate_text'], enabled: true, test_status: 'untested'},
     {id: 'online', adapter_id: 'openai_compatible', capabilities: ['generate_text'], enabled: true, test_status: 'ok'},
     {id: 'other-online', adapter_id: 'openai_compatible', capabilities: ['generate_text'], enabled: true, test_status: 'untested'},
   ]);
@@ -196,8 +220,8 @@ async function unsafeManifest() {
   await assert.rejects(env.prepare(), /清单无效/); assert.equal(env.files.size, 0);
 }
 (async () => {
-  for (const test of [firstInstall, restartPreservesChoice, customConfiguration, upgradePreservesDisabledLlm,
-    upgradePreservesOnlineSelection, repairDualSelectionRetriesAndRunsOnce, interruptedCopy,
+  for (const test of [firstInstall, restartPreservesChoice, customConfiguration, upgradeCleansOldModelButKeepsConfig,
+    upgradeKeepsOnlineSelection, repairDualSelectionRetriesAndRunsOnce, interruptedCopy,
     corruptResource, invalidConfiguration, failedLocalTestRetries, unsafeManifest]) {
     await test(); console.log('PASS ' + test.name);
   }

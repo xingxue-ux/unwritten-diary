@@ -12,7 +12,6 @@ import { CoreGateway } from '../ui/CoreGateway';
 import { verifyBundledModels } from '../verify/BundledModelsVerify';
 import { appFilesDir, clearFirstRunSession, selectFirstRunSession } from '../session/AppDirectory';
 import { BundledModels } from '../models/BundledModels';
-import { verifyLocalLlm } from '../verify/LocalLlmVerify';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'DiaryCore';
@@ -146,10 +145,6 @@ export default class EntryAbility extends UIAbility {
       BundledModels.prepare(this.context, () => {}, isolated)
         .then(() => TranscriptionVerify.injectKnownWavAndCheck(isolated, this.baseUrl))
         .catch(() => { hilog.error(DOMAIN, TAG, 'FIRST_RUN_ASR failed'); });
-    } else if (this.mode === 'local_llm') {
-      verifyLocalLlm(this.context).catch((err: Object) => {
-        hilog.error(DOMAIN, TAG, 'LOCAL_LLM_ACCEPTANCE_FAILED %{public}s', (err as Error).message);
-      });
     } else if (this.mode === 'bundled_models') {
       verifyBundledModels(this.context).catch((err: Object) => {
         hilog.error(DOMAIN, TAG, 'BUNDLED_MODELS_ACCEPTANCE_FAILED %{public}s', (err as Error).message);
@@ -183,7 +178,7 @@ export default class EntryAbility extends UIAbility {
     // 验证时它把 waiting_configuration 的任务抢先跑掉，探针的摘要成了 processed=0。
     // 探针不需要界面；不加载页面也就没有前台驱动，队列只由探针自己推进。
     if (DEBUG_BUILD && (this.mode === 'gen_remote' || this.mode === 'gen_remove' ||
-      this.mode === 'bundled_models' || this.mode === 'local_llm' || this.mode === 'first_run_asr')) {
+      this.mode === 'bundled_models' || this.mode === 'first_run_asr')) {
       hilog.info(DOMAIN, TAG,
         '%{public}s PROBE_NO_UI mode=%{public}s（gen_* 探针不加载 pages/Index，避免前台 runDue 抢任务）',
         MARK, this.mode);

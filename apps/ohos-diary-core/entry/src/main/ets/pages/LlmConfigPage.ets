@@ -10,12 +10,20 @@ import { modelLabel, presetLabel } from '../ui/UserText';
 import { ErrorBanner, SectionTitle, StatePill, LoadingRow } from '../ui/Common';
 import { SketchColors, SketchFonts, sketchInput, sketchButton, sketchOutline } from '../ui/Sketch';
 
-/** Remote LLM configuration. Opening/editing/saving never probes the network. */
+/**
+ * 在线模型服务配置。日记生成**必须**有一个在线服务——本机整理（随包 Qwen）已移除。
+ * 打开、编辑、保存都不会联网；只有「查找可用模型」「检查连接」会真的请求服务。
+ */
 @Component
 export struct LlmConfigPage {
   pathStack: NavPathStack = new NavPathStack();
   @State providers: ProviderConfig[] = [];
-  @State localProvider: ProviderConfig | null = null;
+  /**
+   * 旧版本留下的、本构建已不再支持的整理配置（典型：`builtin_local_llm` /
+   * `adapter_id = llama_cpp`）。**不静默删除**：列出来、说明为什么不能用，
+   * 由用户自己点删除。
+   */
+  @State unsupported: ProviderConfig[] = [];
   @State presets: ProviderPreset[] = [];
   @State models: ProviderModelInfo[] = [];
   @State selected: ProviderConfig | null = null;
@@ -51,12 +59,11 @@ export struct LlmConfigPage {
     if (!this.active) { return; }
     this.loading = false;
     if (!result.ok) { this.error = uiErrorOf(result); this.uncertain = true; return; }
-    this.providers = (result.data as ProviderConfig[]).filter((p: ProviderConfig) =>
+    const all: ProviderConfig[] = result.data as ProviderConfig[];
+    this.providers = all.filter((p: ProviderConfig) =>
       p.adapter_id === 'openai_compatible' && p.capabilities.includes('generate_text'));
-    this.localProvider = null;
-    for (const provider of result.data as ProviderConfig[]) {
-      if (provider.id === 'builtin_local_llm') { this.localProvider = provider; }
-    }
+    this.unsupported = all.filter((p: ProviderConfig) =>
+      p.capabilities.includes('generate_text') && p.adapter_id !== 'openai_compatible');
     if (this.selected !== null && !this.dirty) {
       const id: string = (this.selected as ProviderConfig).id;
       let found: boolean = false;
@@ -235,7 +242,7 @@ export struct LlmConfigPage {
     this.busy = false;
     if (!this.active) { return; }
     if (!result.ok) { await this.load(); this.error = uiErrorOf(result); return; }
-    this.message = '已切换为在线整理。';
+    this.message = '已切换到这个服务，之后的整理会用它。';
     AppState.bumpDataVersion();
     await this.load();
   }
@@ -245,18 +252,21 @@ export struct LlmConfigPage {
     await this.useOnline(this.selected as ProviderConfig);
   }
 
-  private async toggleLocal(): Promise<void> {
-    if (this.busy || this.loading || this.uncertain || this.localProvider === null) { return; }
-    const current: ProviderConfig = this.localProvider as ProviderConfig;
-    if (current.enabled) { return; }
+  /**
+   * 删除一条旧版本留下的、已不再支持的配置。**必须是用户显式点击 + 确认**：
+   * 启动流程不会替用户删任何配置。
+   */
+  private async removeUnsupported(provider: ProviderConfig): Promise<void> {
+    if (this.busy || this.loading) { return; }
+    if (!await confirmAction('删除这条旧配置？', '这是旧版本的本机整理，已经不能使用；删除只影响这条配置，日记会保留。', '删除配置') || !this.active) { return; }
     this.busy = true;
     this.error = EMPTY_UI_ERROR;
-    const params: ProviderIdParams = { provider_id: current.id };
-    const saved = await CoreGateway.call(this.dbPath, 'providers.selectGeneration', params);
+    const params: ProviderIdParams = { provider_id: provider.id };
+    const result = await CoreGateway.call(this.dbPath, 'providers.remove', params);
     this.busy = false;
     if (!this.active) { return; }
-    if (!saved.ok) { await this.load(); this.error = uiErrorOf(saved); return; }
-    this.message = '已切换为本机整理。';
+    if (!result.ok) { this.error = uiErrorOf(result); return; }
+    this.message = '旧配置已删除，日记已保留。';
     AppState.bumpDataVersion();
     await this.load();
   }
@@ -346,25 +356,41 @@ export struct LlmConfigPage {
       Scroll() {
         Column({ space: 16 }) {
           Text('让智能助手整理日记').fontFamily(SketchFonts.display).fontSize(24).fontColor(SketchColors.ink)
-          Text('本机和在线整理只选一个，切换后保留配置。').fontSize(14).fontColor(SketchColors.muted)
-          if (this.localProvider !== null) {
-            Column({ space: 10 }) {
-              Row({ space: 12 }) {
-                Text('本机整理').fontSize(18).fontColor(SketchColors.ink)
-                StatePill({ text: (this.localProvider as ProviderConfig).enabled ? '当前使用' : '未使用',
-                  tone: (this.localProvider as ProviderConfig).enabled ? 'ok' : 'muted' })
-              }
-              Text('模型已随包准备，无需密钥，可离线整理。').fontSize(14).fontColor(SketchColors.muted)
-              Text('优先保留原句，适合简单整理。').fontSize(13).fontColor(SketchColors.muted)
-              Button((this.localProvider as ProviderConfig).enabled ? '正在使用' : '使用本机整理')
-                .attributeModifier(sketchButton).drawModifier(sketchOutline())
-                .enabled(!this.busy && !this.loading && !this.uncertain && !(this.localProvider as ProviderConfig).enabled)
-                .onClick(() => { this.toggleLocal(); })
+          Text('日记生成需要一个在线模型服务：添加服务、检查连接，然后「使用此服务」。')
+            .fontSize(14).fontColor(SketchColors.muted)
+          Text('同一时间只选一个服务；切换后其他整理服务停用，已保存的配置、密钥和测试结果都保留。')
+            .fontSize(13).fontColor(SketchColors.muted)
+          if (!this.loading && this.providers.length === 0) {
+            Column({ space: 6 }) {
+              Text('还没有配置在线服务').fontSize(18).fontColor(SketchColors.ink)
+              Text('日记页的「整理这一天」需要一个在线服务才能生成正文。语音转写和语义检索仍是本机能力，不受影响。')
+                .fontSize(14).fontColor(SketchColors.muted)
             }.width('100%').alignItems(HorizontalAlign.Start).padding(16)
               .backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
           }
-          SectionTitle({ text: '在线整理（可选）' })
-          Text('选择在线服务后，整理时会发送相关记录。')
+          if (this.unsupported.length > 0) {
+            SectionTitle({ text: '旧版本留下的配置' })
+            Text('这些配置用的适配器已不再随本应用提供，不会被使用，也不会自动删除。')
+              .fontSize(13).fontColor(SketchColors.muted)
+            ForEach(this.unsupported, (provider: ProviderConfig) => {
+              Column({ space: 6 }) {
+                Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
+                  space: { main: LengthMetrics.vp(12), cross: LengthMetrics.vp(8) } }) {
+                  Text(provider.label).fontSize(18).fontColor(SketchColors.ink)
+                  StatePill({ text: '已不再支持', tone: 'warn' })
+                }.width('100%')
+                Text('这是旧版本随包的本机整理（适配器 llama_cpp）。本次更新已移除本机生成能力，' +
+                  '要整理日记请在下面添加一个在线服务。')
+                  .fontSize(13).fontColor(SketchColors.muted)
+                Button('删除这条配置').attributeModifier(sketchButton).drawModifier(sketchOutline())
+                  .enabled(!this.busy && !this.loading)
+                  .onClick(() => { this.removeUnsupported(provider); })
+              }.width('100%').alignItems(HorizontalAlign.Start).padding(14)
+                .backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
+            }, (provider: ProviderConfig) => `${provider.id}-${provider.label}`)
+          }
+          SectionTitle({ text: '在线服务' })
+          Text('整理时会把这一天的相关记录发送给你选择的在线服务。')
             .fontSize(14).fontColor(SketchColors.muted)
           if (this.loading) { LoadingRow({ text: '读取模型服务…' }) }
           Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
