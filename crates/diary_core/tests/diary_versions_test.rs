@@ -1141,3 +1141,63 @@ fn v10_library_migrates_to_latest_with_revision_backfilled() {
         .unwrap_err();
     assert_eq!(error.code(), ErrorCode::RevisionConflict);
 }
+
+/// 历史版本的 `generationInfo.generationOptions.keptOriginal`（本机整理时代）仍可读。
+///
+/// 随包本机整理（Qwen3.5 + llama.cpp）已从产品移除：现在不再写
+/// `localPolicy` / `keptOriginal`，读取侧也不解释它们。但旧资料库里存的是当时的
+/// JSON——`generationOptions` 是一个普通键值 map，**不能因为现在的代码不写某个键
+/// 就让整次读取失败**。
+#[test]
+fn legacy_local_llm_metadata_still_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let (mut core, _transport) = core_with_transport(dir.path(), vec![chat_ok("今天去看妈妈。")]);
+    save_provider(&mut core);
+    capture_with_text(&mut core, "今天去看妈妈，她说体检没事。", "2026-10-16", "op-a");
+    let base = generated_base(&mut core, "今天去看妈妈。", "op-gen-legacy");
+
+    // 把这一版的审计信息改写成旧版本机整理写下的形状（含 provider/model 与两个选项）。
+    let legacy = serde_json::json!({
+        "prompt_version": "local-v1",
+        "provider_id": "builtin_local_llm",
+        "model": "Qwen3.5-0.8B-Q4_0",
+        "generation_options": {
+            "steps": "1",
+            "intermediateCalls": "0",
+            "repairCalls": "0",
+            "modelCalls": "1",
+            "localPolicy": "conservative-edit-v1",
+            "keptOriginal": "true"
+        },
+        "covered_source_count": 1,
+        "unprocessed_source_count": 0
+    });
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "UPDATE diary_versions SET generation_info = ?1 WHERE id = ?2",
+            rusqlite::params![legacy.to_string(), base.id],
+        )
+        .unwrap();
+    }
+
+    let read = core.get_diary_version(&base.id).unwrap();
+    assert_eq!(read.body, "今天去看妈妈。", "正文原样读回");
+    let info = read.generation_info.expect("旧版本仍带审计信息");
+    assert_eq!(info.prompt_version, "local-v1");
+    assert_eq!(info.provider_id.as_deref(), Some("builtin_local_llm"));
+    assert_eq!(info.model.as_deref(), Some("Qwen3.5-0.8B-Q4_0"));
+    assert_eq!(info.generation_options["keptOriginal"], "true");
+    assert_eq!(info.generation_options["localPolicy"], "conservative-edit-v1");
+    assert_eq!(info.covered_source_count, 1);
+
+    // 列表与当前版本走同一条读取路径：旧版本不能因为这两个键读不出来。
+    let all = versions(&core, "2026-10-16");
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].generation_info.as_ref().unwrap().generation_options["keptOriginal"], "true");
+    assert_eq!(
+        day_of(&core, "2026-10-16").current_version_id.as_deref(),
+        Some(base.id.as_str())
+    );
+}
