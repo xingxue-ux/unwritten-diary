@@ -157,7 +157,7 @@ export struct LlmConfigPage {
       this.message = '保存未完成，请重新填写密钥后重试。'; return;
     }
     this.adopt(result.data as ProviderConfig);
-    this.message = '已保存。检查连接后即可启用。';
+    this.message = '已保存，请检查连接。';
     AppState.bumpDataVersion();
     await this.load();
   }
@@ -208,7 +208,7 @@ export struct LlmConfigPage {
     else {
       const report: ProviderTestReport = result.data as ProviderTestReport;
       this.message = (this.selected as ProviderConfig).test_status === 'ok'
-        ? '连接成功，可以启用服务。' : '测试未全部通过，请检查服务和模型。';
+        ? '连接成功，可以使用。' : '连接未通过，请检查配置。';
 
     }
     AppState.bumpDataVersion();
@@ -216,43 +216,41 @@ export struct LlmConfigPage {
     if (!result.ok && this.active && !this.uncertain) { this.error = uiErrorOf(result); }
   }
 
-  private async toggleEnabled(): Promise<void> {
-    if (!this.canProbe()) { return; }
-    const provider: ProviderConfig = this.selected as ProviderConfig;
-    if (!provider.enabled && provider.test_status !== 'ok') {
-      this.validation('请先通过文本生成连接测试，再启用服务。'); return;
+  private async useOnline(provider: ProviderConfig): Promise<void> {
+    if (this.busy || this.loading || this.uncertain) { return; }
+    if (provider.enabled) { return; }
+    if (provider.test_status !== 'ok') {
+      this.validation('请先检查连接。'); return;
     }
     this.busy = true;
     this.error = EMPTY_UI_ERROR;
-    const config: ProviderConfig = { id: provider.id, label: provider.label,
-      adapter_id: provider.adapter_id, endpoint: provider.endpoint, model: provider.model,
-      capabilities: provider.capabilities, credential_ref: provider.credential_ref,
-      enabled: !provider.enabled, test_status: provider.test_status };
-    const params: SaveProviderParams = { config: config, secret: null };
-    const result = await CoreGateway.call(this.dbPath, 'providers.save', params);
+    const params: ProviderIdParams = { provider_id: provider.id };
+    const result = await CoreGateway.call(this.dbPath, 'providers.selectGeneration', params);
     this.busy = false;
     if (!this.active) { return; }
-    if (!result.ok) { this.error = uiErrorOf(result); return; }
-    this.adopt(result.data as ProviderConfig);
-    this.message = config.enabled ? '已启用，可开始整理日记。' : '已停用，配置和密钥已保留。';
+    if (!result.ok) { await this.load(); this.error = uiErrorOf(result); return; }
+    this.message = '已切换为在线整理。';
     AppState.bumpDataVersion();
     await this.load();
   }
 
+  private async toggleEnabled(): Promise<void> {
+    if (!this.canProbe()) { return; }
+    await this.useOnline(this.selected as ProviderConfig);
+  }
+
   private async toggleLocal(): Promise<void> {
-    if (this.busy || this.loading || this.localProvider === null) { return; }
+    if (this.busy || this.loading || this.uncertain || this.localProvider === null) { return; }
     const current: ProviderConfig = this.localProvider as ProviderConfig;
-    const config: ProviderConfig = { id: current.id, label: current.label,
-      adapter_id: current.adapter_id, endpoint: null, model: current.model,
-      capabilities: current.capabilities, credential_ref: null,
-      enabled: !current.enabled, test_status: current.test_status };
+    if (current.enabled) { return; }
     this.busy = true;
-    const params: SaveProviderParams = { config: config, secret: null };
-    const saved = await CoreGateway.call(this.dbPath, 'providers.save', params);
+    this.error = EMPTY_UI_ERROR;
+    const params: ProviderIdParams = { provider_id: current.id };
+    const saved = await CoreGateway.call(this.dbPath, 'providers.selectGeneration', params);
     this.busy = false;
     if (!this.active) { return; }
-    if (!saved.ok) { this.error = uiErrorOf(saved); return; }
-    this.message = config.enabled ? '已启用本机整理。' : '已停用本机整理。';
+    if (!saved.ok) { await this.load(); this.error = uiErrorOf(saved); return; }
+    this.message = '已切换为本机整理。';
     AppState.bumpDataVersion();
     await this.load();
   }
@@ -315,8 +313,9 @@ export struct LlmConfigPage {
         if (this.selected !== null) {
           Button('查找可用模型').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.detectModels(); })
           Button('检查连接').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.test(); })
-          Button((this.selected as ProviderConfig).enabled ? '停用服务' : '启用服务')
-            .attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.toggleEnabled(); })
+          Button((this.selected as ProviderConfig).enabled ? '正在使用' : '使用此服务')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
+            .enabled(this.canProbe() && !(this.selected as ProviderConfig).enabled).onClick(() => { this.toggleEnabled(); })
           Button('删除服务').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(this.canProbe()).onClick(() => { this.remove(); })
         }
       }.width('100%')
@@ -325,10 +324,13 @@ export struct LlmConfigPage {
           onReload: () => { this.load(); } })
       }
       if (this.message.length > 0) { Text(this.message).fontColor(SketchColors.text).fontSize(14) }
-      ForEach(this.models, (item: ProviderModelInfo, index: number) => {
-        Button(modelLabel(item.id, index)).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
+      ForEach(this.models, (item: ProviderModelInfo) => {
+        Button(modelLabel(item.id)).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
           .onClick(() => { this.model = item.id; this.dirty = true; })
       }, (item: ProviderModelInfo) => item.id)
+      if (this.models.length > 0) {
+        Text('模型名称由服务提供，中文简称仅供参考。').fontSize(12).fontColor(SketchColors.muted)
+      }
     }.width('100%').alignItems(HorizontalAlign.Start).padding(16)
       .backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
   }
@@ -338,23 +340,25 @@ export struct LlmConfigPage {
       Scroll() {
         Column({ space: 16 }) {
           Text('让智能助手整理日记').fontFamily(SketchFonts.display).fontSize(24).fontColor(SketchColors.ink)
+          Text('本机和在线整理只选一个，切换后保留配置。').fontSize(14).fontColor(SketchColors.muted)
           if (this.localProvider !== null) {
             Column({ space: 10 }) {
               Row({ space: 12 }) {
                 Text('本机整理').fontSize(18).fontColor(SketchColors.ink)
-                StatePill({ text: (this.localProvider as ProviderConfig).enabled ? '已启用' : '未启用',
+                StatePill({ text: (this.localProvider as ProviderConfig).enabled ? '当前使用' : '未使用',
                   tone: (this.localProvider as ProviderConfig).enabled ? 'ok' : 'muted' })
               }
               Text('模型已随包准备，无需密钥，可离线整理。').fontSize(14).fontColor(SketchColors.muted)
               Text('优先保留原句，适合简单整理。').fontSize(13).fontColor(SketchColors.muted)
-              Button((this.localProvider as ProviderConfig).enabled ? '停用本机整理' : '启用本机整理')
+              Button((this.localProvider as ProviderConfig).enabled ? '正在使用' : '使用本机整理')
                 .attributeModifier(sketchButton).drawModifier(sketchOutline())
-                .enabled(!this.busy && !this.loading).onClick(() => { this.toggleLocal(); })
+                .enabled(!this.busy && !this.loading && !this.uncertain && !(this.localProvider as ProviderConfig).enabled)
+                .onClick(() => { this.toggleLocal(); })
             }.width('100%').alignItems(HorizontalAlign.Start).padding(16)
               .backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
           }
           SectionTitle({ text: '在线整理（可选）' })
-          Text('启用在线服务后优先使用，只有整理时才会发送相关记录。')
+          Text('选择在线服务后，整理时会发送相关记录。')
             .fontSize(14).fontColor(SketchColors.muted)
           if (this.loading) { LoadingRow({ text: '读取模型服务…' }) }
           Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
@@ -370,11 +374,14 @@ export struct LlmConfigPage {
               Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
                 space: { main: LengthMetrics.vp(12), cross: LengthMetrics.vp(8) } }) {
                 Text(provider.label).fontSize(18).fontColor(SketchColors.ink)
-                StatePill({ text: provider.enabled ? '已启用' : '未启用', tone: provider.enabled ? 'ok' : 'muted' })
-                Text(provider.test_status === 'ok' ? '连接测试通过' : provider.test_status === 'failed' ? '连接测试失败' : '尚未验证文本生成')
+                StatePill({ text: provider.enabled ? '当前使用' : '未使用', tone: provider.enabled ? 'ok' : 'muted' })
+                Text(provider.test_status === 'ok' ? '连接已通过' : provider.test_status === 'failed' ? '连接未通过' : '请先检查连接')
                   .fontSize(13).fontColor(SketchColors.muted)
                 Button('编辑配置').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
                   .onClick(() => { this.edit(provider); })
+                Button(provider.enabled ? '正在使用' : '使用此服务').attributeModifier(sketchButton).drawModifier(sketchOutline())
+                  .enabled(!this.busy && !this.loading && !this.uncertain && !provider.enabled && provider.test_status === 'ok')
+                  .onClick(() => { this.useOnline(provider); })
               }.width('100%')
               Text(modelLabel(provider.model)).fontSize(13).fontColor(SketchColors.muted)
             }.width('100%').alignItems(HorizontalAlign.Start).padding(14)

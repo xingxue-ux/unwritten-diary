@@ -424,15 +424,17 @@ async function searchIndexStatusIgnoresStaleResponse(){
   assert.equal(page.indexStatus.semantic_index_ready,true);
 }
 async function llmConfiguration(){
-  const calls=[];let saved=null;let secretReceived=null;let failList=false;let failSave=false;let failTest=false;let confirmed=true;
+  const calls=[];let saved=null;let secretReceived=null;let failList=false;let failSave=false;let failSelect=false;let failTest=false;let confirmed=true;
   let provider={id:'llm',label:'Existing',adapter_id:'openai_compatible',endpoint:'https://example.com/v1',
     model:'model-a',capabilities:['generate_text'],credential_ref:'sec_existing',enabled:false,test_status:'untested'};
   const local={...provider,id:'asr',adapter_id:'sherpa_onnx',capabilities:['transcribe_audio']};
+  let localLlm={...provider,id:'builtin_local_llm',adapter_id:'llama_cpp',enabled:true,credential_ref:null};
+  let otherOnline={...provider,id:'other-online',test_status:'ok'};
   const ok=data=>({ok:true,data,error:null});
   const failed={ok:false,data:null,error:{code:'network_unavailable',message:'offline',retryable:true}};
   const gateway={call:async(db,method,params)=>{
     calls.push(method);
-    if(method==='providers.list')return failList?failed:ok([provider,local]);
+    if(method==='providers.list')return failList?failed:ok([provider,local,localLlm,otherOnline]);
     if(method==='providers.presets')return ok([]);
     if(method==='providers.save'){
       saved=JSON.parse(JSON.stringify(params.config));secretReceived=params.secret;
@@ -440,6 +442,14 @@ async function llmConfiguration(){
       provider={...saved,id:'llm',credential_ref:params.secret?'sec_new':saved.credential_ref};return ok(provider);
     }
     if(method==='providers.models')return ok([{id:'detected'}]);
+    if(method==='providers.selectGeneration'){
+      if(failSelect)return failed;
+      assert.deepEqual(Object.keys(params),['provider_id']);
+      provider={...provider,enabled:provider.id===params.provider_id};
+      localLlm={...localLlm,enabled:localLlm.id===params.provider_id};
+      otherOnline={...otherOnline,enabled:otherOnline.id===params.provider_id};
+      return ok([provider,localLlm,otherOnline].find(p=>p.id===params.provider_id));
+    }
     if(method==='providers.test'){
       if(failTest)return {ok:false,data:null,error:{code:'authentication_failed',message:'HTTP 401',retryable:false}};
       assert.deepEqual(Array.from(params.scope),['generate_text']);
@@ -453,7 +463,7 @@ async function llmConfiguration(){
     '../ui/Errors':errorModule,'../ui/AppRuntime':{confirmAction:async()=>confirmed},
     '../ui/AppState':{AppState:{bumpDataVersion:noop}}},{},true);
   const page=new LlmConfigPage();await page.load();
-  assert.deepEqual(calls,['providers.list','providers.presets']);assert.equal(page.providers.length,1);
+  assert.deepEqual(calls,['providers.list','providers.presets']);assert.equal(page.providers.length,2);
   page.adopt(provider);page.label='Renamed';page.dirty=true;await page.save();
   assert.equal(saved.credential_ref,'sec_existing');assert.equal(secretReceived,null);assert.equal(saved.enabled,false);
   page.secret='new-test-secret';page.dirty=true;await page.save();
@@ -463,7 +473,16 @@ async function llmConfiguration(){
   assert.equal(calls.length,before);await page.save();await page.detectModels();assert.equal(page.models[0].id,'detected');
   await page.toggleEnabled();assert.equal(page.selected.enabled,false); // untested cannot enable
   await page.test();assert.equal(page.selected.test_status,'ok');await page.toggleEnabled();
-  assert.equal(saved.enabled,true);assert.equal(saved.credential_ref,'sec_new');assert.equal(secretReceived,null);
+  assert.equal(page.selected.enabled,true);assert.equal(page.selected.credential_ref,'sec_new');
+  assert.equal(page.localProvider.enabled,false);assert.equal(secretReceived,null);
+  await page.toggleLocal();assert.equal(page.localProvider.enabled,true);assert.equal(page.selected.enabled,false);
+  const selectedCalls=calls.length;await page.toggleLocal();assert.equal(calls.length,selectedCalls);
+  // The card switches directly, without entering or overwriting the edit form.
+  await page.useOnline(otherOnline);assert.equal(page.localProvider.enabled,false);
+  assert.equal(page.providers.find(p=>p.id==='other-online').enabled,true);assert.equal(page.selected.id,'llm');
+  failSelect=true;await page.toggleLocal();assert.equal(page.localProvider.enabled,false);
+  assert.equal(page.providers.find(p=>p.id==='other-online').enabled,true);failSelect=false;
+  await page.toggleEnabled();assert.equal(page.selected.enabled,true);
   failTest=true;await page.test();assert.equal(page.error.code,'authentication_failed');assert.equal(page.message,'');failTest=false;
   failList=true;await page.test();assert.equal(page.canProbe(),false);failList=false;await page.load();assert.equal(page.canProbe(),true);
   page.secret='never-echo-this';page.dirty=true;failSave=true;await page.save();
@@ -522,7 +541,11 @@ async function chineseSystemFeedback(){
   }
   assert.notEqual(runtime.jobKindLabel('diary_generate'),runtime.jobKindLabel('unrecognized'));
   const text=load('ui/UserText.ets',{'./Errors':{toUiError}});
-  assert.ok(!/[A-Za-z]/.test(text.presetLabel('DeepSeek')+text.modelLabel('deepseek-flash')+text.testStatusLabel('ok')));
+  assert.ok(!/[A-Za-z]/.test(text.presetLabel('DeepSeek')+text.testStatusLabel('ok')));
+  assert.equal(text.modelLabel('deepseek-v4-pro'),'专业模型（deepseek-v4-pro）');
+  assert.equal(text.modelLabel('deepseek-reasoner'),'推理模型（deepseek-reasoner）');
+  assert.equal(text.modelLabel('unrelated-project'),'unrelated-project');
+  assert.equal(text.modelLabel('unrelated-flash'),'unrelated-flash');
   assert.ok(!/[A-Za-z]/.test(text.timeZoneLabel('UTC')+text.timeZoneLabel('Asia/Shanghai')));
 }
 async function exportFeedbackHidesPaths(){

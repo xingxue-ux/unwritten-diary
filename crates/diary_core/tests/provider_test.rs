@@ -17,6 +17,87 @@ use diary_core::{
     Transport, TransportError,
 };
 
+// ------------------------------------------------------------------ 整理服务切换
+
+#[test]
+fn generation_selection_is_exclusive_and_preserves_credentials_and_asr() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let online = core
+        .save_provider(
+            &provider_config("online", &[ProviderCapability::GenerateText], true),
+            Some("selection-test-secret"),
+        )
+        .unwrap();
+    let asr = core
+        .save_provider(&local_provider_config("asr", None), None)
+        .unwrap();
+    let local = Provider {
+        id: "builtin_local_llm".into(),
+        label: "本机整理".into(),
+        adapter_id: "llama_cpp".into(),
+        endpoint: None,
+        model: Some("/test/model.gguf".into()),
+        capabilities: [ProviderCapability::GenerateText].into_iter().collect(),
+        credential_ref: None,
+        enabled: false,
+        test_status: ProviderTestStatus::Untested,
+    };
+    core.save_provider(&local, None).unwrap();
+    core.select_generation_provider(&local.id).unwrap();
+    let rows = core.list_providers().unwrap();
+    let stopped = rows.iter().find(|p| p.id == online.id).unwrap();
+    assert!(!stopped.enabled);
+    assert_eq!(stopped.credential_ref, online.credential_ref);
+    assert_eq!(stopped.model, online.model);
+    assert_eq!(stopped.test_status, online.test_status);
+    assert_eq!(rows.iter().find(|p| p.id == asr.id).unwrap(), &asr);
+    // Switching back reuses the saved key and never calls the PanicTransport.
+    core.select_generation_provider(&online.id).unwrap();
+    assert!(
+        core.provider_capability_gate(ProviderCapability::GenerateText)
+            .unwrap()
+            .ready
+    );
+    assert_eq!(
+        core.list_providers()
+            .unwrap()
+            .iter()
+            .filter(|p| p.enabled && p.capabilities.contains(&ProviderCapability::GenerateText))
+            .count(),
+        1
+    );
+    let before = core.list_providers().unwrap();
+    assert!(core.select_generation_provider("missing").is_err());
+    assert!(core.select_generation_provider(&asr.id).is_err());
+    assert_eq!(core.list_providers().unwrap(), before);
+}
+
+#[test]
+fn generation_selection_rolls_back_if_a_switch_cannot_be_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.sqlite");
+    let mut core = Core::open(&path).unwrap();
+    core.set_transport_for_test(Arc::new(PanicTransport {}));
+    for (id, enabled) in [("a_old", true), ("z_new", false)] {
+        core.save_provider(
+            &provider_config(id, &[ProviderCapability::GenerateText], enabled),
+            Some("selection-test-secret"),
+        )
+        .unwrap();
+    }
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_selection BEFORE UPDATE ON providers
+        WHEN NEW.id = 'z_new' AND NEW.enabled = 1
+        BEGIN SELECT RAISE(ABORT, 'test write failure'); END;",
+    )
+    .unwrap();
+    let before = core.list_providers().unwrap();
+    assert!(core.select_generation_provider("z_new").is_err());
+    assert_eq!(core.list_providers().unwrap(), before);
+}
+
 // ------------------------------------------------------------------ 工具
 
 fn new_core(dir: &Path) -> Core {

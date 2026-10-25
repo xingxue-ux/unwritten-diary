@@ -4,9 +4,9 @@
     // bundle-info.bundle-name 一致才能安装，见 probes/ohos-hap-smoke/README.md。
     "bundleName": "com.lingxing.unwrittendiary",
     "vendor": "xingxue",
-    "versionCode": 1000001,
-    "versionName": "1.0.1",
-    "buildVersion": "2",
+    "versionCode": 1000002,
+    "versionName": "1.0.2",
+    "buildVersion": "1",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }

@@ -1,7 +1,7 @@
 import { JobRunSummary } from '../core/Models';
 import { toUiError } from './Errors';
 
-/** Product labels never fall back to protocol names, paths or raw service replies. */
+/** Ordinary labels stay Chinese; model configuration retains exact model IDs. */
 export function presetLabel(label: string): string {
   const value: string = label.toLowerCase();
   if (value.includes('deepseek')) { return '深度求索'; }
@@ -10,11 +10,12 @@ export function presetLabel(label: string): string {
   return '其他服务';
 }
 
-export function modelLabel(model: string | null, index: number = 0): string {
+export function modelLabel(model: string | null): string {
   if (model === null || model.length === 0) { return '未选择模型'; }
-  if (model.includes('flash') || model === 'deepseek-chat') { return '快速模型'; }
-  if (model.includes('reasoner') || model.includes('pro')) { return '专业模型'; }
-  return `模型 ${index + 1}`;
+  if (model === 'deepseek-flash' || model === 'deepseek-chat') { return `快速模型（${model}）`; }
+  if (model === 'deepseek-v4-pro') { return `专业模型（${model}）`; }
+  if (model === 'deepseek-reasoner') { return `推理模型（${model}）`; }
+  return model;
 }
 
 export function testStatusLabel(status: string): string {
