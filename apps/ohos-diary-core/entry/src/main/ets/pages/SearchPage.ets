@@ -1,15 +1,16 @@
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchInput, sketchArea, sketchOutline } from '../ui/Sketch';
 // 搜索：关键词 / 语义 / 混合三种模式。
 //
 // 用到的 C ABI：`search.start`、`search.nextPage`、`search.upgrade`、`search.cancel`、
 // `indexes.status`（显示语义索引覆盖，不拿它挡搜索）。
 //
-// 三个必须如实处理的点：
+// 必须如实处理的点：
 // 1. `semantic_index_ready == false` **不等于**没有语义结果：已嵌入的块仍会被检索，
 //    覆盖不全只在 `warnings` 里说；结果照常显示，另外加一条覆盖提示；
 // 2. keyword 的 `phase` 可能是 `keyword_ready`（还有下一页），不恒为 `done`；
 //    能不能翻页看 **cursor**，phase 不是结束标志；
-// 3. hybrid 的 `start` 只算关键词阶段；`upgrade` 成功才 `hybrid_ready`，
-//    升不了级时仍停在 `keyword_ready`，不能把标签写成「混合结果」；
+// 3. hybrid 的 `start` 只算关键词阶段；界面自动调用 `upgrade` 完成混合检索，
+//    升不了级时仍停在 `keyword_ready`，如实显示只有关键词结果；
 // 4. `error` 有值时**不显示「没有结果」**：检索失败不等于库里没有匹配内容。
 
 import { common } from '@kit.AbilityKit';
@@ -37,6 +38,8 @@ import { EmptyState, ErrorBanner, LoadingRow, PageTitle, StatePill } from '../ui
 @Component
 export struct SearchPage {
   pathStack: NavPathStack = new NavPathStack();
+  @Prop @Watch('onVisibilityChanged') visible: boolean = true;
+  @StorageLink('ohosDataVersion') @Watch('onDataVersionChanged') dataVersion: number = 0;
   @State query: string = '';
   @State mode: string = 'keyword';
   @State results: SearchHit[] = [];
@@ -50,6 +53,7 @@ export struct SearchPage {
   @State loading: boolean = false;
   @State loadingMore: boolean = false;
   @State upgrading: boolean = false;
+  @State cancelling: boolean = false;
   @State upgradeAttempted: boolean = false;
   @State searched: boolean = false;
   @State error: UiError = EMPTY_UI_ERROR;
@@ -58,15 +62,61 @@ export struct SearchPage {
 
   private dbPath: string = '';
   private seq: number = 0;
+  private statusSeq: number = 0;
+  private ready: boolean = false;
+  private refreshPending: boolean = false;
 
   aboutToAppear(): void {
     const context = getContext(this) as common.UIAbilityContext;
     this.dbPath = databasePath(context);
+    this.ready = true;
     this.loadIndexStatus();
   }
 
+  aboutToDisappear(): void {
+    this.ready = false;
+    this.statusSeq++;
+    this.cancelSession(this.resetRequest());
+  }
+
+  onVisibilityChanged(): void {
+    if (!this.ready) { return; }
+    if (this.visible) {
+      this.loadIndexStatus();
+      if (this.refreshPending) {
+        this.refreshPending = false;
+        if (this.searched && this.query.trim().length > 0) { this.startSearch(); }
+      }
+    } else if (this.loading || this.loadingMore || this.upgrading) {
+      this.refreshPending = true;
+      this.cancelSession(this.resetRequest());
+    }
+  }
+
+  onDataVersionChanged(): void {
+    if (!this.ready) { return; }
+    const searchAgain: boolean = this.searched && this.phase !== 'cancelled' && this.query.trim().length > 0;
+    if (this.visible) {
+      this.refreshPending = false;
+      this.loadIndexStatus();
+      if (searchAgain) { this.startSearch(); }
+      else if (this.searched) {
+        this.cancelSession(this.resetRequest());
+        this.clearResults();
+        this.searched = false;
+      }
+    } else {
+      this.cancelSession(this.resetRequest());
+      this.clearResults();
+      this.searched = searchAgain;
+      this.refreshPending = searchAgain;
+    }
+  }
+
   private async loadIndexStatus(): Promise<void> {
+    const token: number = ++this.statusSeq;
     const result = await CoreGateway.call(this.dbPath, 'indexes.status', null);
+    if (!this.ready || token !== this.statusSeq) { return; }
     if (!result.ok) {
       this.statusError = uiErrorOf(result);
       return;
@@ -75,19 +125,57 @@ export struct SearchPage {
     this.indexStatus = result.data as IndexStatus;
   }
 
-  private async cancelPrevious(): Promise<void> {
-    const previous: string = this.sessionId;
-    this.sessionId = '';
-    if (previous.length === 0) {
+  private async cancelSession(session: string): Promise<void> {
+    if (session.length === 0) {
       return;
     }
-    const params: SearchSessionParams = { session_id: previous };
+    const params: SearchSessionParams = { session_id: session };
     await CoreGateway.call(this.dbPath, 'search.cancel', params);
   }
 
-  private async startSearch(): Promise<void> {
+  private resetRequest(): string {
+    const previous: string = this.sessionId;
+    this.seq++;
+    this.sessionId = '';
+    this.loading = false;
+    this.loadingMore = false;
+    this.upgrading = false;
+    this.cancelling = false;
+    this.cursor = '';
+    this.hasMore = false;
+    return previous;
+  }
+
+  private clearResults(): void {
+    this.results = [];
+    this.warnings = [];
+    this.phase = '';
+    this.indexCoverage = '';
+    this.error = EMPTY_UI_ERROR;
+    this.upgradeAttempted = false;
+  }
+
+  private updateQuery(value: string): void {
+    const changed: boolean = this.query.trim() !== value.trim();
+    this.query = value;
+    this.error = EMPTY_UI_ERROR;
+    if (!changed) { return; }
+    this.cancelSession(this.resetRequest());
+    this.clearResults();
+    this.searched = false;
+    this.refreshPending = false;
+  }
+
+  private async startSearch(restarted: boolean = false): Promise<void> {
     const text: string = this.query.trim();
+    const mode: string = this.mode;
+    const previous: string = this.resetRequest();
+    const token: number = this.seq;
+    this.clearResults();
+    this.refreshPending = false;
     if (text.length === 0) {
+      this.searched = false;
+      this.cancelSession(previous);
       this.error = {
         code: 'invalid_argument',
         title: '还没有输入内容',
@@ -98,28 +186,16 @@ export struct SearchPage {
       };
       return;
     }
-    this.seq++;
-    const token: number = this.seq;
     this.loading = true;
-    this.loadingMore = false;
-    this.upgrading = false;
-    this.error = EMPTY_UI_ERROR;
     this.searched = true;
-    this.upgradeAttempted = false;
-    this.results = [];
-    this.warnings = [];
-    this.phase = '';
-    this.indexCoverage = '';
-    this.cursor = '';
-    this.hasMore = false;
-    await this.cancelPrevious();
+    await this.cancelSession(previous);
     if (token !== this.seq) {
       return;
     }
     this.queryRevision++;
     const request: SearchRequestParams = {
       query: text,
-      mode: this.mode,
+      mode: mode,
       page_size: 20,
     };
     const params: SearchParams = {
@@ -128,6 +204,7 @@ export struct SearchPage {
     };
     const result = await CoreGateway.call(this.dbPath, 'search.start', params);
     if (token !== this.seq) {
+      if (result.ok) { await this.cancelSession((result.data as SearchSnapshot).session_id); }
       return;
     }
     this.loading = false;
@@ -136,6 +213,12 @@ export struct SearchPage {
       return;
     }
     this.applySnapshot(result.data as SearchSnapshot, false);
+    if (mode === 'hybrid' && this.phase === 'keyword_ready') {
+      await this.upgrade(!restarted);
+      if (token !== this.seq) {
+        return;
+      }
+    }
     // 语义就绪度可能在这次查询之后变化（自动重建/换模型），顺手刷新一次。
     this.loadIndexStatus();
   }
@@ -148,17 +231,37 @@ export struct SearchPage {
     this.cursor = snapshot.cursor === null ? '' : snapshot.cursor;
     this.hasMore = snapshot.cursor !== null;
     this.queryRevision = snapshot.query_revision;
-    this.results = append ? this.results.concat(snapshot.results) : snapshot.results;
+    const merged: SearchHit[] = append ? this.results.slice() : [];
+    // 原文同时命中记录和它的文字来源时只展示一份；不同来源的命中仍保留。
+    for (const hit of snapshot.results) {
+      const index: number = merged.findIndex((item: SearchHit) => item.hit_id === hit.hit_id ||
+        (item.capture_id === hit.capture_id && item.source_kind === 'text' && hit.source_kind === 'text' &&
+          item.snippet !== null && item.snippet === hit.snippet && (item.source_id === null || hit.source_id === null)));
+      if (index < 0) {
+        merged.push(hit);
+      } else {
+        const previous: SearchHit = merged[index];
+        const display: SearchHit = previous.source_id !== null && hit.source_id === null ? previous : hit;
+        const matched: string[] = [];
+        for (const value of previous.matched_by.concat(hit.matched_by)) {
+          if (matched.indexOf(value) < 0) { matched.push(value); }
+        }
+        display.matched_by = matched;
+        merged[index] = display;
+      }
+    }
+    this.results = merged;
   }
 
   private async loadMore(): Promise<void> {
-    if (!this.hasMore || this.loadingMore || this.loading || this.cursor.length === 0) {
+    if (!this.hasMore || this.loadingMore || this.loading || this.upgrading || this.cancelling || this.cursor.length === 0) {
       return;
     }
     if (this.sessionId.length === 0) {
       return;
     }
     this.loadingMore = true;
+    this.error = EMPTY_UI_ERROR;
     const token: number = this.seq;
     const params: SearchNextPageParams = {
       session_id: this.sessionId,
@@ -170,14 +273,18 @@ export struct SearchPage {
     }
     this.loadingMore = false;
     if (!result.ok) {
+      if (result.error !== null && (result.error.code === 'search_expired' || result.error.code === 'cursor_expired')) {
+        await this.startSearch(true);
+        return;
+      }
       this.error = uiErrorOf(result);
       return;
     }
     this.applySnapshot(result.data as SearchSnapshot, true);
   }
 
-  private async upgrade(): Promise<void> {
-    if (this.sessionId.length === 0 || this.upgrading) {
+  private async upgrade(allowRestart: boolean = true): Promise<void> {
+    if (this.sessionId.length === 0 || this.upgrading || this.loadingMore || this.loading || this.cancelling) {
       return;
     }
     this.upgrading = true;
@@ -191,6 +298,10 @@ export struct SearchPage {
     }
     this.upgrading = false;
     if (!result.ok) {
+      if (allowRestart && result.error !== null && (result.error.code === 'search_expired' || result.error.code === 'cursor_expired')) {
+        await this.startSearch(true);
+        return;
+      }
       this.error = uiErrorOf(result);
       return;
     }
@@ -198,20 +309,20 @@ export struct SearchPage {
   }
 
   private async cancel(): Promise<void> {
-    if (this.sessionId.length === 0) {
+    if (this.cancelling || (!this.loading && !this.upgrading && !this.loadingMore && this.sessionId.length === 0)) {
       return;
     }
+    const previous: string = this.resetRequest();
     const token: number = this.seq;
-    const params: SearchSessionParams = { session_id: this.sessionId };
-    const result = await CoreGateway.call(this.dbPath, 'search.cancel', params);
+    this.cancelling = true;
+    this.phase = 'cancelled';
+    this.error = EMPTY_UI_ERROR;
+    this.refreshPending = false;
+    await this.cancelSession(previous);
     if (token !== this.seq) {
       return;
     }
-    if (!result.ok) {
-      this.error = uiErrorOf(result);
-      return;
-    }
-    this.applySnapshot(result.data as SearchSnapshot, false);
+    this.cancelling = false;
   }
 
   private setMode(mode: string): void {
@@ -221,6 +332,16 @@ export struct SearchPage {
     this.mode = mode;
     if (this.searched && this.query.trim().length > 0) {
       this.startSearch();
+    } else {
+      this.cancelSession(this.resetRequest());
+      this.clearResults();
+      this.searched = false;
+    }
+  }
+
+  private openHit(hit: SearchHit): void {
+    if (hit.capture_id.length > 0) {
+      this.pathStack.pushPathByName('capture', hit.capture_id);
     }
   }
 
@@ -252,33 +373,46 @@ export struct SearchPage {
     return this.indexStatus !== null && this.indexStatus.semantic_index_ready;
   }
 
+  private resultStatus(): string {
+    if (this.loading) {
+      return '正在搜索…';
+    }
+    if (this.upgrading) {
+      return '正在结合语义搜索…';
+    }
+    if (this.mode === 'hybrid' && this.phase === 'keyword_ready' && this.upgradeAttempted) {
+      return '当前仅有关键词结果';
+    }
+    if (this.phase.length === 0 && this.error.code.length > 0) { return '搜索未完成'; }
+    return searchPhaseLabel(this.phase);
+  }
+
+  private waitingForResults(): boolean {
+    return this.loading || (this.upgrading && this.results.length === 0);
+  }
+
   private semanticBanner(): string {
-    if (this.indexStatus === null) {
+    if (this.indexStatus === null || this.mode === 'keyword') {
       return '';
     }
     const status: IndexStatus = this.indexStatus;
     if (status.semantic_index_ready) {
       return '';
     }
-    const base: string = `语义索引未完全就绪：已嵌入 ${status.embedded_chunks} / ${status.total_chunks} 块。` +
-      '语义/混合模式仍会检索已嵌入的块，结果可能不全（不是「没有结果」）。';
-    if (status.reasons.length > 0) {
-      return `${base}\n${status.reasons[0]}`;
-    }
-    return base;
+    return '部分记录尚未整理，语义搜索结果可能不全。';
   }
 
   @Builder
   modeButton(label: string, value: string) {
     Button(label)
+      .attributeModifier(sketchButton).drawModifier(sketchOutline())
       .fontSize(14)
-      .height(34)
       .backgroundColor(this.mode === value
-        ? $r('sys.color.ohos_id_color_emphasize')
-        : $r('sys.color.ohos_id_color_sub_background'))
+        ? SketchColors.button
+        : SketchColors.soft)
       .fontColor(this.mode === value
-        ? $r('sys.color.ohos_id_color_text_primary_contrary')
-        : $r('sys.color.ohos_id_color_text_primary'))
+        ? SketchColors.ink
+        : SketchColors.text)
       .onClick(() => {
         this.setMode(value);
       })
@@ -293,20 +427,20 @@ export struct SearchPage {
       Text('!')
         .fontSize(12)
         .fontWeight(FontWeight.Bold)
-        .fontColor($r('sys.color.ohos_id_color_warning'))
+        .fontColor(SketchColors.warning)
         .width(16)
         .height(16)
         .textAlign(TextAlign.Center)
         .flexShrink(0)
       Text(text)
         .fontSize(12)
-        .fontColor($r('sys.color.ohos_id_color_text_primary'))
+        .fontColor(SketchColors.text)
         .layoutWeight(1)
     }
     .width('100%')
     .padding(10)
-    .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-    .borderRadius(10)
+    .backgroundColor(SketchColors.soft)
+    .borderRadius(0)
     .alignItems(VerticalAlign.Top)
   }
 
@@ -316,7 +450,7 @@ export struct SearchPage {
       Row({ space: 6 }) {
         Text(hit.day_key === null ? '日期未知' : hit.day_key)
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
         StatePill({ text: hitSourceKindLabel(hit.source_kind), tone: 'muted' })
         Blank()
         ForEach(hit.matched_by, (matched: string) => {
@@ -325,17 +459,17 @@ export struct SearchPage {
       }
       .width('100%')
       if (hit.title !== null && hit.title.length > 0) {
-        Text(hit.title)
+        Text(hit.source_kind === 'file' ? '文件记录' : hit.title)
           .fontSize(14)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .fontColor(SketchColors.text)
           .width('100%')
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       Text(hit.snippet === null ? '（没有摘录）' : hit.snippet)
         .fontSize(15)
-        .fontColor($r('sys.color.ohos_id_color_text_primary'))
+        .fontColor(SketchColors.text)
         .width('100%')
         .maxLines(4)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -343,27 +477,30 @@ export struct SearchPage {
         Text(`覆盖：${coverageLabel(hit.coverage)}`)
           .fontSize(11)
           .fontColor(hit.coverage === 'complete'
-            ? $r('sys.color.ohos_id_color_text_tertiary')
-            : $r('sys.color.ohos_id_color_warning'))
+            ? SketchColors.muted
+            : SketchColors.warning)
         if (this.locatorLabel(hit).length > 0) {
           Text(this.locatorLabel(hit))
             .fontSize(11)
-            .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            .fontColor(SketchColors.muted)
         }
       }
       .width('100%')
     }
     .width('100%')
     .padding(14)
-    .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-    .borderRadius(14)
+    .backgroundColor(SketchColors.paper)
+    .drawModifier(sketchOutline())
     .alignItems(HorizontalAlign.Start)
+    .accessibilityLevel('yes')
+    .accessibilityText('查看原记录')
+    .onClick(() => { this.openHit(hit); })
   }
 
   build() {
     Column({ space: 10 }) {
       Column() {
-        PageTitle({ title: '搜索', subtitle: '关键词、语义，或先关键词再显式升级到混合' })
+        PageTitle({ title: '搜索', subtitle: '找回本机的文字与原始材料。' })
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 12 })
@@ -378,23 +515,23 @@ export struct SearchPage {
       .padding({ left: 16, right: 16 })
 
       Row({ space: 8 }) {
-        TextInput({ placeholder: '搜索日记内容…', text: this.query })
+        TextInput({ placeholder: '搜索一个词，或一段记忆…', text: this.query }).attributeModifier(sketchInput)
           .layoutWeight(1)
           .height(42)
           .fontSize(15)
-          .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
+          .backgroundColor(SketchColors.soft)
           .onChange((value: string) => {
-            this.query = value;
+            this.updateQuery(value);
           })
           .onSubmit(() => {
             this.startSearch();
           })
         Button('搜索')
-          .height(42)
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
           .fontSize(15)
           .enabled(!this.loading)
-          .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-          .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+          .backgroundColor(SketchColors.button)
+          .fontColor(SketchColors.ink)
           .onClick(() => {
             this.startSearch();
           })
@@ -410,39 +547,39 @@ export struct SearchPage {
             Text('!')
               .fontSize(12)
               .fontWeight(FontWeight.Bold)
-              .fontColor($r('sys.color.ohos_id_color_warning'))
+              .fontColor(SketchColors.warning)
               .width(16)
               .height(16)
               .textAlign(TextAlign.Center)
               .flexShrink(0)
             Text(this.semanticBanner())
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_primary'))
+              .fontColor(SketchColors.text)
               .layoutWeight(1)
           }
           .width('100%')
           .alignItems(VerticalAlign.Top)
-          Button('去设置查看/重建语义索引')
+          Button('整理搜索内容')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(12)
-            .height(30)
-            .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+            .backgroundColor(SketchColors.button)
+            .fontColor(SketchColors.ink)
             .onClick(() => {
-              this.pathStack.pushPathByName('settings', '');
+              this.pathStack.pushPathByName('diagnostics', '');
             })
         }
         .width('100%')
         .padding(12)
-        .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-        .borderRadius(12)
+        .backgroundColor(SketchColors.soft)
+        .borderRadius(0)
         .margin({ left: 16, right: 16 })
         .alignItems(HorizontalAlign.Start)
       }
 
       if (this.statusError.code.length > 0) {
-        Text(`索引状态读取失败（${this.statusError.code}）；搜索仍可继续，但无法判断语义覆盖。`)
+        Text('暂时无法读取搜索状态，请稍后重试。')
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
           .width('100%')
           .padding({ left: 16, right: 16 })
       }
@@ -461,39 +598,29 @@ export struct SearchPage {
 
       if (this.searched) {
         Row({ space: 8 }) {
-          Text(`阶段：${searchPhaseLabel(this.phase)}`)
+          Text(this.resultStatus())
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
           if (this.indexCoverage.length > 0) {
             Text(`覆盖：${coverageLabel(this.indexCoverage)}`)
               .fontSize(12)
               .fontColor(this.indexCoverage === 'complete'
-                ? $r('sys.color.ohos_id_color_text_secondary')
-                : $r('sys.color.ohos_id_color_warning'))
+                ? SketchColors.muted
+                : SketchColors.warning)
           }
           if (this.hasMore) {
             Text('还有下一页')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+              .fontColor(SketchColors.muted)
           }
           Blank()
-          if (this.mode === 'hybrid' && this.phase === 'keyword_ready' && !this.upgradeAttempted) {
-            Button(this.upgrading ? '融合中…' : '升级为混合检索')
-              .fontSize(12)
-              .height(30)
-              .enabled(!this.upgrading)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .fontColor($r('sys.color.ohos_id_color_text_primary'))
-              .onClick(() => {
-                this.upgrade();
-              })
-          }
-          if (this.phase !== 'cancelled' && this.sessionId.length > 0) {
+          if (this.phase !== 'cancelled' && (this.loading || this.upgrading || this.loadingMore || this.sessionId.length > 0)) {
             Button('取消本次搜索')
+              .enabled(!this.cancelling)
+              .attributeModifier(sketchButton).drawModifier(sketchOutline())
               .fontSize(12)
-              .height(30)
-              .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+              .backgroundColor(SketchColors.soft)
+              .fontColor(SketchColors.muted)
               .onClick(() => {
                 this.cancel();
               })
@@ -505,26 +632,25 @@ export struct SearchPage {
 
       if (this.warnings.length > 0) {
         Column({ space: 6 }) {
-          ForEach(this.warnings, (warning: string, index: number) => {
-            this.warningBox(warning)
-          }, (warning: string, index: number) => `${index}-${warning}`)
+          this.warningBox('部分内容未参与搜索，可整理后重试。')
         }
         .width('100%')
         .padding({ left: 16, right: 16 })
       }
 
-      if (this.loading) {
-        LoadingRow({ text: '正在检索…（语义/混合可能要加载模型）' })
+      if (this.waitingForResults()) {
+        LoadingRow({ text: this.upgrading ? '正在结合语义搜索…' : '正在搜索…' })
       } else if (this.results.length === 0) {
         if (this.searched) {
-          if (this.error.code.length > 0) {
+          if (this.phase === 'cancelled') {
+            EmptyState({ icon: '—', title: '搜索已取消', hint: '可以修改内容后重新搜索。' })
+          } else if (this.error.code.length > 0) {
             // `error` 有值 = 这次检索**没有完整完成**（`search.start` 失败，或混合升级
             // 失败）。这时不能说「没有结果 / 换一个关键词」：那是把失败说成「库里没有」，
             // 用户会白改关键词。错误条已经在上面显示，这里只补一句边界说明。
-            Text('这次检索没有完成，结果不代表「没有匹配的内容」；原因见上面的错误。' +
-              '可以重试搜索，或先确认索引状态。')
+            Text('搜索未完成，请重试。')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+              .fontColor(SketchColors.muted)
               .width('100%')
               .padding({ left: 16, right: 16 })
           } else {
@@ -532,9 +658,9 @@ export struct SearchPage {
               icon: '—',
               title: '没有结果',
               hint: this.warnings.length > 0
-                ? '原因见上方的核心提示；不要把「没有结果」当成「没有内容」。'
+                ? '部分内容未参与搜索，可整理后重试。'
                 : (this.mode === 'semantic' && this.indexStatus !== null && !this.semanticReady()
-                  ? '语义索引还没有可用向量；先到设置页确认模型与重建状态。'
+                  ? '请先整理搜索内容。'
                   : '换一个关键词，或切换检索模式。'),
             })
           }
@@ -542,7 +668,7 @@ export struct SearchPage {
           EmptyState({
             icon: '⌕',
             title: '搜一搜已经记下的内容',
-            hint: '输入关键词后按回车。切换「语义/混合」会走不同的检索路径。',
+            hint: '输入想找的内容，然后点击搜索。',
           })
         }
       } else {
@@ -552,26 +678,27 @@ export struct SearchPage {
               this.resultCard(hit)
             }
           }, (hit: SearchHit) => hit.hit_id)
-          if (this.loadingMore) {
+          if (this.loadingMore || this.upgrading) {
             ListItem() {
-              LoadingRow({ text: '加载下一页…' })
+              LoadingRow({ text: this.upgrading ? '正在结合语义搜索…' : '加载下一页…' })
             }
           } else if (this.hasMore) {
             ListItem() {
               Button('加载更多')
+                .enabled(!this.upgrading && !this.cancelling)
+                .attributeModifier(sketchButton).drawModifier(sketchOutline())
                 .fontSize(13)
-                .height(36)
-                .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-                .fontColor($r('sys.color.ohos_id_color_text_primary'))
+                .backgroundColor(SketchColors.soft)
+                .fontColor(SketchColors.text)
                 .onClick(() => {
                   this.loadMore();
                 })
             }
           } else {
             ListItem() {
-              Text('没有更多了')
+              Text(this.phase === 'cancelled' ? '已停止加载' : '没有更多了')
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
                 .textAlign(TextAlign.Center)
                 .padding(12)
@@ -588,6 +715,6 @@ export struct SearchPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('sys.color.ohos_id_color_background'))
+    .backgroundColor(SketchColors.canvas)
   }
 }

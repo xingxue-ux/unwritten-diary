@@ -42,9 +42,9 @@ use std::sync::Arc;
 
 use crate::error::{CoreError, Result};
 use crate::model::{Provider, ProviderCapability, ProviderTestStatus};
+use crate::provider::adapter;
 use crate::provider::adapter::{GenerateRequest as AdapterGenerateRequest, CALL_TIMEOUT_MS};
 use crate::provider::transport::{HttpRequest, HttpResponse, Transport};
-use crate::provider::adapter;
 use crate::quality::case::{AudioSpec, TranscriptCase};
 
 /// 一次生成请求：**提示词已经拼好**（材料 + 模板说明）。
@@ -333,6 +333,19 @@ impl GenerateEngine for OpenAiCompatibleGenerateEngine {
         // 把这条量测路径指到本机上；这里与 `provider::test`/执行者用同一个口径再挡一次。
         let adapter = match adapter {
             adapter::Adapter::Http(adapter) => adapter,
+            adapter::Adapter::LocalLlm => {
+                let outcome = crate::provider::local_llm::generate(
+                    self.provider.model.as_deref(),
+                    &AdapterGenerateRequest {
+                        prompt: request.prompt.clone(),
+                        system: request.system.clone(),
+                    },
+                )?;
+                return Ok(GeneratedText {
+                    text: outcome.text,
+                    model: outcome.model,
+                });
+            }
             adapter::Adapter::Local(engine) => {
                 return Err(CoreError::ProviderNotConfigured {
                     reason: format!(
@@ -566,7 +579,6 @@ pub fn synthetic_wav(spec: &AudioSpec) -> Vec<u8> {
     wav.resize(44 + data_bytes as usize, 0); // 全零 = 静音
     wav
 }
-
 /// 给回放模式用：按用例的 `audio` 规格取占位音频。
 pub fn placeholder_audio(case: &TranscriptCase) -> Vec<u8> {
     synthetic_wav(&case.audio)

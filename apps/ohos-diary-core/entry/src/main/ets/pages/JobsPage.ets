@@ -1,3 +1,4 @@
+import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketchOutline } from '../ui/Sketch';
 // 任务中心：`jobs.status` 聚合 + `jobs.list` 游标翻页 + `jobs.get` 逐条详情。
 //
 // 按钮只按**状态**给（文档 §3.2 / §3.5）：
@@ -25,6 +26,7 @@ import {
 import { CoreGateway, CoreRequest, CoreResult, uiErrorOf } from '../ui/CoreGateway';
 import { EMPTY_UI_ERROR, UiError } from '../ui/Errors';
 import { AppState } from '../ui/AppState';
+import { errorSummary, runSummary } from '../ui/UserText';
 import {
   confirmAction,
   databasePath,
@@ -51,6 +53,21 @@ const NON_RETRYABLE: string[] = [
   'not_found',
   'revision_conflict',
 ];
+
+@Component
+struct JobCountChip {
+  @Prop label: string = '';
+  @Prop value: number = 0;
+  @Prop tone: string = '';
+
+  build() {
+    Column({ space: 2 }) {
+      Text(`${this.value}`).fontSize(18).fontWeight(FontWeight.Bold)
+        .fontColor(this.tone === 'warn' ? SketchColors.warning : SketchColors.text)
+      Text(this.label).fontSize(11).fontColor(SketchColors.muted)
+    }.width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Center)
+  }
+}
 
 @Component
 export struct JobsPage {
@@ -252,8 +269,8 @@ export struct JobsPage {
       this.pathStack.pushPathByName('transcription', '');
       return;
     }
-    if (job.kind === 'respond') {
-      toast('AI 服务配置页面还没做（providers.* / settings.* 的 C ABI 已就绪）；当前只能查看任务状态。');
+    if (job.kind === 'respond' || job.kind === 'diary_generate' || job.kind === 'organize') {
+      this.pathStack.pushPathByName('llm', '');
       return;
     }
     // semantic_index / index / extract：都去设置页看模型与索引状态。
@@ -331,78 +348,23 @@ export struct JobsPage {
       return;
     }
     const summary: JobRunSummary = result.data as JobRunSummary;
-    this.runMessage = `本轮：处理 ${summary.processed}，成功 ${summary.succeeded}，失败 ${summary.failed}，` +
-      `重试 ${summary.retrying}，积压 ${summary.due_backlog}`;
+    this.runMessage = runSummary(summary);
     AppState.bumpDataVersion();
     this.reload();
-  }
-
-  private countOf(state: string): number {
-    const status: JobStatus | null = this.status;
-    if (status === null) {
-      return 0;
-    }
-    if (state === 'queued') {
-      return status.queued;
-    }
-    if (state === 'running') {
-      return status.running;
-    }
-    if (state === 'retry_wait') {
-      return status.retry_wait;
-    }
-    if (state === 'waiting_configuration') {
-      return status.waiting_configuration;
-    }
-    if (state === 'waiting_dependency') {
-      return status.waiting_dependency;
-    }
-    if (state === 'waiting_network') {
-      return status.waiting_network;
-    }
-    if (state === 'failed') {
-      return status.failed;
-    }
-    if (state === 'cancelled') {
-      return status.cancelled;
-    }
-    if (state === 'succeeded') {
-      return status.succeeded;
-    }
-    return 0;
-  }
-
-  @Builder
-  countChip(label: string, value: number, tone: string) {
-    Column({ space: 2 }) {
-      Text(`${value}`)
-        .fontSize(18)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(tone === 'warn'
-          ? $r('sys.color.ohos_id_color_warning')
-          : (tone === 'alert'
-            ? $r('sys.color.ohos_id_color_alert')
-            : $r('sys.color.ohos_id_color_text_primary')))
-      Text(label)
-        .fontSize(11)
-        .fontColor($r('sys.color.ohos_id_color_text_secondary'))
-    }
-    .layoutWeight(1)
-    .padding({ top: 8, bottom: 8 })
-    .alignItems(HorizontalAlign.Center)
   }
 
   @Builder
   filterButton(label: string, index: number) {
     Button(label)
+      .attributeModifier(sketchButton).drawModifier(sketchOutline())
       .fontSize(13)
-      .height(32)
+      .margin({ right: 6, bottom: 6 })
       .backgroundColor(this.filterIndex === index
-        ? $r('sys.color.ohos_id_color_emphasize')
-        : $r('sys.color.ohos_id_color_sub_background'))
+        ? SketchColors.button
+        : SketchColors.soft)
       .fontColor(this.filterIndex === index
-        ? $r('sys.color.ohos_id_color_text_primary_contrary')
-        : $r('sys.color.ohos_id_color_text_primary'))
+        ? SketchColors.ink
+        : SketchColors.text)
       .onClick(() => {
         this.setFilter(index);
       })
@@ -411,64 +373,59 @@ export struct JobsPage {
   @Builder
   jobDetail(job: Job) {
     Column({ space: 4 }) {
-      SectionTitle({ text: '任务详情（jobs.get）' })
-      InfoRow({ label: '任务 ID', value: job.id })
-      InfoRow({ label: '类型', value: `${jobKindLabel(job.kind)}（${job.kind}）` })
+      SectionTitle({ text: '任务详情' })
+      InfoRow({ label: '类型', value: jobKindLabel(job.kind) })
       InfoRow({ label: '状态', value: jobStateLabel(job.state) })
       InfoRow({ label: '尝试次数', value: `${job.attempt_count} / ${job.max_attempts}` })
-      InfoRow({ label: '优先级', value: `${job.priority}` })
-      InfoRow({ label: '目标数', value: `${job.target_ids.length}` })
-      InfoRow({ label: '错误码', value: job.error_code === null ? '—' : job.error_code })
       InfoRow({ label: '下次尝试', value: job.next_attempt_at === null ? '—' : formatDateTime(job.next_attempt_at) })
-      InfoRow({ label: 'attention_key', value: job.attention_key === null ? '—' : job.attention_key })
       InfoRow({ label: '创建时间', value: formatDateTime(job.created_at) })
       InfoRow({ label: '更新时间', value: formatDateTime(job.updated_at) })
       if (job.progress !== null) {
         InfoRow({ label: '进度', value: `${job.progress.completed} / ${job.progress.total}` })
       } else {
-        InfoRow({ label: '进度', value: '核心没有给可靠进度（不编百分比）' })
+        InfoRow({ label: '进度', value: '处理中' })
       }
       if (job.requires_user_action) {
         if (this.isConfigAttention(job)) {
           Button('去配置')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(34)
-            .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+            .backgroundColor(SketchColors.button)
+            .fontColor(SketchColors.ink)
             .onClick(() => {
               this.goConfigure(job);
             })
         } else if (this.isTerminalAttention(job)) {
-          Text('终态、需要人工处理；没有可靠的自动跳转目标，先看上面的错误码。')
+          Text('任务未完成，请检查服务设置。')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
         } else {
-          Text('需要处理，但核心没有给出 attention_key；不猜原因、不乱跳。')
+          Text('任务需要处理，请检查服务设置。')
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_warning'))
+            .fontColor(SketchColors.warning)
             .width('100%')
         }
       }
       Row({ space: 8 }) {
         if (this.canRetry(job)) {
           Button(this.busyJobId === job.id ? '提交中…' : '重试')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(34)
             .enabled(this.busyJobId.length === 0)
-            .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+            .backgroundColor(SketchColors.button)
+            .fontColor(SketchColors.ink)
             .onClick(() => {
               this.retry(job);
             })
         }
         if (this.canCancel(job)) {
           Button(this.busyJobId === job.id ? '提交中…' : '取消任务')
+            .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .fontSize(13)
-            .height(34)
             .enabled(this.busyJobId.length === 0)
-            .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-            .fontColor($r('sys.color.ohos_id_color_text_primary'))
+            .backgroundColor(SketchColors.soft)
+            .fontColor(SketchColors.text)
             .onClick(() => {
               this.cancel(job);
             })
@@ -489,15 +446,12 @@ export struct JobsPage {
         Text(jobKindLabel(job.kind))
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .fontColor(SketchColors.text)
         StatePill({ text: jobStateLabel(job.state), tone: jobStateTone(job.state) })
         Blank()
-        Text(job.id.substring(0, 10))
-          .fontSize(11)
-          .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
         Text(this.expandedJobId === job.id ? '收起' : '详情')
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_emphasize'))
+          .fontColor(SketchColors.ink)
       }
       .width('100%')
       .onClick(() => {
@@ -506,16 +460,16 @@ export struct JobsPage {
       Row({ space: 10 }) {
         Text(`尝试 ${job.attempt_count}/${job.max_attempts}`)
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
         if (job.error_code !== null) {
-          Text(`错误码：${job.error_code}`)
+          Text(errorSummary(job.error_code))
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_alert'))
+            .fontColor(SketchColors.alert)
         }
         if (job.next_attempt_at !== null) {
           Text(`下次：${formatDateTime(job.next_attempt_at)}`)
             .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+            .fontColor(SketchColors.muted)
         }
       }
       .width('100%')
@@ -523,10 +477,10 @@ export struct JobsPage {
         Row({ space: 8 }) {
           Progress({ value: job.progress.completed, total: job.progress.total, type: ProgressType.Linear })
             .layoutWeight(1)
-            .color($r('sys.color.ohos_id_color_emphasize'))
+            .color(SketchColors.ink)
           Text(`${job.progress.completed} / ${job.progress.total}`)
             .fontSize(11)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+            .fontColor(SketchColors.muted)
         }
         .width('100%')
       }
@@ -536,11 +490,11 @@ export struct JobsPage {
           if (this.isConfigAttention(job)) {
             Text('可以「去配置」')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_warning'))
+              .fontColor(SketchColors.warning)
           } else {
-            Text('没有可靠的跳转目标')
+            Text('请检查服务设置')
               .fontSize(12)
-              .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+              .fontColor(SketchColors.muted)
           }
         }
         .width('100%')
@@ -559,8 +513,8 @@ export struct JobsPage {
     }
     .width('100%')
     .padding(14)
-    .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-    .borderRadius(14)
+    .backgroundColor(SketchColors.paper)
+    .drawModifier(sketchOutline())
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -568,16 +522,16 @@ export struct JobsPage {
     Column({ space: 10 }) {
       Row({ space: 8 }) {
         Column() {
-          PageTitle({ title: '任务中心', subtitle: '转写、索引与 AI 任务的真实状态；不编进度' })
+          PageTitle({ title: '任务中心', subtitle: '查看转写、搜索整理和日记进度。' })
         }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
         Button(this.runningDue ? '运行中…' : '运行到期任务')
+          .attributeModifier(sketchButton).drawModifier(sketchOutline())
           .fontSize(13)
-          .height(36)
           .enabled(!this.runningDue)
-          .backgroundColor($r('sys.color.ohos_id_color_emphasize'))
-          .fontColor($r('sys.color.ohos_id_color_text_primary_contrary'))
+          .backgroundColor(SketchColors.button)
+          .fontColor(SketchColors.ink)
           .onClick(() => {
             this.runDue();
           })
@@ -588,50 +542,50 @@ export struct JobsPage {
       if (this.status !== null) {
         Column() {
           Row() {
-            this.countChip('处理中', this.countOf('queued') + this.countOf('running'), 'active')
-            this.countChip('等待', this.countOf('retry_wait') + this.countOf('waiting_dependency') + this.countOf('waiting_network'), 'muted')
-            this.countChip('需要处理', this.countOf('waiting_configuration') + this.countOf('failed'), 'warn')
-            this.countChip('完成', this.countOf('succeeded'), 'ok')
+            JobCountChip({ label: '处理中', value: this.status.queued + this.status.running }).layoutWeight(1)
+            JobCountChip({ label: '等待', value: this.status.retry_wait + this.status.waiting_dependency + this.status.waiting_network }).layoutWeight(1)
+            JobCountChip({ label: '需要处理', value: this.status.waiting_configuration + this.status.failed, tone: 'warn' }).layoutWeight(1)
+            JobCountChip({ label: '完成', value: this.status.succeeded }).layoutWeight(1)
           }
           .width('100%')
           Row({ space: 8 }) {
             if (this.status.due_backlog > 0) {
-              Text(`到期积压：${this.status.due_backlog}`)
+              Text(`待处理：${this.status.due_backlog}`)
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_warning'))
+                .fontColor(SketchColors.warning)
             }
             if (this.status.next_wakeup !== null) {
-              Text(`下次唤醒：${formatDateTime(this.status.next_wakeup)}`)
+              Text(`下次处理：${formatDateTime(this.status.next_wakeup)}`)
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .fontColor(SketchColors.muted)
             }
             if (this.status.cancelled > 0) {
               Text(`已取消：${this.status.cancelled}`)
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .fontColor(SketchColors.muted)
             }
           }
           .width('100%')
         }
         .width('100%')
         .padding(10)
-        .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-        .borderRadius(12)
+        .backgroundColor(SketchColors.paper)
+        .drawModifier(sketchOutline())
         .margin({ left: 16, right: 16 })
       }
 
       if (this.runMessage.length > 0) {
         Text(this.runMessage)
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
           .width('100%')
           .padding({ left: 16, right: 16 })
       }
 
       if (this.statusError.code.length > 0) {
-        Text(`队列计数读取失败（${this.statusError.code}）；列表仍按真实任务展示。`)
+        Text('任务数量暂时无法读取。')
           .fontSize(12)
-          .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+          .fontColor(SketchColors.muted)
           .width('100%')
           .padding({ left: 16, right: 16 })
       }
@@ -649,7 +603,7 @@ export struct JobsPage {
         .padding({ left: 16, right: 16 })
       }
 
-      Row({ space: 6 }) {
+      Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(this.filterLabels, (label: string, index: number) => {
           this.filterButton(label, index)
         }, (label: string, index: number) => `${index}-${label}`)
@@ -668,7 +622,7 @@ export struct JobsPage {
               EmptyState({
                 icon: '—',
                 title: '这个筛选下没有任务',
-                hint: '转写/索引任务在录音保存、重建索引或运行到期任务后出现。',
+                hint: '转写和日记整理任务会显示在这里。',
               })
             }
           } else if (this.jobs.length === 0) {
@@ -676,7 +630,7 @@ export struct JobsPage {
             ListItem() {
               Text('任务列表没有读出来：这不代表没有任务；原因见上面的错误。')
                 .fontSize(12)
-                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .fontColor(SketchColors.muted)
                 .width('100%')
                 .padding(12)
             }
@@ -694,7 +648,7 @@ export struct JobsPage {
               ListItem() {
                 Text('没有更多了')
                   .fontSize(12)
-                  .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                  .fontColor(SketchColors.muted)
                   .width('100%')
                   .textAlign(TextAlign.Center)
                   .padding(12)
@@ -716,6 +670,6 @@ export struct JobsPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('sys.color.ohos_id_color_background'))
+    .backgroundColor(SketchColors.canvas)
   }
 }

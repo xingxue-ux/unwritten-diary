@@ -1158,7 +1158,7 @@ export interface ProviderModelInfo {
   owned_by: string | null;
 }
 
-/** `providers.remove` 的参数。 */
+/** `providers.remove` / `providers.selectGeneration` 的参数。 */
 export interface ProviderIdParams {
   provider_id: string;
 }

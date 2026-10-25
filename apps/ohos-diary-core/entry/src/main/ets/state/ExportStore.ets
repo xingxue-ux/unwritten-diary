@@ -88,7 +88,7 @@ export class ExportStore {
     const from: string = request.fromDayKey.trim();
     const to: string = request.toDayKey.trim();
     if (from.length === 0 || to.length === 0) {
-      this.message = '导出的开始日期和结束日期都不能为空（YYYY-MM-DD）；没有生成文件。';
+      this.message = '请选择开始和结束日期。';
       return null;
     }
     // **不能直接比较原始字符串**：核心是「先 parse 日期、再按规范形比较」
@@ -105,7 +105,7 @@ export class ExportStore {
       return null;
     }
     if (request.includeAssets === true) {
-      this.message = '这次导出只写日记正文，不随附原件（includeAssets 必须为 false）；没有生成文件。';
+      this.message = '暂不支持导出原始材料。';
       return null;
     }
     // 只转发核心认识的字段；`includeAssets` 明确写 false，与核心默认一致，
@@ -137,12 +137,11 @@ export class ExportStore {
     const error: UiError = uiErrorOf(result);
     this.error = error;
     if (error.code === 'permission_denied') {
-      this.message = '资料库不在应用沙箱内（或导出目录不可写），核心拒绝写文件；' +
-        '把资料库放到应用沙箱目录后再导出。这次没有生成文件。';
+      this.message = '无法保存导出副本，请重新打开应用后再试。';
     } else if (error.code === 'not_found') {
-      this.message = '这个日期范围内没有可导出的当前日记正文；没有生成文件。';
+      this.message = '所选日期没有可导出的日记。';
     } else if (error.code === 'invalid_argument') {
-      this.message = '导出参数不合法（日期范围或格式），核心没有写文件。';
+      this.message = '请检查日期范围后重试。';
     } else if (error.code === 'storage_full') {
       this.message = '存储空间不足，导出没有完成。';
     } else {
@@ -205,15 +204,6 @@ function isDigits(value: string): boolean {
  * 如果核心哪天回了 `restorable = true`，这里如实指出与既有口径不符——不替核心圆场。
  */
 function describeExport(ticket: ExportTicket): string {
-  let message: string = `导出完成：${ticket.dayCount} 天、${ticket.byteSize} 字节；` +
-    `文件：${ticket.path}。`;
-  if (ticket.packageTicket === null) {
-    message += '平台保存句柄为空，但文件已经落盘在资料库的 exports/ 下。';
-  }
-  if (ticket.restorable) {
-    message += '（注意：核心返回 restorable=true，与「阅读导出不能恢复资料库」的既有口径不符，请核对版本。）';
-  } else {
-    message += '这不是备份（restorable=false）：文件里只有当前日记正文，不能用来恢复资料库。';
-  }
-  return message;
+  return ticket.restorable ? '导出类型异常，请更新应用后重试。'
+    : `已生成 ${ticket.dayCount} 天日记的阅读副本，请选择保存位置。`;
 }

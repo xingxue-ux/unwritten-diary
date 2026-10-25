@@ -50,6 +50,7 @@ import {
 } from '../core/Models';
 import { CoreGateway, CoreResult, uiErrorOf } from '../ui/CoreGateway';
 import { EMPTY_UI_ERROR, UiError } from '../ui/Errors';
+import { runSummary } from '../ui/UserText';
 
 /** `diary.listDays` 每页条数：核心把 `page_size` 夹在 1–100。 */
 const DAYS_PAGE_SIZE: number = 100;
@@ -230,12 +231,11 @@ export class DiaryStore {
       return null;
     }
     if (reason !== 'manual' && reason !== 'regenerate') {
-      this.message = '界面主动生成只能用 manual / regenerate；' +
-        'scheduled / automatic 是自动整理那一路，结果一律是候选。';
+      this.message = '请重新发起整理。';
       return null;
     }
     if (styleId !== undefined && styleId.trim().length === 0) {
-      this.message = '风格 id 不能是空串；省略表示用默认风格。';
+      this.message = '请重新选择风格。';
       return null;
     }
     if (key !== this.dayKey) {
@@ -265,9 +265,7 @@ export class DiaryStore {
     }
     const ticket: DiaryGenerationTicket = result.data as DiaryGenerationTicket;
     this.ticket = ticket;
-    this.message = `已受理生成（任务 ${ticket.job_id}；输入已冻结成快照 ${ticket.source_snapshot_id}）。` +
-      '这还不是一版正文：要调 runDueJobs() 执行任务之后，结果才会出现在 diary.getDay 里。' +
-      '自动整理（scheduled / automatic）的结果一律是候选；要设为当前必须显式 setCurrent。';
+    this.message = '整理已排队，请稍候。';
     return ticket;
   }
 
@@ -291,7 +289,7 @@ export class DiaryStore {
     }
     const day: DiaryDay | null = this.day;
     if (day === null) {
-      this.message = '先读取这一天（openDay），再切换当前版本。';
+      this.message = '请先打开这一天的日记。';
       return false;
     }
     const id: string = versionId.trim();
@@ -314,7 +312,7 @@ export class DiaryStore {
       this.day = result.data as DiaryDay;
       this.dayEmpty = false;
       this.working = false;
-      this.message = '已设为当前版本；旧当前版仍作为候选保留，正文没有丢。';
+      this.message = '已采用，原版本已保留。';
       return true;
     }
     const error: UiError = uiErrorOf(result);
@@ -323,9 +321,8 @@ export class DiaryStore {
       const reread: boolean = await this.loadDayInternal(day.day_key, false);
       this.working = false;
       this.message = reread
-        ? '这一天的状态刚被改动，已重读最新状态；当前版本没有被替换，' +
-          '请核对后再试（没有拿旧 revision 重试）。'
-        : '这一天的状态刚被改动，当前版本没有被替换；重读最新状态也失败了（原因见上面的错误）。';
+        ? '日记已更新，请核对后重试。'
+        : '日记已更新，暂时无法读取，请稍后重试。';
       return false;
     }
     if (error.code === 'not_found' || error.code === 'invalid_argument') {
@@ -484,7 +481,7 @@ export class DiaryStore {
     if (truncated) {
       // 只走了一部分页：必须说出来，别让页面以为这就是全部。
       this.message = `有材料的日期很多，这次只载入了前 ${MAX_DAYS_PAGES * DAYS_PAGE_SIZE} 天；` +
-        '天数列表不完整（daysTruncated=true）。';
+        '日期列表尚未加载完整。';
     }
     return true;
   }
@@ -549,37 +546,16 @@ export class DiaryStore {
 
   /** 运行摘要的人话；「等待配置」与「候选」都在这里如实说出来。 */
   private describeRun(summary: JobRunSummary, statusOk: boolean, dayOk: boolean): string {
-    const parts: string[] = [];
-    parts.push(`本轮处理 ${summary.processed} 个任务：成功 ${summary.succeeded}、` +
-      `失败 ${summary.failed}、重试 ${summary.retrying}、积压 ${summary.due_backlog}`);
-    if (summary.waiting_dependency > 0) {
-      parts.push(`${summary.waiting_dependency} 个任务在等前置任务`);
+    const parts: string[] = [runSummary(summary)];
+    if (statusOk && this.jobStatus !== null && this.jobStatus.waiting_configuration > 0) {
+      parts.push('有任务等待配置，请先配置模型服务。');
     }
-    const status: JobStatus | null = this.jobStatus;
-    if (statusOk && status !== null && status.waiting_configuration > 0) {
-      parts.push(`有 ${status.waiting_configuration} 个任务停在「等待配置模型服务」` +
-        '（requires_user_action=true）：还没配置模型服务，不是生成失败；配置好后任务会继续');
+    if (dayOk && this.day !== null && this.day.candidate_version_ids.length > 0) {
+      parts.push(`有 ${this.day.candidate_version_ids.length} 版候选日记，可阅读后采用。`);
     }
-    if (summary.failed > 0) {
-      parts.push(`${summary.failed} 个任务失败，错误码在任务中心看得到；原始材料没有被覆盖`);
-    }
-    if (dayOk && this.day !== null) {
-      const day: DiaryDay = this.day;
-      if (day.current_version_id === null && day.candidate_version_ids.length > 0) {
-        parts.push(`这一天现在有 ${day.candidate_version_ids.length} 个候选版本、还没有当前版本；` +
-          '要采用其中一版请显式 setCurrent');
-      } else if (day.candidate_version_ids.length > 0) {
-        parts.push(`这一天的当前版本是 ${day.current_version_id}，` +
-          `另有 ${day.candidate_version_ids.length} 个候选`);
-      }
-    }
-    if (!statusOk) {
-      parts.push('任务状态没有刷新成功（原因见上面的错误）');
-    }
-    if (!dayOk) {
-      parts.push('这一天的状态没有重读成功（原因见上面的错误）');
-    }
-    return parts.join('；') + '。';
+    if (!statusOk) { parts.push('暂时无法读取任务状态。'); }
+    if (!dayOk) { parts.push('暂时无法读取日记。'); }
+    return parts.join('');
   }
 
   /** 受理生成失败时按错误码说清楚：风格不存在 / 没有材料 / 其它。 */

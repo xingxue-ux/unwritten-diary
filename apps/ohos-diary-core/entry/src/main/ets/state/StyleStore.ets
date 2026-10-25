@@ -184,7 +184,7 @@ export class StyleStore {
     }
     const id: string = styleId.trim();
     if (id.length === 0) {
-      this.message = '风格 id 不能为空。';
+      this.message = '请先选择风格。';
       return null;
     }
     this.loading = true;
@@ -200,7 +200,7 @@ export class StyleStore {
       this.error = error;
       if (error.code === 'not_found') {
         this.current = null;
-        this.message = '这条风格不存在；没有回退到默认风格（默认风格也要从 styles.list 里读）。';
+        this.message = '这条风格已不存在，请重新选择。';
       } else {
         this.message = '风格偏好没有读取完成。';
       }
@@ -231,7 +231,7 @@ export class StyleStore {
     const id: string = input.id.trim();
     const label: string = input.label.trim();
     if (id.length === 0) {
-      this.message = '风格 id 不能为空；没有保存。';
+      this.message = '请先选择风格。';
       return null;
     }
     if (label.length === 0) {
@@ -283,18 +283,7 @@ export class StyleStore {
       this.saving = false;
       this.upsert(saved);
       this.current = saved;
-      const checked: string = expectedRevision === undefined
-        ? '这次是明确覆盖，没有做版本检查'
-        : '版本检查通过';
-      let provenance: string = '';
-      if (defaultsApplied) {
-        // 新建 + 没给全字段：必须说清楚，这是核心默认，不是从别的风格继承的。
-        provenance = '这是新风格，未填的字段用了核心默认（无偏好、无示例、无禁用表达）；';
-      } else if (partial) {
-        provenance = '未填的字段沿用了这条风格已保存的值（整行写入，靠补齐基底实现部分更新）；';
-      }
-      this.message = `已保存「${saved.label}」第 ${saved.revision} 版；${checked}。` + provenance +
-        '历史日记不会自动重写（styleSnapshotId 仍指当时那一版）。';
+      this.message = '风格已保存，仅影响今后整理的日记。';
       return saved;
     }
     const error: UiError = uiErrorOf(result);
@@ -308,7 +297,7 @@ export class StyleStore {
         const latest: StyleProfile = reread.data as StyleProfile;
         this.upsert(latest);
         this.current = latest;
-        this.message = '这条风格已被改动，已重读最新版本；请核对后再保存（没有拿旧 revision 重试）。';
+        this.message = '风格已更新，请核对后再保存。';
       } else {
         this.error = uiErrorOf(reread);
         this.message = '这条风格已被改动，重读最新版本也失败了；上面的错误说明了原因。';

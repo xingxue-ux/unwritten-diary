@@ -213,7 +213,7 @@ export class RecycleStore {
     if (preview === null) {
       this.message = this.previewStale
         ? '上一次预览已经失效，请重新预览清理影响后再确认永久清理。'
-        : '永久清理前要先预览清理影响（previewPurge）；没有预览不会删除任何东西。';
+        : '请先预览删除范围。';
       return null;
     }
     this.working = true;
@@ -290,7 +290,7 @@ export class RecycleStore {
       this.working = false;
       this.message = isTrashedCapture(restored)
         ? '核心返回的记录仍在回收站里；已刷新列表，请以列表为准。'
-        : `已恢复为「${restored.state}」状态；正文与来源都还在。`;
+        : '记录已恢复。';
       if (!refreshed) {
         this.message += '（回收站列表没有刷新成功，原因见上面的错误；这次恢复本身已经完成。）';
       }
@@ -302,8 +302,8 @@ export class RecycleStore {
       const refreshed: boolean = await this.loadTrashPages();
       this.working = false;
       this.message = refreshed
-        ? '这条记录已在别处被改动，已刷新回收站；没有用旧 revision 重试，请核对后再恢复。'
-        : '这条记录已在别处被改动；没有用旧 revision 重试，列表也没刷新成功（原因见上面的错误）。';
+        ? '记录已更新，请核对后再恢复。'
+        : '记录已更新，暂时无法读取，请稍后重试。';
       return false;
     }
     if (error.code === 'invalid_state') {
@@ -363,7 +363,7 @@ export class RecycleStore {
     if (truncated) {
       // 只扫了一部分：列表本身就不完整，必须说出来（不能悄悄截断）。
       this.message = `记录很多，这次只扫描了前 ${MAX_LIST_PAGES * LIST_PAGE_SIZE} 条；` +
-        '回收站列表不完整（truncated=true）。';
+        '回收站列表尚未加载完整。';
     }
     // ⚠️ 只有**扫完了**才能判断「预览的那条不在回收站里」；截断时它可能在后面几页，
     // 这时作废预览等于说谎。
@@ -425,7 +425,7 @@ function describePurgeResult(result: PurgeResult, deleteDiaryVersions: boolean):
   const parts: string[] = [];
   parts.push(`已永久清理：原件 ${result.purged_asset_ids.length} 个、` +
     `派生内容 ${result.purged_derived_content_ids.length} 个、` +
-    `AI 回应 ${result.purged_ai_response_ids.length} 个`);
+    `整理结果 ${result.purged_ai_response_ids.length} 个`);
   if (deleteDiaryVersions) {
     parts.push(`按选择删除了 ${result.purged_diary_version_ids.length} 个有可判定关联的日记版本`);
   } else {
