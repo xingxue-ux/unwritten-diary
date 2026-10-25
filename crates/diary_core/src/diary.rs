@@ -449,9 +449,7 @@ fn collect_materials(conn: &Connection, day_key: &str) -> Result<DayMaterials> {
     let processed = materials.iter().filter(|item| item.processed).count() as i64;
     let failed = materials
         .iter()
-        .filter(|item| {
-            !item.processed && item.unprocessed_reason.as_deref() == Some("extract_failed")
-        })
+        .filter(|item| !item.processed && item.unprocessed_reason.as_deref() == Some("extract_failed"))
         .count() as i64;
     let pending = materials
         .iter()
@@ -933,7 +931,9 @@ fn looks_like_structured_output(text: &str) -> bool {
                 || line.starts_with("• ")
                 || line
                     .split_once(". ")
-                    .map(|(head, _)| !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()))
+                    .map(|(head, _)| {
+                        !head.is_empty() && head.chars().all(|c| c.is_ascii_digit())
+                    })
                     .unwrap_or(false)
         })
         .count();
@@ -1835,10 +1835,11 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
             id: generation_id.to_owned(),
         });
     };
-    let reason =
-        DiaryGenerationReason::from_wire(&reason_wire).ok_or_else(|| CoreError::CorruptedData {
+    let reason = DiaryGenerationReason::from_wire(&reason_wire).ok_or_else(|| {
+        CoreError::CorruptedData {
             message: format!("未知的生成原因：{reason_wire}"),
-        })?;
+        }
+    })?;
     if version_id.is_some() {
         // 已经生成过：重入不再花一次钱，也不产第二个版本。
         return Ok(());
@@ -1865,22 +1866,26 @@ fn generate_once(core: &mut Core, generation_id: &str) -> std::result::Result<()
     )?;
     let protocol = adapter::adapter_for(&provider.adapter_id).ok_or_else(|| {
         CoreError::ProviderNotConfigured {
-            reason: provider::missing_adapter_reason(&provider),
+            reason: format!("服务「{}」的适配器不在本构建里", provider.label),
         }
     })?;
-    // 日记生成只走在线服务：本机引擎（sherpa_onnx）只做转写与语义检索，
-    // `capabilities()` 里没有 `generate_text`，闸门本来就不会选它；这里再挡一次，
-    // 免得一条手写的本机配置被当成生成服务。
-    if let adapter::Adapter::Local(engine) = protocol {
-        return Err(CoreError::ProviderNotConfigured {
-            reason: format!(
-                "服务「{}」是本机引擎「{}」，它不生成日记；\
-                     日记生成需要一个在线服务",
-                provider.label,
-                engine.id()
-            ),
-        });
-    }
+    // `adapter_for` 自 #103 起返回 `Adapter`（HTTP 协议或本机引擎）这一层枚举。
+    // 本地引擎没有「生成文本」这个能力（`capabilities()` 里就没有它），所以闸门不可能
+    // 把日记生成指到本机引擎上。这里与 `provider::test` / `respond` 同一个口径再挡一次：
+    // 绕过闸门也不能走进一个不存在的 HTTP 调用。
+    let protocol = match protocol {
+        adapter::Adapter::Http(protocol) => protocol,
+        adapter::Adapter::Local(engine) => {
+            return Err(CoreError::ProviderNotConfigured {
+                reason: format!(
+                    "服务「{}」是本机引擎「{}」，它不实现 generate_text；\
+                     日记生成要配一个支持 generate_text 的服务",
+                    provider.label,
+                    engine.id()
+                ),
+            })
+        }
+    };
     let secret = provider::provider_secret(core, &provider)?.ok_or_else(|| {
         CoreError::ProviderNotConfigured {
             reason: format!("服务「{}」还没有可用的密钥", provider.label),
@@ -2232,7 +2237,7 @@ impl<'a> CallOutcome<'a> {
 fn call_generate(
     core: &mut Core,
     provider: &Provider,
-    protocol: adapter::Adapter,
+    protocol: &dyn adapter::ProtocolAdapter,
     secret: &str,
     request: &adapter::GenerateRequest,
     account: &CallAccount<'_>,
@@ -2241,15 +2246,6 @@ fn call_generate(
     // 逐次闸门：单次与每日调用次数、失败率。超限就停下（`quota_exceeded`），
     // 执行者据此不落版本——**绝不静默分片刷爆配额**。
     organize::ensure_call_allowed(core, account.reason, calls_so_far)?;
-
-    let protocol = match protocol {
-        adapter::Adapter::Http(protocol) => protocol,
-        adapter::Adapter::Local(_) => {
-            return Err(CoreError::ProviderNotConfigured {
-                reason: "所选本机服务不支持日记整理".to_owned(),
-            })
-        }
-    };
 
     let http = protocol.generate(provider, secret, request)?;
     let response = match core.transport().send(&http) {

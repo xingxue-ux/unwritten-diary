@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Stage the pinned ASR and embedding models for an offline OHOS installation.
-
-日记生成不再随包：本机整理模型（Qwen3.5 + llama.cpp 桥）已移除，生成由用户在
-「模型服务」里配置的在线服务承担。转写与语义检索仍是本地能力。
-"""
+"""Stage the pinned local ASR/embedding models for an offline OHOS installation."""
 from __future__ import annotations
 
 import argparse
@@ -70,7 +66,7 @@ def stage(asr: Path, bge: Path, destination: Path = RAW, root: Path = ROOT) -> d
     # Validate every source before copying anything to the build inputs.
     sources = []
     for group, _, key in GROUPS:
-        source = {'asr': asr, 'bge': bge}[key]
+        source = asr if key == 'asr' else bge
         for item in manifest['files']:
             if item['path'].startswith(group + '/'):
                 path = source / Path(item['path']).relative_to(group)
@@ -106,9 +102,7 @@ def main() -> int:
         manifest = check() if args.check else stage(args.asr_dir, args.bge_dir)
     except (OSError, ValueError, KeyError) as error:
         parser.exit(1, f'[FAIL] {error}\nStage the pinned models with --asr-dir and --bge-dir before building HAP.\n')
-    print(f'[PASS] {len(manifest["files"])} pinned local model files, '
-          f'{sum(f["bytes"] for f in manifest["files"]):,} bytes; ASR and embedding only '
-          '(日记生成由用户配置的在线服务承担).')
+    print(f'[PASS] {len(manifest["files"])} pinned local model files, {sum(f["bytes"] for f in manifest["files"]):,} bytes; no LLM weights.')
     return 0
 
 

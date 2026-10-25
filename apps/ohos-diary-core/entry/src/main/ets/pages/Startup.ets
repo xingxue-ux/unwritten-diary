@@ -48,8 +48,7 @@ struct Startup {
       CatMark({ iconSize: 64 })
       Text('不写日记').fontFamily(SketchFonts.display).fontSize(36).fontColor(SketchColors.ink)
       Text(this.failed ? '本地模型准备失败' : '正在准备本地模型…').fontSize(18).fontColor(SketchColors.ink)
-      Text(this.failed ? '请检查可用空间后重试，也可以先写下文字记录。'
-        : '转写与检索可离线使用，无需下载模型；整理日记需要配置一个在线模型服务。')
+      Text(this.failed ? '请检查可用空间后重试，也可以先写下文字记录。' : '语音转写与语义检索均可离线使用，无需下载模型。')
         .fontSize(14).fontColor(SketchColors.muted).textAlign(TextAlign.Center)
       Progress({ value: this.completed, total: this.total, type: ProgressType.Linear })
         .width('85%').color(SketchColors.ink).backgroundColor(SketchColors.line)

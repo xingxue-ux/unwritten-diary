@@ -22,7 +22,6 @@ import {
   DiaryGenerationTicket,
   DiaryVersion,
   DiaryVersionParams,
-  ProviderConfig,
 } from '../core/Models';
 import { DiaryStore } from '../state/DiaryStore';
 import { CoreGateway, CoreResult, uiErrorOf } from '../ui/CoreGateway';
@@ -76,13 +75,6 @@ export struct DiaryPage {
   // ---- 页面自己的临时提示（只是把刚发生的动作用人话说一遍，不是业务结论） ----
   @State acceptedNote: string = '';
   @State runNote: string = '';
-  /**
-   * 「整理这一天」被点过、但一个可用的在线服务都没有。
-   *
-   * 文案要求（产品决定）：说清「需要先配置模型服务」并给可点的入口，不能只把
-   * `provider_not_configured` 这种技术错误码丢给用户。
-   */
-  @State needModelService: boolean = false;
 
   // ---- 正文：页面级临时读取，不缓存（见文件头第 2 条） ----
   @State bodyVersionId: string = '';
@@ -105,8 +97,6 @@ export struct DiaryPage {
   }
 
   onDataVersionChanged(): void {
-    // 数据版本变化也包含「模型服务配置变了」：旧的提示不再成立，重新判定。
-    this.needModelService = false;
     if (this.store !== null) {
       this.reload();
     }
@@ -154,22 +144,6 @@ export struct DiaryPage {
    * 重读这一天。三步的结论都在 store 的 `message` / `error` / `waitingConfiguration`
    * 里，页面只把它们显示出来。
    */
-  /**
-   * 有没有一个**启用中的在线服务**能承担日记生成。
-   *
-   * 只认 `openai_compatible` + 声明 `generate_text` + `enabled`。读失败时返回 true
-   * （不拦）：让核心按原来的路径如实报错，比页面自己编一个结论可靠。
-   */
-  private async hasOnlineGenerationService(): Promise<boolean> {
-    const result: CoreResult = await CoreGateway.call(this.dbPath, 'providers.list', null);
-    if (!result.ok) {
-      return true;
-    }
-    return (result.data as ProviderConfig[]).some((provider: ProviderConfig) =>
-      provider.adapter_id === 'openai_compatible' && provider.enabled &&
-      provider.capabilities.includes('generate_text'));
-  }
-
   private async generateAndRun(): Promise<void> {
     const store: DiaryStore | null = this.store;
     if (store === null) {
@@ -179,24 +153,7 @@ export struct DiaryPage {
     this.acceptedNote = '';
     this.runNote = '';
     this.busy = true;
-    // 没有在线服务就不要排一条注定停在 waiting_configuration 的任务：
-    // 页面直接说人话并给出入口（语音转写/语义检索仍是本机能力，不受影响）。
-    if (!await this.hasOnlineGenerationService()) {
-      this.busy = false;
-      this.needModelService = true;
-      return;
-    }
-    this.needModelService = false;
-    // 这一天已经有版本（当前或候选）时必须用 `regenerate`。
-    //
-    // 核心按**快照哈希**去重（`diary.rs` 的 `existing_generation`）：同一份输入快照只要
-    // 生成过一次并产出版本，`reason = manual` 就会直接返回**旧票据**、不排新任务——
-    // 材料没变时「整理这一天」看起来点了没反应，候选也不会增加。`regenerate` 是核心
-    // 文档里「用户明确要再来一版」的唯一例外，只有它能绕过这道去重。
-    const hasVersions: boolean = this.hasAnyVersion();
-    const ticket: DiaryGenerationTicket | null = hasVersions
-      ? await store.regenerate(dayKey)
-      : await store.generate(dayKey);
+    const ticket: DiaryGenerationTicket | null = await store.generate(dayKey);
     this.sync(store);
     if (ticket === null) {
       // 没受理：原因已经由 store 写进 error / message，原样显示，页面不另编一套。
@@ -226,11 +183,6 @@ export struct DiaryPage {
     this.sync(store);
     this.busy = false;
     await this.readCurrentBody();
-  }
-
-  /** 这一天有没有任何版本（当前或候选）。只读两个 store 结论，不自己猜。 */
-  private hasAnyVersion(): boolean {
-    return this.currentVersionId.length > 0 || this.candidateVersionIds.length > 0;
   }
 
   /** store → 页面 `@State` 的唯一同步点。 */
@@ -501,44 +453,15 @@ export struct DiaryPage {
           .fontColor(SketchColors.muted)
           .width('100%')
 
-        // ---- 没有在线服务：说清要做什么，并给可点的入口 ----
-        if (this.needModelService) {
-          Column({ space: 8 }) {
-            Text('整理日记需要一个在线模型服务')
-              .fontSize(SketchType.section)
-              .fontColor(SketchColors.ink)
-              .width('100%')
-            // 按钮名随状态变（有版本时是「再来一版」），提示里不能写死一个名字，
-            // 否则用户会去找一个界面上不存在的按钮。
-            Text('本机整理模型已不再随包提供。先添加一个在线服务、检查连接，再点「使用此服务」；' +
-              '然后回到这里点「' + (this.hasAnyVersion() ? '再来一版' : '整理这一天') + '」。' +
-              '语音转写和检索不需要配置，仍然可用。')
-              .fontSize(SketchType.caption)
-              .fontColor(SketchColors.muted)
-              .width('100%')
-            Button('去配置模型服务')
-              .attributeModifier(sketchButton).drawModifier(sketchOutline())
-              .enabled(!this.busy)
-              .onClick(() => { this.pathStack.pushPathByName('llm', ''); })
-          }
-          .width('100%')
-          .alignItems(HorizontalAlign.Start)
-          .padding(12)
-          .backgroundColor(SketchColors.paper)
-          .drawModifier(sketchOutline())
-        }
-
         // ---- 生成：先受理，再跑任务 ----
         Row({ space: 8 }) {
-          Button(this.hasAnyVersion() ? '再来一版' : '整理这一天')
+          Button('整理这一天')
             .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .enabled(!this.busy)
             .onClick(() => {
               this.generateAndRun();
             })
-          Text(this.hasAnyVersion()
-            ? '已有一版，再整理会新增一个候选版本；采用它才会替换当前正文。'
-            : '整理完成后即可阅读。')
+          Text('整理完成后即可阅读。')
             .fontSize(SketchType.caption)
             .fontColor(SketchColors.muted)
             .layoutWeight(1)

@@ -134,7 +134,7 @@ fi
 # ── 0a2. 两种构建都必须保留产品联网权限
 check_internet_permission
 
-# 产品包必须含三组固定本地模型；不会以缺模型的包冒充离线产品。
+# 产品包必须含两组固定本地模型；不会以缺模型的包冒充离线产品。
 python3 "$HERE/../../tools/stage_ohos_models.py" --check
 
 # ── 0b. ohpm install（依赖是本地 file: 目录，不需要联网）

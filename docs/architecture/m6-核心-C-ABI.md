@@ -168,7 +168,7 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 
 ## 6 方法映射表
 
-### 6.1 已接（60 条，`core.info.capabilities` 就是这份清单）
+### 6.1 已接（59 条，`core.info.capabilities` 就是这份清单）
 
 | 契约方法 | 核心调用 | `data` |
 |---|---|---|
@@ -209,7 +209,6 @@ cargo build --release          # 产出 target/release/libdiary_capi.{so,a}
 | `jobs.acknowledgeAttention` | `Core::acknowledge_attention` | `null` |
 | `providers.save` | `Core::save_provider` | `Provider` |
 | `providers.list` | `Core::list_providers` | `Provider[]` |
-| `providers.selectGeneration` | `Core::select_generation_provider` | `Provider` |
 | `providers.presets` | `Core::list_provider_presets`（静态表，不读库、不出网、不含密钥） | `ProviderPreset[]` |
 | `providers.models` | `Core::list_provider_models`（`GET {endpoint}/models`，只有显式调用才出网；loopback 无凭据也照常请求） | `ProviderModelInfo[]` |
 | `providers.test` | `Core::test_provider`（loopback 无凭据也照常探针；服务器错误如实上报） | `ProviderTestReport` |
@@ -473,8 +472,8 @@ C ABI 没有回调/推送面，所以 `core.events` 不装成 Stream，而是把
    没列出来的就是还没接，界面不该显示成可用）；
 4. `src/tests.rs` 加用例（至少一条成功路径 + 一条参数错误）。
 
-**日记这一片没有缺口**：`diary.generate` 是最后一条，已接；§6.1 的 60 条就是
-`WIRED_METHODS` 的完整清单。已接的 60 条见上表：`providers.*` 七条、`sources` 五条
+**日记这一片没有缺口**：`diary.generate` 是最后一条，已接；§6.1 的 59 条就是
+`WIRED_METHODS` 的完整清单。已接的 59 条见上表：`providers.*` 六条、`sources` 五条
 （含正文与定位）、`backups.*` 三条、`core.events`、`diary.*` 八条、`captures.*` 十条
 （含回收站五条）、`recordings.*` 五条、`search.*` 四条、`indexes.*` 三条、`jobs.*` 七条、
 `styles.*` 三条、`exports.create` 一条，以及 `settings.get / update` 两条
@@ -692,7 +691,7 @@ cargo +1.94.1 build -p diary_capi --release --target aarch64-unknown-linux-ohos
    `SKIP_ASR_LIBS=1` 构建）：`dlopen` 6 个符号、沙箱建库/落盘、ArkTS 包装、5 个一级入口、
    `diary.*` 读数与空态、任务中心二级入口都有逐页截图。**没有**验证的是两条模型链
    （no-asr 构建不能转写/语义）与大库性能；
-5. **方法子集**：接了 60 条（§6.1），`diary.*` 八条（含 `diary.generate`）已经齐了；
+5. **方法子集**：接了 59 条（§6.1），`diary.*` 八条（含 `diary.generate`）已经齐了；
    仍未包装的契约方法（`responses.*` / `plugins.*` / `imports.*` / `assets.*` /
    `search.snapshot` / `jobs.nextWakeup` / `core.snapshot|close|setRuntimeState`）
    见 §6.2；

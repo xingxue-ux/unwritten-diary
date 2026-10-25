@@ -11,9 +11,8 @@ const marker = `${base}/defaults-ready.json`;
 
 function environment() {
   const files = new Map(), handles = new Map(), calls = [], resources = new Map(), directories = new Set();
-  const state = {opens: 0, closes: 0, failWrite: false, corruptResource: false, testFails: false, selectFails: false};
+  const state = {opens: 0, closes: 0, failWrite: false, corruptResource: false, testFails: false};
   let nextFd = 1;
-  // 日记生成不随包：只有转写（ASR）与语义检索（BGE）两组。
   const names = ['asr/sense-voice-int8/model.int8.onnx', 'asr/sense-voice-int8/tokens.txt',
     'semantic/bge-small-zh-v1.5-ours/model_quantized.onnx', 'semantic/bge-small-zh-v1.5-ours/tokenizer.json'];
   const inventory = {version: 1, files: names.map((name, index) => {
@@ -26,14 +25,8 @@ function environment() {
   let providers = [originalProvider];
   const io = {
     OpenMode: {CREATE: 1, READ_WRITE: 2, TRUNC: 4}, WhenceType: {SEEK_SET: 0},
-    accessSync: name => files.has(name) || directories.has(name) ||
-      [...files.keys()].some(key => key.startsWith(name + '/')),
-    statSync: name => ({size: files.get(name).length}),
+    accessSync: name => files.has(name) || directories.has(name), statSync: name => ({size: files.get(name).length}),
     mkdirSync: name => {if (directories.has(name)) throw new Error('File exists'); directories.add(name);},
-    rmdirSync: name => {
-      for (const key of [...files.keys()]) if (key.startsWith(name + '/')) files.delete(key);
-      for (const key of [...directories]) if (key === name || key.startsWith(name + '/')) directories.delete(key);
-    },
     unlinkSync: name => files.delete(name),
     open: async name => {files.set(name, Buffer.alloc(0)); const fd = nextFd++; handles.set(fd, {name, position: 0}); return {fd};},
     lseek: (fd, offset) => {handles.get(fd).position = offset;},
@@ -60,23 +53,12 @@ function environment() {
     if (method === 'providers.save') {
       assert.equal(params.config.adapter_id, 'sherpa_onnx');
       assert.equal(params.secret, null);
-      providers = [...providers.filter(p => p.id !== params.config.id), params.config];
-      return {ok: true, data: params.config};
+      providers = [params.config]; return {ok: true, data: params.config};
     }
     if (method === 'providers.test') {
       assert.deepEqual(Array.from(params.scope), ['transcribe_audio']);
       if (state.testFails) return {ok: false};
-      providers.find(p => p.id === params.provider_id).test_status = 'ok'; return {ok: true};
-    }
-    if (method === 'providers.remove') {
-      providers = providers.filter(p => p.id !== params.provider_id);
-      return {ok: true, data: null};
-    }
-    if (method === 'providers.selectGeneration') {
-      if (state.selectFails) return {ok: false};
-      providers = providers.map(p => p.capabilities.includes('generate_text')
-        ? {...p, enabled: p.id === params.provider_id} : p);
-      return {ok: true, data: providers.find(p => p.id === params.provider_id)};
+      providers[0].test_status = 'ok'; return {ok: true};
     }
     throw new Error('Unexpected API ' + method);
   }};
@@ -110,9 +92,7 @@ function environment() {
   const context = {exports: {}, require: name => modules[name] || {}, ArrayBuffer, Uint8Array, Error, JSON, Math};
   vm.runInNewContext(js, context);
   const prepare = () => context.exports.BundledModels.prepare({filesDir: '/app', resourceManager: manager}, () => {});
-  return {prepare, files, calls, state, inventory,
-    providers: value => {if (value === undefined) return providers.map(p => ({...p})); providers = value;},
-    handles};
+  return {prepare, files, calls, state, inventory, providers: value => {providers = value;}, handles};
 }
 
 async function firstInstall() {
@@ -125,13 +105,6 @@ async function firstInstall() {
   assert.equal(config.asrModelDir, undefined); // explicit provider selection keeps priority
   assert.ok(env.files.has(marker));
   assert.equal(env.calls.find(c => c.method === 'providers.save').params.config.model, asr);
-  // 日记生成不随包：不再种任何 generate_text 配置行，也不预热生成模型。
-  assert.equal(env.calls.filter(c => c.method === 'providers.save' && c.params.config.capabilities.includes('generate_text')).length, 0);
-  assert.equal(env.calls.filter(c => c.method === 'providers.selectGeneration').length, 0);
-  assert.equal(env.calls.filter(c => c.method === 'providers.test').length, 1);
-  assert.equal(env.calls.filter(c => c.method === 'providers.remove').length, 0);
-  assert.ok(env.files.has(`${base}/legacy-local-llm-model-cleaned-v1.json`));
-  assert.equal([...env.files.keys()].some(p => p.includes('/llm/')), false);
 }
 async function restartPreservesChoice() {
   const env = environment(); await env.prepare();
@@ -144,51 +117,7 @@ async function customConfiguration() {
   env.files.set('/app/core-config.json', Buffer.from(text));
   env.providers([{id: 'mine', adapter_id: 'sherpa_onnx', model: '/custom/asr', enabled: false}]);
   await env.prepare(); assert.equal(env.files.get('/app/core-config.json').toString(), text);
-  assert.equal(env.calls.filter(c => c.method === 'providers.save' && c.params.config.adapter_id === 'sherpa_onnx').length, 0);
-  assert.equal(env.calls.filter(c => c.method === 'providers.save').length, 0);
-}
-async function upgradeCleansOldModelButKeepsConfig() {
-  const env = environment();
-  env.files.set(`${base}/llm/qwen3.5-0.8b-q4_0/model.gguf`, Buffer.from('stale 563 MB'));
-  const legacy = {id: 'builtin_local_llm', adapter_id: 'llama_cpp', model: `${base}/llm/qwen3.5-0.8b-q4_0/model.gguf`,
-    capabilities: ['generate_text'], enabled: true, test_status: 'untested'};
-  env.providers([legacy]);
-  await env.prepare();
-  // 旧的 563 MB 权重回收；但**配置行不删**（升级不该让配置凭空消失）。
-  assert.equal(env.files.has(`${base}/llm/qwen3.5-0.8b-q4_0/model.gguf`), false);
-  assert.equal(env.calls.filter(c => c.method === 'providers.remove').length, 0);
-  assert.ok(env.providers().some(p => p.id === 'builtin_local_llm'), '旧配置必须还在');
-  assert.ok(env.files.has(`${base}/legacy-local-llm-model-cleaned-v1.json`));
-  // 没有可用的在线服务可切换：不许去选那条旧配置（否则 prepare 会失败）。
-  assert.equal(env.calls.filter(c => c.method === 'providers.selectGeneration').length, 0);
-}
-async function upgradeKeepsOnlineSelection() {
-  const env = environment();
-  env.providers([
-    {id: 'builtin_local_llm', adapter_id: 'llama_cpp', capabilities: ['generate_text'], enabled: true, test_status: 'untested'},
-    {id: 'online', adapter_id: 'openai_compatible', capabilities: ['generate_text'],
-      enabled: true, test_status: 'ok', credential_ref: 'keep-key'}]);
-  await env.prepare();
-  // 两条都保留；旧配置不会被选中，在线服务保持启用、密钥与测试结论不动。
-  assert.equal(env.calls.filter(c => c.method === 'providers.remove').length, 0);
-  assert.ok(env.providers().some(p => p.id === 'builtin_local_llm'), '旧配置必须还在');
-  const online = env.providers().find(p => p.id === 'online');
-  assert.equal(online.enabled, true); assert.equal(online.credential_ref, 'keep-key');
-  assert.equal(env.calls.filter(c => c.method === 'providers.selectGeneration').length, 0);
-}
-async function repairDualSelectionRetriesAndRunsOnce() {
-  const env = environment();
-  env.providers([
-    {id: 'online', adapter_id: 'openai_compatible', capabilities: ['generate_text'], enabled: true, test_status: 'ok'},
-    {id: 'other-online', adapter_id: 'openai_compatible', capabilities: ['generate_text'], enabled: true, test_status: 'untested'},
-  ]);
-  env.state.selectFails = true;
-  await assert.rejects(env.prepare(), /设置整理方式失败/);
-  assert.equal(env.files.has(`${base}/llm-selection-ready.json`), false);
-  env.state.selectFails = false;await env.prepare();
-  const selections = env.calls.filter(c => c.method === 'providers.selectGeneration');
-  assert.equal(selections.length, 2);assert.equal(selections[1].params.provider_id, 'online');
-  const count = env.calls.length;await env.prepare();assert.equal(env.calls.length, count);
+  assert.deepEqual(env.calls.map(c => c.method), ['providers.list']);
 }
 async function interruptedCopy() {
   const env = environment(), destination = `${base}/${env.inventory.files[0].path}`;
@@ -220,8 +149,7 @@ async function unsafeManifest() {
   await assert.rejects(env.prepare(), /清单无效/); assert.equal(env.files.size, 0);
 }
 (async () => {
-  for (const test of [firstInstall, restartPreservesChoice, customConfiguration, upgradeCleansOldModelButKeepsConfig,
-    upgradeKeepsOnlineSelection, repairDualSelectionRetriesAndRunsOnce, interruptedCopy,
+  for (const test of [firstInstall, restartPreservesChoice, customConfiguration, interruptedCopy,
     corruptResource, invalidConfiguration, failedLocalTestRetries, unsafeManifest]) {
     await test(); console.log('PASS ' + test.name);
   }

@@ -44,7 +44,6 @@
 //! | `jobs.acknowledgeAttention` | `Core::acknowledge_attention` | `null` |
 //! | `providers.save` | `Core::save_provider` | `Provider` |
 //! | `providers.list` | `Core::list_providers` | `Provider[]` |
-//! | `providers.selectGeneration` | `Core::select_generation_provider` | `Provider` |
 //! | `providers.presets` | `Core::list_provider_presets`（静态表，不出网） | `ProviderPreset[]` |
 //! | `providers.models` | `Core::list_provider_models`（`GET {endpoint}/models`） | `ProviderModelInfo[]` |
 //! | `providers.test` | `Core::test_provider` | `ProviderTestReport` |
@@ -228,7 +227,6 @@ pub(crate) const WIRED_METHODS: &[&str] = &[
     "jobs.acknowledgeAttention",
     "providers.save",
     "providers.list",
-    "providers.selectGeneration",
     "providers.presets",
     "providers.models",
     "providers.test",
@@ -583,10 +581,6 @@ pub(crate) fn dispatch(
         "providers.list" => {
             no_params(method, params)?;
             to_value(core.list_providers()?)
-        }
-        "providers.selectGeneration" => {
-            let input: ProviderIdParams = parse(params)?;
-            to_value(core.select_generation_provider(&input.provider_id)?)
         }
         // 静态预设表：不读库、不出网、不含密钥。字段名照核心 `ProviderPreset`
         // 的 serde 原样（没有 rename_all）：`adapter_id` / `docs_url` 是 snake_case。

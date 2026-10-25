@@ -105,7 +105,6 @@ pub trait ProtocolAdapter: Send + Sync {
 ///
 /// 上层（能力闸门、连接测试、执行者）按形态分支，但**能力协商的判据是同一套**：
 /// 能力集合、配置声明、连接测试结论，三者缺一不可（见 `provider::evaluate`）。
-#[derive(Clone, Copy)]
 pub enum Adapter {
     Http(&'static dyn ProtocolAdapter),
     Local(&'static dyn super::local_engine::LocalEngine),
@@ -237,7 +236,9 @@ impl ProtocolAdapter for OpenAiCompatible {
                     secret,
                 ))
             }
-            ProviderCapability::TranscribeAudio => Self::transcribe_probe_request(provider, secret),
+            ProviderCapability::TranscribeAudio => {
+                Self::transcribe_probe_request(provider, secret)
+            }
             ProviderCapability::UnderstandImage => Err(CoreError::CapabilityUnsupported {
                 reason: format!(
                     "适配器「{OPENAI_COMPATIBLE}」没有实现图像理解；不发起调用，也不排任务"

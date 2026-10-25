@@ -208,79 +208,6 @@ pub(crate) fn list(core: &Core) -> Result<Vec<Provider>> {
     stored_providers(core)
 }
 
-/// 已从本构建移除的适配器标识：旧版本随包的本机整理（Qwen + llama.cpp）。
-///
-/// 老用户的库里可能还留着一条 `adapter_id = llama_cpp` 的 `builtin_local_llm`。
-/// 我们**不静默删除**这条配置（那是用户资料库的一部分），而是让每个入口都用
-/// [`missing_adapter_reason`] 如实说明「它已经不能用、下一步改用在线服务」。
-pub(crate) const REMOVED_LOCAL_LLM_ADAPTER: &str = "llama_cpp";
-
-/// 一条配置引用了本构建没有的适配器时，给用户看的说明。
-///
-/// 对旧版本的本机整理单独措辞：说清「已不再随应用提供」，并给出唯一可行的下一步。
-/// 其它未知适配器沿用原来的简短说法（插件带来的适配器将来可能由插件注册）。
-pub(crate) fn missing_adapter_reason(provider: &Provider) -> String {
-    if provider.adapter_id == REMOVED_LOCAL_LLM_ADAPTER {
-        format!(
-            "「{}」是旧版本随包的本机整理，适配器「{}」已不再随本应用提供；\
-             它不会再生成本地日记，请添加一个在线模型服务并使用它",
-            provider.label, provider.adapter_id
-        )
-    } else {
-        format!(
-            "服务「{}」用的适配器「{}」不在本构建里",
-            provider.label, provider.adapter_id
-        )
-    }
-}
-
-/// Atomically choose one diary-generation service without rewriting its model,
-/// credentials or test verdict. Transcription-only providers are independent.
-///
-/// **只接受在线服务**：随包本机整理（Qwen3.5 + llama.cpp）已移除，本机引擎
-/// （`sherpa_onnx`）只做转写与语义检索，`capabilities()` 里没有 `generate_text`。
-/// 就算一条本机配置行手写声明了 `generate_text`，这里也明确拒绝——闸门、
-/// 执行者与界面对「日记生成」说的是同一件事：需要一个在线服务。
-pub(crate) fn select_generation(core: &mut Core, provider_id: &str) -> Result<Provider> {
-    let tx = core.conn.transaction()?;
-    let mut selected = load_provider(&tx, provider_id)?;
-    let capability = ProviderCapability::GenerateText;
-    let adapter = adapter::adapter_for(&selected.adapter_id).ok_or_else(|| {
-        CoreError::InvalidArgument {
-            reason: missing_adapter_reason(&selected),
-        }
-    })?;
-    if adapter.is_local()
-        || !adapter.capabilities().contains(&capability)
-        || !selected.capabilities.contains(&capability)
-    {
-        return Err(CoreError::InvalidArgument {
-            reason: "日记生成需要一个在线服务；本机引擎只做转写与检索".to_owned(),
-        });
-    }
-    let rows = {
-        let sql = format!("SELECT {PROVIDER_COLUMNS} FROM providers ORDER BY created_at, id");
-        let mut statement = tx.prepare(&sql)?;
-        let raw = statement
-            .query_map([], raw_provider_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        raw.into_iter().map(provider_from_raw).collect::<Result<Vec<_>>>()?
-    };
-    let now_text = support::to_iso(now());
-    for provider in rows {
-        if provider.capabilities.contains(&capability) {
-            tx.execute(
-                "UPDATE providers SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
-                params![provider.id == selected.id, now_text, provider.id],
-            )?;
-        }
-    }
-    tx.commit()?;
-    selected.enabled = true;
-    promote_configuration_waits(core, now())?;
-    Ok(selected)
-}
-
 /// 校验并规范化 endpoint：只接受 `http(s)://host[:port][/path]`。
 ///
 /// **不接受 userinfo**（`http://user:pass@host/v1`）：URL 里的密码没有可靠的生命周期
@@ -291,11 +218,11 @@ pub(crate) fn select_generation(core: &mut Core, provider_id: &str) -> Result<Pr
 /// 多引一个依赖不划算。**不校验主机能不能解析**——那是连接测试的事。
 fn normalize_endpoint(endpoint: &str) -> Result<String> {
     let trimmed = endpoint.trim();
-    let (scheme, rest) = trimmed
-        .split_once("://")
-        .ok_or_else(|| CoreError::InvalidArgument {
+    let (scheme, rest) = trimmed.split_once("://").ok_or_else(|| {
+        CoreError::InvalidArgument {
             reason: format!("endpoint「{endpoint}」缺少协议前缀（要写 http:// 或 https://）"),
-        })?;
+        }
+    })?;
     let scheme = scheme.to_ascii_lowercase();
     if scheme != "http" && scheme != "https" {
         return Err(CoreError::InvalidArgument {
@@ -389,14 +316,15 @@ pub(crate) fn save(core: &mut Core, config: &Provider, secret: Option<&str>) -> 
             reason: "服务配置需要一个显示名（label）".to_owned(),
         });
     }
-    let adapter =
-        adapter::adapter_for(&config.adapter_id).ok_or_else(|| CoreError::InvalidArgument {
+    let adapter = adapter::adapter_for(&config.adapter_id).ok_or_else(|| {
+        CoreError::InvalidArgument {
             reason: format!(
                 "没有标识为「{}」的协议适配器；内置的有：{}",
                 config.adapter_id,
                 adapter::builtin_adapter_ids().join("、")
             ),
-        })?;
+        }
+    })?;
     // 本地引擎没有 endpoint 也没有密钥：给它配一个 http:// 地址是配置错误，
     // 如实拒绝（而不是存下来一个永远不会被用的字段，让用户以为配上了什么）。
     if adapter.is_local() {
@@ -828,7 +756,10 @@ fn evaluate(
         return Ok(Err(format!("服务「{}」没有启用", provider.label)));
     }
     let Some(adapter) = adapter::adapter_for(&provider.adapter_id) else {
-        return Ok(Err(missing_adapter_reason(provider)));
+        return Ok(Err(format!(
+            "服务「{}」用的适配器「{}」不在本构建里",
+            provider.label, provider.adapter_id
+        )));
     };
     if !adapter.capabilities().contains(&capability) {
         return Ok(Err(format!(
@@ -863,9 +794,6 @@ fn evaluate(
 
     // 本地引擎：没有 endpoint、没有密钥，改为**本机资源就绪**这一条。
     // 「缺什么、怎么办」由引擎的就绪结论直接给出（带路径的那种）。
-    //
-    // 本机引擎只做转写与语义检索，`capabilities()` 里没有 `generate_text`，
-    // 所以日记生成永远走不到这里（上面那条能力检查已经拒绝）。
     if adapter.is_local() {
         return match local_engine::readiness_for(core, provider.model.as_deref()) {
             Ok(readiness) if readiness.ready => Ok(Ok(())),
@@ -907,11 +835,6 @@ fn evaluate(
 /// 本机引擎这条路的「下一步」：与 HTTP 那条路的措辞不同，因为要做的事不同
 /// （补模型目录/引擎库，而不是配 endpoint 与密钥）。
 fn local_next_step(capability: ProviderCapability) -> String {
-    if capability == ProviderCapability::GenerateText {
-        // 本机引擎只做转写/检索；生成日记必须有一个在线服务。
-        return "本机引擎不生成日记：请在「我的 → 模型服务」里添加一个在线服务，                测试通过后点「使用此服务」"
-            .to_owned();
-    }
     format!(
         "本机引擎不需要 endpoint 与密钥：把模型目录（model.int8.onnx 与 tokens.txt）放到随包位置 \
          {}，或用 {} 指定目录、{} 指定引擎库；也可以在设置里保存一条 adapter={} 的服务配置，\
@@ -1019,7 +942,7 @@ pub(crate) fn capability_gate_for_with(
     if local_only {
         providers.retain(|provider| {
             adapter::adapter_for(&provider.adapter_id)
-                .map(|adapter| matches!(adapter, adapter::Adapter::Local(_)))
+                .map(|adapter| adapter.is_local())
                 .unwrap_or(false)
         });
     }
@@ -1034,12 +957,13 @@ pub(crate) fn capability_gate_for_with(
     let consider_builtin = capability == ProviderCapability::TranscribeAudio
         && !providers.iter().any(|provider| {
             adapter::adapter_for(&provider.adapter_id)
-                .map(|adapter| matches!(adapter, adapter::Adapter::Local(_)))
+                .map(|adapter| adapter.is_local())
                 .unwrap_or(false)
         });
     if consider_builtin {
         providers.push(local_engine::builtin_provider(core.config_file()));
     }
+
     if providers.is_empty() {
         let reason = if stored.is_empty() {
             if local_only {
@@ -1241,7 +1165,10 @@ pub(crate) fn test(
     };
     let adapter = adapter::adapter_for(&provider.adapter_id).ok_or_else(|| {
         CoreError::ProviderNotConfigured {
-            reason: missing_adapter_reason(&provider),
+            reason: format!(
+                "服务「{}」的适配器「{}」不在本构建里",
+                provider.label, provider.adapter_id
+            ),
         }
     })?;
     if adapter.is_local() {
@@ -1844,9 +1771,12 @@ fn respond_once(core: &mut Core, response_id: &str) -> std::result::Result<(), C
     )?;
     let adapter = adapter::adapter_for(&provider.adapter_id).ok_or_else(|| {
         CoreError::ProviderNotConfigured {
-            reason: missing_adapter_reason(&provider),
+            reason: format!("服务「{}」的适配器不在本构建里", provider.label),
         }
     })?;
+    // 本地引擎没有「生成文本」这个能力（`capabilities()` 里就没有它），所以闸门
+    // 不可能把 `respond` 指到本机引擎上。这里再挡一次是防御：绕过闸门也不能走进
+    // 一个不存在的 HTTP 调用。
     let adapter = match adapter {
         adapter::Adapter::Http(adapter) => adapter,
         adapter::Adapter::Local(engine) => {
@@ -1860,10 +1790,11 @@ fn respond_once(core: &mut Core, response_id: &str) -> std::result::Result<(), C
             })
         }
     };
-    let secret =
-        provider_secret(core, &provider)?.ok_or_else(|| CoreError::ProviderNotConfigured {
+    let secret = provider_secret(core, &provider)?.ok_or_else(|| {
+        CoreError::ProviderNotConfigured {
             reason: format!("服务「{}」还没有可用的密钥", provider.label),
-        })?;
+        }
+    })?;
 
     // 提示词与上下文拼装是 B4b 的事（风格、快照、来源取舍）。这一片如实只把
     // 用户自己的请求文字发出去，`capture_ids` 作为来源记录下来，不擅自编提示词。
@@ -1885,14 +1816,7 @@ fn respond_once(core: &mut Core, response_id: &str) -> std::result::Result<(), C
         return Err(error);
     }
     let outcome = adapter.parse_generate(&response, Some(&secret))?;
-    write_response(core, response_id, outcome)
-}
 
-fn write_response(
-    core: &mut Core,
-    response_id: &str,
-    outcome: adapter::GenerateOutcome,
-) -> Result<()> {
     let now_text = support::to_iso(now());
     core.conn.execute(
         "UPDATE ai_responses SET body = ?1, model = COALESCE(?2, model), state = 'ready', \
@@ -1981,6 +1905,7 @@ fn pinned_provider(core: &Core, response_id: &str) -> Result<Option<String>> {
         .optional()?;
     Ok(provider_id.flatten())
 }
+
 /// 配置变了以后重评队列：能跑的放回 `queued`，不能跑的停在
 /// `waiting_configuration` 并写清「在等什么」。
 ///

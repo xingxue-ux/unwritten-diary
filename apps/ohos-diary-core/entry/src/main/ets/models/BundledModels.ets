@@ -3,7 +3,7 @@ import { fileIo as fs, hash } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DiaryCore } from '../core/DiaryCore';
-import { ProviderConfig, ProviderIdParams, SaveProviderParams, TestProviderParams } from '../core/Models';
+import { ProviderConfig, SaveProviderParams, TestProviderParams } from '../core/Models';
 import { CoreGateway } from '../ui/CoreGateway';
 
 interface ModelFile {
@@ -25,8 +25,6 @@ export interface ModelProgress {
 const RESOURCE_ROOT: string = 'bundled_models';
 const ASR_REL: string = 'asr/sense-voice-int8';
 const BGE_REL: string = 'semantic/bge-small-zh-v1.5-ours';
-/** 旧版本随包的「本机整理」模型目录（Qwen3.5-0.8B）。升级时清掉，回收 563 MB。 */
-const LEGACY_LLM_REL: string = 'llm';
 const BUILTIN_ASR: string = 'builtin_local_asr';
 const CHUNK_BYTES: number = 1024 * 1024;
 
@@ -40,7 +38,6 @@ export class BundledModels {
     const content = await context.resourceManager.getRawFileContent(`${RESOURCE_ROOT}/manifest.json`);
     const text: string = new util.TextDecoder('utf-8').decodeWithStream(content);
     const manifest: ModelManifest = JSON.parse(text) as ModelManifest;
-    // 两组本地能力（转写 + 语义检索）。日记生成不随包，所以清单里没有 llm 组。
     if (manifest.version !== 1 || manifest.files.length !== 4) {
       throw new Error('随包模型清单不完整');
     }
@@ -70,19 +67,6 @@ export class BundledModels {
     if (!BundledModels.exists(marker)) {
       await BundledModels.asrDefault(filesDir, `${root}/${ASR_REL}`);
       await BundledModels.writeAtomic(marker, '{"version":1}\n');
-    }
-    // 日记生成已不随包：回收旧版本留下的本机整理权重目录（约 563 MB）。
-    // **不动**旧的那条 provider 配置行：那是用户资料库的一部分，界面上会如实列出
-    // 「旧版本的本机整理，已不再支持」并让用户自己删。清理失败不阻断启动。
-    const cleanupMarker: string = `${root}/legacy-local-llm-model-cleaned-v1.json`;
-    if (!BundledModels.exists(cleanupMarker)) {
-      const cleaned: boolean = await BundledModels.cleanupLegacyLocalModel(root);
-      if (cleaned) { await BundledModels.writeAtomic(cleanupMarker, '{"version":1}\n'); }
-    }
-    const selectionMarker: string = `${root}/llm-selection-ready.json`;
-    if (!BundledModels.exists(selectionMarker)) {
-      await BundledModels.normalizeLlmSelection(filesDir);
-      await BundledModels.writeAtomic(selectionMarker, '{"version":1}\n');
     }
     hilog.info(0, 'DiaryModels', 'BUNDLED_MODELS_READY files=%{public}d bytes=%{public}d',
       manifest.files.length, total);
@@ -213,54 +197,5 @@ export class BundledModels {
       if (provider.id === BUILTIN_ASR && provider.test_status === 'ok') { return; }
     }
     throw new Error('随包转写模型测试未通过');
-  }
-
-  /**
-   * 回收上一版随包的本机整理**权重目录**（`bundled-models/v1/llm/`，约 563 MB）。
-   *
-   * 只删我们自己在沙箱里铺的模型文件，**不删资料库里的 provider 配置行**：
-   * 那条 `adapter_id = llama_cpp` 的 `builtin_local_llm` 会继续出现在「模型服务」页，
-   * 标成「旧版本的本机整理（已不再支持）」，由用户自己决定删不删。静默删配置是
-   * 不可接受的——升级不该让用户看见一个配置凭空消失。
-   *
-   * 返回 true 表示可以记「已清理」；失败返回 false，下次启动重试。
-   */
-  private static async cleanupLegacyLocalModel(root: string): Promise<boolean> {
-    const legacy: string = `${root}/${LEGACY_LLM_REL}`;
-    if (!BundledModels.exists(legacy)) { return true; }
-    try {
-      fs.rmdirSync(legacy);
-      hilog.info(0, 'DiaryModels', 'LEGACY_LOCAL_LLM_MODEL_CLEANED path=%{public}s', legacy);
-      return true;
-    } catch (_) {
-      hilog.warn(0, 'DiaryModels', 'LEGACY_LOCAL_LLM_MODEL_CLEANUP_FAILED');
-      return false;
-    }
-  }
-
-  // One-time repair of the previous release's independent switches: keep at most
-  // one enabled generation service, preserving its test-status / creation-order
-  // priority. Listing and selecting configurations never probes the network.
-  // 本机整理已移除，这里只在剩下的在线服务里选一个。
-  private static async normalizeLlmSelection(filesDir: string): Promise<void> {
-    const db: string = `${filesDir}/library.sqlite`;
-    const listed = await CoreGateway.call(db, 'providers.list', null);
-    if (!listed.ok) { throw new Error('读取整理方式失败，请重试'); }
-    // 只考虑本构建真的支持、而且声明了 generate_text 的服务：旧版
-    // `builtin_local_llm`（adapter llama_cpp）不能被选中，否则 prepare 会失败。
-    const enabled: ProviderConfig[] = (listed.data as ProviderConfig[]).filter((p: ProviderConfig) =>
-      p.enabled && p.capabilities.includes('generate_text') && p.adapter_id === 'openai_compatible');
-    if (enabled.length <= 1) { return; }
-    const statuses: string[] = ['ok', 'untested', 'failed'];
-    for (const status of statuses) {
-      const peers: ProviderConfig[] = enabled.filter((p: ProviderConfig) => p.test_status === status);
-      const preferred: ProviderConfig | undefined = peers[0];
-      if (preferred !== undefined) {
-        const params: ProviderIdParams = { provider_id: preferred.id };
-        const selected = await CoreGateway.call(db, 'providers.selectGeneration', params);
-        if (!selected.ok) { throw new Error('设置整理方式失败，请重试'); }
-        return;
-      }
-    }
   }
 }

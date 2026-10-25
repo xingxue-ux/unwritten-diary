@@ -393,8 +393,9 @@ fn finish(execution: Execution, started: Instant) -> SandboxOutcome {
         run_code,
         remaining_fuel,
     } = execution;
-    let instructions_used = remaining_fuel
-        .map(|remaining| FUEL_BUDGET.saturating_sub(remaining).min(FUEL_BUDGET) as i64);
+    let instructions_used = remaining_fuel.map(|remaining| {
+        FUEL_BUDGET.saturating_sub(remaining).min(FUEL_BUDGET) as i64
+    });
     let duration = started.elapsed().as_millis() as i64;
 
     // 越权优先：即使插件忽略了负返回码并「成功」返回 0，结局也是 denied。
@@ -836,7 +837,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
                     &mut caller,
                     ERR_PROVIDER,
                     "provider_not_configured",
-                    crate::provider::missing_adapter_reason(provider_config),
+                    format!("服务「{provider_id}」的适配器不在本构建里"),
                 ));
             };
             let adapter = match adapter {
@@ -1150,11 +1151,9 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
                 return Ok(invalid(&mut caller, "state_put", "key 参数不合法"));
             };
             if key.is_empty()
-                || !key.bytes().all(|byte| {
-                    byte.is_ascii_lowercase()
-                        || byte.is_ascii_digit()
-                        || matches!(byte, b'.' | b'_' | b'-')
-                })
+                || !key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-'))
             {
                 return Ok(invalid(
                     &mut caller,

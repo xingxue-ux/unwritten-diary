@@ -42,9 +42,9 @@ use std::sync::Arc;
 
 use crate::error::{CoreError, Result};
 use crate::model::{Provider, ProviderCapability, ProviderTestStatus};
-use crate::provider::adapter;
 use crate::provider::adapter::{GenerateRequest as AdapterGenerateRequest, CALL_TIMEOUT_MS};
 use crate::provider::transport::{HttpRequest, HttpResponse, Transport};
+use crate::provider::adapter;
 use crate::quality::case::{AudioSpec, TranscriptCase};
 
 /// 一次生成请求：**提示词已经拼好**（材料 + 模板说明）。
@@ -325,7 +325,7 @@ impl GenerateEngine for OpenAiCompatibleGenerateEngine {
     fn generate(&self, request: &GenerateRequest) -> Result<GeneratedText> {
         let adapter = adapter::adapter_for(&self.provider.adapter_id).ok_or_else(|| {
             CoreError::ProviderNotConfigured {
-                reason: crate::provider::missing_adapter_reason(&self.provider),
+                reason: format!("适配器 {} 不在本构建里", self.provider.adapter_id),
             }
         })?;
         // `adapter_for` 自 #103 起返回 `Adapter`（HTTP 协议或本机引擎）这一层枚举。
@@ -566,6 +566,7 @@ pub fn synthetic_wav(spec: &AudioSpec) -> Vec<u8> {
     wav.resize(44 + data_bytes as usize, 0); // 全零 = 静音
     wav
 }
+
 /// 给回放模式用：按用例的 `audio` 规格取占位音频。
 pub fn placeholder_audio(case: &TranscriptCase) -> Vec<u8> {
     synthetic_wav(&case.audio)
