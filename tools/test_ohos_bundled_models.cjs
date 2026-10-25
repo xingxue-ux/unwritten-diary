@@ -11,7 +11,7 @@ const marker = `${base}/defaults-ready.json`;
 
 function environment() {
   const files = new Map(), handles = new Map(), calls = [], resources = new Map(), directories = new Set();
-  const state = {opens: 0, closes: 0, failWrite: false, corruptResource: false, testFails: false, selectFails: false};
+  const state = {opens: 0, closes: 0, failWrite: false, corruptResource: false, testFails: false};
   let nextFd = 1;
   const names = ['asr/sense-voice-int8/model.int8.onnx', 'asr/sense-voice-int8/tokens.txt',
     'semantic/bge-small-zh-v1.5-ours/model_quantized.onnx', 'semantic/bge-small-zh-v1.5-ours/tokenizer.json',
@@ -61,12 +61,6 @@ function environment() {
       assert.deepEqual(Array.from(params.scope), ['transcribe_audio']);
       if (state.testFails) return {ok: false};
       providers.find(p => p.id === params.provider_id).test_status = 'ok'; return {ok: true};
-    }
-    if (method === 'providers.selectGeneration') {
-      if (state.selectFails) return {ok: false};
-      providers = providers.map(p => p.capabilities.includes('generate_text')
-        ? {...p, enabled: p.id === params.provider_id} : p);
-      return {ok: true, data: providers.find(p => p.id === params.provider_id)};
     }
     throw new Error('Unexpected API ' + method);
   }};
@@ -141,31 +135,6 @@ async function upgradePreservesDisabledLlm() {
   assert.equal(env.calls.filter(c => c.method === 'providers.save' && c.params.config.id === 'builtin_local_llm').length, 0);
   assert.ok(env.files.has(`${base}/llm-defaults-ready.json`));
 }
-async function upgradePreservesOnlineSelection() {
-  const env = environment();
-  env.providers([{id: 'online', adapter_id: 'openai_compatible', capabilities: ['generate_text'],
-    enabled: true, test_status: 'ok', credential_ref: 'keep-key'}]);
-  await env.prepare();
-  const local = env.calls.find(c => c.method === 'providers.save' && c.params.config.id === 'builtin_local_llm');
-  assert.equal(local.params.config.enabled, false);
-  assert.equal(env.calls.filter(c => c.method === 'providers.selectGeneration').length, 0);
-}
-async function repairDualSelectionRetriesAndRunsOnce() {
-  const env = environment();
-  env.files.set(`${base}/llm-defaults-ready.json`, Buffer.from('{}'));
-  env.providers([
-    {id: 'builtin_local_llm', adapter_id: 'llama_cpp', capabilities: ['generate_text'], enabled: true, test_status: 'untested'},
-    {id: 'online', adapter_id: 'openai_compatible', capabilities: ['generate_text'], enabled: true, test_status: 'ok'},
-    {id: 'other-online', adapter_id: 'openai_compatible', capabilities: ['generate_text'], enabled: true, test_status: 'untested'},
-  ]);
-  env.state.selectFails = true;
-  await assert.rejects(env.prepare(), /设置整理方式失败/);
-  assert.equal(env.files.has(`${base}/llm-selection-ready.json`), false);
-  env.state.selectFails = false;await env.prepare();
-  const selections = env.calls.filter(c => c.method === 'providers.selectGeneration');
-  assert.equal(selections.length, 2);assert.equal(selections[1].params.provider_id, 'online');
-  const count = env.calls.length;await env.prepare();assert.equal(env.calls.length, count);
-}
 async function interruptedCopy() {
   const env = environment(), destination = `${base}/${env.inventory.files[0].path}`;
   env.files.set(destination, Buffer.from('previous')); env.state.failWrite = true;
@@ -196,8 +165,7 @@ async function unsafeManifest() {
   await assert.rejects(env.prepare(), /清单无效/); assert.equal(env.files.size, 0);
 }
 (async () => {
-  for (const test of [firstInstall, restartPreservesChoice, customConfiguration, upgradePreservesDisabledLlm,
-    upgradePreservesOnlineSelection, repairDualSelectionRetriesAndRunsOnce, interruptedCopy,
+  for (const test of [firstInstall, restartPreservesChoice, customConfiguration, upgradePreservesDisabledLlm, interruptedCopy,
     corruptResource, invalidConfiguration, failedLocalTestRetries, unsafeManifest]) {
     await test(); console.log('PASS ' + test.name);
   }

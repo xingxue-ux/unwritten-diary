@@ -1339,43 +1339,6 @@ fn two_threads_can_share_one_handle() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
-fn providers_select_generation_switches_with_both_parameter_spellings() {
-    let (dir, _path, handle) = open_temp("generation-selection");
-    for id in ["first", "second"] {
-        expect_ok(&call(
-            handle,
-            "providers.save",
-            json!({"config": {
-                "id": id, "label": id, "adapter_id": "llama_cpp", "model": "/test/model.gguf",
-                "capabilities": ["generate_text"], "enabled": false, "test_status": "untested"
-            }}),
-        ));
-    }
-    let first = expect_ok(&call(
-        handle,
-        "providers.selectGeneration",
-        json!({"providerId": "first"}),
-    ));
-    assert_eq!(first["enabled"], json!(true));
-    expect_ok(&call(
-        handle,
-        "providers.selectGeneration",
-        json!({"provider_id": "second"}),
-    ));
-    let rows = expect_ok(&call(handle, "providers.list", json!(null)));
-    let enabled: Vec<_> = rows
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|p| p["enabled"] == true)
-        .collect();
-    assert_eq!(enabled.len(), 1);
-    assert_eq!(enabled[0]["id"], json!("second"));
-    assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
 /// `providers.save` / `list` / `test` / `remove` 的 C ABI 形状、校验与错误码。
 ///
 /// 不依赖真引擎/真网络：
@@ -1418,13 +1381,6 @@ fn providers_crud_contract_shapes_and_validation() {
     assert_eq!(rows.len(), 1, "{listed}");
     assert_eq!(rows[0]["id"], json!("local_asr_capi"));
     assert_ne!(rows[0]["id"], json!("builtin_local_asr"));
-
-    expect_error(&call(handle, "providers.selectGeneration",
-        json!({"providerId": "local_asr_capi"})), "invalid_argument");
-    expect_error(&call(handle, "providers.selectGeneration",
-        json!({"provider_id": "missing"})), "not_found");
-    expect_error(&call(handle, "providers.selectGeneration",
-        json!({"provider_id": "local_asr_capi", "extra": true})), "invalid_argument");
 
     // save 校验：本机引擎不接受 endpoint。
     let mut with_endpoint = config.clone();

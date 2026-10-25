@@ -1876,13 +1876,6 @@ impl Core {
         provider::save(self, config, secret)
     }
 
-    /// Choose a single diary-generation service atomically. Other generation
-    /// services are disabled; saved configurations and credentials are retained.
-    /// This does not test connections or send any network requests.
-    pub fn select_generation_provider(&mut self, provider_id: &str) -> Result<Provider> {
-        provider::select_generation(self, provider_id)
-    }
-
     /// 移除服务配置，契约第 4.4 节 `providers.remove`。**不删除任何日记**，
     /// 也不删除已经生成的回应（它记着当时的来源，是历史事实）。
     pub fn remove_provider(&mut self, provider_id: &str) -> Result<()> {

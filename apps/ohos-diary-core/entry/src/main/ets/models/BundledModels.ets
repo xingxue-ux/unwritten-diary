@@ -3,7 +3,7 @@ import { fileIo as fs, hash } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DiaryCore } from '../core/DiaryCore';
-import { ProviderConfig, ProviderIdParams, SaveProviderParams, TestProviderParams } from '../core/Models';
+import { ProviderConfig, SaveProviderParams, TestProviderParams } from '../core/Models';
 import { CoreGateway } from '../ui/CoreGateway';
 
 interface ModelFile {
@@ -75,11 +75,6 @@ export class BundledModels {
     if (!BundledModels.exists(llmMarker)) {
       await BundledModels.llmDefault(filesDir, `${root}/${LLM_REL}`);
       await BundledModels.writeAtomic(llmMarker, '{"version":1}\n');
-    }
-    const selectionMarker: string = `${root}/llm-selection-ready.json`;
-    if (!BundledModels.exists(selectionMarker)) {
-      await BundledModels.normalizeLlmSelection(filesDir);
-      await BundledModels.writeAtomic(selectionMarker, '{"version":1}\n');
     }
     hilog.info(0, 'DiaryModels', 'BUNDLED_MODELS_READY files=%{public}d bytes=%{public}d',
       manifest.files.length, total);
@@ -222,34 +217,10 @@ export class BundledModels {
     const config: ProviderConfig = {
       id: 'builtin_local_llm', label: '本机整理', adapter_id: 'llama_cpp',
       endpoint: null, model: path, capabilities: ['generate_text'],
-      credential_ref: null, enabled: !(listed.data as ProviderConfig[]).some((p: ProviderConfig) =>
-        p.enabled && p.capabilities.includes('generate_text')), test_status: 'untested',
+      credential_ref: null, enabled: true, test_status: 'untested',
     };
     const params: SaveProviderParams = { config: config, secret: null };
     const saved = await CoreGateway.call(db, 'providers.save', params);
     if (!saved.ok) { throw new Error('设置本机整理失败，请重试'); }
-  }
-
-  // One-time repair of the previous release's independent switches. Preserve
-  // its test-status / creation-order priority, with the bundled default last.
-  // Listing and selecting configurations never probes the network.
-  private static async normalizeLlmSelection(filesDir: string): Promise<void> {
-    const db: string = `${filesDir}/library.sqlite`;
-    const listed = await CoreGateway.call(db, 'providers.list', null);
-    if (!listed.ok) { throw new Error('读取整理方式失败，请重试'); }
-    const enabled: ProviderConfig[] = (listed.data as ProviderConfig[]).filter((p: ProviderConfig) =>
-      p.enabled && p.capabilities.includes('generate_text'));
-    if (enabled.length <= 1) { return; }
-    const statuses: string[] = ['ok', 'untested', 'failed'];
-    for (const status of statuses) {
-      const peers: ProviderConfig[] = enabled.filter((p: ProviderConfig) => p.test_status === status);
-      const preferred: ProviderConfig | undefined = peers.find((p: ProviderConfig) => p.id !== 'builtin_local_llm') || peers[0];
-      if (preferred !== undefined) {
-        const params: ProviderIdParams = { provider_id: preferred.id };
-        const selected = await CoreGateway.call(db, 'providers.selectGeneration', params);
-        if (!selected.ok) { throw new Error('设置整理方式失败，请重试'); }
-        return;
-      }
-    }
   }
 }
