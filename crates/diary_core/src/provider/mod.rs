@@ -19,6 +19,7 @@
 pub mod adapter;
 pub mod endpoint;
 pub mod local_engine;
+pub mod local_llm;
 pub mod models;
 pub mod normalize;
 pub mod presets;
@@ -216,12 +217,12 @@ pub(crate) fn select_generation(core: &mut Core, provider_id: &str) -> Result<Pr
     let capability = ProviderCapability::GenerateText;
     if !selected.capabilities.contains(&capability)
         || !adapter::adapter_for(&selected.adapter_id).is_some_and(|adapter| {
-            matches!(adapter, adapter::Adapter::Http(_))
+            matches!(adapter, adapter::Adapter::Http(_) | adapter::Adapter::LocalLlm)
                 && adapter.capabilities().contains(&capability)
         })
     {
         return Err(CoreError::InvalidArgument {
-            reason: "请选择在线整理服务".to_owned(),
+            reason: "请选择可用的整理服务".to_owned(),
         });
     }
     let rows = {
@@ -237,8 +238,7 @@ pub(crate) fn select_generation(core: &mut Core, provider_id: &str) -> Result<Pr
     let now_text = support::to_iso(now());
     for provider in rows {
         if provider.capabilities.contains(&capability)
-            && adapter::adapter_for(&provider.adapter_id)
-                .is_some_and(|adapter| matches!(adapter, adapter::Adapter::Http(_)))
+
         {
             tx.execute(
                 "UPDATE providers SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
@@ -839,6 +839,9 @@ fn evaluate(
     // 本地引擎：没有 endpoint、没有密钥，改为**本机资源就绪**这一条。
     // 「缺什么、怎么办」由引擎的就绪结论直接给出（带路径的那种）。
     if adapter.is_local() {
+        if matches!(adapter, adapter::Adapter::LocalLlm) {
+            return Ok(local_llm::readiness(provider.model.as_deref()).map_err(|e| e.to_string()));
+        }
         return match local_engine::readiness_for(core, provider.model.as_deref()) {
             Ok(readiness) if readiness.ready => Ok(Ok(())),
             Ok(readiness) => Ok(Err(local_engine::blocked_message(&readiness))),
@@ -879,6 +882,9 @@ fn evaluate(
 /// 本机引擎这条路的「下一步」：与 HTTP 那条路的措辞不同，因为要做的事不同
 /// （补模型目录/引擎库，而不是配 endpoint 与密钥）。
 fn local_next_step(capability: ProviderCapability) -> String {
+    if capability == ProviderCapability::GenerateText {
+        return "请重新打开应用准备本机整理模型".to_owned();
+    }
     format!(
         "本机引擎不需要 endpoint 与密钥：把模型目录（model.int8.onnx 与 tokens.txt）放到随包位置 \
          {}，或用 {} 指定目录、{} 指定引擎库；也可以在设置里保存一条 adapter={} 的服务配置，\
@@ -914,6 +920,9 @@ pub(crate) fn capability_gate_for_with(
     local_only: bool,
 ) -> Result<CapabilityGate> {
     let next_step = |what: &str| {
+        if cfg!(feature = "offline-only") {
+            return "请重新打开应用准备本机模型".to_owned();
+        }
         format!(
             "在「设置 → 远端服务」里{what}，然后对「{}」跑一次连接测试；\
              本机/局域网服务把 endpoint 配成 http://127.0.0.1:<端口>/v1 这类地址即可",
@@ -983,10 +992,10 @@ pub(crate) fn capability_gate_for_with(
         .filter(|item| item.enabled)
         .cloned()
         .collect();
-    if local_only {
+    if local_only || cfg!(feature = "offline-only") {
         providers.retain(|provider| {
             adapter::adapter_for(&provider.adapter_id)
-                .map(|adapter| adapter.is_local())
+                .map(|adapter| adapter.is_local() && (!local_only || matches!(adapter, adapter::Adapter::Local(_))))
                 .unwrap_or(false)
         });
     }
@@ -1001,7 +1010,7 @@ pub(crate) fn capability_gate_for_with(
     let consider_builtin = capability == ProviderCapability::TranscribeAudio
         && !providers.iter().any(|provider| {
             adapter::adapter_for(&provider.adapter_id)
-                .map(|adapter| adapter.is_local())
+                .map(|adapter| matches!(adapter, adapter::Adapter::Local(_)))
                 .unwrap_or(false)
         });
     if consider_builtin {
@@ -1221,7 +1230,7 @@ pub(crate) fn test(
     // 走到这里的只可能是 HTTP 适配器（本机引擎在上面就返回了）。
     let adapter = match adapter {
         adapter::Adapter::Http(adapter) => adapter,
-        adapter::Adapter::Local(_) => {
+        adapter::Adapter::Local(_) | adapter::Adapter::LocalLlm => {
             return Err(CoreError::InvalidState {
                 entity: "服务配置",
                 id: provider_id.to_owned(),
@@ -1429,6 +1438,14 @@ fn test_local(
     let mut probe_note = None;
     let mut failure: Option<CoreError> = None;
     if !probed.is_empty() {
+        if matches!(adapter, adapter::Adapter::LocalLlm) {
+            match local_llm::generate(provider.model.as_deref(), &adapter::GenerateRequest {
+                prompt: "只回复一个字：好".to_owned(), system: None,
+            }) {
+                Ok(_) => { calls = 1; probe_note = Some("本机整理可用".to_owned()); }
+                Err(error) => failure = Some(error),
+            }
+        } else {
         match local_engine::config_for(core, provider.model.as_deref()) {
             Ok(config) => {
                 // 一次探针覆盖范围内所有本机能力：它验的是「同一个引擎能不能跑」。
@@ -1442,6 +1459,8 @@ fn test_local(
             }
             Err(error) => failure = Some(error),
         }
+    }
+
     }
 
     if let Some(error) = failure {
@@ -1823,6 +1842,12 @@ fn respond_once(core: &mut Core, response_id: &str) -> std::result::Result<(), C
     // 一个不存在的 HTTP 调用。
     let adapter = match adapter {
         adapter::Adapter::Http(adapter) => adapter,
+        adapter::Adapter::LocalLlm => {
+            let outcome = local_llm::generate(provider.model.as_deref(), &adapter::GenerateRequest {
+                prompt: request_text, system: None,
+            })?;
+            return write_response(core, response_id, outcome);
+        }
         adapter::Adapter::Local(engine) => {
             return Err(CoreError::ProviderNotConfigured {
                 reason: format!(
@@ -1860,7 +1885,10 @@ fn respond_once(core: &mut Core, response_id: &str) -> std::result::Result<(), C
         return Err(error);
     }
     let outcome = adapter.parse_generate(&response, Some(&secret))?;
+    write_response(core, response_id, outcome)
+}
 
+fn write_response(core: &mut Core, response_id: &str, outcome: adapter::GenerateOutcome) -> Result<()> {
     let now_text = support::to_iso(now());
     core.conn.execute(
         "UPDATE ai_responses SET body = ?1, model = COALESCE(?2, model), state = 'ready', \

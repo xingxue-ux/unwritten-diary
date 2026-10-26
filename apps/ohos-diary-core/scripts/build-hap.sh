@@ -79,14 +79,14 @@ trap restore EXIT
 
 # 产品的远端模型服务在 debug/release 都需要联网权限。
 # 探针的执行由 EntryAbility 的 BuildProfile.DEBUG 门禁控制，不通过删权限禁用产品能力。
-check_internet_permission() {
+check_offline_permissions() {
   python3 - "$MODULEJSON" <<'PY'
 import json, sys
 manifest = json.load(open(sys.argv[1], encoding="utf-8"))
 permissions = {p["name"] for p in manifest["module"]["requestPermissions"]}
-if "ohos.permission.INTERNET" not in permissions:
-    sys.exit("[build-hap] 产品清单缺少 INTERNET，远端模型不可用；拒绝构建")
-print("[build-hap] INTERNET 已在产品清单中（debug/release 共用）")
+if "ohos.permission.INTERNET" in permissions:
+    sys.exit("[build-hap] 离线版清单包含联网权限；拒绝构建")
+print("[build-hap] 离线版清单无联网权限")
 PY
 }
 
@@ -94,7 +94,7 @@ PY
 if [[ -z "${SKIP_NATIVE:-}" ]]; then
   "$HERE/scripts/build-native.sh"
 fi
-for so in libdiary_capi.so libdiary_napi.so libc++_shared.so; do
+for so in libdiary_capi.so libdiary_napi.so libc++_shared.so libdiary_llm.so libdiary_llm_dotprod.so; do
   [[ -f "$HERE/entry/libs/arm64-v8a/$so" ]] \
     || { echo "缺少 entry/libs/arm64-v8a/$so（先跑 scripts/build-native.sh）" >&2; exit 1; }
 done
@@ -131,10 +131,10 @@ else
   echo "[build-hap] 矩阵 asr-only：只带 sherpa ORT 1.16.3（关键词检索可用；语义检索不可用；WITH_SEMANTIC=1 才含 1.29.1）"
 fi
 
-# ── 0a2. 两种构建都必须保留产品联网权限
-check_internet_permission
+# ── 0a2. 两种离线构建都不能声明联网权限
+check_offline_permissions
 
-# 产品包必须含两组固定本地模型；不会以缺模型的包冒充离线产品。
+# 产品包必须含三组固定本地模型；不会以缺模型的包冒充离线产品。
 python3 "$HERE/../../tools/stage_ohos_models.py" --check
 
 # ── 0b. ohpm install（依赖是本地 file: 目录，不需要联网）

@@ -43,7 +43,7 @@ if [[ -z "${SKIP_RUST:-}" ]]; then
   export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER="$CC_PREFIX-clang"
   export CC_aarch64_unknown_linux_ohos="$CC_PREFIX-clang"
   export AR_aarch64_unknown_linux_ohos="$NDK/llvm/bin/llvm-ar"
-  ( cd "$REPO" && cargo build -p diary_capi --target "$TARGET" --release $CARGO_OFFLINE )
+  ( cd "$REPO" && cargo build -p diary_capi --target "$TARGET" --release --features offline-only $CARGO_OFFLINE )
   cp "$CARGO_TARGET_DIR/$TARGET/release/libdiary_capi.so" "$OUT/libdiary_capi.so"
 fi
 
@@ -74,6 +74,10 @@ if [[ -z "${SKIP_SHIM:-}" ]]; then
 fi
 
 # ── 3. 自检：ELF 类型、NEEDED、导出/未定义符号 ──────────────────────────────
+if [[ "${SKIP_LLM:-0}" != 1 ]]; then
+  bash "$HERE/scripts/build-llm.sh"
+fi
+
 echo "== [3/3] 产物自检"
 for so in "$OUT/libdiary_capi.so" "$OUT/libdiary_napi.so" "$OUT/libc++_shared.so"; do
   [[ -f "$so" ]] || { echo "缺少产物：$so" >&2; exit 1; }

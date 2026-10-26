@@ -5,17 +5,12 @@
     "description": "$string:module_desc",
     "mainElement": "EntryAbility",
     "deviceTypes": [
-      "2in1",
-      "tablet",
-      "phone"
+      "2in1"
     ],
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
     "requestPermissions": [
-      {
-        "name": "ohos.permission.INTERNET"
-      },
       {
         "name": "ohos.permission.MICROPHONE",
         "reason": "$string:microphone_reason",
@@ -53,27 +48,6 @@
             ]
           }
         ]
-      },
-      {
-        "name": "ProbeAbility",
-        "srcEntry": "./ets/verify/ProbeAbility.ets",
-        "description": "$string:EntryAbility_desc",
-        "icon": "$media:app_icon",
-        "label": "$string:EntryAbility_label",
-        "startWindowIcon": "$media:app_icon",
-        "startWindowBackground": "$color:start_window_background",
-        "exported": false
-      },
-      {
-        "name": "ProbeIsoAbility",
-        "srcEntry": "./ets/verify/ProbeIsoAbility.ets",
-        "description": "$string:EntryAbility_desc",
-        "icon": "$media:app_icon",
-        "label": "$string:EntryAbility_label",
-        "startWindowIcon": "$media:app_icon",
-        "startWindowBackground": "$color:start_window_background",
-        "exported": false,
-        "process": ":probe"
       }
     ]
   }

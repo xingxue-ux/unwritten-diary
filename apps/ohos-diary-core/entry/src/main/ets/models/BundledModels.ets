@@ -26,6 +26,8 @@ const RESOURCE_ROOT: string = 'bundled_models';
 const ASR_REL: string = 'asr/sense-voice-int8';
 const BGE_REL: string = 'semantic/bge-small-zh-v1.5-ours';
 const BUILTIN_ASR: string = 'builtin_local_asr';
+const BUILTIN_LLM: string = 'builtin_local_llm';
+const LLM_REL: string = 'llm/qwen3.5-4b';
 const CHUNK_BYTES: number = 1024 * 1024;
 
 /** Offline model deployment; completes before any product page opens the core. */
@@ -38,12 +40,12 @@ export class BundledModels {
     const content = await context.resourceManager.getRawFileContent(`${RESOURCE_ROOT}/manifest.json`);
     const text: string = new util.TextDecoder('utf-8').decodeWithStream(content);
     const manifest: ModelManifest = JSON.parse(text) as ModelManifest;
-    if (manifest.version !== 1 || manifest.files.length !== 4) {
+    if (manifest.version !== 1 || manifest.files.length !== 5) {
       throw new Error('随包模型清单不完整');
     }
     let total: number = 0;
     for (const file of manifest.files) {
-      if (!/^(asr|semantic)\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(file.path) ||
+      if (!/^(asr|semantic|llm)\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(file.path) ||
         file.path.includes('..') || file.bytes <= 0 || !/^[a-f0-9]{64}$/.test(file.sha256)) {
         throw new Error('随包模型清单无效');
       }
@@ -68,34 +70,33 @@ export class BundledModels {
       await BundledModels.asrDefault(filesDir, `${root}/${ASR_REL}`);
       await BundledModels.writeAtomic(marker, '{"version":1}\n');
     }
-    const selectionMarker: string = `${root}/online-generation-selection-v1.json`;
-    if (!BundledModels.exists(selectionMarker)) {
-      await BundledModels.normalizeOnlineSelection(filesDir);
-      await BundledModels.writeAtomic(selectionMarker, '{"version":1}\n');
-    }
+    await BundledModels.llmDefault(filesDir, `${root}/${LLM_REL}/model.gguf`);
     hilog.info(0, 'DiaryModels', 'BUNDLED_MODELS_READY files=%{public}d bytes=%{public}d',
       manifest.files.length, total);
   }
 
-  // Repair the old independent switches once. Preserve test-status and creation
-  // priority; never activate a disabled service or send a network request.
-  private static async normalizeOnlineSelection(filesDir: string): Promise<void> {
+  private static async llmDefault(filesDir: string, model: string): Promise<void> {
     const db: string = `${filesDir}/library.sqlite`;
     const listed = await CoreGateway.call(db, 'providers.list', null);
-    if (!listed.ok) { throw new Error('读取整理服务失败，请重试'); }
-    const enabled: ProviderConfig[] = (listed.data as ProviderConfig[]).filter((p: ProviderConfig) =>
-      p.adapter_id === 'openai_compatible' && p.enabled && p.capabilities.includes('generate_text'));
-    if (enabled.length <= 1) { return; }
-    const statuses: string[] = ['ok', 'untested', 'failed'];
-    for (const status of statuses) {
-      const preferred: ProviderConfig | undefined = enabled.find((p: ProviderConfig) => p.test_status === status);
-      if (preferred !== undefined) {
-        const params: ProviderIdParams = { provider_id: preferred.id };
-        const selected = await CoreGateway.call(db, 'providers.selectGeneration', params);
-        if (!selected.ok) { throw new Error('切换整理服务失败，请重试'); }
-        return;
-      }
+    if (!listed.ok) { throw new Error('读取本机整理配置失败，请重试'); }
+    const providers: ProviderConfig[] = listed.data as ProviderConfig[];
+    const previous = providers.find((p: ProviderConfig) => p.id === BUILTIN_LLM);
+    if (previous !== undefined && previous.adapter_id === 'llama_cpp' && previous.model === model &&
+      previous.enabled && !providers.some((p: ProviderConfig) => p.id !== BUILTIN_LLM && p.enabled &&
+        p.capabilities.includes('generate_text'))) { return; }
+    if (previous === undefined || previous.model !== model) {
+      const config: ProviderConfig = {
+        id: BUILTIN_LLM, label: '本机整理', adapter_id: 'llama_cpp',
+        endpoint: null, model: model, capabilities: ['generate_text'],
+        credential_ref: null, enabled: true, test_status: 'untested',
+      };
+      const params: SaveProviderParams = { config: config, secret: null };
+      const saved = await CoreGateway.call(db, 'providers.save', params);
+      if (!saved.ok) { throw new Error('准备本机整理失败，请重试'); }
     }
+    const params: ProviderIdParams = { provider_id: BUILTIN_LLM };
+    const selected = await CoreGateway.call(db, 'providers.selectGeneration', params);
+    if (!selected.ok) { throw new Error('启用本机整理失败，请重试'); }
   }
 
   private static exists(path: string): boolean {

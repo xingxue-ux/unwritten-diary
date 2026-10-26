@@ -16,6 +16,14 @@ set DEVECO=E:\huawei\DevEco Studio
 set DEVECO_SDK_HOME=%DEVECO%\sdk
 set JAVA_HOME=%DEVECO%\jbr
 set PATH=%DEVECO%\tools\node;%PATH%
+for %%L in (libdiary_capi.so libdiary_napi.so libc++_shared.so libdiary_llm.so libdiary_llm_dotprod.so libsherpa-onnx-c-api.so libonnxruntime.so libonnxruntime-diary-1.29.1.so) do (
+  if not exist "entry\libs\arm64-v8a\%%L" (
+    echo Missing offline runtime: %%L
+    exit /b 1
+  )
+)
+python -c "import json; m=json.load(open('entry/src/main/module.json5',encoding='utf-8')); assert not any(p['name']=='ohos.permission.INTERNET' for p in m['module']['requestPermissions']), 'Offline build must not request internet permission'"
+if errorlevel 1 exit /b 1
 python ..\..\tools\stage_ohos_models.py --check
 if errorlevel 1 exit /b 1
 call "%DEVECO%\tools\hvigor\bin\hvigorw.bat" --mode module -p product=default -p module=entry@default -p buildMode=debug assembleHap --no-daemon

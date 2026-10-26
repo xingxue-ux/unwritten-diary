@@ -679,7 +679,7 @@ pub(crate) fn transcription_choice(core: &crate::Core) -> Result<TranscriptionCh
         let Some(adapter) = crate::provider::adapter::adapter_for(&provider.adapter_id) else {
             continue;
         };
-        if !adapter.is_local() {
+        if !matches!(adapter, super::adapter::Adapter::Local(_)) {
             continue;
         }
         let model_override = provider

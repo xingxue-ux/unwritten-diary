@@ -46,6 +46,7 @@ wasmi = { version = "2.0.0", default-features = false, features = ["std", "valid
 libloading = "0.9"
 
 [features]
+offline-only = []
 # AI 质量集的**判定器**（issue #93，B4b-ai-quality）。默认不开：判定器不是产品代码，
 # 产品路径一个字节都不该为它变大。由 `tools/probe` 与下面的 `[[test]]` 显式打开。
 #

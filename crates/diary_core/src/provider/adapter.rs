@@ -105,9 +105,11 @@ pub trait ProtocolAdapter: Send + Sync {
 ///
 /// 上层（能力闸门、连接测试、执行者）按形态分支，但**能力协商的判据是同一套**：
 /// 能力集合、配置声明、连接测试结论，三者缺一不可（见 `provider::evaluate`）。
+#[derive(Clone, Copy)]
 pub enum Adapter {
     Http(&'static dyn ProtocolAdapter),
     Local(&'static dyn super::local_engine::LocalEngine),
+    LocalLlm,
 }
 
 impl Adapter {
@@ -115,6 +117,7 @@ impl Adapter {
         match self {
             Self::Http(adapter) => adapter.id(),
             Self::Local(engine) => engine.id(),
+            Self::LocalLlm => super::local_llm::ADAPTER_ID,
         }
     }
 
@@ -123,19 +126,21 @@ impl Adapter {
         match self {
             Self::Http(adapter) => adapter.capabilities(),
             Self::Local(engine) => engine.capabilities(),
+            Self::LocalLlm => &[ProviderCapability::GenerateText],
         }
     }
 
     /// 是不是本地引擎（不联网、没有 endpoint、没有密钥）。
     pub fn is_local(&self) -> bool {
-        matches!(self, Self::Local(_))
+        matches!(self, Self::Local(_) | Self::LocalLlm)
     }
 }
 
 /// 按标识取内置适配器。取不到就是「核心还没有这种协议」——不静默换一个。
 pub fn adapter_for(adapter_id: &str) -> Option<Adapter> {
     match adapter_id {
-        OPENAI_COMPATIBLE => Some(Adapter::Http(&OpenAiCompatible {})),
+        OPENAI_COMPATIBLE if !cfg!(feature = "offline-only") => Some(Adapter::Http(&OpenAiCompatible {})),
+        super::local_llm::ADAPTER_ID => Some(Adapter::LocalLlm),
         other => super::local_engine::local_engine_for(other).map(Adapter::Local),
     }
 }
@@ -143,7 +148,7 @@ pub fn adapter_for(adapter_id: &str) -> Option<Adapter> {
 /// 内置适配器清单（用于错误消息与文档，不含插件带来的）。
 pub fn builtin_adapter_ids() -> &'static [&'static str] {
     // 两种形态各列自己的 id；`local_engine` 那张表与这里保持同一个来源。
-    &[OPENAI_COMPATIBLE, super::local_engine::SHERPA_ONNX]
+    &[OPENAI_COMPATIBLE, super::local_engine::SHERPA_ONNX, super::local_llm::ADAPTER_ID]
 }
 
 // ------------------------------------------------------------ OpenAI 兼容

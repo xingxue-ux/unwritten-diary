@@ -41,7 +41,10 @@ use crate::Core;
 pub const DEFAULT_TEMPLATE_ID: &str = "merge_by_theme";
 
 /// 整理提示词版本。它进输入快照（`promptVersion`），与手动生成分开记。
+#[cfg(not(feature = "offline-only"))]
 pub const ORGANIZE_PROMPT_VERSION: &str = "b4e-3";
+#[cfg(feature = "offline-only")]
+pub const ORGANIZE_PROMPT_VERSION: &str = "ohos-qwen35-organize-1";
 
 /// 自动整理的**观察窗**：只看最近这么多天里有材料的日子。
 ///
@@ -364,10 +367,7 @@ fn param_int(params: &BTreeMap<String, String>, key: &str) -> i64 {
 
 /// 模板规则文本（产品指令）。**只由常量与已校验的整数/布尔拼出**：
 /// 材料、调用方文本、自由字符串都没有入口进到这里。
-pub(crate) fn render_rule(
-    template_id: &str,
-    params: &BTreeMap<String, String>,
-) -> Result<String> {
+pub(crate) fn render_rule(template_id: &str, params: &BTreeMap<String, String>) -> Result<String> {
     let spec = template_spec(template_id).ok_or_else(|| CoreError::NotFound {
         entity: "整理模板",
         id: template_id.to_owned(),
@@ -588,11 +588,7 @@ fn read_settings(conn: &rusqlite::Connection) -> Result<Option<SettingsRecord>> 
 /// v11 迁移建的是 `organize_settings`，v18 之后运行时用的是 `settings`。两张表的
 /// 整理列相同，默认值也只有这里一套（`LIMITS` + `DEFAULT_TEMPLATE_ID` +
 /// `DEFAULT_AUTO_ORGANIZE_TIME`），不在 SQL 或第二个函数里另抄一份。
-fn seed_default_settings_into(
-    tx: &Transaction<'_>,
-    table: &str,
-    now: DateTime<Utc>,
-) -> Result<()> {
+fn seed_default_settings_into(tx: &Transaction<'_>, table: &str, now: DateTime<Utc>) -> Result<()> {
     tx.execute(
         &format!(
             "INSERT OR IGNORE INTO {table} (id, enabled, template_id, template_params, \
@@ -727,11 +723,7 @@ pub(crate) fn validate_settings(incoming: &OrganizeSettings) -> Result<OrganizeS
         incoming.max_materials,
         LIMITS.max_materials,
     )?;
-    let max_chars = check_range(
-        "单次整理的字数上限",
-        incoming.max_chars,
-        LIMITS.max_chars,
-    )?;
+    let max_chars = check_range("单次整理的字数上限", incoming.max_chars, LIMITS.max_chars)?;
     let max_calls_per_run = check_range(
         "单次整理的模型调用次数上限",
         incoming.max_calls_per_run,
@@ -846,13 +838,15 @@ fn validate_diary_time_zone(value: &str) -> Result<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(CoreError::InvalidArgument {
-            reason: "日记时区不能为空（例如 Asia/Shanghai；首次由平台层写入设备时区）"
-                .to_owned(),
+            reason: "日记时区不能为空（例如 Asia/Shanghai；首次由平台层写入设备时区）".to_owned(),
         });
     }
     if trimmed.len() > 64 {
         return Err(CoreError::InvalidArgument {
-            reason: format!("日记时区名太长（{} 字节，上限 64）：「{trimmed}」", trimmed.len()),
+            reason: format!(
+                "日记时区名太长（{} 字节，上限 64）：「{trimmed}」",
+                trimmed.len()
+            ),
         });
     }
     if !trimmed
@@ -1171,11 +1165,10 @@ impl Candidate {
 ///
 /// 用材料自己的 UTC 偏移折算（偏移是记录当时的事实，不是现在我们猜的）。
 pub(crate) fn due_at(day_key: &str, time: &str, utc_offset_minutes: i64) -> Result<DateTime<Utc>> {
-    let date = NaiveDate::parse_from_str(day_key, "%Y-%m-%d").map_err(|_| {
-        CoreError::InvalidArgument {
+    let date =
+        NaiveDate::parse_from_str(day_key, "%Y-%m-%d").map_err(|_| CoreError::InvalidArgument {
             reason: format!("dayKey 必须是 YYYY-MM-DD，实际是「{day_key}」"),
-        }
-    })?;
+        })?;
     let (hour, minute) = time
         .split_once(':')
         .and_then(|(hour, minute)| Some((hour.parse::<u32>().ok()?, minute.parse::<u32>().ok()?)))
@@ -1189,12 +1182,13 @@ pub(crate) fn due_at(day_key: &str, time: &str, utc_offset_minutes: i64) -> Resu
         .ok_or_else(|| CoreError::InvalidArgument {
             reason: format!("计划触发时间不合法：{time}"),
         })?;
-    let at = offset
-        .from_local_datetime(&local)
-        .single()
-        .ok_or_else(|| CoreError::InvalidArgument {
-            reason: format!("计划触发时间在本地时区里不存在：{day_key} {time}"),
-        })?;
+    let at =
+        offset
+            .from_local_datetime(&local)
+            .single()
+            .ok_or_else(|| CoreError::InvalidArgument {
+                reason: format!("计划触发时间在本地时区里不存在：{day_key} {time}"),
+            })?;
     Ok(at.with_timezone(&Utc))
 }
 
@@ -1419,7 +1413,8 @@ pub(crate) fn plan_due(core: &mut Core, now: DateTime<Utc>) -> Result<OrganizePl
         if candidate.estimated_calls > remaining {
             summary.blocked_days.push(candidate.day_key.clone());
             summary.blocked_code = Some("quota_exceeded".to_owned());
-            summary.blocked_reason = Some(format!(
+            summary.blocked_reason =
+                Some(format!(
                 "自动整理停下了：{} 这一天的输入预计需要 {} 次调用，而最近 {FAILURE_WINDOW_HOURS} \
                  小时只剩 {} 次额度（上限 {} 次，已用 {} 次）。已经做的：额度够的日子已经排出去了，\
                  账本里每一次调用都有记录。下一步：等窗口滑过去，或在设置里调高每日调用上限；\
@@ -1528,11 +1523,7 @@ pub(crate) fn status(core: &Core) -> Result<OrganizeStatus> {
         next_run_at,
         quota,
         provider_code: if gate.ready { None } else { Some(gate.code) },
-        provider_reason: if gate.ready {
-            None
-        } else {
-            Some(gate.reason)
-        },
+        provider_reason: if gate.ready { None } else { Some(gate.reason) },
         provider_next_step: gate.next_step,
         blocked_code,
         blocked_reason,
@@ -1543,7 +1534,15 @@ pub(crate) fn status(core: &Core) -> Result<OrganizeStatus> {
 }
 
 /// `diary_generations` 里「最近一次自动整理」要用的那几列。
-type LastRunRow = (String, String, String, Option<String>, Option<String>, String, String);
+type LastRunRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+);
 
 /// 最近一次**自动整理**的真实结果（含它真的发出去了几次调用）。
 fn last_run(core: &Core) -> Result<Option<OrganizeRunInfo>> {
@@ -1613,7 +1612,10 @@ mod tests {
     fn params_are_validated_and_defaults_are_filled() {
         let params = effective_params("merge_by_theme", &HashMap::new()).unwrap();
         assert_eq!(params.get("themeCount").map(String::as_str), Some("3"));
-        assert_eq!(params.get("keepChronology").map(String::as_str), Some("true"));
+        assert_eq!(
+            params.get("keepChronology").map(String::as_str),
+            Some("true")
+        );
 
         let mut overrides = HashMap::new();
         overrides.insert("themeCount".to_owned(), "5".to_owned());

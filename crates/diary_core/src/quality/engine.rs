@@ -333,6 +333,11 @@ impl GenerateEngine for OpenAiCompatibleGenerateEngine {
         // 把这条量测路径指到本机上；这里与 `provider::test`/执行者用同一个口径再挡一次。
         let adapter = match adapter {
             adapter::Adapter::Http(adapter) => adapter,
+            adapter::Adapter::LocalLlm => {
+                return Err(CoreError::ProviderNotConfigured {
+                    reason: "在线质量量测不调用本机模型，请使用本机量测入口".to_owned(),
+                });
+            }
             adapter::Adapter::Local(engine) => {
                 return Err(CoreError::ProviderNotConfigured {
                     reason: format!(

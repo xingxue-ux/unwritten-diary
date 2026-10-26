@@ -133,13 +133,13 @@ export function jobStateLabel(state: string): string {
     return '等待自动重试';
   }
   if (state === 'waiting_configuration') {
-    return '需要配置';
+    return '等待模型就绪';
   }
   if (state === 'waiting_dependency') {
     return '等待前一步';
   }
   if (state === 'waiting_network') {
-    return '等待网络';
+    return '等待重试';
   }
   if (state === 'failed') {
     return '未完成';

@@ -842,7 +842,7 @@ fn define_host(linker: &mut Linker<SandboxState>) -> Result<(), wasmi::Error> {
             };
             let adapter = match adapter {
                 adapter::Adapter::Http(adapter) => adapter,
-                adapter::Adapter::Local(_) => {
+                adapter::Adapter::Local(_) | adapter::Adapter::LocalLlm => {
                     return Ok(fail(
                         &mut caller,
                         ERR_PROVIDER,

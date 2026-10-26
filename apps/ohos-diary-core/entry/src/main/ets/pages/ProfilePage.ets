@@ -295,7 +295,7 @@ export struct ProfilePage {
           this.diagnosticsPanel()
         } else {
           PageTitle({ title: '我的小天地', subtitle: '你的记录安静地留在这台设备上。' })
-          Text('日记默认只保存在这台设备上；只有你主动配置的模型服务会收到交给它处理的材料。')
+          Text('纯离线版：记录、语音转写、搜索和日记整理均在本机完成。')
             .fontSize(13).fontColor(SketchColors.text).padding(20)
             .width('100%').backgroundColor(SketchColors.soft).drawModifier(sketchOutline())
           ErrorBanner({ error: this.error, showReload: true, onReload: () => { this.load(); } })
@@ -308,7 +308,7 @@ export struct ProfilePage {
             Column() {
               SectionTitle({ text: '创作与整理' })
               this.entry('风格偏好', '篇幅、语气与叙述方式', 'styles')
-              this.entry('模型服务', '设置智能整理服务', 'llm')
+              this.entry('本机整理', '查看内置整理模型', 'llm')
               this.entry('本地语音转写', '离线把录音转成文字', 'transcription')
               this.entry('整理时机', '安静地安排每天的整理', 'schedule')
               this.entry('任务中心', '查看处理进度', 'jobs')

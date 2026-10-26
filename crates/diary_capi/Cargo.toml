@@ -19,6 +19,9 @@ serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 
+[features]
+offline-only = ["diary_core/offline-only"]
+
 [dev-dependencies]
 # 只给测试算片段哈希用（核心会自己重算并核对，桥面不碰业务规则）。
 sha2.workspace = true

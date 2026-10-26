@@ -80,6 +80,7 @@ export struct DiaryPage {
   @State bodyVersionId: string = '';
   @State bodyLabel: string = '';
   @State bodyText: string = '';
+  @State bodyAiGenerated: boolean = false;
   @State bodyError: string = '';
 
   @StorageLink('ohosDataVersion') @Watch('onDataVersionChanged') dataVersion: number = 0;
@@ -243,6 +244,7 @@ export struct DiaryPage {
     this.bodyVersionId = versionId;
     this.bodyLabel = label;
     this.bodyText = '';
+    this.bodyAiGenerated = false;
     this.bodyError = '';
     if (versionId.length === 0) {
       return;
@@ -260,6 +262,7 @@ export struct DiaryPage {
     }
     const version: DiaryVersion = result.data as DiaryVersion;
     this.bodyText = version.body;
+    this.bodyAiGenerated = version.generation_info !== null || version.origin === 'generated';
   }
 
   private clearBody(): void {
@@ -267,6 +270,7 @@ export struct DiaryPage {
     this.bodyVersionId = '';
     this.bodyLabel = '';
     this.bodyText = '';
+    this.bodyAiGenerated = false;
     this.bodyError = '';
   }
 
@@ -337,10 +341,10 @@ export struct DiaryPage {
   @Builder
   statusStrip() {
     Column({ space: 6 }) {
-      Button('配置模型服务').attributeModifier(sketchButton).drawModifier(sketchOutline())
+      Button('检查本机整理').attributeModifier(sketchButton).drawModifier(sketchOutline())
         .onClick(() => { this.pathStack.pushPathByName('llm', ''); })
       if (this.waitingConfiguration) {
-        Text('请先配置模型服务')
+        Text('本机整理模型尚未准备好')
           .fontSize(SketchType.section)
           .fontColor(SketchColors.ink)
           .width('100%')
@@ -506,6 +510,9 @@ export struct DiaryPage {
               .fontColor(SketchColors.muted)
               .width('100%')
           } else {
+            if (this.bodyAiGenerated) {
+              Text('人工智能生成').fontSize(13).fontColor(SketchColors.muted)
+            }
             Text(this.bodyText.length > 0 ? this.bodyText : '（这一版正文为空）')
               .fontSize(18)
               .lineHeight(30)

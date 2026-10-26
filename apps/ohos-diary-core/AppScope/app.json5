@@ -1,11 +1,10 @@
 {
   "app": {
-    // 参考工程的临时 bundleName（不是产品最终值）。要与调试 Profile（.p7b）里的
-    // bundle-info.bundle-name 一致才能安装，见 probes/ohos-hap-smoke/README.md。
+    // 应用标识必须与安装包签名配置中的标识一致。
     "bundleName": "com.lingxing.unwrittendiary",
     "vendor": "xingxue",
-    "versionCode": 1000004,
-    "versionName": "1.0.4",
+    "versionCode": 1000005,
+    "versionName": "1.0.5",
     "buildVersion": "1",
     "icon": "$media:app_icon",
     "label": "$string:app_name"

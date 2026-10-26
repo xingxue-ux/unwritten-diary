@@ -204,6 +204,10 @@ impl Default for UreqTransport {
 
 impl Transport for UreqTransport {
     fn send(&self, request: &HttpRequest) -> std::result::Result<HttpResponse, TransportError> {
+        // Compile-time product policy, before DNS, sockets or request creation.
+        if cfg!(feature = "offline-only") {
+            return Err(TransportError::Other { message: "离线版不支持网络请求".to_owned() });
+        }
         let mut outgoing = self
             .agent
             .request(&request.method, &request.url)
