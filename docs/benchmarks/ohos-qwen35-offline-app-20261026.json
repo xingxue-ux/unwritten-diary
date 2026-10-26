@@ -469,8 +469,8 @@
   "packages": [
     {
       "package": "unwritten-diary-qwen35-offline-debug-signed.hap",
-      "bytes": 3067678559,
-      "sha256": "dd990810b7272c290bf6e3666bd3b0e6ca62c087b9893a1b8d6c7a228af1756e",
+      "bytes": 3067684917,
+      "sha256": "11117f46f273bc1f35f2909b24d7ea129246c01756d6ffa0a019ca83698913a7",
       "model_files": 5,
       "model_bytes": 3004756957,
       "internet_permission": false,
@@ -482,8 +482,8 @@
     },
     {
       "package": "unwritten-diary-qwen35-offline-release-signed.hap",
-      "bytes": 3066576251,
-      "sha256": "a132f44e5af30862937b95adbd8b6e5e44f57c4b8e271b224073945899dfd440",
+      "bytes": 3066575335,
+      "sha256": "8150f29b909accfedb530358b7845821bd857048cbd56c8c4d7e67bfe0099f28",
       "model_files": 5,
       "model_bytes": 3004756957,
       "internet_permission": false,
@@ -494,7 +494,8 @@
       "native_allocated_sections_match": true
     }
   ],
-  "device_installation": false,
+  "device_installation": true,
+  "device_report": "ohos-qwen35-device-20261026.md",
   "tests": {
     "default_core_unit": {
       "passed": 118,
@@ -504,7 +505,7 @@
     "offline_diary_unit": 10,
     "model_staging": 6,
     "bundled_deployment": 10,
-    "ohos_interactions": 28,
+    "ohos_interactions": 31,
     "arkts_scope_files": 35,
     "docs_links_yaml": true,
     "ui_structure_parity": true,

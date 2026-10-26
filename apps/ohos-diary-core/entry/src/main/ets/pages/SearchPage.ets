@@ -16,6 +16,8 @@ import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketch
 import { common } from '@kit.AbilityKit';
 import {
   IndexStatus,
+  RebuildSemanticParams,
+  RunDueParams,
   SearchHit,
   SearchNextPageParams,
   SearchParams,
@@ -31,6 +33,7 @@ import {
   formatDuration,
   hitSourceKindLabel,
   matchedByLabel,
+  newOperationId,
   searchPhaseLabel,
 } from '../ui/AppRuntime';
 import { EmptyState, ErrorBanner, LoadingRow, PageTitle, StatePill } from '../ui/Common';
@@ -53,6 +56,7 @@ export struct SearchPage {
   @State loading: boolean = false;
   @State loadingMore: boolean = false;
   @State upgrading: boolean = false;
+  @State preparingIndex: boolean = false;
   @State cancelling: boolean = false;
   @State upgradeAttempted: boolean = false;
   @State searched: boolean = false;
@@ -140,6 +144,7 @@ export struct SearchPage {
     this.loading = false;
     this.loadingMore = false;
     this.upgrading = false;
+    this.preparingIndex = false;
     this.cancelling = false;
     this.cursor = '';
     this.hasMore = false;
@@ -221,6 +226,43 @@ export struct SearchPage {
     }
     // 语义就绪度可能在这次查询之后变化（自动重建/换模型），顺手刷新一次。
     this.loadIndexStatus();
+  }
+
+  private async prepareSearchContent(): Promise<void> {
+    if (this.loading || this.loadingMore || this.upgrading || this.preparingIndex) { return; }
+    const previous: string = this.resetRequest();
+    const token: number = this.seq;
+    this.clearResults();
+    this.loading = true;
+    this.preparingIndex = true;
+    this.searched = this.query.trim().length > 0;
+    await this.cancelSession(previous);
+    if (token !== this.seq) { return; }
+    const params: RebuildSemanticParams = {
+      reason: 'user_search', operation_id: newOperationId('op-search-index'),
+    };
+    const queued = await CoreGateway.call(this.dbPath, 'indexes.rebuildSemantic', params);
+    if (token !== this.seq) { return; }
+    if (!queued.ok) {
+      this.loading = false;
+      this.preparingIndex = false;
+      this.error = uiErrorOf(queued);
+      return;
+    }
+    const work: RunDueParams = { budget_ms: 30000, trigger: 'manual' };
+    const completed = await CoreGateway.call(this.dbPath, 'jobs.runDue', work);
+    if (token !== this.seq) { return; }
+    if (!completed.ok) {
+      this.loading = false;
+      this.preparingIndex = false;
+      this.error = uiErrorOf(completed);
+      return;
+    }
+    await this.loadIndexStatus();
+    if (token !== this.seq) { return; }
+    this.preparingIndex = false;
+    this.loading = false;
+    if (this.query.trim().length > 0) { await this.startSearch(); }
   }
 
   private applySnapshot(snapshot: SearchSnapshot, append: boolean): void {
@@ -374,6 +416,7 @@ export struct SearchPage {
   }
 
   private resultStatus(): string {
+    if (this.preparingIndex) { return '正在准备搜索内容…'; }
     if (this.loading) {
       return '正在搜索…';
     }
@@ -564,8 +607,9 @@ export struct SearchPage {
             .fontSize(12)
             .backgroundColor(SketchColors.button)
             .fontColor(SketchColors.ink)
+            .enabled(!this.loading && !this.loadingMore && !this.upgrading && !this.preparingIndex)
             .onClick(() => {
-              this.pathStack.pushPathByName('diagnostics', '');
+              this.prepareSearchContent();
             })
         }
         .width('100%')
@@ -639,7 +683,7 @@ export struct SearchPage {
       }
 
       if (this.waitingForResults()) {
-        LoadingRow({ text: this.upgrading ? '正在结合语义搜索…' : '正在搜索…' })
+        LoadingRow({ text: this.resultStatus() })
       } else if (this.results.length === 0) {
         if (this.searched) {
           if (this.phase === 'cancelled') {

@@ -465,7 +465,7 @@ export struct DiaryPage {
             .onClick(() => {
               this.generateAndRun();
             })
-          Text('整理完成后即可阅读。')
+          Text(this.currentVersionId.length > 0 ? '再次整理会保留现有日记。' : '整理完成后即可阅读。')
             .fontSize(SketchType.caption)
             .fontColor(SketchColors.muted)
             .layoutWeight(1)

@@ -540,10 +540,8 @@ export struct RecordingPage {
         }
         .width('100%')
         InfoRow({ label: '音频时长', value: formatDuration((this.finalized as RecordingFinalizeResult).logical_duration_ms) })
-        InfoRow({
-          label: '转写任务',
-          value: (this.finalized as RecordingFinalizeResult).transcription_queued ? '等待转写' : '没有排队',
-        })
+        // transcription_queued is the finalize-time receipt, not current task
+        // state. The live work feedback below and the fragment page show progress.
         if ((this.finalized as RecordingFinalizeResult).state === 'recoverable') {
           Text('录音不完整，已保留可用部分。')
             .fontSize(12)

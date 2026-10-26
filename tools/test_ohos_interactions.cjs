@@ -423,6 +423,51 @@ async function searchIndexStatusIgnoresStaleResponse(){
   older.resolve({ok:true,data:{semantic_index_ready:false}});await first;
   assert.equal(page.indexStatus.semantic_index_ready,true);
 }
+async function searchPreparesIndexInline(){
+  const calls=[];let built=false;
+  const {SearchPage}=load('pages/SearchPage.ets',{'../ui/Errors':errorModule,
+    '../ui/AppRuntime':{newOperationId:()=> 'prepare-once'},
+    '../ui/CoreGateway':{uiErrorOf:r=>r.error,CoreGateway:{call:async(db,method,params)=>{
+      calls.push(method);
+      if(method==='indexes.rebuildSemantic'){assert.equal(params.operation_id,'prepare-once');return {ok:true,data:{id:'j'}};}
+      if(method==='jobs.runDue'){built=true;return {ok:true,data:{succeeded:1}};}
+      if(method==='indexes.status')return {ok:true,data:{semantic_index_ready:built}};
+      if(method==='search.start'){assert.equal(params.request.query,'退款');return {ok:true,data:snapshot('keyword_ready',[],null)};}
+      if(method==='search.upgrade')return {ok:true,data:snapshot('hybrid_ready',['semantic-match'],null)};
+      throw new Error('Unexpected '+method);
+    }}}},{},true);
+  const page=new SearchPage();page.ready=true;page.query='退款';page.mode='hybrid';
+  page.pathStack={pushPathByName:()=>{throw new Error('Must stay on search page');}};
+  await page.prepareSearchContent();
+  assert.equal(page.loading,false);assert.equal(page.preparingIndex,false);
+  assert.equal(page.semanticReady(),true);assert.equal(page.results[0].hit_id,'semantic-match');
+  assert.equal(calls.filter(m=>m==='indexes.rebuildSemantic').length,1);
+}
+async function searchPreparationCancellationDoesNotRestart(){
+  const pending=deferred(),entered=deferred(),calls=[];
+  const {SearchPage}=load('pages/SearchPage.ets',{'../ui/Errors':errorModule,
+    '../ui/AppRuntime':{newOperationId:()=> 'prepare-cancel'},
+    '../ui/CoreGateway':{uiErrorOf:r=>r.error,CoreGateway:{call:async(db,method)=>{
+      calls.push(method);
+      if(method==='indexes.rebuildSemantic')return {ok:true,data:{id:'j'}};
+      if(method==='jobs.runDue'){entered.resolve();return pending.promise;}
+      throw new Error('Unexpected '+method);
+    }}}},{},true);
+  const page=new SearchPage();page.ready=true;page.query='旧查询';page.mode='hybrid';
+  const preparation=page.prepareSearchContent();await entered.promise;
+  assert.equal(page.resultStatus(),'正在准备搜索内容…');
+  await page.cancel();pending.resolve({ok:true,data:{succeeded:1}});await preparation;
+  assert.equal(page.phase,'cancelled');assert.equal(page.loading,false);assert.equal(page.preparingIndex,false);
+  assert.ok(!calls.includes('search.start'));
+}
+async function searchPreparationFailureIsVisible(){
+  const {SearchPage}=load('pages/SearchPage.ets',{'../ui/Errors':errorModule,
+    '../ui/AppRuntime':{newOperationId:()=> 'prepare-failure'},
+    '../ui/CoreGateway':{uiErrorOf:r=>r.error,CoreGateway:{call:async()=>({ok:false,error:{code:'model_unavailable'}})}}},{},true);
+  const page=new SearchPage();page.query='退款';page.mode='hybrid';await page.prepareSearchContent();
+  assert.equal(page.error.code,'model_unavailable');assert.equal(page.loading,false);assert.equal(page.preparingIndex,false);
+  assert.equal(page.resultStatus(),'搜索未完成');assert.equal(page.results.length,0);
+}
 async function llmConfiguration(){
   const calls=[];let failList=false;let failTest=false;
   let provider={id:'builtin_local_llm',label:'本机整理',adapter_id:'llama_cpp',endpoint:null,
@@ -605,7 +650,7 @@ async function scheduleSettingsCanChange(){
 }
 (async()=>{
   const failed=[];
-  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,recordingStartsOnEntry,recordingAgainStartsImmediately,editorState,directRecordSave,searchTransitions,automaticHybridSearch,hybridQueryReplacement,searchCancelsPendingRequest,searchEmptyQueryInvalidatesOld,searchPaginationRetryClearsError,searchExpiredCursorRestarts,searchResultsDoNotDuplicateOriginal,searchEditsDiscardStaleResults,searchRefreshesAfterDataChanges,searchHybridDoesNotReportEmptyWhilePending,searchUpgradeExpiryRetryIsBounded,searchCancellationKeepsLoadedPages,searchIndexStatusIgnoresStaleResponse,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths,styleProfilesStayIndependent,scheduleSettingsCanChange]){
+  for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,recordingStartsOnEntry,recordingAgainStartsImmediately,editorState,directRecordSave,searchTransitions,automaticHybridSearch,hybridQueryReplacement,searchCancelsPendingRequest,searchEmptyQueryInvalidatesOld,searchPaginationRetryClearsError,searchExpiredCursorRestarts,searchResultsDoNotDuplicateOriginal,searchEditsDiscardStaleResults,searchRefreshesAfterDataChanges,searchHybridDoesNotReportEmptyWhilePending,searchUpgradeExpiryRetryIsBounded,searchCancellationKeepsLoadedPages,searchIndexStatusIgnoresStaleResponse,searchPreparesIndexInline,searchPreparationCancellationDoesNotRestart,searchPreparationFailureIsVisible,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths,styleProfilesStayIndependent,scheduleSettingsCanChange]){
     try{await test();console.log('PASS '+test.name);}catch(e){failed.push(test.name);console.error('FAIL '+test.name+': '+e.message);}
   }
   assert.equal(failed.length,0,failed.join(', '));
