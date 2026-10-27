@@ -4,7 +4,9 @@
   "bundle_name": "com.lingxing.unwrittendiary",
   "version": "1.0.6",
   "version_code": 1000006,
-  "devices": ["2in1"],
+  "devices": [
+    "2in1"
+  ],
   "internet_permission": false,
   "content_export": false,
   "bundled_privacy_policy": true,
@@ -26,18 +28,48 @@
     "release_hap_build": "passed",
     "unsigned_app_build": "passed",
     "device_export_entry_absent": true,
-    "device_privacy_page": "passed"
+    "device_privacy_page": "passed",
+    "device_original_data_preserved": {
+      "captures": 3,
+      "source_items": 3,
+      "source_revisions": 3,
+      "diary_versions": 3,
+      "historical_provider_configs": 2,
+      "integrity_check": "ok",
+      "local_generation_selected": true
+    }
   },
   "store": {
     "channel": "公开测试 / 应用尝鲜",
-    "countries": ["中国大陆"],
+    "countries": [
+      "中国大陆"
+    ],
     "planned_start": "2026-10-28T00:00:00+08:00",
     "planned_end": "2026-10-31T23:59:59+08:00",
     "download_limit": 1000,
     "screenshots": 4,
-    "screenshot_size": [2560, 1440],
+    "screenshot_size": [
+      2560,
+      1440
+    ],
     "screenshot_data": "synthetic isolated test library",
-    "cloud_release_signing": "pending IDE heap adjustment",
-    "review": "not_submitted"
+    "cloud_release_signing": "passed after authorized IDE heap increase to 8192 MiB and restart",
+    "review": "not_submitted",
+    "package_upload": "pending web account reauthentication",
+    "privacy_policy_public_content_verified": true
+  },
+  "cloud_release_app": {
+    "file": "unwritten-ohos-qwen35-offline-20261026-default-re-signed-3.app",
+    "bytes": 2911695561,
+    "sha256": "82b1b135973891de76703c78871788f15af2b501a225ae1e60e8e3b1c15a7a9a",
+    "version": "1.0.6",
+    "version_code": 1000006,
+    "build": "1",
+    "signing": "Huawei managed release signing",
+    "debug": false,
+    "bundled_model_files": 5,
+    "bundled_model_bytes": 3004756957,
+    "model_hashes_verified": true,
+    "native_allocated_sections_verified": true
   }
 }
