@@ -63,6 +63,11 @@ class VisualParityTest(unittest.TestCase):
         self.change(visual.ETS / 'pages/Index.ets', 'StylesPage()', "this.PlaceholderPage('风格', '')")
         self.assertTrue(any('routes:' in error for error in visual.check(self.root)))
 
+    def test_demo_export_route_fails(self) -> None:
+        self.change(visual.ETS / 'pages/Index.ets', "name === 'privacy'", "name === 'export'")
+        self.assertTrue(any('offline demo must not offer content export' in error
+                            for error in visual.check(self.root)))
+
     def test_comment_is_not_a_control(self) -> None:
         target = self.root / visual.ETS / 'pages/RecordPage.ets'
         with target.open('a', encoding='utf-8') as handle:

@@ -6,7 +6,7 @@ import { databasePath } from '../ui/AppRuntime';
 import { RunDueParams } from '../core/Models';
 import { CatMark, SketchColors, SketchFonts, sketchOutline } from '../ui/Sketch';
 import { StylesPage } from './StylesPage';
-import { ExportPage } from './ExportPage';
+import { PrivacyPage } from './PrivacyPage';
 import { RecordPage } from './RecordPage';
 import { DiaryPage } from './DiaryPage';
 import { DiaryDayPage } from './DiaryDayPage';
@@ -166,11 +166,11 @@ struct Index {
         SchedulePage()
       }
       .title('整理时机', { backgroundColor: SketchColors.canvas })
-    } else if (name === 'export') {
+    } else if (name === 'privacy') {
       NavDestination() {
-        ExportPage()
+        PrivacyPage()
       }
-      .title('阅读导出', { backgroundColor: SketchColors.canvas })
+      .title('隐私政策', { backgroundColor: SketchColors.canvas })
     }
   }
 

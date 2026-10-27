@@ -97,10 +97,12 @@ def check(root: Path) -> list[str]:
         failures.append('font: bundled display font is not registered')
     if 'PlaceholderPage(' in shell:
         failures.append('routes: temporary placeholder is still in the product shell')
-    for route, component in (('styles', 'StylesPage'), ('export', 'ExportPage')):
+    for route, component in (('styles', 'StylesPage'), ('privacy', 'PrivacyPage')):
         if not re.search(rf"name === '{route}'[\s\S]*?{component}\(", shell):
             failures.append(f'routes: {route} must open {component}')
         read(ETS / f'pages/{component}.ets')
+    if re.search(r"name === 'export'|\bExportPage\(", shell):
+        failures.append('routes: the offline demo must not offer content export')
 
     pages = sorted((root / ETS / 'pages').glob('*.ets'))
     for page in [*pages, root / ETS / 'ui/Common.ets']:

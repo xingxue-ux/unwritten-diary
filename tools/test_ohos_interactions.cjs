@@ -24,6 +24,7 @@ function load(file,modules,globals={},page=false){
     source=source.replace('@Component','').replace('export struct ','export class ')
       .replace(/@(State|Prop|StorageProp\([^)]*\)|StorageLink\([^)]*\)|Watch\([^)]*\))\s*/g,'');
   }
+  source=source.replace(/@Concurrent\s*/g,'');
   const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.CommonJS}}).outputText;
   const ctx={exports:{},require:name=>modules[name]||{},console,Date,Math,Error,Map,ArrayBuffer,Uint8Array,
     NavPathStack:class{},setInterval,clearInterval,...globals};
@@ -648,8 +649,25 @@ async function scheduleSettingsCanChange(){
   assert.equal(page.zoneLabel('Asia/Shanghai'),'中国标准时间');
   await page.saveZone('Asia/Shanghai');assert.equal(updates.length,3);
 }
+async function demoExportCannotWrite(){
+  const calls=[];
+  const {runCoreBatch}=load('ui/CoreWorker.ets',{
+    '@kit.PerformanceAnalysisKit':{hilog:log},'@kit.ArkTS':{process:{tid:1}},
+    '../core/DiaryCore':{DiaryCore:{openHandleCount:()=>1}},
+    '../core/DiaryError':{DiaryError},
+    './CoreSessions':{acquireCore:()=>({rawCall:method=>{calls.push(method);return {ready:true};}}),closeAll:noop}
+  });
+  const result=JSON.parse(runCoreBatch('isolated-demo-db',JSON.stringify([
+    {method:'exports.create',params:JSON.stringify({format:'markdown'})},
+    {method:'core.info',params:''}
+  ])));
+  assert.equal(result[0].ok,false);assert.equal(result[0].error.code,'unsupported_format');
+  assert.equal(result[1].ok,true);assert.deepEqual(calls,['core.info']);
+}
 (async()=>{
   const failed=[];
+  try{await demoExportCannotWrite();console.log('PASS demoExportCannotWrite');}
+  catch(e){failed.push('demoExportCannotWrite');console.error('FAIL demoExportCannotWrite: '+e.message);}
   for(const test of [cancelledStartup,recordingErrors,leaveDuringPermission,recordingStartsOnEntry,recordingAgainStartsImmediately,editorState,directRecordSave,searchTransitions,automaticHybridSearch,hybridQueryReplacement,searchCancelsPendingRequest,searchEmptyQueryInvalidatesOld,searchPaginationRetryClearsError,searchExpiredCursorRestarts,searchResultsDoNotDuplicateOriginal,searchEditsDiscardStaleResults,searchRefreshesAfterDataChanges,searchHybridDoesNotReportEmptyWhilePending,searchUpgradeExpiryRetryIsBounded,searchCancellationKeepsLoadedPages,searchIndexStatusIgnoresStaleResponse,searchPreparesIndexInline,searchPreparationCancellationDoesNotRestart,searchPreparationFailureIsVisible,llmConfiguration,isolatedFirstRunUi,resumedDiaryFeedback,chineseSystemFeedback,exportFeedbackHidesPaths,styleProfilesStayIndependent,scheduleSettingsCanChange]){
     try{await test();console.log('PASS '+test.name);}catch(e){failed.push(test.name);console.error('FAIL '+test.name+': '+e.message);}
   }

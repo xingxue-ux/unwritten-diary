@@ -115,6 +115,9 @@ export function runCoreBatch(dbPath: string, requestsJson: string): string {
   for (let i = 0; i < requests.length; i++) {
     const request: WireRequest = requests[i];
     try {
+      if (request.method === 'exports.create') {
+        throw new DiaryError('unsupported_format', '体验版暂不提供导出。');
+      }
       const params: Object | null = request.params.length === 0
         ? null
         : JSON.parse(request.params) as Object;

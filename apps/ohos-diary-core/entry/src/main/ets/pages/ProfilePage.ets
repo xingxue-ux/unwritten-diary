@@ -295,7 +295,7 @@ export struct ProfilePage {
           this.diagnosticsPanel()
         } else {
           PageTitle({ title: '我的小天地', subtitle: '你的记录安静地留在这台设备上。' })
-          Text('纯离线版：记录、语音转写、搜索和日记整理均在本机完成。')
+          Text('离线体验版：记录、语音转写、搜索和日记整理均在本机完成。')
             .fontSize(13).fontColor(SketchColors.text).padding(20)
             .width('100%').backgroundColor(SketchColors.soft).drawModifier(sketchOutline())
           ErrorBanner({ error: this.error, showReload: true, onReload: () => { this.load(); } })
@@ -318,8 +318,8 @@ export struct ProfilePage {
             Column() {
               SectionTitle({ text: '资料与应用' })
               this.entry('搜索索引', '让记录更容易找到', 'diagnostics')
-              this.entry('阅读导出', '按日期生成便于阅读的副本', 'export')
               this.entry('存储与回收站', '查看和恢复移除的记录', 'recycle')
+              this.entry('隐私政策', '了解本机数据的处理方式', 'privacy')
             }.width('100%').alignItems(HorizontalAlign.Start)
           }
           Button(this.showDiagnostics ? '收起本地功能' : '本地功能')

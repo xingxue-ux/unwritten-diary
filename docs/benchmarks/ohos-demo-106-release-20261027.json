@@ -1,0 +1,43 @@
+{
+  "date": "2026-10-27",
+  "display_name": "不写日记demo",
+  "bundle_name": "com.lingxing.unwrittendiary",
+  "version": "1.0.6",
+  "version_code": 1000006,
+  "devices": ["2in1"],
+  "internet_permission": false,
+  "content_export": false,
+  "bundled_privacy_policy": true,
+  "privacy_policy_url": "https://xingxue-ux.github.io/unwritten-diary/",
+  "release_hap": {
+    "bytes": 3066583983,
+    "sha256": "8b8830d7c0db6f0626b7726fa8b67090c2e4090ecea39794d2885a25304ece04",
+    "signing": "device test signing",
+    "bundled_model_files": 5,
+    "bundled_model_bytes": 3004756957,
+    "model_hashes_verified": true,
+    "native_allocated_sections_verified": true
+  },
+  "validation": {
+    "interactions": 32,
+    "visual_checker_tests": 15,
+    "non_ui_arkts_files": 36,
+    "debug_hap_build": "passed",
+    "release_hap_build": "passed",
+    "unsigned_app_build": "passed",
+    "device_export_entry_absent": true,
+    "device_privacy_page": "passed"
+  },
+  "store": {
+    "channel": "公开测试 / 应用尝鲜",
+    "countries": ["中国大陆"],
+    "planned_start": "2026-10-28T00:00:00+08:00",
+    "planned_end": "2026-10-31T23:59:59+08:00",
+    "download_limit": 1000,
+    "screenshots": 4,
+    "screenshot_size": [2560, 1440],
+    "screenshot_data": "synthetic isolated test library",
+    "cloud_release_signing": "pending IDE heap adjustment",
+    "review": "not_submitted"
+  }
+}
