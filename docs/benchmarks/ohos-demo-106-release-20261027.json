@@ -54,9 +54,24 @@
     ],
     "screenshot_data": "synthetic isolated test library",
     "cloud_release_signing": "passed after authorized IDE heap increase to 8192 MiB and restart",
-    "review": "not_submitted",
-    "package_upload": "pending web account reauthentication",
-    "privacy_policy_public_content_verified": true
+    "review": "submitted; Huawei pre-review in progress",
+    "package_upload": "uploaded; legality passed",
+    "privacy_policy_public_content_verified": true,
+    "package_uploaded_at": "2026-10-27T12:47:22+08:00",
+    "contact_phone_verified": true,
+    "content_rating": {
+      "China": "8+",
+      "Brazil": "A10",
+      "other_regions": "7+",
+      "children_only": false
+    },
+    "public_test_version": "1.0.6 (1000006)",
+    "channels": [
+      "AppGallery客户端测试专区",
+      "生成分享链接"
+    ],
+    "share_url": "https://appgallery.huawei.com/link/invite-test-wap?taskId=4866cb00a2d30eb0a031bede3ab96b4d",
+    "review_note": "Huawei UI says pre-review usually takes 30–40 minutes; passing it automatically forwards to the app market review team. No approval or live listing confirmed."
   },
   "cloud_release_app": {
     "file": "unwritten-ohos-qwen35-offline-20261026-default-re-signed-3.app",
