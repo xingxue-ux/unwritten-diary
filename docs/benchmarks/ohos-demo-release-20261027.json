@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-27",
+  "branch": "codex/ohos-offline-llm",
+  "display_name": "不写日记demo",
+  "bundle_name": "com.lingxing.unwrittendiary",
+  "version": "1.0.5",
+  "version_code": 1000005,
+  "build_version": "1",
+  "devices": ["2in1"],
+  "package": "unwritten-ohos-qwen35-offline-20261026-default-re-signed-2.app",
+  "bytes": 2911684723,
+  "sha256": "32f669cc0c6fe6a53d9cace78c387906415fad697f9c063503ea3bbf9d4c2243",
+  "release_build": true,
+  "release_signing": "DevEco Studio cloud-managed signing; automatic build-version rewriting disabled after IDE heap exhaustion",
+  "internet_permission": false,
+  "bundled_model_hashes_verified": 5,
+  "compiled_display_name_verified": true,
+  "upload": {
+    "method": "Huawei developer console browser file chooser",
+    "purpose": "测试和正式上架",
+    "uploaded_at": "2026-10-27T00:14:11+08:00",
+    "legality": "已达标",
+    "store_review": "not_submitted"
+  }
+}
