@@ -10,6 +10,7 @@ class ScheduleApi extends MockDiaryApi {
   bool conflictOnce;
   OrganizeSchedule current = const OrganizeSchedule(
     enabled: false,
+    templateId: 'merge_by_theme',
     autoOrganizeTime: '22:30',
     supplementOnNewMaterials: true,
     revision: 3,
@@ -30,6 +31,7 @@ class ScheduleApi extends MockDiaryApi {
       // 模拟「别人刚改过」：核心拒绝，并且当前值已经推进到 revision+1。
       current = OrganizeSchedule(
         enabled: true,
+        templateId: current.templateId,
         autoOrganizeTime: current.autoOrganizeTime,
         supplementOnNewMaterials: current.supplementOnNewMaterials,
         revision: current.revision + 1,
@@ -47,6 +49,7 @@ class ScheduleApi extends MockDiaryApi {
     }
     current = OrganizeSchedule(
       enabled: schedule.enabled,
+      templateId: schedule.templateId,
       autoOrganizeTime: schedule.autoOrganizeTime,
       supplementOnNewMaterials: schedule.supplementOnNewMaterials,
       revision: current.revision + 1,
@@ -61,6 +64,7 @@ void main() {
       final api = ScheduleApi();
       api.current = const OrganizeSchedule(
         enabled: true,
+        templateId: 'proofread',
         autoOrganizeTime: '07:15',
         supplementOnNewMaterials: false,
         revision: 9,
@@ -70,6 +74,7 @@ void main() {
       expect(controller.enabled, isTrue);
       expect(controller.autoOrganizeTime, '07:15');
       expect(controller.supplementOnNewMaterials, isFalse);
+      expect(controller.templateId, 'proofread');
     });
 
     test('关着的时候如实说「默认是关的」，不假装会整理', () async {
@@ -118,6 +123,17 @@ void main() {
       expect(ScheduleSettingsController.normalizeClock('12:60'), isNull);
       expect(ScheduleSettingsController.normalizeClock('abc'), isNull);
       expect(ScheduleSettingsController.normalizeClock(''), isNull);
+    });
+
+    test('换整理方式会写回核心（「跟随原文」走 proofread 模板）', () async {
+      final api = ScheduleApi();
+      final controller = ScheduleSettingsController(api);
+      await controller.load();
+      expect(controller.templateId, 'merge_by_theme');
+      expect(await controller.setTemplate('proofread'), isTrue);
+      expect(controller.templateId, 'proofread');
+      expect(api.current.templateId, 'proofread');
+      expect(controller.message, '整理方式已更新。');
     });
 
     test('时间写回前先规范化', () async {

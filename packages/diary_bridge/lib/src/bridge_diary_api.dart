@@ -1227,7 +1227,7 @@ class BridgeDiaryApi implements api.DiaryApi, api.OrganizeSchedulePort {
     final current = await _translate(() => _open.organizeSettings());
     final next = bridge.OrganizeSettings(
       enabled: schedule.enabled,
-      templateId: current.templateId,
+      templateId: schedule.templateId,
       templateParams: current.templateParams,
       maxMaterials: current.maxMaterials,
       maxChars: current.maxChars,
@@ -1251,6 +1251,7 @@ class BridgeDiaryApi implements api.DiaryApi, api.OrganizeSchedulePort {
   api.OrganizeSchedule _scheduleOf(bridge.OrganizeSettings settings) =>
       api.OrganizeSchedule(
         enabled: settings.enabled,
+        templateId: settings.templateId,
         autoOrganizeTime: settings.autoOrganizeTime,
         supplementOnNewMaterials: settings.supplementOnNewMaterials,
         revision: settings.revision.toInt(),
