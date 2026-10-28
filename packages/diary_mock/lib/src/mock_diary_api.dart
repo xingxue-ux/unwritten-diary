@@ -218,7 +218,6 @@ class MockDiaryApi implements DiaryApi, OrganizeSchedulePort {
     );
   }
 
-  @override
   api.OrganizeSchedule _organizeSchedule = const api.OrganizeSchedule(
     enabled: false,
     autoOrganizeTime: '22:30',
@@ -249,6 +248,7 @@ class MockDiaryApi implements DiaryApi, OrganizeSchedulePort {
     return _organizeSchedule;
   }
 
+  @override
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
     '${invocation.memberName} 尚未在 F0 Mock 中实现，请按任务书扩展。',
   );
