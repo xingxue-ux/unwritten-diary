@@ -384,6 +384,10 @@ String _summary(StyleProfile profile) => [
 
 /// 五个维度的预设说法。**核心不认这些词**——它们只是省打字的常见写法，
 /// 用户点「自定义」后写什么都行（核心只校验长度）。
+///
+/// 措辞一律不用括号：这些字符串会**整段进提示词**，括号里的补充会被模型当成
+/// 硬性细则（「很短（三五行）」会让它去数行数）。要补充就写成连贯的一句话，
+/// 让它读起来是语气而不是规则。
 const List<String> kStyleDimensionKeys = [
   'length',
   'tone',
@@ -396,11 +400,11 @@ const List<String> kStyleLengthPresets = [
   // 「跟随原文」放第一档。文案只有一个词：带括号解释就变成一条硬约束了，
   // 模型会照着括号里的细则做事，反而失去「大致跟着原文」的分寸。
   '跟随原文',
-  '很短（三五行）',
+  '三五行就好',
   '简短',
   '适中',
   '舒展',
-  '长（千字上下）',
+  '长一点，千字上下',
 ];
 
 const List<String> kStyleTonePresets = [
@@ -415,7 +419,7 @@ const List<String> kStyleTonePresets = [
 const List<String> kStylePersonPresets = [
   '第一人称',
   '旁观叙述',
-  '第二人称（对她说）',
+  '第二人称，像在对她说',
 ];
 
 const List<String> kStyleTemperaturePresets = [
@@ -491,7 +495,7 @@ const List<StyleArchetype> kStyleArchetypes = [
   ),
   StyleArchetype(
     label: '记录体',
-    length: '很短（三五行）',
+    length: '三五行就好',
     tone: '冷静记录',
     person: '旁观叙述',
     temperature: '克制',
@@ -501,7 +505,7 @@ const List<StyleArchetype> kStyleArchetypes = [
     label: '书信',
     length: '适中',
     tone: '更亲近',
-    person: '第二人称（对她说）',
+    person: '第二人称，像在对她说',
     temperature: '温和',
     rhetoric: '少量修辞',
   ),
