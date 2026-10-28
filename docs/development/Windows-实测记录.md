@@ -189,3 +189,86 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\release\build-windows.
 ```
 
 产物：`E:\wt-win\dist\windows\unwritten-diary-0.1.0-windows-x64\`（便携目录）与同名 `.zip`。
+---
+
+# 第二次实测（2026-10-28）：按验收清单逐组跑
+
+> 目的不同：2026-10-20 那次证明「这台机器能出包」，这次按
+> [`Windows-验收清单.md`](Windows-验收清单.md) 的 A→F 组逐条走，看**交付状态**。
+> 结论先写：**A/B/C/D 四组基本通过，E 组没做，F 组做不了**。
+
+## 0. 结论
+
+| 组 | 内容 | 结果 |
+|---|---|---|
+| A | 构建产物（构建机） | **6/7 通过**；A5 未签名（没有证书） |
+| B | 便携包 | **4/5 通过**；B2（SmartScreen）要另一台机器才能验 |
+| C | 安装包 | **6/9 通过**；静默路径全通，向导逐屏没点 |
+| D | 数据目录与迁移 | **3/4 通过**；D1 属首发前切换，不适用 |
+| E | 功能冒烟（GUI） | **0/6**：合成输入驱动不了 Flutter 输入框，没做成 |
+| F | 干净机器 | **0/3**：这台是开发机，家庭版也没有 Sandbox/Hyper-V |
+
+## 1. 这轮抓到的两个真缺陷（都已修，见 `6a6e1b7`）
+
+### ① 构建脚本在干净 target 上第 2 步就终止
+
+`build-windows.ps1` 全局 `$ErrorActionPreference = 'Stop'`，而 `Invoke-Step` 是裸的
+`& $Exe @Arguments`。PowerShell 5.1 会把原生程序写到 **stderr** 的每一行包成
+ErrorRecord —— cargo 的 `Compiling …`、flutter 的 `Building …` 全走 stderr。
+于是 **cargo 退出码是 0，脚本却在 `Compiling proc-macro2` 处终止**。
+
+10-20 那次没暴露，是因为跑的是本地改过的副本（坑 1、坑 3）；#172 修掉那两处之后，
+仓库里的脚本**还没有人跑过完整构建**。
+
+改法：调用期间把偏好降回 `Continue`、stderr 并进 stdout，成败只看退出码。
+
+### ② 窗口标题栏显示「涓嶅啓鏃ヨ」
+
+`runner/main.cpp:30` 是 `window.Create(L"不写日记", …)`，源文件 UTF-8 **无 BOM**，
+而 CMake 没加 `/utf-8`。MSVC 在中文系统上按 GBK 解读源文件，宽字面量编成乱码
+（截图证据：标题栏乱码，窗口内容正常 —— 后者是 Dart 侧运行时字符串，不受影响）。
+
+改法：`runner/CMakeLists.txt` 加 `target_compile_options(${BINARY_NAME} PRIVATE "/utf-8")`。
+
+## 2. 体积（与 10-20 对比）
+
+| 项 | 2026-10-20 | 2026-10-28 | 变化 |
+|---|---:|---:|---|
+| 便携包 | 46,840,257 B（45 文件） | **47,226,110 B（47 文件）** | +385,853 B |
+| zip | 20,164,621 B | **20,313,233 B** | +148,612 B |
+| 安装包 | 未产出 | **17,161,405 B** | 首次 |
+
+仍在 180 MB 预算的 26.2%（纯程序体积，不含模型）。
+
+## 3. 可复现的验证命令
+
+```powershell
+# 构建（ASCII 路径 + 绕开 rustup 的 gnu host，见坑 4）
+cd E:\wt-win
+$env:RUSTUP_TOOLCHAIN = 'stable-x86_64-pc-windows-msvc'
+.\tools\release\build-windows.ps1              # A1
+.\tools\release\build-windows.ps1 -SkipRust -Installer   # C 组
+
+# 便携包
+Copy-Item dist\windows\unwritten-diary-0.1.0-windows-x64 C:\Temp\unwritten-diary -Recurse
+Start-Process C:\Temp\unwritten-diary\unwritten_diary.exe
+
+# 安装包（按用户、不弹 UAC）
+.\dist\windows\unwritten-diary-0.1.0-windows-x64-setup.exe /VERYSILENT /CURRENTUSER
+```
+
+## 4. 合成输入驱动 GUI 的坑（给下一次省时间）
+
+- **PowerShell 默认不是 DPI 感知进程**：屏幕 2560×1440 @150%，脚本里
+  `Screen.PrimaryScreen.Bounds` 报 1707×960，`SetCursorPos` 用的是物理像素
+  ⇒ 直接按截图坐标点击会落到别处。先调 `SetProcessDPIAware()` 再截图取坐标。
+- 坐标对了之后**点击能切换页面**（「搜索」「我的」都点通了），但**输入框点不进去**：
+  `SendKeys` 与 `Ctrl+V` 粘中文都无效，搜索框仍是占位符。
+  要验 E 组大概率得用 UIA（Flutter 的 Windows accessibility 树）或干脆人工走一遍。
+
+## 5. F 组为什么这台机器做不了
+
+- Windows 11 **家庭版**：没有 Windows Sandbox，没有 Hyper-V 管理器，
+  Docker Desktop 只能跑 **Linux 容器**（`docker info --format '{{.OSType}}'` → `linux`）。
+  容器里更没有交互式桌面，Flutter Windows 应用起不来。
+- 可行路径：VirtualBox/VMware 起一台干净 Win11，或用微软的 Enterprise 90 天评估镜像。
