@@ -1,8 +1,9 @@
 {
   "version": "1.0.7",
   "version_code": 1000007,
-  "app_bytes": 202554615,
-  "app_sha256": "c112044ca95ea694c4bf847179d4c91878fd863fd41d5fbd6afabbbb6e7df485",
+  "app_bytes": 202559719,
+  "app_sha256": "191beb83d15e64dbf6e6b86d258f7a7298e251ef559b5dd696d8fadeb1ce4d3f",
+  "cloud_release_signing": "passed",
   "internet_permission": true,
   "device_types": [
     "2in1"
@@ -11,8 +12,13 @@
   "local_model_bytes": 263819069,
   "model_hashes_verified": true,
   "no_local_llm": true,
+  "content_export": false,
   "native_official_service_guard": true,
   "device_test": "not_run_no_connected_device",
-  "cloud_release_signing": "pending DevEco launch",
-  "market_submission": "not_submitted"
+  "market_submission": "not_submitted",
+  "market_package_upload": "passed_2026-10-28_22:34:11",
+  "market_package_legality": "passed",
+  "market_draft": "saved_1.0.7_public_test_preparing_submission",
+  "submission_blocker": "Previous 1.0.6 review requires safety assessment report and passing result; operator has no materials or written exemption",
+  "privacy_policy_url": "https://xingxue-ux.github.io/unwritten-diary/online/"
 }

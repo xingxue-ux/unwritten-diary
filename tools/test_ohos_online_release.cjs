@@ -27,5 +27,16 @@ async function startup(answer,alreadyAccepted=false,writeFails=false) {
   assert.deepEqual(await startup(1),{prompts:1,prepared:1,terminated:0,written:true,noticeFailed:false});
   assert.deepEqual(await startup(1,true),{prompts:0,prepared:1,terminated:0,written:false,noticeFailed:false});
   assert.equal((await startup(1,false,true)).prepared,0);
+  const calls=[];
+  class DiaryError extends Error {constructor(code,message){super(message);this.code=code;this.retryable=false;}static fromThrown(e){return e;}}
+  const worker=load('ui/CoreWorker.ets',{'@kit.PerformanceAnalysisKit':{hilog:{debug:()=>{}}},
+    '@kit.ArkTS':{process:{tid:1}},'../core/DiaryError':{DiaryError},
+    '../core/DiaryCore':{DiaryCore:{openHandleCount:()=>1}},
+    './CoreSessions':{acquireCore:()=>({rawCall:(method)=>{calls.push(method);return null;}})}});
+  const results=JSON.parse(worker.runCoreBatch('/app/library.sqlite',JSON.stringify([
+    {method:'settings.get',params:''},{method:'exports.create',params:'{}'},{method:'providers.list',params:''}])));
+  assert.deepEqual(calls,['settings.get','providers.list']);
+  assert.equal(results[1].error.code,'unsupported_format');assert.equal(results[2].ok,true);
   console.log('PASS official endpoints and first-launch notice: decline, accept, repeat, write failure');
+  console.log('PASS export blocked before native call; other requests continue');
 })().catch(e=>{console.error(e);process.exitCode=1;});
