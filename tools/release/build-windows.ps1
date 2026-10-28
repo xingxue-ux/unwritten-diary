@@ -98,12 +98,23 @@ function Invoke-Step([string]$Exe, [string[]]$Arguments, [string]$WorkDir = $Roo
     return
   }
   Push-Location $WorkDir
+  # 原生工具把进度写去 stderr（cargo 的 `Compiling …`、flutter 的 `Building …` 都是）。
+  # Windows PowerShell 5.1 会把原生程序的每行 stderr 包成 ErrorRecord，而本脚本全局设了
+  # `$ErrorActionPreference = 'Stop'`，于是**退出码明明是 0 也会在第 2 步终止**。
+  # 2026-10-28 在干净 target 上实跑到这个：`NativeCommandError` 打在 `& $Exe @Arguments`
+  # 那一行，日志停在 `Compiling proc-macro2`，而 cargo 的退出码是 0。
+  # 解法：调用期间把偏好降回 Continue，并把 stderr 并进 stdout 一起显示；
+  # 成败只看退出码，不看有没有 stderr 输出。
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
   try {
-    & $Exe @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "$pretty 退出码 $LASTEXITCODE" }
+    & $Exe @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
+    $exitCode = $LASTEXITCODE
   } finally {
+    $ErrorActionPreference = $previousPreference
     Pop-Location
   }
+  if ($exitCode -ne 0) { throw "$pretty 退出码 $exitCode" }
 }
 
 function Find-SignTool {

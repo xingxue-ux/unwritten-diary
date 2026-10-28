@@ -17,7 +17,7 @@
       `unwritten_diary.exe`、`diary_bridge.dll`、`flutter_windows.dll`、
       `data\icudtl.dat`、`data\app.so`、`data\flutter_assets\AssetManifest.bin`。
 - [ ] A3. `diary_bridge.dll` 与 `unwritten_diary.exe` **同目录**（放到 `data\` 或 `lib\` 下会加载失败）。
-- [ ] A4. `legal\` 目录在（12 份第三方许可），`LICENSE` 在根目录。
+- [ ] A4. `legal\` 目录在（13 份第三方许可），`LICENSE` 在根目录。
 - [ ] A5. 签名（发布必须做，否则别的机器会拦）：
       `Get-AuthenticodeSignature .\unwritten_diary.exe` 返回 `Status = Valid`，
       且有**时间戳**（`TimeStamperCertificate` 非空）。
@@ -81,6 +81,6 @@
 
 | 日期 | 机器（型号/系统版本） | commit | 包（zip/安装包 + sha256 前 8 位） | A | B | C | D | E | F | 失败项与现象 |
 |---|---|---|---|---|---|---|---|---|---|---|
-|  |  |  |  |  |  |  |  |  |  |  |
+| 2026-10-28 | AMD Ryzen 7 8845H / Windows 11 家庭版 中文版 10.0.26300（**开发机**：装着 VS 2026 Insiders + Flutter 3.44.6 + Rust 1.94.1） | `6a6e1b7` | zip `unwritten-diary-0.1.0-windows-x64.zip` `14D1F93E`；安装包 `...-setup.exe` `C3C700B9`（17,161,405 B） | 6/7 | 4/5 | 6/9 | 3/4 | 0/6 | 0/3 | A5 未签名（无证书）；B2/C 交互向向导未逐屏点（用 `/VERYSILENT` 走同一路径）；E 组未做（合成输入无法稳定驱动 Flutter 输入框）；F 组无干净机器 |
 
 > 没有这一行记录 = 没有验过。`M5-打包与发布.md` §3.5 的「未在本次执行」就靠这张表来消。
