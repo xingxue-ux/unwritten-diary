@@ -439,6 +439,19 @@ abstract class DiaryApi {
 
   // -------------------------------------------------------------- 设置
 
+  /// 读「整理时机」：开关、计划时间、补充候选开关（核心 `organize_settings`）。
+  ///
+  /// 与 [getSettings] 是两件事：`settings.*` 覆盖全部可编辑设置（含日记时区等平台
+  /// 字段），这一对只覆盖整理时机，且 Windows 桥**只实现了后者**。不知道就报
+  /// `UnsupportedError`，不要返回编造的默认值。
+  Future<OrganizeSchedule> organizeSchedule();
+
+  /// 写「整理时机」。`expectedRevision` 不匹配抛 `revisionConflict`，核心零改动。
+  Future<OrganizeSchedule> updateOrganizeSchedule({
+    required OrganizeSchedule schedule,
+    required int expectedRevision,
+  });
+
   Future<Settings> getSettings();
 
   Future<Settings> updateSettings({

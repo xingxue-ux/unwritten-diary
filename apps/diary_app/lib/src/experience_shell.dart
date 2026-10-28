@@ -21,6 +21,7 @@ import 'library_care_panel.dart';
 import 'readable_export_controller.dart';
 import 'readable_export_panel.dart';
 import 'search_controller.dart';
+import 'schedule_settings_controller.dart';
 import 'revision_controller.dart';
 import 'revision_diff.dart';
 import 'sketch_ui.dart';
@@ -61,6 +62,7 @@ class _ExperienceShellState extends State<ExperienceShell>
   late final LibraryCareController _libraryCare;
   late final IndexSettingsController _indexSettings;
   late final StyleSettingsController _styleSettings;
+  late final ScheduleSettingsController _scheduleSettings;
   late final ReadableExportController _readableExport;
   late final Listenable _contentChanges;
   final _editor = TextEditingController();
@@ -85,8 +87,6 @@ class _ExperienceShellState extends State<ExperienceShell>
   String _revisionView = '正文';
   bool _editingRevision = false;
   String _candidateDraft = _candidateBody;
-  String _schedule = '22:30';
-  bool _automatic = true;
   bool _pluginEnabled = false;
   String _recordingDemoState = 'idle';
   final List<String> _attachments = [];
@@ -122,6 +122,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       widget.api,
       capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
     );
+    _scheduleSettings = ScheduleSettingsController(widget.api);
     _readableExport = ReadableExportController(
       widget.api,
       capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
@@ -134,6 +135,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       _libraryCare,
       _indexSettings,
       _styleSettings,
+      _scheduleSettings,
       _readableExport,
     ]);
     if (!widget.demoMode) {
@@ -193,6 +195,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     _libraryCare.dispose();
     _indexSettings.dispose();
     _styleSettings.dispose();
+    _scheduleSettings.dispose();
     _readableExport.dispose();
     _editor.dispose();
     _search.removeListener(_onSearchValueChanged);
@@ -375,6 +378,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     });
     if (panel == 'storage') unawaited(_libraryCare.loadTrash());
     if (panel == 'style') unawaited(_styleSettings.load());
+    if (panel == 'schedule') unawaited(_scheduleSettings.load());
     if (panel == 'index') unawaited(_indexSettings.load());
   }
 
@@ -2068,44 +2072,102 @@ class _ExperienceShellState extends State<ExperienceShell>
     ],
   );
 
-  Widget _schedulePanel() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _title('整理时机', '安静地整理，不打断记录。'),
-      const SizedBox(height: 20),
-      _notice('自动整理尚未接入；这里仅预览设置方式，开关与时间不会保存或启动任务。'),
-      const SizedBox(height: 18),
-      SketchFrame(
-        child: Column(
-          children: [
-            SwitchListTile(
-              title: const Text('自动整理'),
-              subtitle: const Text('只整理已经提交的材料'),
-              value: _automatic,
-              onChanged: (value) => setState(() => _automatic = value),
+  Widget _schedulePanel() {
+    final controller = _scheduleSettings;
+    final settings = controller.schedule;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _title('整理时机', '安静地整理，不打断记录。'),
+        const SizedBox(height: 20),
+        if (settings == null && controller.loading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 24),
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          )
+        else if (settings == null)
+          _notice(controller.message ?? '整理时机暂时没有读出来，请稍后重试。')
+        else ...[
+          SketchFrame(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('自动整理'),
+                  subtitle: Text(
+                    controller.enabled ? '已开启 · 只整理已经保存的材料' : '已关闭',
+                  ),
+                  value: controller.enabled,
+                  onChanged: controller.saving
+                      ? null
+                      : (value) =>
+                            unawaited(controller.setEnabled(value)),
+                ),
+                const Divider(color: SketchColors.line),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('计划时间'),
+                  subtitle: const Text(
+                    '到点后，下次打开应用时会检查并处理；按设备当前时区计算。不是完成承诺。',
+                  ),
+                  trailing: Text(
+                    controller.autoOrganizeTime,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      color: SketchColors.ink,
+                    ),
+                  ),
+                  onTap: controller.saving
+                      ? null
+                      : () => _pickAutoOrganizeTime(controller),
+                ),
+                const Divider(color: SketchColors.line),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('新材料来了自动补一版'),
+                  subtitle: const Text(
+                    '当天已经有当前正文、之后又保存了材料时，自动再整理一版候选。关掉就只在你点「再来一版」时整理。',
+                  ),
+                  value: controller.supplementOnNewMaterials,
+                  onChanged: controller.saving
+                      ? null
+                      : (value) => unawaited(
+                          controller.setSupplementOnNewMaterials(value),
+                        ),
+                ),
+              ],
             ),
-            const Divider(color: SketchColors.line),
-            ListTile(
-              title: const Text('计划时间'),
-              trailing: Text(_schedule),
-              onTap: () async {
-                final picked = await showTimePicker(
-                  context: context,
-                  initialTime: const TimeOfDay(hour: 22, minute: 30),
-                );
-                if (picked != null && mounted) {
-                  setState(
-                    () => _schedule =
-                        '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}',
-                  );
-                }
-              },
+          ),
+          if (controller.message != null) ...[
+            const SizedBox(height: 14),
+            Text(
+              controller.message!,
+              style: const TextStyle(fontSize: 13, color: SketchColors.muted),
             ),
           ],
-        ),
-      ),
-    ],
-  );
+        ],
+      ],
+    );
+  }
+
+  Future<void> _pickAutoOrganizeTime(
+    ScheduleSettingsController controller,
+  ) async {
+    final parts = controller.autoOrganizeTime.split(':');
+    final hour = int.tryParse(parts.first) ?? 22;
+    final minute = parts.length > 1 ? int.tryParse(parts[1]) ?? 30 : 30;
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: hour, minute: minute),
+      helpText: '选择每天整理的时间',
+    );
+    if (picked == null || !mounted) return;
+    final text =
+        '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}';
+    await controller.setAutoOrganizeTime(text);
+  }
 
   Widget _pluginsPanel() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,

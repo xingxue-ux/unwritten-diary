@@ -1469,3 +1469,55 @@ class ExportTicket {
   @override
   String toString() => 'ExportTicket($jobId)';
 }
+
+
+/// 「整理时机」这一小块的可写设置（鸿蒙端 `SchedulePage` 的那三项）。
+///
+/// 只收核心 `organize_settings` 里**真的可编辑**的字段：开关、计划时间、以及
+/// 「当天已有当前版本后又来新材料时是否自动补一版」。模板、配额、失败率这些
+/// 属于整理参数，界面不在这里暴露，写回时原样保留（`updateOrganizeSettings`
+/// 要求整份对象）。
+class OrganizeSchedule {
+  const OrganizeSchedule({
+    required this.enabled,
+    required this.autoOrganizeTime,
+    required this.supplementOnNewMaterials,
+    required this.revision,
+  });
+
+  /// 自动整理是否开启。**核心默认是关的**：只有显式打开才会跑。
+  final bool enabled;
+
+  /// 计划触发时间 `HH:mm`（本地时间）。**不是完成承诺**，到点在下次启动时补做。
+  final String autoOrganizeTime;
+
+  /// 当天已有当前版本、之后又来了新材料时，是否自动补做一份候选。
+  final bool supplementOnNewMaterials;
+
+  /// 乐观锁版本；每次真的改动 +1。
+  final int revision;
+
+  OrganizeSchedule copyWith({
+    bool? enabled,
+    String? autoOrganizeTime,
+    bool? supplementOnNewMaterials,
+  }) => OrganizeSchedule(
+    enabled: enabled ?? this.enabled,
+    autoOrganizeTime: autoOrganizeTime ?? this.autoOrganizeTime,
+    supplementOnNewMaterials:
+        supplementOnNewMaterials ?? this.supplementOnNewMaterials,
+    revision: revision,
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is OrganizeSchedule &&
+      other.enabled == enabled &&
+      other.autoOrganizeTime == autoOrganizeTime &&
+      other.supplementOnNewMaterials == supplementOnNewMaterials &&
+      other.revision == revision;
+
+  @override
+  int get hashCode =>
+      Object.hash(enabled, autoOrganizeTime, supplementOnNewMaterials, revision);
+}
