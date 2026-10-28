@@ -148,7 +148,7 @@ class StyleSettingsPanelState extends State<StyleSettingsPanel> {
         const SizedBox(height: 16),
         _archetypes(),
         const SizedBox(height: 6),
-        _dimension('length', '篇幅', kStyleLengthPresets, _length, '例如：三段以内，不超过 200 字；或「别扩写」'),
+        _dimension('length', '篇幅', kStyleLengthPresets, _length, '例如：三段以内，不超过 200 字'),
         _dimension('tone', '语气', kStyleTonePresets, _tone, '例如：像跟老朋友说话，别太文艺'),
         _dimension('person', '叙述', kStylePersonPresets, _person, '例如：第三人称，但只写她自己的感受'),
         _dimension('temperature', '情绪温度', kStyleTemperaturePresets, _temperature, '例如：低落的部分不要强行安慰'),
@@ -161,9 +161,7 @@ class StyleSettingsPanelState extends State<StyleSettingsPanel> {
         ),
         const SizedBox(height: 6),
         const Text(
-          '上面这些是「写成什么样」。想让改动小一点（但不必一字不差），去'
-          '「我的 → 整理时机 → 整理方式」选「只改错别字与标点」——'
-          '整理方式决定能改多少，风格再决定语气。',
+          '想让改动更小，去「我的 → 整理时机 → 整理方式」。',
           style: TextStyle(color: SketchColors.muted, fontSize: 12),
         ),
         const SizedBox(height: 10),
@@ -395,9 +393,9 @@ const List<String> kStyleDimensionKeys = [
 ];
 
 const List<String> kStyleLengthPresets = [
-  // 「跟着原文」放第一档：**不是「一字不改」**，而是「别跟原文差太远」——
-  // 长度上不压缩也不扩写，说法上保留他原来的措辞。与「写得短」不是一回事。
-  '跟原文差不多长（不压缩也不扩写）',
+  // 「跟随原文」放第一档。文案只有一个词：带括号解释就变成一条硬约束了，
+  // 模型会照着括号里的细则做事，反而失去「大致跟着原文」的分寸。
+  '跟随原文',
   '很短（三五行）',
   '简短',
   '适中',
