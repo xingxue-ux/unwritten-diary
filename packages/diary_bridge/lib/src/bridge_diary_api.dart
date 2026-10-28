@@ -59,7 +59,7 @@ import '../diary_bridge.dart' as bridge;
 ///   [api.DiaryException]（枚举码），未知码落到 `unknown` 而不是崩掉；
 /// - **能力窄化**：核心报的是「桥接接了多少」，这里只报「适配层能真的用的」，
 ///   两者取交集。
-class BridgeDiaryApi implements api.DiaryApi {
+class BridgeDiaryApi implements api.DiaryApi, api.OrganizeSchedulePort {
   BridgeDiaryApi({
     required this.coreLibraryPath,
     required this.libraryPath,
@@ -1203,6 +1203,58 @@ class BridgeDiaryApi implements api.DiaryApi {
   @override
   Future<void> acknowledgeAttention(String attentionKey) =>
       _translate(() => _open.acknowledgeAttention(attentionKey: attentionKey));
+
+  // ------------------------------------------------------------ 整理时机
+
+  /// 读「整理时机」，走核心真实的 `organize_settings`（不是契约的 `settings.get`）。
+  ///
+  /// 为什么用这一对而不是 `settings.*`：契约的 `settings` 覆盖全部可编辑设置（含日记
+  /// 时区等平台层字段），桥这一层没实现它；而 `organize_settings` 是核心真实存在、
+  /// 已经在桥里导出的对象，界面要改的开关与计划时间都在里面。
+  @override
+  Future<api.OrganizeSchedule> organizeSchedule() async {
+    final settings = await _translate(() => _open.organizeSettings());
+    return _scheduleOf(settings);
+  }
+
+  /// 写「整理时机」。核心要求传**整份**对象，所以先读当前值，只替换这三个字段，
+  /// 模板与配额原样带回——不把界面没展示的参数悄悄改掉。
+  @override
+  Future<api.OrganizeSchedule> updateOrganizeSchedule({
+    required api.OrganizeSchedule schedule,
+    required int expectedRevision,
+  }) async {
+    final current = await _translate(() => _open.organizeSettings());
+    final next = bridge.OrganizeSettings(
+      enabled: schedule.enabled,
+      templateId: current.templateId,
+      templateParams: current.templateParams,
+      maxMaterials: current.maxMaterials,
+      maxChars: current.maxChars,
+      maxCallsPerRun: current.maxCallsPerRun,
+      maxCallsPerDay: current.maxCallsPerDay,
+      maxFailureRate: current.maxFailureRate,
+      autoOrganizeTime: schedule.autoOrganizeTime,
+      supplementOnNewMaterials: schedule.supplementOnNewMaterials,
+      revision: current.revision,
+      updatedAt: current.updatedAt,
+    );
+    final saved = await _translate(
+      () => _open.updateOrganizeSettings(
+        settings: next,
+        expectedRevision: expectedRevision,
+      ),
+    );
+    return _scheduleOf(saved);
+  }
+
+  api.OrganizeSchedule _scheduleOf(bridge.OrganizeSettings settings) =>
+      api.OrganizeSchedule(
+        enabled: settings.enabled,
+        autoOrganizeTime: settings.autoOrganizeTime,
+        supplementOnNewMaterials: settings.supplementOnNewMaterials,
+        revision: settings.revision.toInt(),
+      );
 
   // ------------------------------------------------------------ 索引
 

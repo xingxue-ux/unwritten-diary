@@ -825,7 +825,8 @@ void main() {
   testWidgets('preview settings disclose that no core action runs', (
     tester,
   ) async {
-    await openApp(tester, MockDiaryApi());
+    final mock = MockDiaryApi();
+    await openApp(tester, mock);
     await tester.tap(find.text('我的').last);
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('风格偏好'));
@@ -837,7 +838,14 @@ void main() {
     await tester.ensureVisible(find.text('整理时机'));
     await tester.tap(find.text('整理时机'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('自动整理尚未接入'), findsOneWidget);
+    // 「整理时机」不再是一段只读的说明：三项都走核心真实的 `organize_settings`，
+    // 开关点下去会真的写回（这里用 MockDiaryApi 验证调用链）。
+    expect(find.text('自动整理'), findsOneWidget);
+    expect(find.text('22:30'), findsOneWidget);
+    expect((await mock.organizeSchedule()).enabled, isFalse);
+    await tester.tap(find.byType(Switch).first);
+    await tester.pumpAndSettle();
+    expect((await mock.organizeSchedule()).enabled, isTrue);
   });
 
   testWidgets('unready semantic index has a visible working settings action', (

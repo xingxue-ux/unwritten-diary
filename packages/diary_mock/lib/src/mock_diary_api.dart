@@ -1,11 +1,12 @@
 import 'dart:async';
 
+import 'package:diary_api/diary_api.dart' as api;
 import 'package:diary_api/diary_api.dart';
 
 /// 只覆盖 F0 的记录路径；其余契约方法在对应任务实现前会明确报错。
 ///
 /// 数据只在这个对象存活期间存在，绝不用于验证真实持久化。
-class MockDiaryApi implements DiaryApi {
+class MockDiaryApi implements DiaryApi, OrganizeSchedulePort {
   MockDiaryApi({
     DateTime Function()? clock,
     this.timeZone = 'Asia/Shanghai',
@@ -215,6 +216,36 @@ class MockDiaryApi implements DiaryApi {
       'MockDiaryApi 没有检索会话（search.start 尚未在 Mock 中实现），'
       'upgradeSearch 交不出真实快照，也不会伪造 hybrid_ready。',
     );
+  }
+
+  api.OrganizeSchedule _organizeSchedule = const api.OrganizeSchedule(
+    enabled: false,
+    autoOrganizeTime: '22:30',
+    supplementOnNewMaterials: true,
+    revision: 1,
+  );
+
+  @override
+  Future<api.OrganizeSchedule> organizeSchedule() async => _organizeSchedule;
+
+  @override
+  Future<api.OrganizeSchedule> updateOrganizeSchedule({
+    required api.OrganizeSchedule schedule,
+    required int expectedRevision,
+  }) async {
+    if (expectedRevision != _organizeSchedule.revision) {
+      throw const DiaryException(
+        code: DiaryErrorCode.revisionConflict,
+        message: '设置已被改动，请重新读取后再试。',
+      );
+    }
+    _organizeSchedule = api.OrganizeSchedule(
+      enabled: schedule.enabled,
+      autoOrganizeTime: schedule.autoOrganizeTime,
+      supplementOnNewMaterials: schedule.supplementOnNewMaterials,
+      revision: _organizeSchedule.revision + 1,
+    );
+    return _organizeSchedule;
   }
 
   @override
