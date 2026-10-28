@@ -425,7 +425,7 @@ async function searchIndexStatusIgnoresStaleResponse(){
 }
 async function llmConfiguration(){
   const calls=[];let saved=null;let secretReceived=null;let failList=false;let failSave=false;let failSelect=false;let failTest=false;let confirmed=true;
-  let provider={id:'llm',label:'Existing',adapter_id:'openai_compatible',endpoint:'https://example.com/v1',
+  let provider={id:'llm',label:'Existing',adapter_id:'openai_compatible',endpoint:'https://api.deepseek.com/v1',
     model:'model-a',capabilities:['generate_text'],credential_ref:'sec_existing',enabled:false,test_status:'untested'};
   const local={...provider,id:'asr',adapter_id:'sherpa_onnx',capabilities:['transcribe_audio']};
   let other={...provider,id:'other',test_status:'ok'};
@@ -457,6 +457,7 @@ async function llmConfiguration(){
     throw new Error('Unexpected '+method);
   }};
   const {LlmConfigPage}=load('pages/LlmConfigPage.ets',{
+    '../ui/OnlineService':load('ui/OnlineService.ets',{}),
     '../ui/CoreGateway':{CoreGateway:gateway,uiErrorOf:r=>({...empty,...r.error})},
     '../ui/Errors':errorModule,'../ui/AppRuntime':{confirmAction:async()=>confirmed},
     '../ui/AppState':{AppState:{bumpDataVersion:noop}}},{},true);
@@ -490,8 +491,8 @@ async function llmConfiguration(){
   assert.equal(page.secret,'');assert.equal(page.canProbe(),false);assert.ok(!page.message.includes('never-echo-this'));failSave=false;
   page.secret='draft-secret';confirmed=false;await page.newProvider(null);assert.equal(page.secret,'draft-secret');
   confirmed=true;await page.newProvider(null);assert.equal(page.secret,'');assert.equal(page.selected,null);
-  page.label='Local';page.endpoint='http://localhost:8080/v1';page.model='local';await page.save();assert.equal(saved.endpoint,'http://localhost:8080/v1');
-  for(const endpoint of ['http://remote.example/v1','https://example.com/v1/chat/completions','https://user:password@example.com/v1','https://example.com/v1?key=secret']){
+  page.label='Official';page.endpoint='https://api.deepseek.com/v1';page.model='deepseek-chat';await page.save();assert.equal(saved.endpoint,'https://api.deepseek.com/v1');
+  for(const endpoint of ['http://localhost:8080/v1','http://remote.example/v1','https://example.com/v1/chat/completions','https://user:password@example.com/v1','https://example.com/v1?key=secret']){
     const count=calls.length;page.endpoint=endpoint;page.dirty=true;await page.save();assert.equal(calls.length,count);
   }
   page.secret='temporary';page.aboutToDisappear();assert.equal(page.secret,'');

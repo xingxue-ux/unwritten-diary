@@ -226,6 +226,9 @@ export struct DiaryDayPage {
       }
       .width('100%')
 
+      if (version.origin === 'generated' || version.origin === 'merge') {
+        Text('人工智能生成，请结合原文核对。').fontSize(13).fontColor(SketchColors.muted)
+      }
       Text(version.body.length > 0 ? version.body : '（这一版正文为空）')
         .fontSize(14)
         .fontColor(SketchColors.text)
@@ -340,6 +343,9 @@ export struct DiaryDayPage {
                   Blank()
                 }
                 .width('100%')
+                if ((this.current as DiaryVersion).origin === 'generated' || (this.current as DiaryVersion).origin === 'merge') {
+                  Text('人工智能生成，请结合原文核对。').fontSize(13).fontColor(SketchColors.muted)
+                }
                 Text((this.current as DiaryVersion).body)
                   .fontSize(17)
                   .lineHeight(28)

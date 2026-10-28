@@ -320,6 +320,7 @@ export struct ProfilePage {
               this.entry('搜索索引', '让记录更容易找到', 'diagnostics')
               this.entry('阅读导出', '按日期生成便于阅读的副本', 'export')
               this.entry('存储与回收站', '查看和恢复移除的记录', 'recycle')
+              this.entry('隐私与模型服务说明', '查看数据处理和第三方备案信息', 'privacy')
             }.width('100%').alignItems(HorizontalAlign.Start)
           }
           Button(this.showDiagnostics ? '收起本地功能' : '本地功能')

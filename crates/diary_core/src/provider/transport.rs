@@ -204,6 +204,14 @@ impl Default for UreqTransport {
 
 impl Transport for UreqTransport {
     fn send(&self, request: &HttpRequest) -> std::result::Result<HttpResponse, TransportError> {
+        // HarmonyOS store release: reject alternate providers before DNS or socket use,
+        // including configurations retained from older builds. Desktop is unchanged.
+        #[cfg(target_env = "ohos")]
+        if !ohos_official_model_url(&request.url) {
+            return Err(TransportError::Other {
+                message: "此鸿蒙版本仅支持深度求索官方服务，请重新选择模型服务。".into(),
+            });
+        }
         let mut outgoing = self
             .agent
             .request(&request.method, &request.url)
@@ -231,6 +239,31 @@ impl Transport for UreqTransport {
                     Err(TransportError::Connect { message })
                 }
             }
+        }
+    }
+}
+
+#[cfg(any(target_env = "ohos", test))]
+fn ohos_official_model_url(url: &str) -> bool {
+    matches!(url,
+        "https://api.deepseek.com/models" |
+        "https://api.deepseek.com/v1/models" |
+        "https://api.deepseek.com/chat/completions" |
+        "https://api.deepseek.com/v1/chat/completions")
+}
+
+#[cfg(test)]
+mod ohos_store_policy_tests {
+    use super::ohos_official_model_url;
+
+    #[test]
+    fn only_exact_official_model_routes_are_allowed() {
+        assert!(ohos_official_model_url("https://api.deepseek.com/v1/models"));
+        assert!(ohos_official_model_url("https://api.deepseek.com/chat/completions"));
+        for url in ["http://api.deepseek.com/models", "https://api.deepseek.com.evil.test/models",
+            "https://api.deepseek.com@evil.test/models", "https://api.deepseek.com/models?url=other",
+            "https://example.com/v1/chat/completions", "http://127.0.0.1/models"] {
+            assert!(!ohos_official_model_url(url), "{url}");
         }
     }
 }

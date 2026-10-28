@@ -7,6 +7,7 @@ import { EMPTY_UI_ERROR, UiError } from '../ui/Errors';
 import { databasePath, confirmAction } from '../ui/AppRuntime';
 import { AppState } from '../ui/AppState';
 import { modelLabel, presetLabel } from '../ui/UserText';
+import { OFFICIAL_ENDPOINT, isOfficialEndpoint } from '../ui/OnlineService';
 import { ErrorBanner, SectionTitle, StatePill, LoadingRow } from '../ui/Common';
 import { SketchColors, SketchFonts, sketchInput, sketchButton, sketchOutline } from '../ui/Sketch';
 
@@ -67,7 +68,7 @@ export struct LlmConfigPage {
     if (!this.active) { return; }
     if (presets.ok) {
       this.presets = (presets.data as ProviderPreset[]).filter((p: ProviderPreset) =>
-        p.adapter_id === 'openai_compatible' && p.capabilities.includes('generate_text'));
+        p.adapter_id === 'openai_compatible' && p.capabilities.includes('generate_text') && isOfficialEndpoint(p.endpoint));
     } else { this.error = uiErrorOf(presets); }
   }
 
@@ -97,8 +98,8 @@ export struct LlmConfigPage {
     if (this.busy || this.loading || !await this.mayDiscard() || !this.active) { return; }
     this.selected = null;
     this.label = preset === null ? '' : presetLabel(preset.label);
-    this.endpoint = preset === null ? '' : preset.endpoint;
-    this.model = preset === null ? '' : preset.model;
+    this.endpoint = preset === null ? OFFICIAL_ENDPOINT : preset.endpoint;
+    this.model = preset === null ? 'deepseek-chat' : preset.model;
     this.secret = '';
     this.models = [];
     this.dirty = preset !== null;
@@ -116,6 +117,7 @@ export struct LlmConfigPage {
     if (this.busy || this.loading || !this.loaded) { return; }
     if (this.selected !== null && !this.dirty) { return; }
     const endpoint: string = this.endpoint.trim().replace(/\/+$/, '');
+    if (!isOfficialEndpoint(endpoint)) { this.validation('此版本仅支持深度求索官方服务。'); return; }
     if (this.label.trim().length === 0 || endpoint.length === 0) {
       this.validation('请填写服务名称和访问地址。'); return;
     }
@@ -218,6 +220,7 @@ export struct LlmConfigPage {
   }
 
   private async useOnline(provider: ProviderConfig): Promise<void> {
+    if (!isOfficialEndpoint(provider.endpoint)) { this.validation('此版本仅支持深度求索官方服务。'); return; }
     if (this.busy || this.loading || !this.loaded || this.uncertain || provider.enabled) { return; }
     if (provider.test_status !== 'ok') {
       this.validation('请先检查连接。'); return;
@@ -285,7 +288,7 @@ export struct LlmConfigPage {
         .enabled(!this.busy && !this.loading).onClick(() => { this.editingAddress = !this.editingAddress; })
       if (this.editingAddress) {
         TextInput({ text: this.endpoint, placeholder: '服务方提供的访问地址' }).attributeModifier(sketchInput)
-        .enabled(!this.busy && !this.loading).onChange((v: string) => {
+        .enabled(false).onChange((v: string) => {
           if (this.endpoint !== v) { this.endpoint = v; this.models = []; this.dirty = true; }
         })
       TextInput({ text: this.model, placeholder: '模型名称，也可保存后选择' }).attributeModifier(sketchInput)
@@ -335,11 +338,11 @@ export struct LlmConfigPage {
       Scroll() {
         Column({ space: 16 }) {
           Text('让智能助手整理日记').fontFamily(SketchFonts.display).fontSize(24).fontColor(SketchColors.ink)
-          Text('每次只使用一个整理服务，切换后保留配置。')
+          Text('仅调用已备案的深度求索官方大模型。请填写自己的服务密钥。')
             .fontSize(14).fontColor(SketchColors.muted)
           if (this.loading) { LoadingRow({ text: '读取模型服务…' }) }
           Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-            Button('添加自定义服务').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
+            Button('添加深度求索服务').attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)
               .onClick(() => { this.newProvider(null); })
             ForEach(this.presets, (preset: ProviderPreset) => {
               Button(presetLabel(preset.label)).attributeModifier(sketchButton).drawModifier(sketchOutline()).enabled(!this.busy && !this.loading)

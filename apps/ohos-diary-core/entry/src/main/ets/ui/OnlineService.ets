@@ -1,0 +1,11 @@
+// This HarmonyOS store build uses the official service only. Desktop is unaffected.
+export const OFFICIAL_ENDPOINT: string = 'https://api.deepseek.com';
+export const MODEL_FILING: string = 'Beijing-DeepseekChat-202404280016';
+export const SERVICE_NOTICE: string = '本应用仅通过深度求索官方接口调用已备案的第三方大模型，不自行训练或提供大模型服务。\n\n启用在线整理后，待整理文字、录音转写及写作偏好会发送给深度求索。原文保留在本机，语音转写和搜索在本机完成。\n\n生成内容可能有误，请结合原文查看。完整隐私说明和第三方备案信息可在“我的”中查看。';
+export const ONLINE_PRIVACY: string = '不写日记隐私与模型服务说明\n更新日期：2026年10月28日\n\n运营者：张可顺\n联系邮箱：3531043382@qq.com\n\n一、本机保存\n文字、录音、转写、日记版本、搜索索引、写作偏好和服务密钥保存在设备内。语音转写与语义搜索使用随包模型，不需要上传录音。应用没有开发者托管的日记服务器，不使用广告或统计分析服务。\n\n二、在线整理\n本鸿蒙发布版仅支持深度求索官方接口。你自行填写服务密钥并启用在线整理后，手动整理或你开启的定时整理会将相关记录文字、录音转写文字及写作偏好，经加密连接发送至深度求索，用于生成日记。检查连接只发送测试文字，查找模型会向同一服务查询可用模型。调用可能由服务商计费，应用不内置公共密钥。未配置在线服务仍可记录、转写和搜索。\n\n服务提供方：杭州深度求索人工智能基础技术研究有限公司及其关联公司。服务方接收请求后的处理以其隐私政策为准：https://cdn.deepseek.com/policies/zh-CN/deepseek-privacy-policy.html 。\n\n三、第三方模型备案公示\n备案名称：Deepseek Chat\n生成式人工智能服务备案号：' + MODEL_FILING + '\n服务提供者算法备案号：网信算备330105747635301240017号\n以上为第三方服务备案信息，不是“不写日记”的应用备案号。官方公示：https://cdn.deepseek.com/policies/zh-CN/model-algorithm-disclosure.html 。具体可用模型名以官方接口实时返回为准。\n\n四、权限与选择\n只有主动录音并获得麦克风授权后才会录音，可在系统设置撤销授权。停止或删除在线服务配置可停止后续在线整理，不能撤回已经发出的请求。日记整理保留原始记录，生成内容会标注人工智能生成。\n\n五、查看与删除\n可在记录、片段、日记和搜索查看内容，在存储与回收站恢复或永久删除移除的记录。可通过系统清除应用数据或卸载删除本地资料，开发者没有其云端副本。自行导出的文件或系统备份需另行管理。\n\n六、未成年人及更新\n未成年人请在监护人指导下使用。不满十四周岁用户应由监护人同意并指导记录及第三方服务的使用。功能或信息处理方式改变时会更新本说明，新增处理另行取得必要同意。隐私问题可通过上述邮箱联系我们，请勿发送不必要的日记、录音或密钥。';
+
+export function isOfficialEndpoint(endpoint: string | null): boolean {
+  if (endpoint === null) { return false; }
+  const normalized: string = endpoint.trim().replace(/\/+$/, '');
+  return normalized === OFFICIAL_ENDPOINT || normalized === OFFICIAL_ENDPOINT + '/v1';
+}

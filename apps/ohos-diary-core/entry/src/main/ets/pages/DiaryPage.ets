@@ -78,6 +78,7 @@ export struct DiaryPage {
 
   // ---- 正文：页面级临时读取，不缓存（见文件头第 2 条） ----
   @State bodyVersionId: string = '';
+  @State bodyOrigin: string = '';
   @State bodyLabel: string = '';
   @State bodyText: string = '';
   @State bodyError: string = '';
@@ -243,6 +244,7 @@ export struct DiaryPage {
     this.bodyVersionId = versionId;
     this.bodyLabel = label;
     this.bodyText = '';
+    this.bodyOrigin = '';
     this.bodyError = '';
     if (versionId.length === 0) {
       return;
@@ -260,6 +262,7 @@ export struct DiaryPage {
     }
     const version: DiaryVersion = result.data as DiaryVersion;
     this.bodyText = version.body;
+    this.bodyOrigin = version.origin;
   }
 
   private clearBody(): void {
@@ -506,6 +509,9 @@ export struct DiaryPage {
               .fontColor(SketchColors.muted)
               .width('100%')
           } else {
+            if (this.bodyOrigin === 'generated' || this.bodyOrigin === 'merge') {
+              Text('人工智能生成，请结合原文核对。').fontSize(13).fontColor(SketchColors.muted)
+            }
             Text(this.bodyText.length > 0 ? this.bodyText : '（这一版正文为空）')
               .fontSize(18)
               .lineHeight(30)

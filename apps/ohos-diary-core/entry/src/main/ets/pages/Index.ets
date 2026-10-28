@@ -20,6 +20,7 @@ import { SchedulePage } from './SchedulePage';
 import { RecyclePage } from './RecyclePage';
 import { TranscriptionConfigPage } from './TranscriptionConfigPage';
 import { LlmConfigPage } from './LlmConfigPage';
+import { ServicePrivacyPage } from './ServicePrivacyPage';
 
 @Entry
 @Component
@@ -166,6 +167,8 @@ struct Index {
         SchedulePage()
       }
       .title('整理时机', { backgroundColor: SketchColors.canvas })
+    } else if (name === 'privacy') {
+      ServicePrivacyPage()
     } else if (name === 'export') {
       NavDestination() {
         ExportPage()

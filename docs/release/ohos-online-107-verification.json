@@ -1,0 +1,18 @@
+{
+  "version": "1.0.7",
+  "version_code": 1000007,
+  "app_bytes": 202554615,
+  "app_sha256": "c112044ca95ea694c4bf847179d4c91878fd863fd41d5fbd6afabbbb6e7df485",
+  "internet_permission": true,
+  "device_types": [
+    "2in1"
+  ],
+  "local_model_files": 4,
+  "local_model_bytes": 263819069,
+  "model_hashes_verified": true,
+  "no_local_llm": true,
+  "native_official_service_guard": true,
+  "device_test": "not_run_no_connected_device",
+  "cloud_release_signing": "pending DevEco launch",
+  "market_submission": "not_submitted"
+}

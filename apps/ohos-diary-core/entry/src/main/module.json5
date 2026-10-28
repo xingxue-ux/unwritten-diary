@@ -5,9 +5,7 @@
     "description": "$string:module_desc",
     "mainElement": "EntryAbility",
     "deviceTypes": [
-      "2in1",
-      "tablet",
-      "phone"
+      "2in1"
     ],
     "deliveryWithInstall": true,
     "installationFree": false,
