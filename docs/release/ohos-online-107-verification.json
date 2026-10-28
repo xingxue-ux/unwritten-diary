@@ -15,10 +15,10 @@
   "content_export": false,
   "native_official_service_guard": true,
   "device_test": "not_run_no_connected_device",
-  "market_submission": "not_submitted",
+  "market_submission": "submitted_2026-10-28_pre_review",
   "market_package_upload": "passed_2026-10-28_22:34:11",
   "market_package_legality": "passed",
-  "market_draft": "saved_1.0.7_public_test_preparing_submission",
-  "submission_blocker": "Previous 1.0.6 review requires safety assessment report and passing result; operator has no materials or written exemption",
+  "market_draft": "1.0.7_public_test_under_pre_review",
+  "qualification_review_note": "Submitted at operator request with official third-party API disclosure; previous 1.0.6 safety assessment issue remains subject to Huawei review",
   "privacy_policy_url": "https://xingxue-ux.github.io/unwritten-diary/online/"
 }
