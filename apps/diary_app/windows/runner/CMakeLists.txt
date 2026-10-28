@@ -38,3 +38,12 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+
+# 源码里有非 ASCII 字面量（main.cpp 的窗口标题 `L"不写日记"`）。MSVC 在没有 BOM、
+# 也没有 `/utf-8` 时按**系统 ANSI 代码页**解读源文件；中文系统上这份 UTF-8 源会被当成
+# GBK，于是宽字面量编成乱码——2026-10-28 真机看到标题栏显示「涓嶅啓鏃ヨ」。
+# 加 `/utf-8` 让「源文件是 UTF-8 + 执行字符集是 UTF-8」这件事显式成立，
+# 不依赖构建机语言设置。
+if(MSVC)
+  target_compile_options(${BINARY_NAME} PRIVATE "/utf-8")
+endif()
