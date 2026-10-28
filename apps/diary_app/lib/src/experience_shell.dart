@@ -2074,6 +2074,27 @@ class _ExperienceShellState extends State<ExperienceShell>
     ],
   );
 
+  /// 核心内置的三个整理模板（`organize.rs` 的 `BUILTIN_TEMPLATES`）。
+  /// 名称与说明照核心原文，不另起一套说法。
+  static const List<({String id, String label, String description})>
+  kOrganizeTemplates = [
+    (
+      id: 'merge_by_theme',
+      label: '按主题归并',
+      description: '把一天零散的材料按主题归并成一篇有结构的日记，适合笔记拼成一天。',
+    ),
+    (
+      id: 'proofread',
+      label: '只改错别字与标点',
+      description: '只做最小修改：错别字与标点，保留口语、顺序与原来的说法。想「几乎跟随原文」选这个。',
+    ),
+    (
+      id: 'compress',
+      label: '压缩到指定长度',
+      description: '压缩到指定字数以内，去掉重复与铺陈，不删掉发生过的事。',
+    ),
+  ];
+
   Widget _schedulePanel() {
     final controller = _scheduleSettings;
     final settings = controller.schedule;
@@ -2105,6 +2126,49 @@ class _ExperienceShellState extends State<ExperienceShell>
                       ? null
                       : (value) =>
                             unawaited(controller.setEnabled(value)),
+                ),
+                const Divider(color: SketchColors.line),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '整理方式',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        kOrganizeTemplates
+                            .firstWhere(
+                              (t) => t.id == controller.templateId,
+                              orElse: () => kOrganizeTemplates.first,
+                            )
+                            .description,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: SketchColors.muted,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final template in kOrganizeTemplates)
+                            ChoiceChip(
+                              label: Text(template.label),
+                              selected: controller.templateId == template.id,
+                              onSelected: controller.saving
+                                  ? null
+                                  : (_) => unawaited(
+                                      controller.setTemplate(template.id),
+                                    ),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
                 const Divider(color: SketchColors.line),
                 ListTile(

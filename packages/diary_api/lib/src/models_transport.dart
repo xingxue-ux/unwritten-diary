@@ -1480,6 +1480,7 @@ class ExportTicket {
 class OrganizeSchedule {
   const OrganizeSchedule({
     required this.enabled,
+    required this.templateId,
     required this.autoOrganizeTime,
     required this.supplementOnNewMaterials,
     required this.revision,
@@ -1487,6 +1488,12 @@ class OrganizeSchedule {
 
   /// 自动整理是否开启。**核心默认是关的**：只有显式打开才会跑。
   final bool enabled;
+
+  /// 整理方式：核心内置模板的 id。
+  ///
+  /// `merge_by_theme`（按主题归并）、`proofread`（只改错别字与标点，**贴近原文**）、
+  /// `compress`（压缩到指定长度）。核心对未知 id 报 `not_found`，这里不擅自兜底。
+  final String templateId;
 
   /// 计划触发时间 `HH:mm`（本地时间）。**不是完成承诺**，到点在下次启动时补做。
   final String autoOrganizeTime;
@@ -1499,10 +1506,12 @@ class OrganizeSchedule {
 
   OrganizeSchedule copyWith({
     bool? enabled,
+    String? templateId,
     String? autoOrganizeTime,
     bool? supplementOnNewMaterials,
   }) => OrganizeSchedule(
     enabled: enabled ?? this.enabled,
+    templateId: templateId ?? this.templateId,
     autoOrganizeTime: autoOrganizeTime ?? this.autoOrganizeTime,
     supplementOnNewMaterials:
         supplementOnNewMaterials ?? this.supplementOnNewMaterials,
@@ -1513,11 +1522,18 @@ class OrganizeSchedule {
   bool operator ==(Object other) =>
       other is OrganizeSchedule &&
       other.enabled == enabled &&
+      other.templateId == templateId &&
       other.autoOrganizeTime == autoOrganizeTime &&
       other.supplementOnNewMaterials == supplementOnNewMaterials &&
       other.revision == revision;
 
   @override
   int get hashCode =>
-      Object.hash(enabled, autoOrganizeTime, supplementOnNewMaterials, revision);
+      Object.hash(
+        enabled,
+        templateId,
+        autoOrganizeTime,
+        supplementOnNewMaterials,
+        revision,
+      );
 }

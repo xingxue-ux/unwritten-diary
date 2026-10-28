@@ -220,6 +220,7 @@ class MockDiaryApi implements DiaryApi, OrganizeSchedulePort {
 
   api.OrganizeSchedule _organizeSchedule = const api.OrganizeSchedule(
     enabled: false,
+    templateId: 'merge_by_theme',
     autoOrganizeTime: '22:30',
     supplementOnNewMaterials: true,
     revision: 1,
@@ -241,6 +242,7 @@ class MockDiaryApi implements DiaryApi, OrganizeSchedulePort {
     }
     _organizeSchedule = api.OrganizeSchedule(
       enabled: schedule.enabled,
+      templateId: schedule.templateId,
       autoOrganizeTime: schedule.autoOrganizeTime,
       supplementOnNewMaterials: schedule.supplementOnNewMaterials,
       revision: _organizeSchedule.revision + 1,

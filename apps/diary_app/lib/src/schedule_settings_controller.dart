@@ -26,6 +26,7 @@ class ScheduleSettingsController extends ChangeNotifier {
   String? message;
 
   bool get enabled => schedule?.enabled ?? false;
+  String get templateId => schedule?.templateId ?? 'merge_by_theme';
   String get autoOrganizeTime => schedule?.autoOrganizeTime ?? '22:30';
   bool get supplementOnNewMaterials =>
       schedule?.supplementOnNewMaterials ?? true;
@@ -116,6 +117,14 @@ class ScheduleSettingsController extends ChangeNotifier {
     (current) => current.copyWith(enabled: value),
     success: value ? '自动整理已开启。' : '自动整理已关闭。',
     failure: '自动整理的开关没有保存，原设置保持不变。',
+  );
+
+  /// 换整理方式。核心只认内置模板 id（`merge_by_theme` / `proofread` / `compress`），
+  /// 未知 id 会被核心拒成 `not_found`，这里不擅自兜底成默认。
+  Future<bool> setTemplate(String id) => _apply(
+    (current) => current.copyWith(templateId: id),
+    success: '整理方式已更新。',
+    failure: '整理方式没有保存，原设置保持不变。',
   );
 
   Future<bool> setSupplementOnNewMaterials(bool value) => _apply(

@@ -833,6 +833,9 @@ void main() {
     await tester.tap(find.text('风格偏好'));
     await tester.pumpAndSettle();
     expect(find.textContaining('暂不保存到核心'), findsOneWidget);
+    // 五个维度都能自定义：点「自定义」后出现输入框，写进去的值会原样保存。
+    expect(find.text('从一套现成的开始'), findsOneWidget);
+    expect(find.byType(TextField), findsAtLeastNWidgets(3));
     await tester.tap(find.text('返回'));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('整理时机'));
