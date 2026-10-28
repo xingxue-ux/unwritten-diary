@@ -13,9 +13,12 @@ import 'package:flutter/foundation.dart';
 /// - 写失败**不改本地状态**，只把原因放进 `message`；
 /// - 所有写操作共用 `saving`，连点开关不会交叉两次写。
 class ScheduleSettingsController extends ChangeNotifier {
-  ScheduleSettingsController(this._api);
+  /// `port` 为 null 表示当前宿主没有实现 `organize_settings` 这一块
+  /// （契约里它归 `settings.*`，Windows 桥还没接）。这时界面只显示原因，
+  /// 不摆一组点了没用的开关。
+  ScheduleSettingsController(this._port);
 
-  final DiaryApi _api;
+  final OrganizeSchedulePort? _port;
 
   OrganizeSchedule? schedule;
   bool loading = false;
@@ -32,8 +35,15 @@ class ScheduleSettingsController extends ChangeNotifier {
     loading = true;
     message = null;
     notifyListeners();
+    final port = _port;
+    if (port == null) {
+      loading = false;
+      message = '当前核心没有开放整理时机的读写，这里的改动不会保存。';
+      notifyListeners();
+      return;
+    }
     try {
-      schedule = await _api.organizeSchedule();
+      schedule = await port.organizeSchedule();
       if (schedule != null && !schedule!.enabled) {
         message = '自动整理默认是关的：打开后才会在计划时间整理已保存的材料。';
       }
@@ -55,8 +65,9 @@ class ScheduleSettingsController extends ChangeNotifier {
     required String success,
     required String failure,
   }) async {
+    final port = _port;
     final current = schedule;
-    if (current == null || saving) return false;
+    if (port == null || current == null || saving) return false;
     final next = patch(current);
     if (next == current) return true;
 
@@ -65,7 +76,7 @@ class ScheduleSettingsController extends ChangeNotifier {
     notifyListeners();
     var ok = false;
     try {
-      schedule = await _api.updateOrganizeSchedule(
+      schedule = await port.updateOrganizeSchedule(
         schedule: next,
         expectedRevision: current.revision,
       );
@@ -78,8 +89,8 @@ class ScheduleSettingsController extends ChangeNotifier {
       }
       // 别处改过设置：重读一次，再按新 revision 重试一遍。
       try {
-        final latest = await _api.organizeSchedule();
-        schedule = await _api.updateOrganizeSchedule(
+        final latest = await port.organizeSchedule();
+        schedule = await port.updateOrganizeSchedule(
           schedule: patch(latest),
           expectedRevision: latest.revision,
         );

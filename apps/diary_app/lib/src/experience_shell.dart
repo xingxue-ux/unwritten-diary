@@ -122,7 +122,9 @@ class _ExperienceShellState extends State<ExperienceShell>
       widget.api,
       capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
     );
-    _scheduleSettings = ScheduleSettingsController(widget.api);
+    _scheduleSettings = ScheduleSettingsController(
+      widget.api is OrganizeSchedulePort ? widget.api as OrganizeSchedulePort : null,
+    );
     _readableExport = ReadableExportController(
       widget.api,
       capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},

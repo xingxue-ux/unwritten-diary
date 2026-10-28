@@ -6,7 +6,7 @@ import 'package:diary_api/diary_api.dart';
 /// 只覆盖 F0 的记录路径；其余契约方法在对应任务实现前会明确报错。
 ///
 /// 数据只在这个对象存活期间存在，绝不用于验证真实持久化。
-class MockDiaryApi implements DiaryApi {
+class MockDiaryApi implements DiaryApi, OrganizeSchedulePort {
   MockDiaryApi({
     DateTime Function()? clock,
     this.timeZone = 'Asia/Shanghai',

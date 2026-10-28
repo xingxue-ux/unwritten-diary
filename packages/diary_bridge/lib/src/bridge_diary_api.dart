@@ -59,7 +59,7 @@ import '../diary_bridge.dart' as bridge;
 ///   [api.DiaryException]（枚举码），未知码落到 `unknown` 而不是崩掉；
 /// - **能力窄化**：核心报的是「桥接接了多少」，这里只报「适配层能真的用的」，
 ///   两者取交集。
-class BridgeDiaryApi implements api.DiaryApi {
+class BridgeDiaryApi implements api.DiaryApi, api.OrganizeSchedulePort {
   BridgeDiaryApi({
     required this.coreLibraryPath,
     required this.libraryPath,
