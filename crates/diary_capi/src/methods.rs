@@ -277,6 +277,12 @@ const DEFAULT_PAGE_SIZE: usize = 20;
 const DEFAULT_EVENTS_LIMIT: usize = 200;
 const MAX_EVENTS_LIMIT: usize = 1000;
 
+fn generation_only_method(method: &str) -> bool {
+    matches!(method,
+        "diary.generate" | "providers.selectGeneration" | "providers.models" | "providers.presets")
+        || method.starts_with("styles.") || method.starts_with("organize.")
+}
+
 /// 方法分派。`params` 为 `null` 表示调用方没给参数。
 pub(crate) fn dispatch(
     core: &mut Core,
@@ -284,6 +290,18 @@ pub(crate) fn dispatch(
     method: &str,
     params: &Value,
 ) -> Result<Value, CallError> {
+    if !diary_core::release_policy::GENERATION_ENABLED {
+        let generation_method = generation_only_method(method);
+        let generation_config = method == "providers.save"
+            && params.get("config").and_then(|c| c.get("adapter_id"))
+                .and_then(Value::as_str) != Some("sherpa_onnx");
+        let generation_test = method == "providers.test"
+            && params.get("scope").and_then(Value::as_array)
+                .is_some_and(|scope| scope.iter().any(|v| v.as_str() != Some("transcribe_audio")));
+        if generation_method || generation_config || generation_test {
+            return Err(CallError::invalid_argument("此版本不提供日记生成或在线模型服务。"));
+        }
+    }
     match method {
         // ------------------------------------------------------------ 核心
         "core.info" => {
@@ -831,7 +849,9 @@ fn core_info(core: &Core, library_id: &str) -> Result<Value, CoreError> {
         "data_schema_version": core.schema_version()?,
         "build_version": env!("CARGO_PKG_VERSION"),
         "library_id": library_id,
-        "capabilities": WIRED_METHODS,
+        "capabilities": WIRED_METHODS.iter().copied()
+            .filter(|method| diary_core::release_policy::GENERATION_ENABLED || !generation_only_method(method))
+            .collect::<Vec<_>>(),
         "recovery": {
             "recoverable_imports": recoverable_imports,
             "open_recordings": open_recordings,

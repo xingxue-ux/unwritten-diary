@@ -295,7 +295,7 @@ export struct ProfilePage {
           this.diagnosticsPanel()
         } else {
           PageTitle({ title: '我的小天地', subtitle: '你的记录安静地留在这台设备上。' })
-          Text('日记默认只保存在这台设备上；只有你主动配置的模型服务会收到交给它处理的材料。')
+          Text('记录、录音和搜索都在这台设备上处理，无需联网。')
             .fontSize(13).fontColor(SketchColors.text).padding(20)
             .width('100%').backgroundColor(SketchColors.soft).drawModifier(sketchOutline())
           ErrorBanner({ error: this.error, showReload: true, onReload: () => { this.load(); } })
@@ -306,11 +306,8 @@ export struct ProfilePage {
           }
           SketchCard() {
             Column() {
-              SectionTitle({ text: '创作与整理' })
-              this.entry('风格偏好', '篇幅、语气与叙述方式', 'styles')
-              this.entry('模型服务', '设置智能整理服务', 'llm')
+              SectionTitle({ text: '记录与转写' })
               this.entry('本地语音转写', '离线把录音转成文字', 'transcription')
-              this.entry('整理时机', '安静地安排每天的整理', 'schedule')
               this.entry('任务中心', '查看处理进度', 'jobs')
             }.width('100%').alignItems(HorizontalAlign.Start)
           }
@@ -319,7 +316,7 @@ export struct ProfilePage {
               SectionTitle({ text: '资料与应用' })
               this.entry('搜索索引', '让记录更容易找到', 'diagnostics')
               this.entry('存储与回收站', '查看和恢复移除的记录', 'recycle')
-              this.entry('隐私与模型服务说明', '查看数据处理和第三方备案信息', 'privacy')
+              this.entry('隐私说明', '查看本机保存和权限说明', 'privacy')
             }.width('100%').alignItems(HorizontalAlign.Start)
           }
           Button(this.showDiagnostics ? '收起本地功能' : '本地功能')

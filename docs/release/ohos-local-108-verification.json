@@ -1,0 +1,36 @@
+{
+  "version": "1.0.8",
+  "version_code": 1000008,
+  "bundle_name": "com.lingxing.unwrittendiary",
+  "bytes": 202334888,
+  "sha256": "d920404e717929179b2d29acda8f0f9839358681b9f869e0bc23d49a7f7adbe7",
+  "release_mode": true,
+  "devices": [
+    "2in1"
+  ],
+  "permissions": [
+    "ohos.permission.MICROPHONE",
+    "ohos.permission.KEEP_BACKGROUND_RUNNING"
+  ],
+  "internet_permission": false,
+  "generated_diary": false,
+  "local_asr": true,
+  "local_semantic_search": true,
+  "bundled_model_bytes": 263819069,
+  "native_capi_sha256": "48aab9cb0d777e55bad8a8823a63d259bc5cda28ee0922295bbe5516424780f3",
+  "native_arch": "aarch64",
+  "native_network_denial_present": true,
+  "credential_scan": "passed",
+  "device_test": "not_run_no_connected_device",
+  "cloud_release_signing": "pending",
+  "market_submission": "not_yet",
+  "artifact": "unsigned APP before cloud release signing",
+  "automated_checks": {
+    "native_no_generation_tests": 4,
+    "c_abi_no_generation_tests": 1,
+    "arkts_scope_files": 35,
+    "existing_interaction_groups": 28,
+    "bundled_model_cases": 10,
+    "local_policy_and_day_navigation": "passed"
+  }
+}

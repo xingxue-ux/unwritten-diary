@@ -16,6 +16,7 @@ mod assets;
 mod backup;
 mod chunker;
 mod chunks;
+pub mod release_policy;
 /// 设备配置文件 `core-config.json`（与 `library.sqlite` 同目录）。
 ///
 /// 公开是为了让 C ABI 与集成测试能读同一份类型（`RuntimeConfigReport` /

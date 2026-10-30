@@ -1343,6 +1343,23 @@ pub(crate) fn run_due(
         next_wakeup: None,
     };
 
+    // Cancel retained generation jobs before configuration/dependency promotion.
+    // Local transcription and indexing continue; original records/versions are untouched.
+    if !crate::release_policy::GENERATION_ENABLED {
+        let ids = {
+            let mut statement = core.conn.prepare(
+                "SELECT id FROM jobs WHERE kind IN ('diary_generate', 'respond') \
+                 AND state NOT IN ('succeeded', 'failed', 'cancelled')",
+            )?;
+            let ids = statement.query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids
+        };
+        for id in ids {
+            cancel(core, &id, &format!("no-generation:{id}"))?;
+        }
+    }
+
     // 自动整理的排期在**每轮开始**跑一次（B4e）：把「该整理」的日子冻结成快照、
     // 排成 `diary_generate` 任务，剩下的退避、补做、配置闸门、租约恢复全部走队列
     // 既有机制（这一片不另造调度）。**默认关时它什么都不做**，连一次 Provider 调用
@@ -1520,6 +1537,13 @@ fn execute(
     job: &Job,
     deadline: Option<std::time::Instant>,
 ) -> std::result::Result<HandlerOutcome, HandlerFailure> {
+    if !crate::release_policy::GENERATION_ENABLED
+        && matches!(job.kind.as_str(), "diary_generate" | "respond")
+    {
+        return Err(HandlerFailure::terminal(
+            "invalid_argument", "此版本不提供日记生成。".to_owned(),
+        ));
+    }
     match job.kind.as_str() {
         KIND_EXTRACT => run_extract(core, job).map(|()| HandlerOutcome::Completed),
         KIND_INDEX => run_index(core, job).map(|()| HandlerOutcome::Completed),

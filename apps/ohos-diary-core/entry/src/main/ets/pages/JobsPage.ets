@@ -522,7 +522,7 @@ export struct JobsPage {
     Column({ space: 10 }) {
       Row({ space: 8 }) {
         Column() {
-          PageTitle({ title: '任务中心', subtitle: '查看转写、搜索整理和日记进度。' })
+          PageTitle({ title: '任务中心', subtitle: '查看转写和搜索处理进度。' })
         }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
@@ -622,7 +622,7 @@ export struct JobsPage {
               EmptyState({
                 icon: '—',
                 title: '这个筛选下没有任务',
-                hint: '转写和日记整理任务会显示在这里。',
+                hint: '转写和搜索处理任务会显示在这里。',
               })
             }
           } else if (this.jobs.length === 0) {

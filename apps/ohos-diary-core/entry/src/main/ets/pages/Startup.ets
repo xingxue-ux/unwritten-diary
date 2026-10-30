@@ -2,7 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { promptAction } from '@kit.ArkUI';
-import { SERVICE_NOTICE } from '../ui/OnlineService';
+import { SERVICE_NOTICE } from '../ui/LocalService';
 import { BundledModels, ModelProgress } from '../models/BundledModels';
 import { appFilesDir } from '../session/AppDirectory';
 import { SketchColors, SketchFonts, CatMark, sketchButton, sketchOutline } from '../ui/Sketch';
@@ -31,12 +31,12 @@ struct Startup {
     if (this.running) { return; }
     this.noticeFailed = false;
     const context = getContext(this) as common.UIAbilityContext;
-    const marker: string = `${appFilesDir(context)}/online-service-notice-v1`;
+    const marker: string = `${appFilesDir(context)}/local-service-notice-v1`;
     try {
       let accepted: boolean = false;
       try { accepted = fs.accessSync(marker); } catch (_) { accepted = false; }
       if (!accepted) {
-        const answer = await promptAction.showDialog({ title: '在线整理与隐私说明',
+        const answer = await promptAction.showDialog({ title: '本机记录与隐私说明',
           message: SERVICE_NOTICE,
           buttons: [{ text: '退出', color: '#777777' }, { text: '同意并继续', color: '#303030' }] });
         if (answer.index !== 1) { await context.terminateSelf(); return; }

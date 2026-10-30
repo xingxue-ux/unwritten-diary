@@ -1299,7 +1299,7 @@ pub(crate) fn candidates(
         });
     }
     pending.sort_by(|left, right| left.day_key.cmp(&right.day_key));
-    if !settings.enabled {
+    if !crate::release_policy::GENERATION_ENABLED || !settings.enabled {
         notes.push(
             "自动整理是关的（默认关）：上面列出的日子只说明「开启后会整理什么」，\
              现在核心不会调用任何服务"
@@ -1337,7 +1337,7 @@ pub(crate) fn plan_due(core: &mut Core, now: DateTime<Utc>) -> Result<OrganizePl
         blocked_reason: None,
         notes: Vec::new(),
     };
-    if !settings.enabled {
+    if !crate::release_policy::GENERATION_ENABLED || !settings.enabled {
         summary
             .notes
             .push("自动整理是关的（默认关）：这一轮没有排任何任务，也不会调用任何服务".to_owned());

@@ -118,6 +118,11 @@ export function runCoreBatch(dbPath: string, requestsJson: string): string {
       if (request.method === 'exports.create') {
         throw new DiaryError('unsupported_format', '此鸿蒙版本暂不提供内容导出。');
       }
+      if (request.method === 'diary.generate' || request.method === 'providers.models' ||
+        request.method === 'providers.selectGeneration' || request.method === 'providers.presets' ||
+        request.method.startsWith('styles.') || request.method.startsWith('organize.')) {
+        throw new DiaryError('invalid_argument', '此版本不提供日记生成或在线模型服务。');
+      }
       const params: Object | null = request.params.length === 0
         ? null
         : JSON.parse(request.params) as Object;

@@ -5,7 +5,6 @@ import { AppState } from '../ui/AppState';
 import { databasePath } from '../ui/AppRuntime';
 import { RunDueParams } from '../core/Models';
 import { CatMark, SketchColors, SketchFonts, sketchOutline } from '../ui/Sketch';
-import { StylesPage } from './StylesPage';
 import { RecordPage } from './RecordPage';
 import { DiaryPage } from './DiaryPage';
 import { DiaryDayPage } from './DiaryDayPage';
@@ -15,10 +14,8 @@ import { RecordingPage } from './RecordingPage';
 import { SearchPage } from './SearchPage';
 import { JobsPage } from './JobsPage';
 import { ProfilePage } from './ProfilePage';
-import { SchedulePage } from './SchedulePage';
 import { RecyclePage } from './RecyclePage';
 import { TranscriptionConfigPage } from './TranscriptionConfigPage';
-import { LlmConfigPage } from './LlmConfigPage';
 import { ServicePrivacyPage } from './ServicePrivacyPage';
 
 @Entry
@@ -133,8 +130,10 @@ struct Index {
       RecordingPage({ pathStack: this.pathStack })
     } else if (name === 'transcription') {
       TranscriptionConfigPage({ pathStack: this.pathStack })
-    } else if (name === 'llm') {
-      LlmConfigPage({ pathStack: this.pathStack })
+    } else if (name === 'dayRecords') {
+      NavDestination() {
+        SnippetsPage({ pathStack: this.pathStack, selectedDay: param })
+      }.title('当天记录', { backgroundColor: SketchColors.canvas })
     } else if (name === 'diaryDay') {
       NavDestination() {
         DiaryDayPage({ pathStack: this.pathStack, dayKey: param as string })
@@ -156,16 +155,6 @@ struct Index {
         RecyclePage()
       }
       .title('回收站', { backgroundColor: SketchColors.canvas })
-    } else if (name === 'styles') {
-      NavDestination() {
-        StylesPage()
-      }
-      .title('风格偏好', { backgroundColor: SketchColors.canvas })
-    } else if (name === 'schedule') {
-      NavDestination() {
-        SchedulePage()
-      }
-      .title('整理时机', { backgroundColor: SketchColors.canvas })
     } else if (name === 'privacy') {
       ServicePrivacyPage()
     }

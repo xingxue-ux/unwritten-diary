@@ -522,12 +522,7 @@ async function resumedDiaryFeedback(){
   assert.equal(page.acceptedNote,'');assert.equal(page.runNote,'');
   page.waitingConfiguration=true;page.runNote='waiting';page.store.jobsStatusKnown=false;
   await page.reload();assert.equal(page.runNote,'waiting');
-  page.store.jobsStatusKnown=true;
-  page.store.generate=async()=>({job_id:'job'});
-  page.store.runDueJobs=async()=>{page.store.waitingConfiguration=true;page.store.message='请先配置模型服务。';};
-  page.store.openDay=async()=>true;
-  await page.generateAndRun();assert.equal(page.waitingConfiguration,true);
-  assert.equal(page.acceptedNote,'');assert.match(page.runNote,/配置/);
+  assert.equal(page.generateAndRun,undefined);
 }
 async function chineseSystemFeedback(){
   const {toUiError}=load('ui/Errors.ets',{'../core/DiaryError':{DiaryError}});

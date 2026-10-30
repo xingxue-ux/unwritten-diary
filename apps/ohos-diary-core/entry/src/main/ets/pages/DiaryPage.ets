@@ -19,7 +19,6 @@ import { SketchColors, SketchFonts, SketchType, SketchCard, sketchButton, sketch
 import { common } from '@kit.AbilityKit';
 import {
   DiaryDay,
-  DiaryGenerationTicket,
   DiaryVersion,
   DiaryVersionParams,
 } from '../core/Models';
@@ -132,41 +131,6 @@ export struct DiaryPage {
     this.acceptedNote = '';
     this.runNote = '';
     this.busy = true;
-    await store.openDay(dayKey);
-    this.sync(store);
-    this.busy = false;
-    await this.readCurrentBody();
-  }
-
-  /**
-   * 生成按钮：`generate` 只受理（返回票据），真正生成要 `runDueJobs`。
-   *
-   * 顺序照任务要求：受理 → 提示「已受理，要跑任务才会生成」→ 跑任务 → 再 `openDay`
-   * 重读这一天。三步的结论都在 store 的 `message` / `error` / `waitingConfiguration`
-   * 里，页面只把它们显示出来。
-   */
-  private async generateAndRun(): Promise<void> {
-    const store: DiaryStore | null = this.store;
-    if (store === null) {
-      return;
-    }
-    const dayKey: string = this.dayKey;
-    this.acceptedNote = '';
-    this.runNote = '';
-    this.busy = true;
-    const ticket: DiaryGenerationTicket | null = await store.generate(dayKey);
-    this.sync(store);
-    if (ticket === null) {
-      // 没受理：原因已经由 store 写进 error / message，原样显示，页面不另编一套。
-      this.busy = false;
-      return;
-    }
-    this.acceptedNote = '正在整理日记…';
-    await store.runDueJobs();
-    this.acceptedNote = '';
-    this.sync(store);
-    // runDueJobs 的说明在下面这次 openDay 里会被 store 清掉（它清 message），先留住原话。
-    this.runNote = store.message;
     await store.openDay(dayKey);
     this.sync(store);
     this.busy = false;
@@ -307,7 +271,7 @@ export struct DiaryPage {
       Column() {
         PageTitle({
           title: '日记',
-          subtitle: '把留下的片段，慢慢整理成一页。',
+          subtitle: '记录按天保留，随时回看。',
         })
       }
       .layoutWeight(1)
@@ -340,14 +304,12 @@ export struct DiaryPage {
   @Builder
   statusStrip() {
     Column({ space: 6 }) {
-      Button('配置模型服务').attributeModifier(sketchButton).drawModifier(sketchOutline())
-        .onClick(() => { this.pathStack.pushPathByName('llm', ''); })
       if (this.waitingConfiguration) {
-        Text('请先配置模型服务')
+        Text('本地任务等待准备')
           .fontSize(SketchType.section)
           .fontColor(SketchColors.ink)
           .width('100%')
-        Text(`有 ${this.waitingCount} 项任务等待配置，完成配置后可继续。`)
+        Text(`有 ${this.waitingCount} 项任务等待准备，可在“我的”查看语音转写和搜索索引。`)
           .fontSize(SketchType.caption)
           .fontColor(SketchColors.muted)
           .width('100%')
@@ -438,8 +400,8 @@ export struct DiaryPage {
             .width('100%')
         } else {
           Row({ space: 8 }) {
-            StatePill({ text: '还没有版本', tone: 'muted' })
-            Text('这一天还没有任何正文版本')
+            StatePill({ text: '原始记录', tone: 'muted' })
+            Text('内容按原文保存')
               .fontSize(SketchType.body)
               .fontColor(SketchColors.ink)
           }
@@ -456,15 +418,15 @@ export struct DiaryPage {
           .fontColor(SketchColors.muted)
           .width('100%')
 
-        // ---- 生成：先受理，再跑任务 ----
+        // Read original records without generating or rewriting their contents.
         Row({ space: 8 }) {
-          Button('整理这一天')
+          Button('查看当天记录')
             .attributeModifier(sketchButton).drawModifier(sketchOutline())
             .enabled(!this.busy)
             .onClick(() => {
-              this.generateAndRun();
+              this.pathStack.pushPathByName('dayRecords', this.dayKey);
             })
-          Text('整理完成后即可阅读。')
+          Text('文字与录音转写均保留原文。')
             .fontSize(SketchType.caption)
             .fontColor(SketchColors.muted)
             .layoutWeight(1)
@@ -504,7 +466,7 @@ export struct DiaryPage {
               .fontColor(SketchColors.ink)
               .width('100%')
           } else if (this.bodyVersionId.length === 0) {
-            Text('还没有当前版本。可以先阅读候选，再决定是否采用。')
+            Text('点击“查看当天记录”，阅读这一天留下的内容。')
               .fontSize(SketchType.caption)
               .fontColor(SketchColors.muted)
               .width('100%')
@@ -628,7 +590,7 @@ export struct DiaryPage {
             EmptyState({
               icon: '日',
               title: '这里还没有日记',
-              hint: '先留下一点今天的片段，再慢慢整理成一页。',
+              hint: '先在“记录”写一条或录一段，内容会按天保留。',
             })
           }
         } else if (this.days.length === 0) {

@@ -125,9 +125,9 @@ async function customConfiguration() {
   env.files.set('/app/core-config.json', Buffer.from(text));
   env.providers([{id: 'mine', adapter_id: 'sherpa_onnx', model: '/custom/asr', enabled: false}]);
   await env.prepare(); assert.equal(env.files.get('/app/core-config.json').toString(), text);
-  assert.deepEqual(env.calls.map(c => c.method), ['providers.list', 'providers.list']);
+  assert.deepEqual(env.calls.map(c => c.method), ['providers.list']);
 }
-async function onlineSelectionRepairRetriesAndRunsOnce() {
+async function generationSelectionIsNeverChanged() {
   const env = environment();
   const asrChoice = {id: 'custom-asr', adapter_id: 'sherpa_onnx', model: '/custom/asr',
     capabilities: ['transcribe_audio'], enabled: true, test_status: 'ok'};
@@ -136,16 +136,17 @@ async function onlineSelectionRepairRetriesAndRunsOnce() {
     {id: 'preferred', adapter_id: 'openai_compatible', capabilities: ['generate_text'], enabled: true,
       test_status: 'ok', credential_ref: 'keep-key'},
   ]);
-  env.state.selectFails = true;await assert.rejects(env.prepare(), /切换整理服务失败/);
+  env.state.selectFails = true;await env.prepare();
   assert.equal(env.files.has(`${base}/online-generation-selection-v1.json`), false);
   assert.equal(env.allProviders().filter(p => p.adapter_id === 'openai_compatible' && p.enabled).length, 2);
   env.state.selectFails = false;await env.prepare();
   const rows = env.allProviders();
   assert.deepEqual(rows.find(p => p.id === 'custom-asr'), asrChoice);
   assert.equal(rows.find(p => p.id === 'preferred').credential_ref, 'keep-key');
-  assert.equal(rows.find(p => p.id === 'first').enabled, false);
+  assert.equal(rows.find(p => p.id === 'first').enabled, true);
   assert.equal(rows.find(p => p.id === 'preferred').enabled, true);
   assert.equal(env.calls.filter(c => c.method === 'providers.test').length, 0);
+  assert.equal(env.calls.filter(c => c.method === 'providers.selectGeneration').length, 0);
   const count = env.calls.length;await env.prepare();assert.equal(env.calls.length, count);
 }
 async function disabledOnlineServicesStayDisabled() {
@@ -186,7 +187,7 @@ async function unsafeManifest() {
   await assert.rejects(env.prepare(), /清单无效/); assert.equal(env.files.size, 0);
 }
 (async () => {
-  for (const test of [firstInstall, restartPreservesChoice, customConfiguration, onlineSelectionRepairRetriesAndRunsOnce,
+  for (const test of [firstInstall, restartPreservesChoice, customConfiguration, generationSelectionIsNeverChanged,
     disabledOnlineServicesStayDisabled, interruptedCopy,
     corruptResource, invalidConfiguration, failedLocalTestRetries, unsafeManifest]) {
     await test(); console.log('PASS ' + test.name);
