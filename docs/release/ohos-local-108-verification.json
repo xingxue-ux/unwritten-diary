@@ -2,8 +2,8 @@
   "version": "1.0.8",
   "version_code": 1000008,
   "bundle_name": "com.lingxing.unwrittendiary",
-  "bytes": 202334888,
-  "sha256": "d920404e717929179b2d29acda8f0f9839358681b9f869e0bc23d49a7f7adbe7",
+  "bytes": 195176304,
+  "sha256": "823e01dc16345f06a883421d7a99469412f698bacf8cda0784e7ea87a14cb4cf",
   "release_mode": true,
   "devices": [
     "2in1"
@@ -22,9 +22,12 @@
   "native_network_denial_present": true,
   "credential_scan": "passed",
   "device_test": "not_run_no_connected_device",
-  "cloud_release_signing": "pending",
-  "market_submission": "not_yet",
-  "artifact": "unsigned APP before cloud release signing",
+  "cloud_release_signing": "completed",
+  "market_submission": "public_test_draft_saved_not_submitted",
+  "package_uploaded_at": "2026-10-30 22:48:02 +08:00",
+  "package_legality": "passed",
+  "artifact": "ohos-diary-core-default-re-signed.app, cloud release signing",
+  "unsigned_app_sha256": "d920404e717929179b2d29acda8f0f9839358681b9f869e0bc23d49a7f7adbe7",
   "automated_checks": {
     "native_no_generation_tests": 4,
     "c_abi_no_generation_tests": 1,
