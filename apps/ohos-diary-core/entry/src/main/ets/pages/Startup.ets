@@ -75,7 +75,7 @@ struct Startup {
   build() {
     Column({ space: 22 }) {
       CatMark({ iconSize: 64 })
-      Text('不写日记').fontFamily(SketchFonts.display).fontSize(36).fontColor(SketchColors.ink)
+      Text('光写日记').fontFamily(SketchFonts.display).fontSize(36).fontColor(SketchColors.ink)
       Text(this.noticeFailed ? '说明确认未完成' : this.failed ? '本地模型准备失败' : '正在准备本地模型…').fontSize(18).fontColor(SketchColors.ink)
       Text(this.noticeFailed ? '请重试后继续使用。' : this.failed ? '请检查可用空间后重试，也可以先写下文字记录。' : '语音转写与语义检索均可离线使用，无需下载模型。')
         .fontSize(14).fontColor(SketchColors.muted).textAlign(TextAlign.Center)

@@ -2,7 +2,7 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "不写日记"
+      "value": "光写日记"
     },
     {
       "name": "EntryAbility_desc",
@@ -10,7 +10,7 @@
     },
     {
       "name": "EntryAbility_label",
-      "value": "不写日记"
+      "value": "光写日记"
     },
     {
       "name": "microphone_reason",

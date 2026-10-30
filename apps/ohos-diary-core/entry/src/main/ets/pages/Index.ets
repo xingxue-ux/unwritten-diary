@@ -170,7 +170,7 @@ struct Index {
                 CatMark()
               }.width(48).height(48).padding(5)
                 .backgroundColor(SketchColors.paper).drawModifier(sketchOutline())
-              Text('不写日记')
+              Text('光写日记')
                 .fontFamily(SketchFonts.display)
                 .fontSize(this.desktop ? 33 : 29)
                 .fontColor(SketchColors.ink)

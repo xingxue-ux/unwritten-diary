@@ -660,7 +660,7 @@ export struct RecordingPage {
                     .fontSize(13)
                     .fontColor(SketchColors.text)
                     .width('100%')
-                  Text('请到系统设置 → 应用 → 不写日记 → 权限 → 麦克风 打开，然后回来重新检查。')
+                  Text('请到系统设置 → 应用 → 光写日记 → 权限 → 麦克风 打开，然后回来重新检查。')
                     .fontSize(12)
                     .fontColor(SketchColors.muted)
                     .width('100%')
