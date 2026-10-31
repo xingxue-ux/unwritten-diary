@@ -1339,6 +1339,59 @@ fn two_threads_can_share_one_handle() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn providers_select_generation_contract() {
+    let (dir, _path, handle) = open_temp("generation-selection");
+    for id in ["first", "second"] {
+        expect_ok(&call(
+            handle,
+            "providers.save",
+            json!({"config": {
+                "id": id, "label": id, "adapter_id": "openai_compatible",
+                "endpoint": "http://127.0.0.1:1/v1", "model": "test-model",
+                "capabilities": ["generate_text"], "enabled": false, "test_status": "untested"
+            }}),
+        ));
+    }
+    expect_ok(&call(
+        handle,
+        "providers.selectGeneration",
+        json!({"providerId": "first"}),
+    ));
+    expect_ok(&call(
+        handle,
+        "providers.selectGeneration",
+        json!({"provider_id": "second"}),
+    ));
+    let rows = expect_ok(&call(handle, "providers.list", json!(null)));
+    let enabled: Vec<_> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["enabled"] == true)
+        .collect();
+    assert_eq!(enabled.len(), 1);
+    assert_eq!(enabled[0]["id"], json!("second"));
+    expect_error(
+        &call(
+            handle,
+            "providers.selectGeneration",
+            json!({"provider_id": "missing"}),
+        ),
+        "not_found",
+    );
+    expect_error(
+        &call(
+            handle,
+            "providers.selectGeneration",
+            json!({"provider_id": "first", "extra": true}),
+        ),
+        "invalid_argument",
+    );
+    assert_eq!(diary_close(handle), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// `providers.save` / `list` / `test` / `remove` 的 C ABI 形状、校验与错误码。
 ///
 /// 不依赖真引擎/真网络：

@@ -41,7 +41,7 @@ use crate::Core;
 pub const DEFAULT_TEMPLATE_ID: &str = "merge_by_theme";
 
 /// 整理提示词版本。它进输入快照（`promptVersion`），与手动生成分开记。
-pub const ORGANIZE_PROMPT_VERSION: &str = "b4e-2";
+pub const ORGANIZE_PROMPT_VERSION: &str = "b4e-3";
 
 /// 自动整理的**观察窗**：只看最近这么多天里有材料的日子。
 ///
