@@ -1,8 +1,8 @@
 {
   "app": {
-    // 参考工程的临时 bundleName（不是产品最终值）。要与调试 Profile（.p7b）里的
-    // bundle-info.bundle-name 一致才能安装，见 probes/ohos-hap-smoke/README.md。
-    "bundleName": "com.lingxing.unwrittendiary",
+    // 光写日记使用独立身份，与联网版不写日记同时发布、同时安装。
+    // 发布或调试签名必须与此包名匹配。
+    "bundleName": "com.lingxing.guangxiediary",
     "vendor": "xingxue",
     "versionCode": 1000008,
     "versionName": "1.0.8",

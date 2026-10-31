@@ -2,7 +2,7 @@
 //
 // 只用于验证，不是产品 API。入口：
 //
-//   aa start -a EntryAbility -b com.lingxing.unwrittendiary -m entry \
+//   aa start -a EntryAbility -b com.lingxing.guangxiediary -m entry \
 //     --ps verify_mode hap_both --ps query=母亲体检的结果怎么样
 //
 // 这次要回答的问题（与任务书一一对应）：

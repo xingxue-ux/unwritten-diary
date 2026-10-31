@@ -2,9 +2,9 @@
   "version": "1.0.8",
   "version_code": 1000008,
   "display_name": "光写日记",
-  "bundle_name": "com.lingxing.unwrittendiary",
-  "bytes": 195176298,
-  "sha256": "60917e38ca3c71c57b146a67c092799a80dacb8fd407abfe2c79598e9e2bc7a5",
+  "bundle_name": "com.lingxing.guangxiediary",
+  "bytes": 195176290,
+  "sha256": "f26b09cb430b7b7127c02bbe84d4509f2baf14e3acfee6ab6dc1377c96f0ddd4",
   "release_mode": true,
   "devices": [
     "2in1"
@@ -24,14 +24,16 @@
   "credential_scan": "passed",
   "device_test": "not_run_no_connected_device",
   "cloud_release_signing": "completed",
-  "market_submission": "public_test_pre_review",
-  "submission_observed_date": "2026-10-31",
-  "replaced_online_public_test": "1.0.7 withdrawn to unblock 1.0.8 submission",
-  "cloud_build": 2,
-  "package_uploaded_at": "2026-10-31 01:21:11 +08:00",
+  "market_submission": "independent_public_test_draft_pending_contact_sms_verification",
+  "content_rating_china": "8+",
+  "store_category": "工具",
+  "store_tags": ["手账", "录音"],
+  "test_window": "2026-10-31 12:00:00 to 2026-10-31 23:59:59 +08:00",
+  "cloud_build": 1,
+  "package_uploaded_at": "2026-10-31 09:15:46 +08:00",
   "package_legality": "passed",
   "artifact": "ohos-diary-core-default-re-signed.app, cloud release signing",
-  "unsigned_app_sha256": "2dc8b3b714cada3144f7176b9f2831c16569e03be2dd409352debbe4e538454f",
+  "unsigned_app_sha256": "456a03e8bec0bb84c1d232cf0d1df6eabc945749c00c72a2b033ea436818ac01",
   "store_screenshots": "existing retained record, search, snippets and local transcription UI; old name disclosed; two screenshots cropped to 16:9 without redrawing",
   "emulator_attempt": {
     "architecture": "x86_64",
@@ -45,5 +47,14 @@
     "existing_interaction_groups": 28,
     "bundled_model_cases": 10,
     "local_policy_and_day_navigation": "passed"
+  },
+  "huawei_app_id": "6917620513961554086",
+  "huawei_project_id": "101653523865510901",
+  "parallel_online_application": {
+    "display_name": "不写日记",
+    "bundle_name": "com.lingxing.unwrittendiary",
+    "huawei_app_id": "6917620078377102156",
+    "version": "1.0.7",
+    "submission": "restored_waiting_for_review"
   }
 }
