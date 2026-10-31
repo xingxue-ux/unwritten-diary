@@ -56,6 +56,7 @@ function sourceKindOf(extracted: ExtractedContent | null): string {
 @Component
 export struct SnippetsPage {
   pathStack: NavPathStack = new NavPathStack();
+  @Prop selectedDay: string = '';
   @State rows: CaptureRow[] = [];
   /** 至少成功读过一页。「false + error」时不能把空数组说成「今天还没有片段」。 */
   @State loaded: boolean = false;
@@ -74,6 +75,13 @@ export struct SnippetsPage {
   aboutToAppear(): void {
     const context = getContext(this) as common.UIAbilityContext;
     this.dbPath = databasePath(context);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(this.selectedDay)) {
+      const parts: string[] = this.selectedDay.split('-');
+      const now: Date = new Date();
+      const today: number = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+      const selected: number = Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+      this.dayOffset = Math.round((selected - today) / 86400000);
+    }
     this.reload();
   }
 

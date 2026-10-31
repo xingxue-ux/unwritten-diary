@@ -2,7 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { promptAction } from '@kit.ArkUI';
-import { SERVICE_NOTICE } from '../ui/OnlineService';
+import { SERVICE_NOTICE } from '../ui/LocalService';
 import { BundledModels, ModelProgress } from '../models/BundledModels';
 import { appFilesDir } from '../session/AppDirectory';
 import { SketchColors, SketchFonts, CatMark, sketchButton, sketchOutline } from '../ui/Sketch';
@@ -31,12 +31,12 @@ struct Startup {
     if (this.running) { return; }
     this.noticeFailed = false;
     const context = getContext(this) as common.UIAbilityContext;
-    const marker: string = `${appFilesDir(context)}/online-service-notice-v1`;
+    const marker: string = `${appFilesDir(context)}/local-service-notice-v1`;
     try {
       let accepted: boolean = false;
       try { accepted = fs.accessSync(marker); } catch (_) { accepted = false; }
       if (!accepted) {
-        const answer = await promptAction.showDialog({ title: '在线整理与隐私说明',
+        const answer = await promptAction.showDialog({ title: '本机记录与隐私说明',
           message: SERVICE_NOTICE,
           buttons: [{ text: '退出', color: '#777777' }, { text: '同意并继续', color: '#303030' }] });
         if (answer.index !== 1) { await context.terminateSelf(); return; }
@@ -75,7 +75,7 @@ struct Startup {
   build() {
     Column({ space: 22 }) {
       CatMark({ iconSize: 64 })
-      Text('不写日记').fontFamily(SketchFonts.display).fontSize(36).fontColor(SketchColors.ink)
+      Text('光写日记').fontFamily(SketchFonts.display).fontSize(36).fontColor(SketchColors.ink)
       Text(this.noticeFailed ? '说明确认未完成' : this.failed ? '本地模型准备失败' : '正在准备本地模型…').fontSize(18).fontColor(SketchColors.ink)
       Text(this.noticeFailed ? '请重试后继续使用。' : this.failed ? '请检查可用空间后重试，也可以先写下文字记录。' : '语音转写与语义检索均可离线使用，无需下载模型。')
         .fontSize(14).fontColor(SketchColors.muted).textAlign(TextAlign.Center)

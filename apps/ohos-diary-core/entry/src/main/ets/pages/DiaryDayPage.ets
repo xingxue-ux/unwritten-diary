@@ -374,7 +374,7 @@ export struct DiaryDayPage {
               EmptyState({
                 icon: '—',
                 title: '这一天还没有成篇日记',
-                hint: '可回到日记页，整理这一天的记录。',
+                hint: '可在片段页查看这一天的原始记录。',
               })
             } else {
               SectionTitle({

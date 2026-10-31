@@ -45,7 +45,7 @@ export struct ExportPage {
       const suffix: string = ticket.format === 'plain_text' ? 'txt' : 'md';
       const firstDay: string = ticket.dayKeys.length > 0 ? ticket.dayKeys[0] : '日记';
       const lastDay: string = ticket.dayKeys.length > 0 ? ticket.dayKeys[ticket.dayKeys.length - 1] : '';
-      const uris: string[] = await view.save({ newFileNames: [`不写日记-${firstDay}-${lastDay}.${suffix}`] });
+      const uris: string[] = await view.save({ newFileNames: [`光写日记-${firstDay}-${lastDay}.${suffix}`] });
       if (uris.length > 0) {
         const source: fileIo.File = await fileIo.open(ticket.path, fileIo.OpenMode.READ_ONLY);
         try {

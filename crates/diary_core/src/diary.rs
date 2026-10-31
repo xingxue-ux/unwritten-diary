@@ -1431,6 +1431,7 @@ pub(crate) fn request_generation(
     reason: DiaryGenerationReason,
     operation_id: &str,
 ) -> Result<DiaryGenerationTicket> {
+    crate::release_policy::require_generation()?;
     parse_day_key(day_key)?;
     if operation_id.trim().is_empty() {
         return Err(CoreError::InvalidArgument {

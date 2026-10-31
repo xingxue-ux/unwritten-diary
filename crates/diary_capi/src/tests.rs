@@ -5174,3 +5174,22 @@ fn captures_move_day_updates_the_day_and_list_days_sees_it() {
     assert_eq!(diary_close(handle), 0);
     std::fs::remove_dir_all(dir).unwrap();
 }
+#[cfg(feature = "no-generation")]
+#[test]
+fn no_generation_release_rejects_generation_but_advertises_local_processing() {
+    let (_dir, _path, handle) = open_temp("no-generation-release");
+    for method in ["diary.generate", "providers.models", "providers.selectGeneration", "styles.list", "organize.templates"] {
+        let response = call(handle, method, json!({}));
+        assert_eq!(response["ok"], false, "{method}");
+        assert_eq!(response["error"]["code"], "invalid_argument", "{method}");
+    }
+    let response = call(handle, "providers.save", json!({"config":{"adapter_id":"openai_compatible"}}));
+    assert_eq!(response["error"]["code"], "invalid_argument");
+    let info = expect_ok(&call(handle, "core.info", Value::Null));
+    let caps = info["capabilities"].as_array().unwrap();
+    assert!(!caps.iter().any(|v| v == "diary.generate"));
+    assert!(caps.iter().any(|v| v == "sources.extract"));
+    assert!(caps.iter().any(|v| v == "indexes.rebuildSemantic"));
+    assert!(caps.iter().any(|v| v == "recordings.finalize"));
+    crate::diary_close(handle);
+}

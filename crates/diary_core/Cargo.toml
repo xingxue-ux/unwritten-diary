@@ -46,6 +46,8 @@ wasmi = { version = "2.0.0", default-features = false, features = ["std", "valid
 libloading = "0.9"
 
 [features]
+# Allows host-side regression tests of the HarmonyOS no-generation release.
+no-generation = []
 # AI 质量集的**判定器**（issue #93，B4b-ai-quality）。默认不开：判定器不是产品代码，
 # 产品路径一个字节都不该为它变大。由 `tools/probe` 与下面的 `[[test]]` 显式打开。
 #
@@ -61,6 +63,10 @@ ai-quality = []
 [[test]]
 name = "ai_quality_test"
 required-features = ["ai-quality"]
+
+[[test]]
+name = "no_generation_test"
+required-features = ["no-generation"]
 
 [dev-dependencies]
 tempfile = "3"

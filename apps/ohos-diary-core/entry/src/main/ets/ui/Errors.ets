@@ -58,7 +58,7 @@ export function toUiError(info: CoreErrorInfo): UiError {
     case 'integrity_failed': title = '材料不完整'; hint = '请重新选择材料。'; break;
     case 'unsupported_format': title = '暂不支持此格式'; hint = '请使用其他格式。'; break;
     case 'search_expired': case 'cursor_expired': title = '搜索结果已更新'; hint = '请重新搜索。'; break;
-    case 'provider_not_configured': title = '服务尚未就绪'; hint = '请先完成模型服务配置。'; break;
+    case 'provider_not_configured': title = '本地模型尚未就绪'; hint = '请在“我的”检查转写和搜索设置。'; break;
     case 'authentication_failed': title = '访问密钥无效'; hint = '请检查或更换密钥。'; break;
     case 'network_unavailable': title = '网络连接失败'; hint = '请检查网络后重试。'; break;
     case 'rate_limited': title = '服务繁忙'; hint = '请稍后再试。'; break;
