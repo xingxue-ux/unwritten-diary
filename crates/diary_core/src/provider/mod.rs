@@ -864,7 +864,15 @@ fn evaluate(
     {
         return Ok(Err(format!("服务「{}」还没有配置模型名", provider.label)));
     }
+    // 本机（严格 loopback）服务可以不填密钥——与 `provider::test` / `models` 同一口径。
+    // 闸门这里是「能不能排任务」的判据，它必须和执行者说同一件事：否则会出现
+    // 「连接测试通过、生成永远停在 provider_not_configured」。
+    let loopback = provider
+        .endpoint
+        .as_deref()
+        .is_some_and(endpoint::is_loopback_endpoint);
     match provider.credential_ref.as_deref() {
+        None if loopback => Ok(Ok(())),
         None => Ok(Err(format!("服务「{}」还没有配置密钥", provider.label))),
         Some(reference) => match core.secrets().get(reference)? {
             Some(_) => Ok(Ok(())),

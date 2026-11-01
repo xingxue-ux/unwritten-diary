@@ -1394,3 +1394,106 @@ fn a_generation_queued_before_trash_excludes_only_the_trashed_material() {
         diary_core::CaptureState::Trashed
     );
 }
+
+/// 本机（严格 loopback）服务**不填密钥也能生成**：与 `providers.test` /
+/// `providers.models` 同一口径。
+///
+/// 修复前这里会停在 `provider_not_configured`——界面按「本机服务不用填密钥」配好，
+/// 连接测试也能过，生成却永远排不起来。
+#[test]
+fn a_loopback_provider_without_credential_can_generate() {
+    let dir = tempfile::tempdir().unwrap();
+    // 连接测试与生成各要一次调用，脚本用 `repeating` 兜住次数差异。
+    let transport = Arc::new(ScriptedTransport::ok(vec![chat_ok("今天的正文。")]).repeating());
+    let mut core = new_core(dir.path());
+    core.set_transport_for_test(transport.clone() as Arc<dyn Transport>);
+
+    let provider = core
+        .save_provider(&provider_config("prv_local"), None)
+        .unwrap();
+    assert!(
+        provider.credential_ref.is_none(),
+        "这一条要验的正是「没有凭据」"
+    );
+    // 连接测试把能力标成已验证（真实流程里用户也要点这一下）。
+    core.test_provider("prv_local", &[ProviderCapability::GenerateText])
+        .unwrap();
+
+    capture_with_text(&mut core, "今天去看了花，回来得有点晚。", "cap-local-1");
+    core.generate_diary("2026-10-16", None, DiaryGenerationReason::Manual, "gen-local-1")
+        .unwrap();
+    core.run_due_jobs(chrono::Utc::now(), 30_000, "test", 16)
+        .unwrap();
+
+    let day = core.get_diary_day("2026-10-16").unwrap();
+    assert!(
+        day.current_version_id.is_some()
+            || !day.candidate_version_ids.is_empty(),
+        "loopback 无凭据应当照常生成；实际：current={:?} candidates={:?}",
+        day.current_version_id,
+        day.candidate_version_ids
+    );
+
+    let requests = transport.requests();
+    let chat = requests
+        .iter()
+        .rfind(|request| request.url.contains("chat/completions"))
+        .expect("生成要发一次 chat/completions");
+    assert!(
+        !chat.headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("authorization")),
+        "没有凭据就不该发 Authorization 头：{:?}",
+        chat.headers
+    );
+}
+
+/// 风格注入后，system 里要带「材料不够时宁短勿编」这句。
+///
+/// 起因是实测：把「篇幅」调到「长一点」时，5 个字的材料被写成 388 字，多出来的
+/// 是原文没有的事（倒水、穿厚衣服）。篇幅要求不能变成编造许可。
+#[test]
+fn the_style_guidance_forbids_padding_when_material_is_thin() {
+    let dir = tempfile::tempdir().unwrap();
+    let transport = Arc::new(ScriptedTransport::ok(vec![chat_ok("今天的正文。")]).repeating());
+    let mut core = new_core(dir.path());
+    core.set_transport_for_test(transport.clone() as Arc<dyn Transport>);
+    save_provider(&mut core);
+
+    let profile = diary_core::model::StyleProfile {
+        id: "sty_long".to_owned(),
+        label: "写长一点".to_owned(),
+        revision: 0,
+        updated_at: chrono::Utc::now(),
+        length_preference: Some("写长一点".to_owned()),
+        person: None,
+        tone: None,
+        emotional_temperature: None,
+        rhetoric_level: None,
+        examples: Vec::new(),
+        banned_expressions: Vec::new(),
+    };
+    core.save_style(&profile, None).unwrap();
+
+    capture_with_text(&mut core, "今天很累。", "cap-style-1");
+    core.generate_diary(
+        "2026-10-16",
+        Some("sty_long"),
+        DiaryGenerationReason::Manual,
+        "gen-style-1",
+    )
+    .unwrap();
+    core.run_due_jobs(chrono::Utc::now(), 30_000, "test", 16)
+        .unwrap();
+
+    let requests = transport.requests();
+    let chat = requests
+        .iter()
+        .rfind(|request| request.url.contains("chat/completions"))
+        .expect("生成要发一次 chat/completions");
+    let body = String::from_utf8_lossy(&chat.body);
+    assert!(
+        body.contains("不要为了凑长度补写没有发生的事"),
+        "风格引导里必须有「宁短勿编」：{body}"
+    );
+}

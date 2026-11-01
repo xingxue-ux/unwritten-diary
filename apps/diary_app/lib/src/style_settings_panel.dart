@@ -404,7 +404,7 @@ const List<String> kStyleLengthPresets = [
   '简短',
   '适中',
   '舒展',
-  '长一点，千字上下',
+  '写长一点',
 ];
 
 const List<String> kStyleTonePresets = [
