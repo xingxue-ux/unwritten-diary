@@ -166,15 +166,19 @@ pub(crate) fn get(core: &Core, style_id: &str) -> Result<StyleProfile> {
         })
 }
 
-/// 生成路径用：取当前版本（含 `snapshot_id`）。id 为空时取默认风格。
+/// 生成路径用：显式 id 优先，否则读取设置里选用的风格，未设置时取内置默认风格。
+/// 选用的风格不存在时如实报错，不能悄悄忽略用户的选择。
 pub(crate) fn resolve(core: &Core, style_id: Option<&str>) -> Result<StyleVersion> {
-    let id = style_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_STYLE_ID);
-    current_version(&core.conn, id)?.ok_or_else(|| CoreError::NotFound {
+    let id = match style_id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(id) => id.to_owned(),
+        None => core
+            .get_settings()?
+            .default_style_id
+            .unwrap_or_else(|| DEFAULT_STYLE_ID.to_owned()),
+    };
+    current_version(&core.conn, &id)?.ok_or_else(|| CoreError::NotFound {
         entity: "风格配置",
-        id: id.to_owned(),
+        id,
     })
 }
 

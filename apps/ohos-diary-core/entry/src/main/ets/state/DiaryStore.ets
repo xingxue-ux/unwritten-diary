@@ -215,7 +215,7 @@ export class DiaryStore {
    *
    * `reason` 只接受 `manual` / `regenerate`：`scheduled` / `automatic` 是自动整理那一路，
    * 由计划任务发起（结果一律是候选），界面上的「生成 / 再来一版」不该伪造它们。
-   * `styleId` 省略 = 用默认风格；点名不存在的风格是 `not_found`，**不静默回退**。
+   * `styleId` 省略 = 用设置里选用的风格，未设置才用内置默认；不存在时报错，**不静默回退**。
    */
   async generate(
     dayKey: string,

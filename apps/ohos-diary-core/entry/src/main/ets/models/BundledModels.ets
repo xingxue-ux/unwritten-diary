@@ -3,7 +3,7 @@ import { fileIo as fs, hash } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DiaryCore } from '../core/DiaryCore';
-import { ProviderConfig, SaveProviderParams, TestProviderParams } from '../core/Models';
+import { ProviderConfig, ProviderIdParams, SaveProviderParams, TestProviderParams } from '../core/Models';
 import { CoreGateway } from '../ui/CoreGateway';
 
 interface ModelFile {
@@ -68,8 +68,34 @@ export class BundledModels {
       await BundledModels.asrDefault(filesDir, `${root}/${ASR_REL}`);
       await BundledModels.writeAtomic(marker, '{"version":1}\n');
     }
+    const selectionMarker: string = `${root}/online-generation-selection-v1.json`;
+    if (!BundledModels.exists(selectionMarker)) {
+      await BundledModels.normalizeOnlineSelection(filesDir);
+      await BundledModels.writeAtomic(selectionMarker, '{"version":1}\n');
+    }
     hilog.info(0, 'DiaryModels', 'BUNDLED_MODELS_READY files=%{public}d bytes=%{public}d',
       manifest.files.length, total);
+  }
+
+  // Repair the old independent switches once. Preserve test-status and creation
+  // priority; never activate a disabled service or send a network request.
+  private static async normalizeOnlineSelection(filesDir: string): Promise<void> {
+    const db: string = `${filesDir}/library.sqlite`;
+    const listed = await CoreGateway.call(db, 'providers.list', null);
+    if (!listed.ok) { throw new Error('读取整理服务失败，请重试'); }
+    const enabled: ProviderConfig[] = (listed.data as ProviderConfig[]).filter((p: ProviderConfig) =>
+      p.adapter_id === 'openai_compatible' && p.enabled && p.capabilities.includes('generate_text'));
+    if (enabled.length <= 1) { return; }
+    const statuses: string[] = ['ok', 'untested', 'failed'];
+    for (const status of statuses) {
+      const preferred: ProviderConfig | undefined = enabled.find((p: ProviderConfig) => p.test_status === status);
+      if (preferred !== undefined) {
+        const params: ProviderIdParams = { provider_id: preferred.id };
+        const selected = await CoreGateway.call(db, 'providers.selectGeneration', params);
+        if (!selected.ok) { throw new Error('切换整理服务失败，请重试'); }
+        return;
+      }
+    }
   }
 
   private static exists(path: string): boolean {

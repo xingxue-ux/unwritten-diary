@@ -11,7 +11,7 @@ const marker = `${base}/defaults-ready.json`;
 
 function environment() {
   const files = new Map(), handles = new Map(), calls = [], resources = new Map(), directories = new Set();
-  const state = {opens: 0, closes: 0, failWrite: false, corruptResource: false, testFails: false};
+  const state = {opens: 0, closes: 0, failWrite: false, corruptResource: false, testFails: false, selectFails: false};
   let nextFd = 1;
   const names = ['asr/sense-voice-int8/model.int8.onnx', 'asr/sense-voice-int8/tokens.txt',
     'semantic/bge-small-zh-v1.5-ours/model_quantized.onnx', 'semantic/bge-small-zh-v1.5-ours/tokenizer.json'];
@@ -53,12 +53,19 @@ function environment() {
     if (method === 'providers.save') {
       assert.equal(params.config.adapter_id, 'sherpa_onnx');
       assert.equal(params.secret, null);
-      providers = [params.config]; return {ok: true, data: params.config};
+      providers = [...providers.filter(p => p.id !== params.config.id), params.config];
+      return {ok: true, data: params.config};
     }
     if (method === 'providers.test') {
       assert.deepEqual(Array.from(params.scope), ['transcribe_audio']);
       if (state.testFails) return {ok: false};
-      providers[0].test_status = 'ok'; return {ok: true};
+      providers.find(p => p.id === params.provider_id).test_status = 'ok'; return {ok: true};
+    }
+    if (method === 'providers.selectGeneration') {
+      if (state.selectFails) return {ok: false};
+      providers = providers.map(p => p.adapter_id === 'openai_compatible' && p.capabilities.includes('generate_text')
+        ? {...p, enabled: p.id === params.provider_id} : p);
+      return {ok: true, data: providers.find(p => p.id === params.provider_id)};
     }
     throw new Error('Unexpected API ' + method);
   }};
@@ -92,7 +99,8 @@ function environment() {
   const context = {exports: {}, require: name => modules[name] || {}, ArrayBuffer, Uint8Array, Error, JSON, Math};
   vm.runInNewContext(js, context);
   const prepare = () => context.exports.BundledModels.prepare({filesDir: '/app', resourceManager: manager}, () => {});
-  return {prepare, files, calls, state, inventory, providers: value => {providers = value;}, handles};
+  return {prepare, files, calls, state, inventory, providers: value => {providers = value;}, handles,
+    allProviders: () => providers.map(p => ({...p}))};
 }
 
 async function firstInstall() {
@@ -117,7 +125,36 @@ async function customConfiguration() {
   env.files.set('/app/core-config.json', Buffer.from(text));
   env.providers([{id: 'mine', adapter_id: 'sherpa_onnx', model: '/custom/asr', enabled: false}]);
   await env.prepare(); assert.equal(env.files.get('/app/core-config.json').toString(), text);
-  assert.deepEqual(env.calls.map(c => c.method), ['providers.list']);
+  assert.deepEqual(env.calls.map(c => c.method), ['providers.list', 'providers.list']);
+}
+async function onlineSelectionRepairRetriesAndRunsOnce() {
+  const env = environment();
+  const asrChoice = {id: 'custom-asr', adapter_id: 'sherpa_onnx', model: '/custom/asr',
+    capabilities: ['transcribe_audio'], enabled: true, test_status: 'ok'};
+  env.providers([asrChoice,
+    {id: 'first', adapter_id: 'openai_compatible', capabilities: ['generate_text'], enabled: true, test_status: 'untested'},
+    {id: 'preferred', adapter_id: 'openai_compatible', capabilities: ['generate_text'], enabled: true,
+      test_status: 'ok', credential_ref: 'keep-key'},
+  ]);
+  env.state.selectFails = true;await assert.rejects(env.prepare(), /切换整理服务失败/);
+  assert.equal(env.files.has(`${base}/online-generation-selection-v1.json`), false);
+  assert.equal(env.allProviders().filter(p => p.adapter_id === 'openai_compatible' && p.enabled).length, 2);
+  env.state.selectFails = false;await env.prepare();
+  const rows = env.allProviders();
+  assert.deepEqual(rows.find(p => p.id === 'custom-asr'), asrChoice);
+  assert.equal(rows.find(p => p.id === 'preferred').credential_ref, 'keep-key');
+  assert.equal(rows.find(p => p.id === 'first').enabled, false);
+  assert.equal(rows.find(p => p.id === 'preferred').enabled, true);
+  assert.equal(env.calls.filter(c => c.method === 'providers.test').length, 0);
+  const count = env.calls.length;await env.prepare();assert.equal(env.calls.length, count);
+}
+async function disabledOnlineServicesStayDisabled() {
+  const env = environment();
+  env.providers([{id: 'saved', adapter_id: 'openai_compatible', capabilities: ['generate_text'],
+    enabled: false, test_status: 'ok', credential_ref: 'keep-key'}]);
+  await env.prepare();
+  assert.equal(env.allProviders().find(p => p.id === 'saved').enabled, false);
+  assert.equal(env.calls.filter(c => c.method === 'providers.selectGeneration').length, 0);
 }
 async function interruptedCopy() {
   const env = environment(), destination = `${base}/${env.inventory.files[0].path}`;
@@ -149,7 +186,8 @@ async function unsafeManifest() {
   await assert.rejects(env.prepare(), /清单无效/); assert.equal(env.files.size, 0);
 }
 (async () => {
-  for (const test of [firstInstall, restartPreservesChoice, customConfiguration, interruptedCopy,
+  for (const test of [firstInstall, restartPreservesChoice, customConfiguration, onlineSelectionRepairRetriesAndRunsOnce,
+    disabledOnlineServicesStayDisabled, interruptedCopy,
     corruptResource, invalidConfiguration, failedLocalTestRetries, unsafeManifest]) {
     await test(); console.log('PASS ' + test.name);
   }

@@ -208,6 +208,50 @@ pub(crate) fn list(core: &Core) -> Result<Vec<Provider>> {
     stored_providers(core)
 }
 
+/// Select one online generation service without rewriting credentials or test
+/// verdicts. Local engines and transcription-only configurations stay unchanged.
+pub(crate) fn select_generation(core: &mut Core, provider_id: &str) -> Result<Provider> {
+    let tx = core.conn.transaction()?;
+    let mut selected = load_provider(&tx, provider_id)?;
+    let capability = ProviderCapability::GenerateText;
+    if !selected.capabilities.contains(&capability)
+        || !adapter::adapter_for(&selected.adapter_id).is_some_and(|adapter| {
+            matches!(adapter, adapter::Adapter::Http(_))
+                && adapter.capabilities().contains(&capability)
+        })
+    {
+        return Err(CoreError::InvalidArgument {
+            reason: "请选择在线整理服务".to_owned(),
+        });
+    }
+    let rows = {
+        let sql = format!("SELECT {PROVIDER_COLUMNS} FROM providers ORDER BY created_at, id");
+        let mut statement = tx.prepare(&sql)?;
+        let raw = statement
+            .query_map([], raw_provider_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        raw.into_iter()
+            .map(provider_from_raw)
+            .collect::<Result<Vec<_>>>()?
+    };
+    let now_text = support::to_iso(now());
+    for provider in rows {
+        if provider.capabilities.contains(&capability)
+            && adapter::adapter_for(&provider.adapter_id)
+                .is_some_and(|adapter| matches!(adapter, adapter::Adapter::Http(_)))
+        {
+            tx.execute(
+                "UPDATE providers SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
+                params![provider.id == selected.id, now_text, provider.id],
+            )?;
+        }
+    }
+    tx.commit()?;
+    selected.enabled = true;
+    promote_configuration_waits(core, now())?;
+    Ok(selected)
+}
+
 /// 校验并规范化 endpoint：只接受 `http(s)://host[:port][/path]`。
 ///
 /// **不接受 userinfo**（`http://user:pass@host/v1`）：URL 里的密码没有可靠的生命周期

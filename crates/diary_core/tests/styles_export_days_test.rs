@@ -332,6 +332,180 @@ fn generation_freezes_the_style_version_and_keeps_it_after_style_updates() {
     assert_eq!(old_tone, "克制", "历史日记的风格快照不能被后续修改改写");
 }
 
+#[test]
+fn generation_uses_selected_style_and_freezes_it_before_settings_change() {
+    for reason in [
+        DiaryGenerationReason::Manual,
+        DiaryGenerationReason::Regenerate,
+        DiaryGenerationReason::Automatic,
+        DiaryGenerationReason::Scheduled,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, transport) = core_with_script(dir.path(), vec![chat_ok("整理后的正文。")]);
+        save_provider(&mut core);
+        capture_on(
+            &mut core,
+            "2026-10-16",
+            "今天的零碎记录。",
+            "op-selected-source",
+        );
+        let first = core
+            .save_style(&style("sty_first", "日常随记", "日常口语"), None)
+            .unwrap();
+        core.save_style(&style("sty_second", "简短回顾", "平实书面"), None)
+            .unwrap();
+        let mut settings = core.get_settings().unwrap();
+        settings.default_style_id = Some(first.id.clone());
+        core.update_settings(&settings, settings.revision).unwrap();
+
+        let ticket = core
+            .generate_diary("2026-10-16", None, reason, "op-selected-generate")
+            .unwrap();
+        // 排队后切换风格并修改旧风格，已经受理的任务仍应使用当时的完整偏好。
+        let mut settings = core.get_settings().unwrap();
+        settings.default_style_id = Some("sty_second".to_owned());
+        core.update_settings(&settings, settings.revision).unwrap();
+        let mut changed = first;
+        changed.tone = Some("选中后才改的语气".to_owned());
+        core.save_style(&changed, Some(changed.revision)).unwrap();
+        drive(&mut core);
+
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 1, "{reason:?}");
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let system = body["messages"][0]["content"].as_str().unwrap();
+        assert!(system.contains("语气：日常口语"), "{reason:?}: {system}");
+        assert!(!system.contains("平实书面"));
+        assert!(!system.contains("选中后才改的语气"));
+        let snapshot = core
+            .debug_query_text(
+                "SELECT body FROM diary_source_snapshots WHERE id = ?1",
+                Some(&ticket.source_snapshot_id),
+            )
+            .unwrap()
+            .unwrap();
+        let snapshot: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        assert_eq!(snapshot["style"]["style_id"], "sty_first");
+        assert_eq!(snapshot["style"]["revision"], 1);
+        let version = core
+            .list_diary_versions("2026-10-16", None, 10)
+            .unwrap()
+            .versions
+            .remove(0);
+        assert_eq!(
+            version.style_snapshot_id.as_deref(),
+            snapshot["style"]["snapshot_id"].as_str()
+        );
+    }
+}
+
+#[test]
+fn scheduled_generation_uses_the_style_selected_in_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, transport) = core_with_script(dir.path(), vec![chat_ok("自动整理的正文。")]);
+    save_provider(&mut core);
+    let day_key = (Utc::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    capture_on(
+        &mut core,
+        &day_key,
+        "昨天的零碎记录。",
+        "op-scheduled-style-source",
+    );
+    core.save_style(&style("sty_scheduled", "自动整理的风格", "自然舒展"), None)
+        .unwrap();
+    let mut settings = core.get_settings().unwrap();
+    settings.default_style_id = Some("sty_scheduled".to_owned());
+    settings.auto_organize_enabled = true;
+    settings.auto_organize_time = "00:00".to_owned();
+    core.update_settings(&settings, settings.revision).unwrap();
+
+    drive(&mut core);
+    drive(&mut core);
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1, "同一份输入不应重复整理");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(body["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("语气：自然舒展"));
+    let version = core
+        .list_diary_versions(&day_key, None, 10)
+        .unwrap()
+        .versions
+        .remove(0);
+    let snapshot = core
+        .debug_query_text(
+            "SELECT body FROM diary_source_snapshots WHERE id = ?1",
+            version.source_snapshot_id.as_deref(),
+        )
+        .unwrap()
+        .unwrap();
+    let snapshot: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+    assert_eq!(snapshot["style"]["style_id"], "sty_scheduled");
+}
+
+#[test]
+fn explicit_style_overrides_settings_and_unset_settings_use_builtin_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, transport) = core_with_script(
+        dir.path(),
+        vec![chat_ok("指定风格的正文。"), chat_ok("默认正文。")],
+    );
+    save_provider(&mut core);
+    capture_on(
+        &mut core,
+        "2026-10-16",
+        "今天的记录。",
+        "op-explicit-source",
+    );
+    core.save_style(&style("sty_explicit", "指定风格", "轻快自然"), None)
+        .unwrap();
+    let mut settings = core.get_settings().unwrap();
+    settings.default_style_id = Some("sty_missing".to_owned());
+    core.update_settings(&settings, settings.revision).unwrap();
+    let error = core
+        .generate_diary(
+            "2026-10-16",
+            None,
+            DiaryGenerationReason::Manual,
+            "op-missing-default",
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        ErrorCode::NotFound,
+        "无效的选中风格不能被静默忽略"
+    );
+    assert!(transport.requests().is_empty());
+
+    core.generate_diary(
+        "2026-10-16",
+        Some("sty_explicit"),
+        DiaryGenerationReason::Manual,
+        "op-explicit-style",
+    )
+    .unwrap();
+    drive(&mut core);
+    let requests = transport.requests();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(body["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("语气：轻快自然"));
+
+    let mut settings = core.get_settings().unwrap();
+    settings.default_style_id = None;
+    core.update_settings(&settings, settings.revision).unwrap();
+    generate(&mut core, "2026-10-16", "op-unset-default");
+    assert_eq!(
+        version_style_snapshot(&core, "2026-10-16"),
+        diary_core::DEFAULT_STYLE_SNAPSHOT_ID
+    );
+    assert_eq!(transport.requests().len(), 2);
+}
+
 // ------------------------------------------------------------------ 导出
 
 fn export_request(from: &str, to: &str, format: &str) -> ExportRequest {
