@@ -1589,17 +1589,20 @@ fn provider_config_validation_rejects_junk_clearly() {
     );
 }
 
-/// 配置不完整（没有密钥）同样**不排任务**：理由与下一步都要可执行。
+/// **远端**服务没有密钥同样不排任务：理由与下一步都要可执行。
+///
+/// 2026-11-01 订正：`provider_config` 的默认 endpoint 是 loopback，而这条例要验的是
+/// 「远端缺凭据」。本机（严格 loopback）服务自 PR #182 起可以不填密钥，闸门现在与
+/// `providers.test` / `providers.models` 同一口径（见 `provider/mod.rs` 的 `evaluate`）；
+/// 本机这条由 `diary_generation_test.rs` 的
+/// `a_loopback_provider_without_credential_can_generate` 正向覆盖。
 #[test]
 fn a_provider_without_a_credential_is_not_scheduled_and_says_why() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = new_core(dir.path());
-    let saved = core
-        .save_provider(
-            &provider_config("prv_nokey", &[ProviderCapability::GenerateText], true),
-            None,
-        )
-        .unwrap();
+    let mut config = provider_config("prv_nokey", &[ProviderCapability::GenerateText], true);
+    config.endpoint = Some("https://api.example.test/v1".to_owned());
+    let saved = core.save_provider(&config, None).unwrap();
     assert!(saved.credential_ref.is_none());
     let capture_id = capture_with_text(&mut core, "还没配密钥。", "op1");
 
