@@ -111,13 +111,6 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     try {
       final value = await widget.api.listProviders();
       if (mounted) setState(() => _providers = value);
-      // 打开页面就把可选模型拉回来：模型名不该等用户点一次按钮才看得见。
-      // 失败保持安静（很多服务没有 `/models`），用户点「获取模型列表」才问原因。
-      for (final provider in value) {
-        if (provider.enabled && !_models.containsKey(provider.id)) {
-          unawaited(_loadModels(provider, quiet: true));
-        }
-      }
     } on Object {
       _say('暂时读不到已配置的服务。', error: true);
     }
@@ -181,8 +174,6 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       _secret.clear();
       await _reload();
       _say('已保存「${saved.label}」。');
-      // 保存成功后顺手拉一次模型列表：模型名不该让人手打。
-      await _loadModels(saved, quiet: true);
     } on DiaryException catch (failure) {
       _say(failure.message, error: true);
     } on Object catch (failure) {
@@ -220,12 +211,12 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     }
   }
 
-  /// 拉某个服务的模型列表。失败时**不打扰**（很多服务没有 `/models`，
-  /// 手填模型名照样能用），只有用户主动点才把原因说出来。
-  Future<void> _loadModels(Provider provider, {bool quiet = false}) async {
+  /// 拉某个服务的模型列表。**只有用户点「获取模型列表」才出网**——
+  /// 与核心 `provider::models` 的约定一致（打开资料库、列服务都不发请求）。
+  Future<void> _loadModels(Provider provider) async {
     final api = widget.api;
     if (api is! ProviderModelPort) {
-      if (!quiet) _say('这个构建不能列出模型。');
+      _say('这个构建不能列出模型。');
       return;
     }
     try {
@@ -234,15 +225,11 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       );
       if (!mounted) return;
       setState(() => _models[provider.id] = models);
-      if (!quiet && models.isEmpty) {
-        _say('这个服务里还没有模型。');
-      }
+      if (models.isEmpty) _say('这个服务里还没有模型。');
     } on DiaryException catch (failure) {
-      if (!quiet) {
-        _say('拿不到模型列表。', detail: failure.message);
-      }
+      _say('拿不到模型列表。', detail: failure.message);
     } on Object catch (failure) {
-      if (!quiet) _say('拿不到模型列表。', detail: '$failure');
+      _say('拿不到模型列表。', detail: '$failure');
     }
   }
 
@@ -414,7 +401,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                 decoration: const InputDecoration(
                   labelText: '模型名',
                   hintText: 'deepseek-chat',
-                  helperText: '保存后自动获取可用模型',
+                  helperText: '不知道填什么就先保存，再点上面的「获取模型列表」',
                 ),
               ),
               TextField(

@@ -891,7 +891,7 @@ void main() {
     expect(find.text('语义检索暂不可用'), findsNothing);
   });
 
-  testWidgets('模型服务打开就列出可用模型，不用先点按钮', (tester) async {
+  testWidgets('模型列表要点「获取模型列表」才拉，打开页面不出网', (tester) async {
     final api = _ProviderUiApi();
     // demoMode 走的是预览面板；真实安装版用的是 AiProviderPanel，这里要测后者。
     await tester.pumpWidget(DiaryApp(api: api));
@@ -902,13 +902,16 @@ void main() {
     await tester.tap(find.text('模型服务'));
     await tester.pumpAndSettle();
 
-    // 打开页面就该有可选模型：模型名不该等用户点一次按钮才看得见。
-    expect(api.modelCalls, greaterThan(0), reason: '打开页面要自动拉一次模型列表');
-    // deepseek-chat 同时出现在「当前模型」那行和 chip 上，所以只断言候选里那个新名字。
+    // 打开页面**不该**发请求：核心 provider::models 的约定就是「点了才出网」。
+    expect(api.modelCalls, 0, reason: '打开页面不该自动拉模型列表');
+    expect(find.text('deepseek-reasoner'), findsNothing);
+
+    await tester.ensureVisible(find.text('获取模型列表'));
+    await tester.tap(find.text('获取模型列表'));
+    await tester.pumpAndSettle();
+
+    expect(api.modelCalls, 1, reason: '点一次按钮拉一次');
     expect(find.text('deepseek-reasoner'), findsOneWidget);
-    expect(find.text('deepseek-chat'), findsWidgets);
-    // 按钮文案要说清是「获取模型列表」，不是含糊的「换模型」。
-    expect(find.text('获取模型列表'), findsOneWidget);
   });
 
   testWidgets('Windows index settings disclose that models are not bundled', (
