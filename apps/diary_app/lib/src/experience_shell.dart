@@ -996,6 +996,15 @@ class _ExperienceShellState extends State<ExperienceShell>
     ],
   );
 
+  /// 脚注：一行小字，没有边框、没有图标。用于「说明」而不是「警告」。
+  Widget _footnote(String text) => Padding(
+    padding: const EdgeInsets.only(top: 2),
+    child: Text(
+      text,
+      style: const TextStyle(color: SketchColors.muted, fontSize: 13, height: 1.5),
+    ),
+  );
+
   Widget _notice(String text, {IconData icon = Icons.info_outline}) =>
       SketchFrame(
         fill: SketchColors.soft,
@@ -1071,10 +1080,10 @@ class _ExperienceShellState extends State<ExperienceShell>
           style: TextStyle(color: SketchColors.muted, fontSize: 17),
         ),
         const SizedBox(height: 42),
-        _notice(
+        _footnote(
           widget.demoMode
               ? '交互演示 · 文字仅保留本次运行；附件和录音是流程预览。'
-              : '记录保存在本地；文件可单独导入，录音仍在接入。',
+              : '记录只存在这台设备上。',
         ),
       ],
     );
@@ -1658,11 +1667,12 @@ class _ExperienceShellState extends State<ExperienceShell>
           '我的小天地',
           widget.demoMode ? '预览资料与整理方式，慢慢布置自己的空间。' : '你的记录安静地留在这台设备上。',
         ),
-        const SizedBox(height: 23),
-        _notice(
+        const SizedBox(height: 14),
+        // 这里原来是带边框的告警块。同一句话用脚注的样子说，读起来是说明而不是警报。
+        _footnote(
           widget.demoMode
               ? '这是单设备演示资料库，没有账号与自动同步。'
-              : '${uiStrings.t('privacy.local_only')}备份、导出和回收站只在核心能力就绪时执行。',
+              : uiStrings.t('privacy.local_only'),
         ),
         if (!widget.demoMode) ...[
           const SizedBox(height: 18),
@@ -1680,16 +1690,22 @@ class _ExperienceShellState extends State<ExperienceShell>
         ],
         const SizedBox(height: 18),
         _section('创作与整理', [
+          // 模型服务放第一条：这是「能不能用起来」的前置条件，藏在第三条时用户找不到。
+          (
+            '模型服务',
+            '配 DeepSeek、OpenAI 或本机模型',
+            'model',
+            Icons.auto_awesome_outlined,
+          ),
           if (!widget.demoMode &&
               _indexSettings.status?.semanticIndexReady == false)
             (
-              '搜索索引 · ${uiStrings.t('job.needs_attention')}',
-              '语义检索尚未就绪，点此查看原因并重建',
+              '搜索索引 · 未建立',
+              '语义检索还没建好，点这里可以建',
               'index',
               Icons.manage_search,
             ),
           ('风格偏好', '篇幅、语气与叙述方式', 'style', Icons.tune),
-          ('模型服务', '能力、连接与使用范围', 'model', Icons.auto_awesome_outlined),
           ('整理时机', '安静地安排每天的整理', 'schedule', Icons.schedule),
           (
             '任务中心',

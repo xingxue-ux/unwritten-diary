@@ -859,8 +859,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('我的').last);
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('搜索索引 · 需要处理'));
-    await tester.tap(find.text('搜索索引 · 需要处理'));
+    await tester.ensureVisible(find.text('搜索索引 · 未建立'));
+    await tester.tap(find.text('搜索索引 · 未建立'));
     await tester.pumpAndSettle();
     expect(find.text('语义检索暂不可用'), findsOneWidget);
     await tester.tap(find.text('重建语义索引'));
@@ -882,8 +882,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('我的').last);
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('搜索索引 · 需要处理'));
-    await tester.tap(find.text('搜索索引 · 需要处理'));
+    await tester.ensureVisible(find.text('搜索索引 · 未建立'));
+    await tester.tap(find.text('搜索索引 · 未建立'));
     await tester.pumpAndSettle();
     expect(find.text('语义检索部分可用'), findsOneWidget);
     expect(find.textContaining('已嵌入的内容可以搜到'), findsOneWidget);
@@ -901,8 +901,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('我的').last);
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('搜索索引 · 需要处理'));
-      await tester.tap(find.text('搜索索引 · 需要处理'));
+      await tester.ensureVisible(find.text('搜索索引 · 未建立'));
+      await tester.tap(find.text('搜索索引 · 未建立'));
       await tester.pumpAndSettle();
 
       expect(find.textContaining('当前 Windows 构建不含任何本地模型文件'), findsOneWidget);

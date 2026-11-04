@@ -6,7 +6,8 @@ import 'package:diary_api/diary_api.dart';
 /// 只覆盖 F0 的记录路径；其余契约方法在对应任务实现前会明确报错。
 ///
 /// 数据只在这个对象存活期间存在，绝不用于验证真实持久化。
-class MockDiaryApi implements DiaryApi, OrganizeSchedulePort {
+class MockDiaryApi
+    implements DiaryApi, OrganizeSchedulePort, ProviderCredentialPort {
   MockDiaryApi({
     DateTime Function()? clock,
     this.timeZone = 'Asia/Shanghai',
@@ -248,6 +249,32 @@ class MockDiaryApi implements DiaryApi, OrganizeSchedulePort {
       revision: _organizeSchedule.revision + 1,
     );
     return _organizeSchedule;
+  }
+
+  /// 记录写过的密钥引用，供测试断言「密钥只经一次调用、配置里只留引用」。
+  final Map<String, String> providerSecrets = {};
+
+  @override
+  Future<api.Provider> saveProviderCredential({
+    required String providerId,
+    required String secret,
+  }) async {
+    if (secret.trim().isEmpty) {
+      throw const DiaryException(
+        code: DiaryErrorCode.invalidArgument,
+        message: '密钥不能为空。',
+      );
+    }
+    final reference = 'secret-${providerSecrets.length + 1}';
+    providerSecrets[providerId] = reference;
+    return api.Provider(
+      id: providerId,
+      label: providerId,
+      adapterId: 'openai_compatible',
+      capabilities: const {api.ProviderCapability.generateText},
+      enabled: true,
+      credentialRef: reference,
+    );
   }
 
   @override
