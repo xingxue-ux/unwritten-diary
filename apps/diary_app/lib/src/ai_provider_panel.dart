@@ -270,6 +270,52 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     }
   }
 
+  /// 「添加服务」里的**测试连接**：用表单里的值真发一次请求。
+  ///
+  /// 与「获取模型列表」同一口径——核心的 `providers.test` 只按已保存的服务测，
+  /// 所以先把表单落一份再测。
+  Future<void> _testForm() async {
+    if (_busy) return;
+    final uri = _checkedEndpoint();
+    if (uri == null) return;
+    final model = _model.text.trim();
+    if (model.isEmpty) {
+      _say('先填模型名，或者点「获取模型列表」挑一个。', error: true);
+      return;
+    }
+    if (_secret.text.trim().isEmpty && !_isLoopback) {
+      _say('先填 API Key，才能测连接。', error: true);
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+    try {
+      final saved = await _persist(uri, model: model);
+      if (saved == null) return;
+      final report = await widget.api.testProvider(
+        providerId: saved.id,
+        scope: const {ProviderCapability.generateText},
+      );
+      await _reload();
+      final ok =
+          report.results[ProviderCapability.generateText] ==
+          ProviderTestStatus.ok;
+      _say(
+        ok ? '连接正常。' : '没连上。检查地址、模型名和密钥。',
+        error: !ok,
+        detail: report.message,
+      );
+    } on DiaryException catch (failure) {
+      _say(failure.message, error: true);
+    } on Object catch (failure) {
+      _say('测试没跑完。', detail: '$failure', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   /// 把某个已有服务填回「添加服务」表单，改完保存是**更新那一条**，不会多出一条。
   void _editProvider(Provider provider) {
     setState(() {
@@ -461,14 +507,21 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                 ),
               ),
               const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: SketchAction(
-                  label: '获取模型列表',
-                  onPressed: _busy
-                      ? null
-                      : () => unawaited(_loadModelsForForm()),
-                ),
+              Wrap(
+                spacing: 10,
+                runSpacing: 8,
+                children: [
+                  SketchAction(
+                    label: '获取模型列表',
+                    onPressed: _busy
+                        ? null
+                        : () => unawaited(_loadModelsForForm()),
+                  ),
+                  SketchAction(
+                    label: '测试连接',
+                    onPressed: _busy ? null : () => unawaited(_testForm()),
+                  ),
+                ],
               ),
               if (_formModels.isNotEmpty) ...[
                 const SizedBox(height: 10),

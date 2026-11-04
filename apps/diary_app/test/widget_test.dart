@@ -923,6 +923,37 @@ void main() {
     expect(find.text('deepseek-reasoner'), findsOneWidget);
   });
 
+  testWidgets('添加服务里也能测试连接，结果留在表单里', (tester) async {
+    final api = _ProviderUiApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('模型服务'));
+    await tester.tap(find.text('模型服务'));
+    await tester.pumpAndSettle();
+
+    // 表单里那个「测试连接」是第二个（第一个在已配置卡片上）。
+    final formTest = find.text('测试连接').last;
+    await tester.ensureVisible(formTest);
+    await tester.tap(formTest);
+    await tester.pumpAndSettle();
+
+    // 没填密钥：先要密钥，不发请求。
+    expect(api.testCalls, 0, reason: '没有密钥不该真的去测');
+    expect(find.textContaining('先填 API Key'), findsOneWidget);
+
+    await tester.enterText(
+      find.widgetWithText(TextField, 'API Key'),
+      'sk-test',
+    );
+    await tester.tap(find.text('测试连接').last);
+    await tester.pumpAndSettle();
+
+    expect(api.testCalls, 1, reason: '填好之后点一次测一次');
+    expect(find.text('连接正常。'), findsWidgets);
+  });
+
   testWidgets('连接结果写在该服务的卡片里，不跑到页面底部', (tester) async {
     final api = _ProviderUiApi();
     await tester.pumpWidget(DiaryApp(api: api));
@@ -933,8 +964,9 @@ void main() {
     await tester.tap(find.text('模型服务'));
     await tester.pumpAndSettle();
 
-    await tester.ensureVisible(find.text('测试连接'));
-    await tester.tap(find.text('测试连接'));
+    // 「测试连接」现在卡片上和表单里各有一个；这条测的是卡片上那个。
+    await tester.ensureVisible(find.text('测试连接').first);
+    await tester.tap(find.text('测试连接').first);
     await tester.pumpAndSettle();
 
     final note = find.text('连接正常。');
@@ -1045,6 +1077,7 @@ void main() {
 /// 只给「模型服务」页用的假 API：已配置一个在线服务，`/models` 返回两个模型。
 class _ProviderUiApi extends MockDiaryApi {
   int modelCalls = 0;
+  int testCalls = 0;
 
   @override
   Future<List<Provider>> listProviders() async => const [
@@ -1095,9 +1128,12 @@ class _ProviderUiApi extends MockDiaryApi {
   Future<ProviderTestReport> testProvider({
     required String providerId,
     required Set<ProviderCapability> scope,
-  }) async => ProviderTestReport(
+  }) async {
+    testCalls++;
+    return ProviderTestReport(
     providerId: providerId,
-    results: const {ProviderCapability.generateText: ProviderTestStatus.ok},
-    actualCallMade: true,
-  );
+      results: const {ProviderCapability.generateText: ProviderTestStatus.ok},
+      actualCallMade: true,
+    );
+  }
 }
