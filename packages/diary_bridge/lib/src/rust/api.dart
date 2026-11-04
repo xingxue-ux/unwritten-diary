@@ -7,6 +7,7 @@ import 'frb_generated.dart';
 import 'lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'third_party/diary_core/model.dart';
+import 'third_party/diary_core/provider/models.dart';
 
 // These functions are ignored because they are not marked as `pub`: `library_key`, `lock`, `recovery_summary`, `wired_capabilities`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`, `from`
@@ -209,6 +210,20 @@ abstract class BridgeSession implements RustOpaqueInterface {
 
   /// 已安装插件。只读缓存清单，不读、不执行插件入口。
   Future<List<PluginInstallation>> listPlugins();
+
+  /// 检测某个服务可用的模型列表，契约 `providers.models`（`GET {endpoint}/models`）。
+  ///
+  /// **只有显式调用才发请求**——打开资料库、`providers.list`、保存配置都不会顺手探一次。
+  /// 本机（严格 loopback）服务没有凭据也照常发；远端缺凭据在发请求之前就报
+  /// `provider_not_configured`。401/403 → `authentication_failed`、超时 →
+  /// `provider_timeout`、连不上/5xx → `network_unavailable`、429 → `rate_limited`、
+  /// 响应解析不了 → `model_unavailable`。返回值与错误消息都不含密钥明文。
+  ///
+  /// 界面用它把「模型名」从手填变成下拉：手填一个拼错的模型名，只会在生成时
+  /// 才失败，而且错得很难懂。
+  Future<List<ProviderModelInfo>> listProviderModels({
+    required String providerId,
+  });
 
   /// 列出脱敏后的服务配置，契约 `providers.list`。
   ///

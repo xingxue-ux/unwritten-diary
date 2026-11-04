@@ -61,10 +61,13 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
   final _model = TextEditingController();
   final _secret = TextEditingController();
   List<Provider> _providers = const [];
+  final Map<String, List<ProviderModel>> _models = {};
   String _fill = 'deepseek';
   bool _busy = false;
   bool _obscure = true;
+  bool _showDetail = false;
   String? _message;
+  String? _detail;
   bool _messageIsError = false;
 
   @override
@@ -93,10 +96,13 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     });
   }
 
-  void _say(String text, {bool error = false}) {
+  /// 只给人看一句话；核心那句又长又技术的诊断放进 [detail]，默认折叠。
+  void _say(String text, {bool error = false, String? detail}) {
     if (!mounted) return;
     setState(() {
       _message = text;
+      _detail = detail;
+      _showDetail = false;
       _messageIsError = error;
     });
   }
@@ -167,7 +173,9 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       }
       _secret.clear();
       await _reload();
-      _say('已保存「${saved.label}」。点下面的「测试连接」确认能通。');
+      _say('已保存「${saved.label}」。');
+      // 保存成功后顺手拉一次模型列表：模型名不该让人手打。
+      await _loadModels(saved, quiet: true);
     } on DiaryException catch (failure) {
       _say(failure.message, error: true);
     } on Object catch (failure) {
@@ -194,9 +202,50 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
           report.results[ProviderCapability.generateText] ==
           ProviderTestStatus.ok;
       _say(
-        report.message ?? (ok ? '连接正常。' : '没通过，检查地址、模型名与密钥。'),
+        ok ? '连接正常。' : '没连上。检查地址、模型名和密钥。',
         error: !ok,
+        detail: report.message,
       );
+    } on DiaryException catch (failure) {
+      _say(failure.message, error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 拉某个服务的模型列表。失败时**不打扰**（很多服务没有 `/models`，
+  /// 手填模型名照样能用），只有用户主动点才把原因说出来。
+  Future<void> _loadModels(Provider provider, {bool quiet = false}) async {
+    final api = widget.api;
+    if (api is! ProviderModelPort) {
+      if (!quiet) _say('这个构建不能列出模型，直接手填模型名就行。');
+      return;
+    }
+    try {
+      final models = await (api as ProviderModelPort).listProviderModels(
+        providerId: provider.id,
+      );
+      if (!mounted) return;
+      setState(() => _models[provider.id] = models);
+      if (!quiet && models.isEmpty) {
+        _say('这个服务没有返回模型列表，直接手填模型名就行。');
+      }
+    } on DiaryException catch (failure) {
+      if (!quiet) {
+        _say('拿不到模型列表，直接手填模型名也行。', detail: failure.message);
+      }
+    } on Object catch (failure) {
+      if (!quiet) _say('拿不到模型列表。', detail: '$failure');
+    }
+  }
+
+  Future<void> _pickModel(Provider provider, String model) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await widget.api.saveProvider(provider.copyWith(model: model));
+      await _reload();
+      _say('模型改成 $model。');
     } on DiaryException catch (failure) {
       _say(failure.message, error: true);
     } finally {
@@ -281,6 +330,12 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                       onPressed: _busy ? null : () => unawaited(_test(provider)),
                     ),
                     SketchAction(
+                      label: '换模型',
+                      onPressed: _busy
+                          ? null
+                          : () => unawaited(_loadModels(provider)),
+                    ),
+                    SketchAction(
                       label: '移除',
                       onPressed: _busy
                           ? null
@@ -288,6 +343,25 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                     ),
                   ],
                 ),
+                if (_models[provider.id]?.isNotEmpty ?? false) ...[
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final model in _models[provider.id]!)
+                        ChoiceChip(
+                          label: Text(model.id),
+                          selected: provider.model == model.id,
+                          onSelected: _busy
+                              ? null
+                              : (_) => unawaited(
+                                  _pickModel(provider, model.id),
+                                ),
+                        ),
+                    ],
+                  ),
+                ],
               ],
             ],
           ),
@@ -333,6 +407,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                 decoration: const InputDecoration(
                   labelText: '模型名',
                   hintText: 'deepseek-chat',
+                  helperText: '保存后会自动拉一次可选模型，也可以直接手填',
                 ),
               ),
               TextField(
@@ -362,7 +437,39 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
           const SizedBox(height: 14),
           SketchFrame(
             fill: _messageIsError ? SketchColors.soft : SketchColors.paper,
-            child: Text(_message!),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(_message!),
+                // 核心那句诊断（端点可达 / 认证通过 / 发起了几次请求…）默认收起来：
+                // 对用户有用的只有「通没通」，其余是排查时才看的东西。
+                if (_detail != null && _detail!.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  GestureDetector(
+                    onTap: () => setState(() => _showDetail = !_showDetail),
+                    child: Text(
+                      _showDetail ? '收起详情' : '详情',
+                      style: const TextStyle(
+                        color: SketchColors.muted,
+                        fontSize: 12,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  ),
+                  if (_showDetail) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      _detail!,
+                      style: const TextStyle(
+                        color: SketchColors.muted,
+                        fontSize: 12,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
+                ],
+              ],
+            ),
           ),
         ],
       ],

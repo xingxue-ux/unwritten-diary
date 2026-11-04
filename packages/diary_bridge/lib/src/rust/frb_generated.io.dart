@@ -11,6 +11,7 @@ import 'frb_generated.dart';
 import 'lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart';
 import 'third_party/diary_core/model.dart';
+import 'third_party/diary_core/provider/models.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RustLibApiImplPlatform({
@@ -397,6 +398,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<ProviderCapability> dco_decode_list_provider_capability(dynamic raw);
 
   @protected
+  List<ProviderModelInfo> dco_decode_list_provider_model_info(dynamic raw);
+
+  @protected
   List<(ProviderCapability, ProviderTestStatus)>
   dco_decode_list_record_provider_capability_provider_test_status(dynamic raw);
 
@@ -607,6 +611,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ProviderCapability dco_decode_provider_capability(dynamic raw);
+
+  @protected
+  ProviderModelInfo dco_decode_provider_model_info(dynamic raw);
 
   @protected
   ProviderTestReport dco_decode_provider_test_report(dynamic raw);
@@ -1154,6 +1161,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<ProviderModelInfo> sse_decode_list_provider_model_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<(ProviderCapability, ProviderTestStatus)>
   sse_decode_list_record_provider_capability_provider_test_status(
     SseDeserializer deserializer,
@@ -1422,6 +1434,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ProviderCapability sse_decode_provider_capability(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ProviderModelInfo sse_decode_provider_model_info(
     SseDeserializer deserializer,
   );
 
@@ -2103,6 +2120,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_provider_model_info(
+    List<ProviderModelInfo> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_record_provider_capability_provider_test_status(
     List<(ProviderCapability, ProviderTestStatus)> self,
     SseSerializer serializer,
@@ -2480,6 +2503,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_provider_capability(
     ProviderCapability self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_provider_model_info(
+    ProviderModelInfo self,
     SseSerializer serializer,
   );
 

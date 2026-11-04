@@ -7,7 +7,11 @@ import 'package:diary_api/diary_api.dart';
 ///
 /// 数据只在这个对象存活期间存在，绝不用于验证真实持久化。
 class MockDiaryApi
-    implements DiaryApi, OrganizeSchedulePort, ProviderCredentialPort {
+    implements
+        DiaryApi,
+        OrganizeSchedulePort,
+        ProviderCredentialPort,
+        ProviderModelPort {
   MockDiaryApi({
     DateTime Function()? clock,
     this.timeZone = 'Asia/Shanghai',
@@ -253,6 +257,17 @@ class MockDiaryApi
 
   /// 记录写过的密钥引用，供测试断言「密钥只经一次调用、配置里只留引用」。
   final Map<String, String> providerSecrets = {};
+
+  /// 假模型列表：够测试断言「下拉里出现这些名字」。
+  List<api.ProviderModel> providerModels = const [
+    api.ProviderModel(id: 'mock-model-a'),
+    api.ProviderModel(id: 'mock-model-b'),
+  ];
+
+  @override
+  Future<List<api.ProviderModel>> listProviderModels({
+    required String providerId,
+  }) async => providerModels;
 
   @override
   Future<api.Provider> saveProviderCredential({

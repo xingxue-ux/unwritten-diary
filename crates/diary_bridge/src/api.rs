@@ -20,7 +20,8 @@ AiResponse, AssetLease, BackupInspection, BackupReport, Capture, CapturePage, Co
     ExtractedContent, ImportManifest, ImportOrigin, ImportStatus, ImportTicket, IndexStatus, Job,
     JobRunSummary, JobState, JobStatus, NativeRecordingStatus, OrganizeSettings, OrganizeStatus,
     OrganizeTemplate, PluginInspection, PluginInstallation, PluginInvocation, PluginRunResult,
-    PluginTemplate, Provider, ProviderCapability, ProviderTestReport, RecordingFinalizeResult,
+    PluginTemplate, Provider, ProviderCapability, ProviderModelInfo, ProviderTestReport,
+    RecordingFinalizeResult,
     RecordingRecovery,
     RecordingSession, RecordingTicket, ResponseTicket, RestoreReport, SearchRequest,
     SearchSnapshot, SegmentManifest, SegmentReceipt, SourceLocation, SourceLocator, SourceRevision,
@@ -680,6 +681,24 @@ impl BridgeSession {
     pub fn list_providers(&self) -> Result<Vec<Provider>, BridgeError> {
         let core = self.lock()?;
         Ok(core.list_providers()?)
+    }
+
+    /// 检测某个服务可用的模型列表，契约 `providers.models`（`GET {endpoint}/models`）。
+    ///
+    /// **只有显式调用才发请求**——打开资料库、`providers.list`、保存配置都不会顺手探一次。
+    /// 本机（严格 loopback）服务没有凭据也照常发；远端缺凭据在发请求之前就报
+    /// `provider_not_configured`。401/403 → `authentication_failed`、超时 →
+    /// `provider_timeout`、连不上/5xx → `network_unavailable`、429 → `rate_limited`、
+    /// 响应解析不了 → `model_unavailable`。返回值与错误消息都不含密钥明文。
+    ///
+    /// 界面用它把「模型名」从手填变成下拉：手填一个拼错的模型名，只会在生成时
+    /// 才失败，而且错得很难懂。
+    pub fn list_provider_models(
+        &self,
+        provider_id: String,
+    ) -> Result<Vec<ProviderModelInfo>, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.list_provider_models(&provider_id)?)
     }
 
     /// 保存服务配置，契约 `providers.save`。
