@@ -923,6 +923,41 @@ void main() {
     expect(find.text('deepseek-reasoner'), findsOneWidget);
   });
 
+  testWidgets('获取模型列表之后 API Key 还在输入框里', (tester) async {
+    final api = _ProviderUiApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('模型服务'));
+    await tester.tap(find.text('模型服务'));
+    await tester.pumpAndSettle();
+
+    final keyField = find.widgetWithText(TextField, 'API Key');
+    await tester.enterText(keyField, 'sk-keep-me');
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('获取模型列表'));
+    await tester.tap(find.text('获取模型列表'));
+    await tester.pumpAndSettle();
+
+    // 拉完列表还要接着测试和保存，密钥被清掉就等于让用户重打一遍。
+    expect(
+      tester.widget<TextField>(keyField).controller?.text,
+      'sk-keep-me',
+      reason: '获取模型列表不该清空 API Key',
+    );
+
+    await tester.ensureVisible(find.text('测试连接').last);
+    await tester.tap(find.text('测试连接').last);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(keyField).controller?.text,
+      'sk-keep-me',
+      reason: '测试连接也不该清空 API Key',
+    );
+  });
+
   testWidgets('添加服务里也能测试连接，结果留在表单里', (tester) async {
     final api = _ProviderUiApi();
     await tester.pumpWidget(DiaryApp(api: api));

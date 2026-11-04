@@ -158,7 +158,24 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
   ///
   /// 「获取模型列表」也要用它：核心只能按**已保存的服务**列模型，
   /// 所以那一步会先把表单落一份——这正是「添加服务」的一部分。
-  Future<Provider?> _persist(Uri uri, {required String model}) async {
+  /// 这个服务已经存过密钥吗？改已有服务时不该逼用户再输一遍。
+  bool get _hasStoredCredential {
+    final id = _editingId;
+    if (id == null) return false;
+    for (final provider in _providers) {
+      if (provider.id == id) return provider.credentialRef != null;
+    }
+    return false;
+  }
+
+  /// 这次操作是否必须让用户填密钥：本机服务不用，改已有服务也不用。
+  bool get _needsSecret => !_isLoopback && !_hasStoredCredential;
+
+  Future<Provider?> _persist(
+    Uri uri, {
+    required String model,
+    bool clearSecret = false,
+  }) async {
     final secret = _secret.text.trim();
     final saved = await widget.api.saveProvider(
       Provider(
@@ -186,7 +203,9 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
         _say('这个构建不能保存密钥，服务已保存但没有密钥。', error: true);
       }
     }
-    _secret.clear();
+    // **只有保存完成才清空**。获取模型列表 / 测试连接之后还要接着保存，
+    // 这时候把输入框清掉等于让用户重打一遍密钥。
+    if (clearSecret) _secret.clear();
     await _reload();
     return saved;
   }
@@ -200,7 +219,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       _say('请填写模型名，例如 deepseek-chat。', error: true);
       return;
     }
-    if (_secret.text.trim().isEmpty && !_isLoopback) {
+    if (_secret.text.trim().isEmpty && _needsSecret) {
       _say('在线服务要填 API Key。', error: true);
       return;
     }
@@ -210,7 +229,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       _message = null;
     });
     try {
-      final saved = await _persist(uri, model: model);
+      final saved = await _persist(uri, model: model, clearSecret: true);
       if (saved == null) return;
       setState(() {
         _editingId = null;
@@ -234,7 +253,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     if (_busy) return;
     final uri = _checkedEndpoint();
     if (uri == null) return;
-    if (_secret.text.trim().isEmpty && !_isLoopback) {
+    if (_secret.text.trim().isEmpty && _needsSecret) {
       _say('先填 API Key，才能问服务有哪些模型。', error: true);
       return;
     }
@@ -283,7 +302,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       _say('先填模型名，或者点「获取模型列表」挑一个。', error: true);
       return;
     }
-    if (_secret.text.trim().isEmpty && !_isLoopback) {
+    if (_secret.text.trim().isEmpty && _needsSecret) {
       _say('先填 API Key，才能测连接。', error: true);
       return;
     }
