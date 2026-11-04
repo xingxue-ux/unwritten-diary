@@ -75,6 +75,15 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
   List<ProviderModel> _formModels = const [];
   /// 正在改哪个已有服务；null 表示新增。保存时用它决定是更新还是新建。
   String? _editingId;
+
+  /// 「添加服务」里**这一次填写**对应的服务 id。
+  ///
+  /// 「获取模型列表」「测试连接」都得先把表单落库（核心只按已保存的服务跑），
+  /// 落完要记住这个 id——不然每点一次就多出一条重复的服务。
+  String? _formProviderId;
+
+  /// 「添加服务」这张卡片的锚点：表单上方内容变高变矮时，用它把位置钉住。
+  final GlobalKey _formKey = GlobalKey();
   String _fill = 'deepseek';
   bool _busy = false;
   bool _obscure = true;
@@ -103,6 +112,9 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     final fill = _quickFills.firstWhere((item) => item.id == id);
     setState(() {
       _fill = id;
+      // 换一个服务商就是另一条配置：之前那次填写落下的 id 不再适用。
+      _formProviderId = null;
+      _formModels = const [];
       _name.text = fill.label;
       _endpoint.text = fill.endpoint;
       _model.text = fill.model;
@@ -158,11 +170,30 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
   ///
   /// 「获取模型列表」也要用它：核心只能按**已保存的服务**列模型，
   /// 所以那一步会先把表单落一份——这正是「添加服务」的一部分。
-  Future<Provider?> _persist(Uri uri, {required String model}) async {
+  /// 这个服务已经存过密钥吗？改已有服务时不该逼用户再输一遍。
+  bool get _hasStoredCredential {
+    final id = _editingId;
+    if (id == null) return false;
+    for (final provider in _providers) {
+      if (provider.id == id) return provider.credentialRef != null;
+    }
+    return false;
+  }
+
+  /// 这次操作是否必须让用户填密钥：本机服务不用，改已有服务也不用。
+  bool get _needsSecret => !_isLoopback && !_hasStoredCredential;
+
+  Future<Provider?> _persist(
+    Uri uri, {
+    required String model,
+    bool clearSecret = false,
+  }) async {
     final secret = _secret.text.trim();
     final saved = await widget.api.saveProvider(
       Provider(
-        id: _editingId ?? 'prv-${DateTime.now().microsecondsSinceEpoch}',
+        id: _editingId ??
+            _formProviderId ??
+            'prv-${DateTime.now().microsecondsSinceEpoch}',
         label: _name.text.trim().isEmpty
             ? (model.isEmpty ? uri.host : model)
             : _name.text.trim(),
@@ -186,9 +217,43 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
         _say('这个构建不能保存密钥，服务已保存但没有密钥。', error: true);
       }
     }
-    _secret.clear();
+    // **只有保存完成才清空**。获取模型列表 / 测试连接之后还要接着保存，
+    // 这时候把输入框清掉等于让用户重打一遍密钥。
+    if (clearSecret) _secret.clear();
+    _formProviderId = saved.id;
     await _reload();
     return saved;
+  }
+
+  /// 跑一段会改变「已配置」高度、进而推动表单的动作，同时把表单钉在原位。
+  ///
+  /// 「已配置」在表单**上面**：它多一条，表单就往下跳。用户点的是表单里的按钮，
+  /// 视线却在原地——所以这里记下表单的全局 y，动作结束后把滚动位置补回去。
+  Future<void> _keepingFormStill(Future<void> Function() body) async {
+    final before = _formTop();
+    final position = Scrollable.maybeOf(context)?.position;
+    await body();
+    if (!mounted) return;
+    // body 里的 setState 只是排了帧，此时量到的还是**旧布局**的位置。
+    // 等这一帧画完再量，否则补的偏移量会偏小（实测少 103px）。
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    final after = _formTop();
+    if (before == null || after == null || position == null) return;
+    final delta = after - before;
+    if (delta.abs() < 1) return;
+    final target = (position.pixels + delta).clamp(
+      0.0,
+      position.maxScrollExtent,
+    );
+    if ((target - position.pixels).abs() >= 1) position.jumpTo(target);
+  }
+
+  /// 「添加服务」卡片左上角的全局 y；还没挂载时返回 null。
+  double? _formTop() {
+    final box = _formKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.attached) return null;
+    return box.localToGlobal(Offset.zero).dy;
   }
 
   Future<void> _save() async {
@@ -200,7 +265,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       _say('请填写模型名，例如 deepseek-chat。', error: true);
       return;
     }
-    if (_secret.text.trim().isEmpty && !_isLoopback) {
+    if (_secret.text.trim().isEmpty && _needsSecret) {
       _say('在线服务要填 API Key。', error: true);
       return;
     }
@@ -209,21 +274,24 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       _busy = true;
       _message = null;
     });
-    try {
-      final saved = await _persist(uri, model: model);
-      if (saved == null) return;
-      setState(() {
-        _editingId = null;
-        _formModels = const [];
-      });
-      _say('已保存「${saved.label}」。');
-    } on DiaryException catch (failure) {
-      _say(failure.message, error: true);
-    } on Object catch (failure) {
-      _say('保存失败：$failure', error: true);
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+    await _keepingFormStill(() async {
+      try {
+        final saved = await _persist(uri, model: model, clearSecret: true);
+        if (saved == null) return;
+        setState(() {
+          _editingId = null;
+          _formProviderId = null;
+          _formModels = const [];
+        });
+        _say('已保存「${saved.label}」。');
+      } on DiaryException catch (failure) {
+        _say(failure.message, error: true);
+      } on Object catch (failure) {
+        _say('保存失败：$failure', error: true);
+      } finally {
+        if (mounted) setState(() => _busy = false);
+      }
+    });
   }
 
   /// 「添加服务」里的**获取模型列表**：用表单里的地址与密钥去问服务提供哪些模型。
@@ -234,7 +302,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     if (_busy) return;
     final uri = _checkedEndpoint();
     if (uri == null) return;
-    if (_secret.text.trim().isEmpty && !_isLoopback) {
+    if (_secret.text.trim().isEmpty && _needsSecret) {
       _say('先填 API Key，才能问服务有哪些模型。', error: true);
       return;
     }
@@ -248,26 +316,28 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       _message = null;
       _formModels = const [];
     });
-    try {
-      final saved = await _persist(uri, model: _model.text.trim());
-      if (saved == null) return;
-      final models = await (api as ProviderModelPort).listProviderModels(
-        providerId: saved.id,
-      );
-      if (!mounted) return;
-      setState(() => _formModels = models);
-      _say(
-        models.isEmpty
-            ? '这个服务里还没有模型。'
-            : '这个服务提供 ${models.length} 个模型，点一个填进「模型名」。',
-      );
-    } on DiaryException catch (failure) {
-      _say(failure.message, error: true);
-    } on Object catch (failure) {
-      _say('拿不到模型列表。', detail: '$failure', error: true);
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+    await _keepingFormStill(() async {
+      try {
+        final saved = await _persist(uri, model: _model.text.trim());
+        if (saved == null) return;
+        final models = await (api as ProviderModelPort).listProviderModels(
+          providerId: saved.id,
+        );
+        if (!mounted) return;
+        setState(() => _formModels = models);
+        _say(
+          models.isEmpty
+              ? '这个服务里还没有模型。'
+              : '这个服务提供 ${models.length} 个模型，点一个填进「模型名」。',
+        );
+      } on DiaryException catch (failure) {
+        _say(failure.message, error: true);
+      } on Object catch (failure) {
+        _say('拿不到模型列表。', detail: '$failure', error: true);
+      } finally {
+        if (mounted) setState(() => _busy = false);
+      }
+    });
   }
 
   /// 「添加服务」里的**测试连接**：用表单里的值真发一次请求。
@@ -283,7 +353,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       _say('先填模型名，或者点「获取模型列表」挑一个。', error: true);
       return;
     }
-    if (_secret.text.trim().isEmpty && !_isLoopback) {
+    if (_secret.text.trim().isEmpty && _needsSecret) {
       _say('先填 API Key，才能测连接。', error: true);
       return;
     }
@@ -291,35 +361,38 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       _busy = true;
       _message = null;
     });
-    try {
-      final saved = await _persist(uri, model: model);
-      if (saved == null) return;
-      final report = await widget.api.testProvider(
-        providerId: saved.id,
-        scope: const {ProviderCapability.generateText},
-      );
-      await _reload();
-      final ok =
-          report.results[ProviderCapability.generateText] ==
-          ProviderTestStatus.ok;
-      _say(
-        ok ? '连接正常。' : '没连上。检查地址、模型名和密钥。',
-        error: !ok,
-        detail: report.message,
-      );
-    } on DiaryException catch (failure) {
-      _say(failure.message, error: true);
-    } on Object catch (failure) {
-      _say('测试没跑完。', detail: '$failure', error: true);
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+    await _keepingFormStill(() async {
+      try {
+        final saved = await _persist(uri, model: model);
+        if (saved == null) return;
+        final report = await widget.api.testProvider(
+          providerId: saved.id,
+          scope: const {ProviderCapability.generateText},
+        );
+        await _reload();
+        final ok =
+            report.results[ProviderCapability.generateText] ==
+            ProviderTestStatus.ok;
+        _say(
+          ok ? '连接正常。' : '没连上。检查地址、模型名和密钥。',
+          error: !ok,
+          detail: report.message,
+        );
+      } on DiaryException catch (failure) {
+        _say(failure.message, error: true);
+      } on Object catch (failure) {
+        _say('测试没跑完。', detail: '$failure', error: true);
+      } finally {
+        if (mounted) setState(() => _busy = false);
+      }
+    });
   }
 
   /// 把某个已有服务填回「添加服务」表单，改完保存是**更新那一条**，不会多出一条。
   void _editProvider(Provider provider) {
     setState(() {
       _editingId = provider.id;
+      _formProviderId = null;
       _fill = '';
       _name.text = provider.label;
       _endpoint.text = provider.endpoint ?? '';
@@ -464,6 +537,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
         ),
         const SizedBox(height: 18),
         SketchFrame(
+          key: _formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
