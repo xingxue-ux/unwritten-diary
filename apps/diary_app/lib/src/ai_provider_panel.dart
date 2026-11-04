@@ -25,21 +25,21 @@ const List<_QuickFill> _quickFills = [
     'DeepSeek',
     'https://api.deepseek.com',
     'deepseek-chat',
-    '要填 API Key。地址填到域名，不要带 /chat/completions。',
+    'API Key 必填。地址填到域名。',
   ),
   _QuickFill(
     'openai',
     'OpenAI',
     'https://api.openai.com/v1',
     'gpt-4o-mini',
-    '要填 API Key。地址带 /v1。',
+    'API Key 必填。地址带 /v1。',
   ),
   _QuickFill(
     'ollama',
     '本机 Ollama',
     'http://127.0.0.1:11434/v1',
     '',
-    '本机服务不用填密钥，模型名照 `ollama list` 里那个填。',
+    '本机服务不用密钥。',
   ),
 ];
 
@@ -111,6 +111,13 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     try {
       final value = await widget.api.listProviders();
       if (mounted) setState(() => _providers = value);
+      // 打开页面就把可选模型拉回来：模型名不该等用户点一次按钮才看得见。
+      // 失败保持安静（很多服务没有 `/models`），用户点「获取模型列表」才问原因。
+      for (final provider in value) {
+        if (provider.enabled && !_models.containsKey(provider.id)) {
+          unawaited(_loadModels(provider, quiet: true));
+        }
+      }
     } on Object {
       _say('暂时读不到已配置的服务。', error: true);
     }
@@ -138,7 +145,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     }
     final secret = _secret.text.trim();
     if (secret.isEmpty && !_isLoopback) {
-      _say('在线服务要填 API Key；只有本机地址可以留空。', error: true);
+      _say('在线服务要填 API Key。', error: true);
       return;
     }
 
@@ -218,7 +225,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
   Future<void> _loadModels(Provider provider, {bool quiet = false}) async {
     final api = widget.api;
     if (api is! ProviderModelPort) {
-      if (!quiet) _say('这个构建不能列出模型，直接手填模型名就行。');
+      if (!quiet) _say('这个构建不能列出模型。');
       return;
     }
     try {
@@ -228,11 +235,11 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       if (!mounted) return;
       setState(() => _models[provider.id] = models);
       if (!quiet && models.isEmpty) {
-        _say('这个服务没有返回模型列表，直接手填模型名就行。');
+        _say('这个服务没有返回模型列表。');
       }
     } on DiaryException catch (failure) {
       if (!quiet) {
-        _say('拿不到模型列表，直接手填模型名也行。', detail: failure.message);
+        _say('拿不到模型列表。', detail: failure.message);
       }
     } on Object catch (failure) {
       if (!quiet) _say('拿不到模型列表。', detail: '$failure');
@@ -292,7 +299,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
         ),
         const SizedBox(height: 8),
         const Text(
-          '配一个能写日记的服务。材料只在你按下生成时交给它。',
+          '配一个能写日记的服务。',
           style: TextStyle(color: SketchColors.text, height: 1.5),
         ),
         const SizedBox(height: 18),
@@ -304,7 +311,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
               if (_providers.isEmpty)
                 const Padding(
                   padding: EdgeInsets.only(top: 12),
-                  child: Text('还没有服务。在下面选一个填好保存就行。'),
+                  child: Text('还没有服务。'),
                 ),
               for (final provider in _providers) ...[
                 const Divider(color: SketchColors.line),
@@ -330,7 +337,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                       onPressed: _busy ? null : () => unawaited(_test(provider)),
                     ),
                     SketchAction(
-                      label: '换模型',
+                      label: '获取模型列表',
                       onPressed: _busy
                           ? null
                           : () => unawaited(_loadModels(provider)),
@@ -407,7 +414,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                 decoration: const InputDecoration(
                   labelText: '模型名',
                   hintText: 'deepseek-chat',
-                  helperText: '保存后会自动拉一次可选模型，也可以直接手填',
+                  helperText: '保存后自动获取可用模型',
                 ),
               ),
               TextField(

@@ -1665,15 +1665,12 @@ class _ExperienceShellState extends State<ExperienceShell>
       children: [
         _title(
           '我的小天地',
-          widget.demoMode ? '预览资料与整理方式，慢慢布置自己的空间。' : '你的记录安静地留在这台设备上。',
+          widget.demoMode ? '预览资料与整理方式。' : '只保存在这台设备上。',
         ),
         const SizedBox(height: 14),
-        // 这里原来是带边框的告警块。同一句话用脚注的样子说，读起来是说明而不是警报。
-        _footnote(
-          widget.demoMode
-              ? '这是单设备演示资料库，没有账号与自动同步。'
-              : uiStrings.t('privacy.local_only'),
-        ),
+        // 只留一句：隐私说明不必在标题下面再复述一遍。
+        if (widget.demoMode)
+          _footnote('单设备演示资料库，没有账号与自动同步。'),
         if (!widget.demoMode) ...[
           const SizedBox(height: 18),
           SketchFrame(

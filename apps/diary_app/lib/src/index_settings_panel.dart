@@ -98,7 +98,7 @@ class IndexSettingsPanel extends StatelessWidget {
                 if (defaultTargetPlatform == TargetPlatform.windows) ...[
                   const SizedBox(height: 12),
                   const Text(
-                    '当前 Windows 构建不含任何本地模型文件；语义检索与录音转写需要配置模型目录后才能使用。应用目前不会自动下载模型。',
+                    '语义检索与转写要先配好本机模型目录（不会自动下载）。',
                     style: TextStyle(
                       color: SketchColors.muted,
                       fontSize: 12,

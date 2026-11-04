@@ -155,13 +155,7 @@ class StyleSettingsPanelState extends State<StyleSettingsPanel> {
         _dimension('rhetoric', '修辞', kStyleRhetoricPresets, _rhetoric, '例如：少用形容词，多用具体动作'),
         const SizedBox(height: 4),
         const Text(
-          '「自定义」会原样写进提示词：核心对这些字段只校验长度，不限定说法，所以'
-          '你可以写得更具体（「像给朋友发消息」「不要总结，不要升华」）。',
-          style: TextStyle(color: SketchColors.muted, fontSize: 12),
-        ),
-        const SizedBox(height: 6),
-        const Text(
-          '想让改动更小，去「我的 → 整理时机 → 整理方式」。',
+          '「自定义」原样写进提示词，写多具体都行。',
           style: TextStyle(color: SketchColors.muted, fontSize: 12),
         ),
         const SizedBox(height: 10),

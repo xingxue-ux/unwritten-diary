@@ -88,7 +88,7 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
 
   String _providerNotice(Provider? provider, List<Provider> eligible) {
     if (provider == null) {
-      return '默认不联网。尚未配置可生成文字的服务；原始记录和搜索仍可使用。';
+      return '还没有配置模型服务。';
     }
     final remote = eligible.where(_isRemote).toList(growable: false);
     if (remote.isNotEmpty) {
@@ -98,15 +98,15 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
           .where((host) => host.isNotEmpty)
           .toSet();
       return destinations.isEmpty
-          ? '已启用服务中有无法展示地址的服务。请先到「模型服务」核对数据去向，再决定是否整理。'
-          : '${uiStrings.t('privacy.ai_egress')}\n当前已启用服务：${destinations.join('、')}。';
+          ? '有服务没填地址，去「模型服务」看一下。'
+          : '材料会发送到：${destinations.join('、')}。';
     }
     final host = Uri.tryParse(provider.endpoint ?? '')?.host;
     final destination = host == null || host.isEmpty ? provider.label : host;
     if (host == null || host.isEmpty) {
-      return '此服务没有可展示的地址。整理前请到「模型服务」核对数据去向与配额。';
+      return '这个服务没填地址，去「模型服务」看一下。';
     }
-    return '点击整理后，会交给已启用的本机服务处理（例如 ${provider.label}：$destination）。';
+    return '由本机服务处理：$destination。';
   }
 
   Future<void> _generate(
@@ -167,7 +167,7 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
             fontSize: 40,
           ),
         ),
-        const Text('把当天已保存的材料整理成一页；由你决定哪一版是当前正文。'),
+        const Text('把当天材料整理成一页。'),
         const SizedBox(height: 20),
         SketchAction(
           label:
@@ -182,7 +182,6 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
           _notice(controller.providerProblem!),
         ],
         const SizedBox(height: 12),
-        _notice('配额和本次费用尚无可靠统计；界面不会猜测用量。'),
         if (provider == null) ...[
           const SizedBox(height: 12),
           SketchAction(
@@ -192,14 +191,13 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
           ),
         ] else if (provider.testStatus != ProviderTestStatus.ok) ...[
           const SizedBox(height: 12),
-          _notice('此服务尚未通过连接测试。任务可能等待配置，请先检查服务。'),
+          _notice('服务还没测试通过。'),
         ],
         if (remote) ...[
           const SizedBox(height: 10),
           CheckboxListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('我确认把当天材料发送到上述服务'),
-            subtitle: const Text('每次重新打开本页都需要重新确认。'),
             value: _remoteConfirmed,
             onChanged: (value) =>
                 setState(() => _remoteConfirmed = value ?? false),
@@ -208,7 +206,7 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
         const SizedBox(height: 18),
         _notice(
           controller.day == null
-              ? '这一天还没有记录。先保存文字或导入材料，再回来整理。'
+              ? '这一天还没有记录。'
               : '当天记录 ${controller.day!.materialCounts.captures} 条 · 已处理 ${controller.day!.materialCounts.processed} 条 · 待处理 ${controller.day!.materialCounts.pending} 条。',
         ),
         const SizedBox(height: 16),
@@ -245,12 +243,12 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
         if (controller.current case final current?)
           _versionCard(current, isCurrent: true)
         else
-          _notice('还没有当前正文。首次整理完成后才会出现；失败不会显示空白假结果。'),
+          _notice('还没有正文。'),
         const SizedBox(height: 23),
         _sectionTitle('整理候选'),
         const SizedBox(height: 10),
         if (controller.candidates.isEmpty)
-          _notice('目前没有待选择的候选。重新整理会保留当前正文并生成候选。'),
+          _notice('还没有候选。'),
         for (final candidate in controller.candidates) ...[
           _versionCard(candidate, isCurrent: false),
           const SizedBox(height: 12),

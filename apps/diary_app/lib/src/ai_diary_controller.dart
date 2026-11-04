@@ -152,14 +152,14 @@ class AiDiaryController extends ChangeNotifier {
         providers = availableProviders;
       } on Object {
         if (!_isCurrent(epoch)) return;
-        providerProblem = '服务配置暂时无法读取；已保存的日记仍可查看。';
+        providerProblem = '读不到服务配置。';
       }
       await refresh();
     } on DiaryException catch (failure) {
       if (_isCurrent(epoch)) error = nextStepFor(failure.code);
     } on Object {
       if (_isCurrent(epoch)) {
-        error = '暂时无法读取整理状态。请稍后重试；原始记录仍在本机。';
+        error = '读不到整理状态。';
       }
     } finally {
       if (_isCurrent(epoch)) {
@@ -253,17 +253,17 @@ class AiDiaryController extends ChangeNotifier {
     final epoch = _viewEpoch;
     final key = dayKey;
     if (job case final activeJob? when !activeJob.state.isTerminal) {
-      error = '上一次整理仍在处理。可等待完成或先取消，再发起新的一次。';
+      error = '上一次整理还在跑。';
       _notify();
       return;
     }
     if (generationProvider == null) {
-      error = '尚未配置可生成文字的 Provider。请先配置并测试服务，再回来整理。';
+      error = '还没有配置模型服务。';
       _notify();
       return;
     }
     if (day == null || day!.materialCounts.captures == 0) {
-      error = '这一天还没有可整理的记录。先保存一条文字或导入材料。';
+      error = '这一天还没有记录。';
       _notify();
       return;
     }
@@ -289,7 +289,7 @@ class AiDiaryController extends ChangeNotifier {
       if (_isCurrent(epoch)) error = nextStepFor(failure.code);
     } on Object {
       if (_isCurrent(epoch)) {
-        error = '整理未能启动。请检查本机资料库状态后重试。';
+        error = '整理没有启动。';
       }
     } finally {
       if (_isCurrent(epoch)) {
@@ -321,7 +321,7 @@ class AiDiaryController extends ChangeNotifier {
       // The next scheduled refresh will reconcile a concurrent edit.
     } on Object {
       if (_isCurrent(epoch)) {
-        error = '未能采纳候选。请刷新状态后重试；当前正文未被替换。';
+        error = '没有采纳，当前正文没变。';
       }
     } finally {
       if (_isCurrent(epoch)) {
@@ -354,7 +354,7 @@ class AiDiaryController extends ChangeNotifier {
     } on DiaryException catch (failure) {
       if (_isCurrent(epoch)) error = nextStepFor(failure.code);
     } on Object {
-      if (_isCurrent(epoch)) error = '任务操作暂时不可用，请刷新状态后重试。';
+      if (_isCurrent(epoch)) error = '任务操作暂时不可用。';
     } finally {
       if (_isCurrent(epoch)) {
         busy = false;
@@ -379,14 +379,14 @@ class AiDiaryController extends ChangeNotifier {
 
   static String nextStepFor(DiaryErrorCode code) => switch (code) {
     DiaryErrorCode.providerNotConfigured ||
-    DiaryErrorCode.modelUnavailable => '模型服务尚未就绪。请到「模型服务」配置并测试生成能力。',
-    DiaryErrorCode.authenticationFailed => '服务认证失败。请检查密钥后重新测试连接。',
+    DiaryErrorCode.modelUnavailable => '模型服务还没配好。',
+    DiaryErrorCode.authenticationFailed => '密钥不对。',
     DiaryErrorCode.networkUnavailable ||
-    DiaryErrorCode.providerTimeout => '网络或服务暂不可用。原始记录不受影响；恢复连接后可重试。',
+    DiaryErrorCode.providerTimeout => '网络或服务暂时不可用。',
     DiaryErrorCode.rateLimited ||
-    DiaryErrorCode.quotaExceeded => '服务配额或速率已达上限。请检查服务商额度，稍后重试。',
-    DiaryErrorCode.revisionConflict => '这一天的正文刚刚变化了。已重新读取，请核对后再操作。',
-    DiaryErrorCode.permissionDenied => '权限不足。请检查本机设置后重试。',
+    DiaryErrorCode.quotaExceeded => '额度或速率到上限了。',
+    DiaryErrorCode.revisionConflict => '正文刚变过，已重新读取。',
+    DiaryErrorCode.permissionDenied => '权限不足。',
     _ => '操作没有完成。请刷新状态或稍后重试；原始材料不会被覆盖。',
   };
 
