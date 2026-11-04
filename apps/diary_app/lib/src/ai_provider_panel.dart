@@ -235,7 +235,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       if (!mounted) return;
       setState(() => _models[provider.id] = models);
       if (!quiet && models.isEmpty) {
-        _say('这个服务没有返回模型列表。');
+        _say('这个服务里还没有模型。');
       }
     } on DiaryException catch (failure) {
       if (!quiet) {

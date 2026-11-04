@@ -174,9 +174,17 @@ fn parse_models(
                  检查 endpoint 是否指向服务的 API 根地址（例如 https://api.deepseek.com）"
             ),
         })?;
-    let entries = data.as_array().ok_or_else(|| CoreError::ModelUnavailable {
-        reason: format!("远端响应的 data 不是数组，无法当作模型列表：{excerpt}"),
-    })?;
+    // `data: null` 是「一个模型都没有」，不是「解析不了」。
+    //
+    // 本机 Ollama 在没拉过任何模型时返回的就是 `{"object":"list","data":null}`
+    // （实测 v0.40.12）。按「形状不对」报错会把「服务里还没有模型」说成
+    // `model_unavailable`，用户会去查网络和端点——查错了方向。
+    let entries: &[serde_json::Value] = match &data {
+        serde_json::Value::Null => &[],
+        other => other.as_array().ok_or_else(|| CoreError::ModelUnavailable {
+            reason: format!("远端响应的 data 不是数组，无法当作模型列表：{excerpt}"),
+        })?,
+    };
 
     let mut models = Vec::new();
     for entry in entries {
@@ -316,6 +324,37 @@ mod tests {
             vec![Ok(HttpResponse::new(200, r#"{"object":"list","data":[]}"#))],
         );
         assert!(core.list_provider_models("prv_models").unwrap().is_empty());
+    }
+
+    /// 本机 Ollama 没拉过模型时返回 `data: null`（实测 v0.40.12）。
+    /// 那是「一个模型都没有」，不是「解析不了」——按后者报错会让人去查网络。
+    #[test]
+    fn null_data_is_an_empty_list_like_ollama_returns() {
+        let (core, _transport) = core_with_provider(
+            Some("http://127.0.0.1:11434/v1"),
+            None,
+            vec![Ok(HttpResponse::new(200, r#"{"object":"list","data":null}"#))],
+        );
+        assert!(
+            core.list_provider_models("prv_models").unwrap().is_empty(),
+            "Ollama 的空列表要当成空列表"
+        );
+    }
+
+    /// 但 `data` 是**别的类型**（字符串、对象）仍要如实报形状不对，不能一律当空。
+    #[test]
+    fn data_of_the_wrong_type_is_still_a_shape_error() {
+        let (core, _transport) = core_with_provider(
+            Some("https://api.deepseek.com"),
+            Some(SECRET),
+            vec![Ok(HttpResponse::new(
+                200,
+                r#"{"object":"list","data":{"id":"not-a-list"}}"#,
+            ))],
+        );
+        let error = core.list_provider_models("prv_models").unwrap_err();
+        assert_eq!(code_of(&error), "model_unavailable");
+        assert!(error.to_string().contains("不是数组"), "{error}");
     }
 
     #[test]
