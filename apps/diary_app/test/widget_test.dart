@@ -1107,6 +1107,47 @@ void main() {
       expect(tester.takeException(), isNull, reason: '$label panel overflowed');
     }
   });
+
+  testWidgets('滚到底再点「获取模型列表」，页面不许跳回上面', (tester) async {
+    final api = _ProviderUiApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('模型服务'));
+    await tester.tap(find.text('模型服务'));
+    await tester.pumpAndSettle();
+
+    // 先拉一次，让表单里出现候选 chip（内容变高）。
+    await tester.enterText(
+      find.widgetWithText(TextField, 'API Key'),
+      'sk-test',
+    );
+    await tester.ensureVisible(find.text('获取模型列表'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('获取模型列表'));
+    await tester.pumpAndSettle();
+    expect(find.text('deepseek-reasoner'), findsOneWidget);
+
+    // 滚到最底下——用户点按钮时通常就在这儿。
+    final scrollable = find.byType(Scrollable).first;
+    await tester.drag(scrollable, const Offset(0, -5000));
+    await tester.pumpAndSettle();
+    final before = tester.state<ScrollableState>(scrollable).position.pixels;
+    expect(before, greaterThan(0), reason: '这一页要真的能滚，否则测不出问题');
+
+    await tester.ensureVisible(find.text('获取模型列表'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('获取模型列表'));
+    await tester.pumpAndSettle();
+
+    final after = tester.state<ScrollableState>(scrollable).position.pixels;
+    expect(
+      after,
+      closeTo(before, 1),
+      reason: '点按钮把内容清空会让滚动位置被夹回去，看起来就是「跳回最上面」',
+    );
+  });
 }
 
 /// 只给「模型服务」页用的假 API：已配置一个在线服务，`/models` 返回两个模型。
