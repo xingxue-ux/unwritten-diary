@@ -891,7 +891,7 @@ void main() {
     expect(find.text('语义检索暂不可用'), findsNothing);
   });
 
-  testWidgets('模型列表要点「获取模型列表」才拉，打开页面不出网', (tester) async {
+  testWidgets('「获取模型列表」在添加服务里，点了才拉', (tester) async {
     final api = _ProviderUiApi();
     // demoMode 走的是预览面板；真实安装版用的是 AiProviderPanel，这里要测后者。
     await tester.pumpWidget(DiaryApp(api: api));
@@ -904,14 +904,45 @@ void main() {
 
     // 打开页面**不该**发请求：核心 provider::models 的约定就是「点了才出网」。
     expect(api.modelCalls, 0, reason: '打开页面不该自动拉模型列表');
-    expect(find.text('deepseek-reasoner'), findsNothing);
 
+    // 没填密钥就问模型列表：先要密钥，不发请求。
     await tester.ensureVisible(find.text('获取模型列表'));
     await tester.tap(find.text('获取模型列表'));
     await tester.pumpAndSettle();
+    expect(api.modelCalls, 0, reason: '没有密钥不该出网');
+    expect(find.textContaining('先填 API Key'), findsOneWidget);
 
+    // 填上密钥再点：这一次真的去问，候选出现在表单里。
+    await tester.enterText(
+      find.widgetWithText(TextField, 'API Key'),
+      'sk-test',
+    );
+    await tester.tap(find.text('获取模型列表'));
+    await tester.pumpAndSettle();
     expect(api.modelCalls, 1, reason: '点一次按钮拉一次');
     expect(find.text('deepseek-reasoner'), findsOneWidget);
+  });
+
+  testWidgets('连接结果写在该服务的卡片里，不跑到页面底部', (tester) async {
+    final api = _ProviderUiApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('模型服务'));
+    await tester.tap(find.text('模型服务'));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('测试连接'));
+    await tester.tap(find.text('测试连接'));
+    await tester.pumpAndSettle();
+
+    final note = find.text('连接正常。');
+    expect(note, findsOneWidget);
+    // 位置断言：提示要排在「添加服务」标题**上面**（即在已配置卡片里）。
+    final noteY = tester.getTopLeft(note).dy;
+    final addCardY = tester.getTopLeft(find.text('添加服务')).dy;
+    expect(noteY, lessThan(addCardY), reason: '连接结果不该掉到页面底部');
   });
 
   testWidgets('Windows index settings disclose that models are not bundled', (
@@ -1040,4 +1071,33 @@ class _ProviderUiApi extends MockDiaryApi {
       ProviderModel(id: 'deepseek-reasoner'),
     ];
   }
+
+  @override
+  Future<Provider> saveProvider(Provider provider) async => provider;
+
+  @override
+  Future<Provider> saveProviderCredential({
+    required String providerId,
+    required String secret,
+  }) async => const Provider(
+    id: 'prv_deepseek',
+    label: 'DeepSeek',
+    adapterId: 'openai_compatible',
+    capabilities: {ProviderCapability.generateText},
+    enabled: true,
+    endpoint: 'https://api.deepseek.com',
+    model: 'deepseek-chat',
+    credentialRef: 'secret-1',
+    testStatus: ProviderTestStatus.ok,
+  );
+
+  @override
+  Future<ProviderTestReport> testProvider({
+    required String providerId,
+    required Set<ProviderCapability> scope,
+  }) async => ProviderTestReport(
+    providerId: providerId,
+    results: const {ProviderCapability.generateText: ProviderTestStatus.ok},
+    actualCallMade: true,
+  );
 }
