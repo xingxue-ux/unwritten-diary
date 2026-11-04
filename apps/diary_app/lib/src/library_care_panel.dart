@@ -25,7 +25,7 @@ class BackupRestorePanel extends StatelessWidget {
     builder: (context, _) => Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const _PanelTitle(title: '备份与恢复', subtitle: '完整备份用于恢复资料库；阅读导出用于查看和分享。'),
+        const _PanelTitle(title: '备份与恢复', subtitle: '备份能恢复，导出只能看。'),
         const SizedBox(height: 18),
         _CapabilityNotice(controller: controller),
         const SizedBox(height: 18),
@@ -36,12 +36,12 @@ class BackupRestorePanel extends StatelessWidget {
               const _FlowHeading(
                 icon: Icons.inventory_2_outlined,
                 title: '完整备份',
-                detail: '包含原始材料、日记版本和必要配置，可以恢复。',
+                detail: '含材料、版本与配置，可恢复。',
               ),
               const SizedBox(height: 8),
-              Text(
-                uiStrings.t('backup.not_encrypted'),
-                style: const TextStyle(color: SketchColors.muted, height: 1.5),
+              const Text(
+                '备份没有加密，自己收好。',
+                style: TextStyle(color: SketchColors.muted),
               ),
               const SizedBox(height: 14),
               SketchAction(
@@ -62,15 +62,14 @@ class BackupRestorePanel extends StatelessWidget {
               const _FlowHeading(
                 icon: Icons.article_outlined,
                 title: '阅读导出',
-                detail: '按日期与格式导出正文，不能作为完整备份恢复。',
+                detail: '按日期导出正文，不能用来恢复。',
               ),
               const SizedBox(height: 10),
-              Text(
-                controller.capabilities.contains('exports.create')
-                    ? '导出核心已就绪，日期和格式选择将在“阅读导出”流程中提供。'
-                    : '等待 #113 的导出核心接入后开放日期、格式和保存位置。',
-                style: const TextStyle(color: SketchColors.muted),
-              ),
+              if (!controller.capabilities.contains('exports.create'))
+                const Text(
+                  '暂未开放。',
+                  style: TextStyle(color: SketchColors.muted),
+                ),
             ],
           ),
         ),
@@ -82,7 +81,7 @@ class BackupRestorePanel extends StatelessWidget {
               const _FlowHeading(
                 icon: Icons.settings_backup_restore,
                 title: '恢复备份',
-                detail: '先检查版本与完整性，确认后恢复到新的资料库。',
+                detail: '先检查，再恢复到新资料库。',
               ),
               const SizedBox(height: 14),
               SketchAction(
@@ -347,11 +346,9 @@ class _CapabilityNotice extends StatelessWidget {
         controller.canCreateBackup &&
         controller.canInspectBackup &&
         controller.canRestoreBackup;
-    return _MessageCard(
-      message: ready
-          ? '备份能力已就绪。所有文件只写入你选择的位置。'
-          : '界面已经接好；当前核心尚未开放全部备份能力，可用操作会自动启用。',
-    );
+    // 就绪时不再占一块地方说「已就绪」——能点的按钮本身就是证明。
+    if (ready) return const SizedBox.shrink();
+    return const _MessageCard(message: '部分备份能力还没接上，可用操作会自动启用。');
   }
 }
 

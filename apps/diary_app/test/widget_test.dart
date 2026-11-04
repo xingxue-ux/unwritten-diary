@@ -859,8 +859,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('我的').last);
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('搜索索引 · 需要处理'));
-    await tester.tap(find.text('搜索索引 · 需要处理'));
+    await tester.ensureVisible(find.text('搜索索引 · 未建立'));
+    await tester.tap(find.text('搜索索引 · 未建立'));
     await tester.pumpAndSettle();
     expect(find.text('语义检索暂不可用'), findsOneWidget);
     await tester.tap(find.text('重建语义索引'));
@@ -882,13 +882,33 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('我的').last);
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('搜索索引 · 需要处理'));
-    await tester.tap(find.text('搜索索引 · 需要处理'));
+    await tester.ensureVisible(find.text('搜索索引 · 未建立'));
+    await tester.tap(find.text('搜索索引 · 未建立'));
     await tester.pumpAndSettle();
     expect(find.text('语义检索部分可用'), findsOneWidget);
     expect(find.textContaining('已嵌入的内容可以搜到'), findsOneWidget);
     expect(find.text('还有 3 块待嵌入。'), findsOneWidget);
     expect(find.text('语义检索暂不可用'), findsNothing);
+  });
+
+  testWidgets('模型服务打开就列出可用模型，不用先点按钮', (tester) async {
+    final api = _ProviderUiApi();
+    // demoMode 走的是预览面板；真实安装版用的是 AiProviderPanel，这里要测后者。
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('模型服务'));
+    await tester.tap(find.text('模型服务'));
+    await tester.pumpAndSettle();
+
+    // 打开页面就该有可选模型：模型名不该等用户点一次按钮才看得见。
+    expect(api.modelCalls, greaterThan(0), reason: '打开页面要自动拉一次模型列表');
+    // deepseek-chat 同时出现在「当前模型」那行和 chip 上，所以只断言候选里那个新名字。
+    expect(find.text('deepseek-reasoner'), findsOneWidget);
+    expect(find.text('deepseek-chat'), findsWidgets);
+    // 按钮文案要说清是「获取模型列表」，不是含糊的「换模型」。
+    expect(find.text('获取模型列表'), findsOneWidget);
   });
 
   testWidgets('Windows index settings disclose that models are not bundled', (
@@ -901,13 +921,13 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('我的').last);
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('搜索索引 · 需要处理'));
-      await tester.tap(find.text('搜索索引 · 需要处理'));
+      await tester.ensureVisible(find.text('搜索索引 · 未建立'));
+      await tester.tap(find.text('搜索索引 · 未建立'));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('当前 Windows 构建不含任何本地模型文件'), findsOneWidget);
-      expect(find.textContaining('语义检索与录音转写需要配置模型目录后才能使用'), findsOneWidget);
-      expect(find.textContaining('不会自动下载模型'), findsOneWidget);
+      // 一句话说完：要配模型目录，且不会自动下载（别让人干等）。
+      expect(find.textContaining('语义检索与转写要先配好本机模型目录'), findsOneWidget);
+      expect(find.textContaining('不会自动下载'), findsOneWidget);
       // 有 IndexStatus.reasons 时就原样显示，不另编一句替代。
       expect(find.text('· 本地模型已更换，需要重建'), findsOneWidget);
     } finally {
@@ -986,4 +1006,35 @@ void main() {
       expect(tester.takeException(), isNull, reason: '$label panel overflowed');
     }
   });
+}
+
+/// 只给「模型服务」页用的假 API：已配置一个在线服务，`/models` 返回两个模型。
+class _ProviderUiApi extends MockDiaryApi {
+  int modelCalls = 0;
+
+  @override
+  Future<List<Provider>> listProviders() async => const [
+    Provider(
+      id: 'prv_deepseek',
+      label: 'DeepSeek',
+      adapterId: 'openai_compatible',
+      capabilities: {ProviderCapability.generateText},
+      enabled: true,
+      endpoint: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+      credentialRef: 'secret-1',
+      testStatus: ProviderTestStatus.ok,
+    ),
+  ];
+
+  @override
+  Future<List<ProviderModel>> listProviderModels({
+    required String providerId,
+  }) async {
+    modelCalls++;
+    return const [
+      ProviderModel(id: 'deepseek-chat'),
+      ProviderModel(id: 'deepseek-reasoner'),
+    ];
+  }
 }

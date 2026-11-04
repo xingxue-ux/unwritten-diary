@@ -33,7 +33,7 @@ class IndexSettingsPanel extends StatelessWidget {
           ),
           const SizedBox(height: 5),
           const Text(
-            '让本机的语义检索跟上新的记录和模型。',
+            '让语义检索跟上新的记录。',
             style: TextStyle(color: SketchColors.muted, fontSize: 15),
           ),
           const SizedBox(height: 18),
@@ -64,7 +64,7 @@ class IndexSettingsPanel extends StatelessWidget {
                       ? '当前生效的索引可以用于语义检索。'
                       : partiallySearchable
                       ? '已嵌入的内容可以搜到，索引覆盖还不完整。'
-                      : '文字记录和关键词搜索仍可使用；语义检索要等本地模型与索引就绪。',
+                      : '语义检索要等本地模型与索引就绪。',
                   style: const TextStyle(color: SketchColors.text, height: 1.5),
                 ),
                 if (partiallySearchable && status!.pendingCount > 0) ...[
@@ -98,7 +98,7 @@ class IndexSettingsPanel extends StatelessWidget {
                 if (defaultTargetPlatform == TargetPlatform.windows) ...[
                   const SizedBox(height: 12),
                   const Text(
-                    '当前 Windows 构建不含任何本地模型文件；语义检索与录音转写需要配置模型目录后才能使用。应用目前不会自动下载模型。',
+                    '语义检索与转写要先配好本机模型目录（不会自动下载）。',
                     style: TextStyle(
                       color: SketchColors.muted,
                       fontSize: 12,
@@ -174,7 +174,7 @@ class IndexSettingsPanel extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           const Text(
-            '换用本地模型后，建议在这里重建索引。任务会在本机后台继续；离开页面不会删除任务。',
+            '换模型后建议重建。任务在后台继续。',
             style: TextStyle(color: SketchColors.muted, fontSize: 12),
           ),
         ],

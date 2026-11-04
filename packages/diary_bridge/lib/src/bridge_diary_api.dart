@@ -59,7 +59,12 @@ import '../diary_bridge.dart' as bridge;
 ///   [api.DiaryException]（枚举码），未知码落到 `unknown` 而不是崩掉；
 /// - **能力窄化**：核心报的是「桥接接了多少」，这里只报「适配层能真的用的」，
 ///   两者取交集。
-class BridgeDiaryApi implements api.DiaryApi, api.OrganizeSchedulePort {
+class BridgeDiaryApi
+    implements
+        api.DiaryApi,
+        api.OrganizeSchedulePort,
+        api.ProviderCredentialPort,
+        api.ProviderModelPort {
   BridgeDiaryApi({
     required this.coreLibraryPath,
     required this.libraryPath,
@@ -605,6 +610,20 @@ class BridgeDiaryApi implements api.DiaryApi, api.OrganizeSchedulePort {
   ///
   /// 宿主凭据接上之后这个方法会被移除（或改成只传 `credentialRef`），调用方不该把它
   /// 当成长期接口。
+  @override
+  Future<List<api.ProviderModel>> listProviderModels({
+    required String providerId,
+  }) async {
+    final session = _open;
+    final models = await _translate(
+      () => session.listProviderModels(providerId: providerId),
+    );
+    return models
+        .map((item) => api.ProviderModel(id: item.id, ownedBy: item.ownedBy))
+        .toList(growable: false);
+  }
+
+  @override
   Future<api.Provider> saveProviderCredential({
     required String providerId,
     required String secret,

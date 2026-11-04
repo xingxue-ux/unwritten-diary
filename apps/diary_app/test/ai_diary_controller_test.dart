@@ -187,7 +187,7 @@ void main() {
     await controller.generate();
     await controller.generate();
     expect(api.generations, 1);
-    expect(controller.error, contains('仍在处理'));
+    expect(controller.error, contains('还在跑'));
     await controller.cancel();
     expect(api.cancellations, 1);
     expect(controller.job?.state, JobState.cancelled);

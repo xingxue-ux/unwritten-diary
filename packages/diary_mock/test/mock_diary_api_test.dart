@@ -129,4 +129,26 @@ void main() {
       throwsA(isA<UnsupportedError>()),
     );
   });
+
+  test('写密钥只留引用，明文不进配置', () async {
+    // 设置页配在线服务时走这条路：`saveProvider` 只存脱敏配置，密钥单独写一次。
+    // Mock 记住的是引用，不是明文——与核心 `SecretStore` 同一口径。
+    final api = MockDiaryApi(clock: () => now);
+    final saved = await api.saveProviderCredential(
+      providerId: 'prv_deepseek',
+      secret: 'sk-test-0123456789',
+    );
+    expect(saved.credentialRef, isNotNull);
+    expect(saved.credentialRef, isNot(contains('sk-test')));
+    expect(api.providerSecrets['prv_deepseek'], saved.credentialRef);
+  });
+
+  test('空密钥不写，直接报错', () async {
+    final api = MockDiaryApi(clock: () => now);
+    await expectLater(
+      api.saveProviderCredential(providerId: 'prv_x', secret: '   '),
+      throwsA(isA<DiaryException>()),
+    );
+    expect(api.providerSecrets, isEmpty);
+  });
 }
