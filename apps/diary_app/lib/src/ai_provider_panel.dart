@@ -43,6 +43,14 @@ const List<_QuickFill> _quickFills = [
   ),
 ];
 
+/// 一张卡片上的一句话提示。`detail` 是核心那句又长又技术的原文，默认折叠。
+class _Note {
+  const _Note(this.text, {this.error = false, this.detail});
+  final String text;
+  final bool error;
+  final String? detail;
+}
+
 /// 模型服务：配一个能生成日记的服务。
 ///
 /// 之前这一页只允许本机地址（`localhost` / `127.0.0.1`），在线服务没有入口——
@@ -61,7 +69,12 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
   final _model = TextEditingController();
   final _secret = TextEditingController();
   List<Provider> _providers = const [];
-  final Map<String, List<ProviderModel>> _models = {};
+  /// 每个服务卡片**自己的**提示（「连接正常」属于那张卡片，不属于整页）。
+  final Map<String, _Note> _notes = {};
+  /// 「添加服务」里点「获取模型列表」拿到的候选。
+  List<ProviderModel> _formModels = const [];
+  /// 正在改哪个已有服务；null 表示新增。保存时用它决定是更新还是新建。
+  String? _editingId;
   String _fill = 'deepseek';
   bool _busy = false;
   bool _obscure = true;
@@ -96,7 +109,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     });
   }
 
-  /// 只给人看一句话；核心那句又长又技术的诊断放进 [detail]，默认折叠。
+  /// 「添加服务」表单里的一句话；核心那句又长又技术的诊断放进 [detail]，默认折叠。
   void _say(String text, {bool error = false, String? detail}) {
     if (!mounted) return;
     setState(() {
@@ -105,6 +118,12 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       _showDetail = false;
       _messageIsError = error;
     });
+  }
+
+  /// 某张服务卡片自己的提示。**连接结果属于那张卡片**，不该跑到页面底部去。
+  void _sayTo(String providerId, String text, {bool error = false, String? detail}) {
+    if (!mounted) return;
+    setState(() => _notes[providerId] = _Note(text, error: error, detail: detail));
   }
 
   Future<void> _reload() async {
@@ -123,21 +142,65 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
         .contains(uri.host.toLowerCase());
   }
 
+  /// 表单里的地址是否可用；不可用时把原因写进表单提示并返回 null。
+  Uri? _checkedEndpoint() {
+    final uri = Uri.tryParse(_endpoint.text.trim());
+    if (uri == null ||
+        !{'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty) {
+      _say('地址要写成 http(s)://…，例如 https://api.deepseek.com。', error: true);
+      return null;
+    }
+    return uri;
+  }
+
+  /// 把表单里的值落库（有 `_editingId` 就更新那一条，否则新建）。
+  ///
+  /// 「获取模型列表」也要用它：核心只能按**已保存的服务**列模型，
+  /// 所以那一步会先把表单落一份——这正是「添加服务」的一部分。
+  Future<Provider?> _persist(Uri uri, {required String model}) async {
+    final secret = _secret.text.trim();
+    final saved = await widget.api.saveProvider(
+      Provider(
+        id: _editingId ?? 'prv-${DateTime.now().microsecondsSinceEpoch}',
+        label: _name.text.trim().isEmpty
+            ? (model.isEmpty ? uri.host : model)
+            : _name.text.trim(),
+        adapterId: 'openai_compatible',
+        capabilities: const {ProviderCapability.generateText},
+        enabled: true,
+        endpoint: uri.toString(),
+        model: model.isEmpty ? null : model,
+      ),
+    );
+    if (secret.isNotEmpty) {
+      // `ProviderCredentialPort` 与 `DiaryApi` 没有子类型关系，`is` 不会提升类型，
+      // 所以这里显式转一次。
+      final api = widget.api;
+      if (api is ProviderCredentialPort) {
+        await (api as ProviderCredentialPort).saveProviderCredential(
+          providerId: saved.id,
+          secret: secret,
+        );
+      } else {
+        _say('这个构建不能保存密钥，服务已保存但没有密钥。', error: true);
+      }
+    }
+    _secret.clear();
+    await _reload();
+    return saved;
+  }
+
   Future<void> _save() async {
     if (_busy) return;
-    final raw = _endpoint.text.trim();
-    final uri = Uri.tryParse(raw);
-    if (uri == null || !{'http', 'https'}.contains(uri.scheme) || uri.host.isEmpty) {
-      _say('地址要写成 http(s)://…，例如 https://api.deepseek.com。', error: true);
-      return;
-    }
+    final uri = _checkedEndpoint();
+    if (uri == null) return;
     final model = _model.text.trim();
     if (model.isEmpty) {
       _say('请填写模型名，例如 deepseek-chat。', error: true);
       return;
     }
-    final secret = _secret.text.trim();
-    if (secret.isEmpty && !_isLoopback) {
+    if (_secret.text.trim().isEmpty && !_isLoopback) {
       _say('在线服务要填 API Key。', error: true);
       return;
     }
@@ -147,32 +210,12 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       _message = null;
     });
     try {
-      final saved = await widget.api.saveProvider(
-        Provider(
-          id: 'prv-${DateTime.now().microsecondsSinceEpoch}',
-          label: _name.text.trim().isEmpty ? model : _name.text.trim(),
-          adapterId: 'openai_compatible',
-          capabilities: const {ProviderCapability.generateText},
-          enabled: true,
-          endpoint: uri.toString(),
-          model: model,
-        ),
-      );
-      if (secret.isNotEmpty) {
-        // `ProviderCredentialPort` 与 `DiaryApi` 没有子类型关系，`is` 不会提升类型，
-        // 所以这里显式转一次。
-        final api = widget.api;
-        if (api is ProviderCredentialPort) {
-          await (api as ProviderCredentialPort).saveProviderCredential(
-            providerId: saved.id,
-            secret: secret,
-          );
-        } else {
-          _say('这个构建不能保存密钥，服务已保存但没有密钥。', error: true);
-        }
-      }
-      _secret.clear();
-      await _reload();
+      final saved = await _persist(uri, model: model);
+      if (saved == null) return;
+      setState(() {
+        _editingId = null;
+        _formModels = const [];
+      });
       _say('已保存「${saved.label}」。');
     } on DiaryException catch (failure) {
       _say(failure.message, error: true);
@@ -183,13 +226,69 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     }
   }
 
-  Future<void> _test(Provider provider) async {
+  /// 「添加服务」里的**获取模型列表**：用表单里的地址与密钥去问服务提供哪些模型。
+  ///
+  /// 核心的 `providers.models` 只按已保存的服务查（它要读 SecretStore），
+  /// 所以这里先把表单落一份——用户此刻本来就在「添加服务」，落库是这条流程的一部分。
+  Future<void> _loadModelsForForm() async {
     if (_busy) return;
+    final uri = _checkedEndpoint();
+    if (uri == null) return;
+    if (_secret.text.trim().isEmpty && !_isLoopback) {
+      _say('先填 API Key，才能问服务有哪些模型。', error: true);
+      return;
+    }
+    final api = widget.api;
+    if (api is! ProviderModelPort) {
+      _say('这个构建不能列出模型。', error: true);
+      return;
+    }
     setState(() {
       _busy = true;
-      _message = '正在向 ${provider.label} 发一次真实请求…';
-      _messageIsError = false;
+      _message = null;
+      _formModels = const [];
     });
+    try {
+      final saved = await _persist(uri, model: _model.text.trim());
+      if (saved == null) return;
+      final models = await (api as ProviderModelPort).listProviderModels(
+        providerId: saved.id,
+      );
+      if (!mounted) return;
+      setState(() => _formModels = models);
+      _say(
+        models.isEmpty
+            ? '这个服务里还没有模型。'
+            : '这个服务提供 ${models.length} 个模型，点一个填进「模型名」。',
+      );
+    } on DiaryException catch (failure) {
+      _say(failure.message, error: true);
+    } on Object catch (failure) {
+      _say('拿不到模型列表。', detail: '$failure', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 把某个已有服务填回「添加服务」表单，改完保存是**更新那一条**，不会多出一条。
+  void _editProvider(Provider provider) {
+    setState(() {
+      _editingId = provider.id;
+      _fill = '';
+      _name.text = provider.label;
+      _endpoint.text = provider.endpoint ?? '';
+      _model.text = provider.model ?? '';
+      _secret.clear();
+      _formModels = const [];
+      _message = null;
+      _detail = null;
+    });
+  }
+
+  Future<void> _test(Provider provider) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    _sayTo(provider.id, '正在发一次真实请求…');
     try {
       final report = await widget.api.testProvider(
         providerId: provider.id,
@@ -199,52 +298,25 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       final ok =
           report.results[ProviderCapability.generateText] ==
           ProviderTestStatus.ok;
-      _say(
+      _sayTo(
+        provider.id,
         ok ? '连接正常。' : '没连上。检查地址、模型名和密钥。',
         error: !ok,
         detail: report.message,
       );
     } on DiaryException catch (failure) {
-      _say(failure.message, error: true);
+      _sayTo(provider.id, failure.message, error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  /// 拉某个服务的模型列表。**只有用户点「获取模型列表」才出网**——
-  /// 与核心 `provider::models` 的约定一致（打开资料库、列服务都不发请求）。
-  Future<void> _loadModels(Provider provider) async {
-    final api = widget.api;
-    if (api is! ProviderModelPort) {
-      _say('这个构建不能列出模型。');
-      return;
-    }
-    try {
-      final models = await (api as ProviderModelPort).listProviderModels(
-        providerId: provider.id,
-      );
-      if (!mounted) return;
-      setState(() => _models[provider.id] = models);
-      if (models.isEmpty) _say('这个服务里还没有模型。');
-    } on DiaryException catch (failure) {
-      _say('拿不到模型列表。', detail: failure.message);
-    } on Object catch (failure) {
-      _say('拿不到模型列表。', detail: '$failure');
-    }
-  }
-
-  Future<void> _pickModel(Provider provider, String model) async {
-    if (_busy) return;
-    setState(() => _busy = true);
-    try {
-      await widget.api.saveProvider(provider.copyWith(model: model));
-      await _reload();
-      _say('模型改成 $model。');
-    } on DiaryException catch (failure) {
-      _say(failure.message, error: true);
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+  /// 表单里点一个候选：只填进「模型名」，保存仍由用户按。
+  void _pickFormModel(String id) {
+    setState(() {
+      _model.text = id;
+      _formModels = const [];
+    });
   }
 
   Future<void> _remove(Provider provider) async {
@@ -324,10 +396,8 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                       onPressed: _busy ? null : () => unawaited(_test(provider)),
                     ),
                     SketchAction(
-                      label: '获取模型列表',
-                      onPressed: _busy
-                          ? null
-                          : () => unawaited(_loadModels(provider)),
+                      label: '改模型',
+                      onPressed: _busy ? null : () => _editProvider(provider),
                     ),
                     SketchAction(
                       label: '移除',
@@ -337,24 +407,10 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                     ),
                   ],
                 ),
-                if (_models[provider.id]?.isNotEmpty ?? false) ...[
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final model in _models[provider.id]!)
-                        ChoiceChip(
-                          label: Text(model.id),
-                          selected: provider.model == model.id,
-                          onSelected: _busy
-                              ? null
-                              : (_) => unawaited(
-                                  _pickModel(provider, model.id),
-                                ),
-                        ),
-                    ],
-                  ),
+                // 连接结果就写在这张卡片里——它说的是这个服务，不是整页。
+                if (_notes[provider.id] case final note?) ...[
+                  const SizedBox(height: 8),
+                  _NoteLine(note: note),
                 ],
               ],
             ],
@@ -401,9 +457,36 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                 decoration: const InputDecoration(
                   labelText: '模型名',
                   hintText: 'deepseek-chat',
-                  helperText: '不知道填什么就先保存，再点上面的「获取模型列表」',
+                  helperText: '不知道填什么就点下面的「获取模型列表」',
                 ),
               ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: SketchAction(
+                  label: '获取模型列表',
+                  onPressed: _busy
+                      ? null
+                      : () => unawaited(_loadModelsForForm()),
+                ),
+              ),
+              if (_formModels.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final model in _formModels)
+                      ChoiceChip(
+                        label: Text(model.id),
+                        selected: _model.text.trim() == model.id,
+                        onSelected: _busy
+                            ? null
+                            : (_) => _pickFormModel(model.id),
+                      ),
+                  ],
+                ),
+              ],
               TextField(
                 controller: _secret,
                 obscureText: _obscure,
@@ -421,50 +504,83 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
               ),
               const SizedBox(height: 12),
               SketchAction(
-                label: _busy ? '处理中…' : '保存服务',
+                label: _busy
+                    ? '处理中…'
+                    : (_editingId == null ? '保存服务' : '更新这个服务'),
                 onPressed: _busy ? null : () => unawaited(_save()),
               ),
+              // 表单自己的提示留在这张卡片里：它说的是「这次填写」，不是整页。
+              if (_message != null) ...[
+                const SizedBox(height: 12),
+                _NoteLine(
+                  note: _Note(
+                    _message!,
+                    error: _messageIsError,
+                    detail: _detail,
+                  ),
+                  expanded: _showDetail,
+                  onToggle: () => setState(() => _showDetail = !_showDetail),
+                ),
+              ],
             ],
           ),
         ),
-        if (_message != null) ...[
-          const SizedBox(height: 14),
-          SketchFrame(
-            fill: _messageIsError ? SketchColors.soft : SketchColors.paper,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(_message!),
-                // 核心那句诊断（端点可达 / 认证通过 / 发起了几次请求…）默认收起来：
-                // 对用户有用的只有「通没通」，其余是排查时才看的东西。
-                if (_detail != null && _detail!.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  GestureDetector(
-                    onTap: () => setState(() => _showDetail = !_showDetail),
-                    child: Text(
-                      _showDetail ? '收起详情' : '详情',
-                      style: const TextStyle(
-                        color: SketchColors.muted,
-                        fontSize: 12,
-                        decoration: TextDecoration.underline,
-                      ),
-                    ),
-                  ),
-                  if (_showDetail) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      _detail!,
-                      style: const TextStyle(
-                        color: SketchColors.muted,
-                        fontSize: 12,
-                        height: 1.5,
-                      ),
-                    ),
-                  ],
-                ],
-              ],
+      ],
+    );
+  }
+}
+
+/// 一句话提示 + 可折叠的原始诊断。
+class _NoteLine extends StatelessWidget {
+  const _NoteLine({
+    required this.note,
+    this.expanded = false,
+    this.onToggle,
+  });
+
+  final _Note note;
+  final bool expanded;
+  final VoidCallback? onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final detail = note.detail;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          note.text,
+          style: TextStyle(
+            color: note.error ? SketchColors.ink : SketchColors.muted,
+          ),
+        ),
+        // 核心那句诊断（端点可达 / 认证通过 / 发起了几次请求…）默认收起来：
+        // 对用户有用的只有「通没通」，其余是排查时才看的东西。
+        if (detail != null && detail.isNotEmpty && onToggle != null) ...[
+          const SizedBox(height: 4),
+          GestureDetector(
+            onTap: onToggle,
+            child: Text(
+              expanded ? '收起详情' : '详情',
+              style: const TextStyle(
+                color: SketchColors.muted,
+                fontSize: 12,
+                decoration: TextDecoration.underline,
+              ),
             ),
           ),
+          if (expanded)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                detail,
+                style: const TextStyle(
+                  color: SketchColors.muted,
+                  fontSize: 12,
+                  height: 1.5,
+                ),
+              ),
+            ),
         ],
       ],
     );
