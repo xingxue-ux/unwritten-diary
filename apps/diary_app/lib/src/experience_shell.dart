@@ -1149,11 +1149,18 @@ class _ExperienceShellState extends State<ExperienceShell>
         children: [
           Row(
             children: [
-              Text(
-                _dateLabel(_capture.occurredAt ?? DateTime.now()),
-                style: const TextStyle(color: SketchColors.muted, fontSize: 15),
+              Expanded(
+                child: Text(
+                  _dateLabel(_capture.occurredAt ?? DateTime.now()),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: SketchColors.muted,
+                    fontSize: 15,
+                  ),
+                ),
               ),
-              const Spacer(),
+              const SizedBox(width: 12),
               SketchAction(
                 key: const Key('exit-big-talk'),
                 label: '说小话',
@@ -1208,24 +1215,37 @@ class _ExperienceShellState extends State<ExperienceShell>
             ),
           ),
           const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(child: _saveStatus()),
-              const SizedBox(width: 16),
-              SketchAction(
-                key: const Key('finish-capture-bigtalk'),
-                label: '收好这一刻',
-                filled: true,
-                onPressed: _capture.text.trim().isEmpty || _capture.finishing
-                    ? null
-                    : _finish,
-              ),
-            ],
-          ),
+          // 窄屏或大字号下横排会挤爆（实测 320px / 2 倍字号溢出 305px），
+          // 所以这里按宽度分流：能横排就横排，否则上下排。
+          if (desktop)
+            Row(
+              children: [
+                Expanded(child: _saveStatus()),
+                const SizedBox(width: 16),
+                _bigTalkFinishButton(),
+              ],
+            )
+          else ...[
+            _saveStatus(),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerRight,
+              child: _bigTalkFinishButton(),
+            ),
+          ],
         ],
       ),
     );
   }
+
+  Widget _bigTalkFinishButton() => SketchAction(
+    key: const Key('finish-capture-bigtalk'),
+    label: '收好这一刻',
+    filled: true,
+    onPressed: _capture.text.trim().isEmpty || _capture.finishing
+        ? null
+        : _finish,
+  );
 
   Widget _editorCard(bool desktop) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
