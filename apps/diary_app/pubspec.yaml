@@ -29,6 +29,9 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  # 只为在 widget 测试里替换 path_provider 的平台实现：日记页要拿 support 目录
+  # 才能建控制器，不 mock 的话测试里永远停在转圈。
+  path_provider_platform_interface: ^2.1.2
 
 flutter:
   uses-material-design: true

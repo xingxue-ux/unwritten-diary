@@ -176,7 +176,7 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
           onPressed: () => unawaited(_chooseDay(controller)),
         ),
         const SizedBox(height: 16),
-        _notice(_providerNotice(provider, eligible)),
+        _hint(_providerNotice(provider, eligible)),
         if (controller.providerProblem != null) ...[
           const SizedBox(height: 12),
           _notice(controller.providerProblem!),
@@ -204,10 +204,12 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
           ),
         ],
         const SizedBox(height: 18),
-        _notice(
+        _hint(
           controller.day == null
               ? '这一天还没有记录。'
-              : '当天记录 ${controller.day!.materialCounts.captures} 条 · 已处理 ${controller.day!.materialCounts.processed} 条 · 待处理 ${controller.day!.materialCounts.pending} 条。',
+              : '${controller.day!.materialCounts.captures} 条材料 · '
+                    '已处理 ${controller.day!.materialCounts.processed} · '
+                    '待处理 ${controller.day!.materialCounts.pending}',
         ),
         const SizedBox(height: 16),
         Wrap(
@@ -243,12 +245,12 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
         if (controller.current case final current?)
           _versionCard(current, isCurrent: true)
         else
-          _notice('还没有正文。'),
+          _hint('还没有正文。'),
         const SizedBox(height: 23),
         _sectionTitle('整理候选'),
         const SizedBox(height: 10),
         if (controller.candidates.isEmpty)
-          _notice('还没有候选。'),
+          _hint('还没有候选。'),
         for (final candidate in controller.candidates) ...[
           _versionCard(candidate, isCurrent: false),
           const SizedBox(height: 12),
@@ -271,7 +273,6 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
           ),
           const SizedBox(height: 20),
         ],
-        _notice('收起只隐藏本机列表里的候选，版本仍保存在资料库，可随时找回。'),
         TextButton(
           onPressed: controller.toggleDismissed,
           child: Text(controller.showDismissed ? '隐藏已收起候选' : '查看已收起候选'),
@@ -402,9 +403,20 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
     ),
   );
 
+  /// 告警框只留给**真的需要用户处理**的事（出错、要确认）。
   Widget _notice(String text) => SketchFrame(
     fill: SketchColors.soft,
     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
     child: Text(text, style: const TextStyle(color: SketchColors.text)),
+  );
+
+  /// 一行淡字：状态与说明用它，不要用框。框会把「还没有记录」说得像出了事。
+  ///
+  /// 带 key 是为了让测试能区分「淡字」和「告警框」——两者渲染出来的文字一样，
+  /// 只看文字断言不出区别。
+  Widget _hint(String text) => Text(
+    text,
+    key: Key('hint-$text'),
+    style: const TextStyle(color: SketchColors.muted, height: 1.5),
   );
 }
