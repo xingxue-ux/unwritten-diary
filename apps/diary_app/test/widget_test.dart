@@ -1028,6 +1028,37 @@ void main() {
     expect(noteY, lessThan(addCardY), reason: '连接结果不该掉到页面底部');
   });
 
+  testWidgets('说大话在窄屏 2 倍字号下也不溢出', (tester) async {
+    tester.view.physicalSize = const Size(320, 700);
+    tester.view.devicePixelRatio = 1;
+    tester.binding.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(
+      tester.binding.platformDispatcher.clearTextScaleFactorTestValue,
+    );
+
+    await openApp(tester, MockDiaryApi());
+    await tester.ensureVisible(find.byKey(const Key('enter-big-talk')));
+    await tester.tap(find.byKey(const Key('enter-big-talk')));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull, reason: '全屏写作面溢出了');
+    expect(find.byKey(const Key('capture-editor-bigtalk')), findsOneWidget);
+
+    // 写一堆字也不该溢出：输入区是 expands 的，自己会滚。
+    await tester.enterText(
+      find.byKey(const Key('capture-editor-bigtalk')),
+      '很长的一段话。' * 60,
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: '长文本把全屏页撑爆了');
+
+    await tester.tap(find.byKey(const Key('exit-big-talk')));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('说大话：全屏写作，文字与普通模式是同一条', (tester) async {
     final dir = Directory.systemTemp.createTempSync('diary-ui');
     addTearDown(() => dir.deleteSync(recursive: true));
