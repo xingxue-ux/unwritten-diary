@@ -7,6 +7,7 @@ import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:unwritten_diary/main.dart';
 import 'package:unwritten_diary/src/sketch_ui.dart';
 import 'package:unwritten_diary/src/ui_strings.dart';
@@ -17,6 +18,21 @@ double _contrastRatio(Color foreground, Color background) {
   final lighter = a > b ? a : b;
   final darker = a > b ? b : a;
   return (lighter + 0.05) / (darker + 0.05);
+}
+
+/// 测试里的 support 目录：日记页要它才能建控制器。
+class _FakePathProvider extends PathProviderPlatform {
+  _FakePathProvider(this.root);
+  final String root;
+
+  @override
+  Future<String?> getApplicationSupportPath() async => root;
+
+  @override
+  Future<String?> getTemporaryPath() async => root;
+
+  @override
+  Future<String?> getApplicationDocumentsPath() async => root;
 }
 
 class CountingMockDiaryApi extends MockDiaryApi {
@@ -1012,6 +1028,33 @@ void main() {
     expect(noteY, lessThan(addCardY), reason: '连接结果不该掉到页面底部');
   });
 
+  testWidgets('日记页的空态是一行字，不是告警框', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('diary-ui');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+
+    final api = _ProviderUiApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('日记').last);
+    // 这一页会一直转圈（假 API 没有实现 diary.getDay），所以只推几帧，不 settle。
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // 空态还在，但**走的是淡字样式**，不是告警框。
+    // 两者文字一样，靠 `_hint` 的 key 区分：换回 `_notice` 这个 key 就没了。
+    for (final text in ['还没有正文。', '还没有候选。']) {
+      expect(find.text(text), findsOneWidget);
+      expect(
+        find.byKey(Key('hint-$text')),
+        findsOneWidget,
+        reason: '「$text」该是一行淡字，不该被框起来',
+      );
+    }
+    // 底部那句解释「收起」的框已经删掉。
+    expect(find.textContaining('收起只隐藏'), findsNothing);
+  });
+
   testWidgets('片段页不再堆「正在接入」这类说明', (tester) async {
     await openApp(tester, MockDiaryApi());
     await tester.tap(find.text('片段').last);
@@ -1193,6 +1236,13 @@ class _ProviderUiApi extends MockDiaryApi {
       ProviderModel(id: 'deepseek-reasoner'),
     ];
   }
+
+  @override
+  Future<DiaryDay> getDay(String dayKey) async => DiaryDay(
+    dayKey: dayKey,
+    timeZone: 'Asia/Shanghai',
+    updatedAt: DateTime.utc(2026, 11, 5),
+  );
 
   @override
   Future<Provider> saveProvider(Provider provider) async => provider;
