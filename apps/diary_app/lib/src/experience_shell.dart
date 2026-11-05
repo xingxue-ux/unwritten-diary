@@ -1094,15 +1094,6 @@ class _ExperienceShellState extends State<ExperienceShell>
               ? '交互演示 · 文字仅保留本次运行；附件和录音是流程预览。'
               : '记录只存在这台设备上。',
         ),
-        const SizedBox(height: 26),
-        // 想写长一点的人需要一个安静的大画布。这里只是换界面，记录还是同一条。
-        SketchAction(
-          key: const Key('enter-big-talk'),
-          label: '说大话',
-          icon: Icons.open_in_full,
-          compact: true,
-          onPressed: _capture.finishing ? null : () => _setBigTalk(true),
-        ),
       ],
     );
     if (desktop) {
@@ -1255,13 +1246,29 @@ class _ExperienceShellState extends State<ExperienceShell>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              '此刻的记录',
-              style: TextStyle(
-                fontFamily: SketchFonts.display,
-                color: SketchColors.ink,
-                fontSize: 31,
-              ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                const Expanded(
+                  child: Text(
+                    '此刻的记录',
+                    style: TextStyle(
+                      fontFamily: SketchFonts.display,
+                      color: SketchColors.ink,
+                      fontSize: 31,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                // 想写长一点的人需要一个安静的大画布。这里只是换界面，记录还是同一条。
+                SketchAction(
+                  key: const Key('enter-big-talk'),
+                  label: '说大话',
+                  icon: Icons.open_in_full,
+                  compact: true,
+                  onPressed: _capture.finishing ? null : () => _setBigTalk(true),
+                ),
+              ],
             ),
             const SizedBox(height: 16),
             const Divider(color: SketchColors.ink, thickness: .8),
