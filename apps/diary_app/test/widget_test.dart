@@ -1028,6 +1028,22 @@ void main() {
     expect(noteY, lessThan(addCardY), reason: '连接结果不该掉到页面底部');
   });
 
+  testWidgets('「说大话」在编辑卡片的标题行右侧', (tester) async {
+    await openApp(tester, MockDiaryApi());
+    final button = find.byKey(const Key('enter-big-talk'));
+    expect(button, findsOneWidget);
+
+    // 位置断言：和「此刻的记录」同一行，且在它右边。
+    final title = tester.getTopLeft(find.text('此刻的记录'));
+    final btn = tester.getTopLeft(button);
+    expect(
+      (btn.dy - title.dy).abs(),
+      lessThan(24),
+      reason: '按钮该和标题同一行，不该跑到左栏或别处',
+    );
+    expect(btn.dx, greaterThan(title.dx), reason: '按钮该在标题右边');
+  });
+
   testWidgets('说大话在窄屏 2 倍字号下也不溢出', (tester) async {
     tester.view.physicalSize = const Size(320, 700);
     tester.view.devicePixelRatio = 1;
