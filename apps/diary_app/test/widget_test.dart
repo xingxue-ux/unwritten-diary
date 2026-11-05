@@ -1012,6 +1012,19 @@ void main() {
     expect(noteY, lessThan(addCardY), reason: '连接结果不该掉到页面底部');
   });
 
+  testWidgets('片段页不再堆「正在接入」这类说明', (tester) async {
+    await openApp(tester, MockDiaryApi());
+    await tester.tap(find.text('片段').last);
+    await tester.pumpAndSettle();
+
+    // 空态只留一行淡字，不再是一个带图标的框。
+    expect(find.text('还没有记录。'), findsOneWidget);
+    // 「我们还没做完」属于开发进度，不该出现在界面里。
+    expect(find.textContaining('正在接入'), findsNothing);
+    expect(find.textContaining('完整时间线'), findsNothing);
+    expect(find.textContaining('后续接入'), findsNothing);
+  });
+
   testWidgets('Windows index settings disclose that models are not bundled', (
     tester,
   ) async {
