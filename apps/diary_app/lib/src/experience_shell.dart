@@ -74,6 +74,10 @@ class _ExperienceShellState extends State<ExperienceShell>
   Timer? _searchDebounce;
 
   int _tab = 0;
+
+  /// 「说大话」：全屏写作。**只换界面，不换数据**——用的还是同一个 `_editor`
+  /// 和同一个 `_capture`，所以两种模式写的是同一条记录。
+  bool _bigTalk = false;
   String? _panel;
   String? _detail;
   String? _diaryInitialDayKey;
@@ -493,22 +497,25 @@ class _ExperienceShellState extends State<ExperienceShell>
                   padding: EdgeInsets.zero,
                   child: Column(
                     children: [
-                      _header(desktop),
-                      if (widget.demoMode) _demoBanner(desktop),
-                      const Divider(
-                        color: SketchColors.ink,
-                        thickness: 1,
-                        height: 1,
-                        indent: 24,
-                        endIndent: 24,
-                      ),
+                      // 说大话时把页头收起来：写作面铺满整个窗口。
+                      if (!_bigTalk) ...[
+                        _header(desktop),
+                        if (widget.demoMode) _demoBanner(desktop),
+                        const Divider(
+                          color: SketchColors.ink,
+                          thickness: 1,
+                          height: 1,
+                          indent: 24,
+                          endIndent: 24,
+                        ),
+                      ],
                       Expanded(
                         child: AnimatedBuilder(
                           animation: _contentChanges,
                           builder: (context, _) => _scrollContent(desktop),
                         ),
                       ),
-                      if (!desktop) _bottomNav(),
+                      if (!desktop && !_bigTalk) _bottomNav(),
                     ],
                   ),
                 ),
@@ -521,6 +528,8 @@ class _ExperienceShellState extends State<ExperienceShell>
   );
 
   Widget _scrollContent(bool desktop) {
+    // 全屏写作要占满高度，不能套在 SingleChildScrollView 里。
+    if (_bigTalk) return _bigTalkPage(desktop);
     if (_panel == null && _detail == null && _tab == 2) {
       return _searchScroll(desktop);
     }
@@ -1085,6 +1094,15 @@ class _ExperienceShellState extends State<ExperienceShell>
               ? '交互演示 · 文字仅保留本次运行；附件和录音是流程预览。'
               : '记录只存在这台设备上。',
         ),
+        const SizedBox(height: 26),
+        // 想写长一点的人需要一个安静的大画布。这里只是换界面，记录还是同一条。
+        SketchAction(
+          key: const Key('enter-big-talk'),
+          label: '说大话',
+          icon: Icons.open_in_full,
+          compact: true,
+          onPressed: _capture.finishing ? null : () => _setBigTalk(true),
+        ),
       ],
     );
     if (desktop) {
@@ -1109,6 +1127,103 @@ class _ExperienceShellState extends State<ExperienceShell>
       key: const ValueKey('record-mobile'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [left, const SizedBox(height: 24), _editorCard(desktop)],
+    );
+  }
+
+  /// 进出全屏写作。**不动文字**：`_editor` 与 `_capture` 都是同一个对象，
+  /// 所以切过去、切回来，光标前的字一个不少。
+  void _setBigTalk(bool value) {
+    if (_bigTalk == value) return;
+    _flushDraft();
+    setState(() => _bigTalk = value);
+  }
+
+  /// 全屏写作面：除了一个安静的输入区，只留「说小话」和「收好这一刻」。
+  Widget _bigTalkPage(bool desktop) {
+    final horizontal = desktop ? 46.0 : 22.0;
+    return Padding(
+      key: const ValueKey('record-bigtalk'),
+      padding: EdgeInsets.fromLTRB(horizontal, desktop ? 26 : 18, horizontal, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Text(
+                _dateLabel(_capture.occurredAt ?? DateTime.now()),
+                style: const TextStyle(color: SketchColors.muted, fontSize: 15),
+              ),
+              const Spacer(),
+              SketchAction(
+                key: const Key('exit-big-talk'),
+                label: '说小话',
+                icon: Icons.close_fullscreen,
+                compact: true,
+                onPressed: () => _setBigTalk(false),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Expanded(
+            child: SketchFrame(
+              padding: EdgeInsets.all(desktop ? 34 : 20),
+              child: CallbackShortcuts(
+                bindings: {
+                  const SingleActivator(
+                    LogicalKeyboardKey.enter,
+                    control: true,
+                  ): () {
+                    final composing = _editor.value.composing;
+                    if (composing.isValid && !composing.isCollapsed) return;
+                    if (_capture.text.trim().isNotEmpty) _finish();
+                  },
+                },
+                child: TextField(
+                  key: const Key('capture-editor-bigtalk'),
+                  controller: _editor,
+                  onChanged: _capture.updateText,
+                  onTapOutside: (_) {
+                    FocusManager.instance.primaryFocus?.unfocus();
+                    _flushDraft();
+                  },
+                  readOnly: _capture.finishing,
+                  expands: true,
+                  maxLines: null,
+                  minLines: null,
+                  textAlignVertical: TextAlignVertical.top,
+                  textInputAction: TextInputAction.newline,
+                  keyboardType: TextInputType.multiline,
+                  style: TextStyle(
+                    color: SketchColors.text,
+                    fontSize: desktop ? 20 : 18,
+                    height: 1.8,
+                  ),
+                  decoration: const InputDecoration(
+                    hintText: '今天路过花店，看到一束很明亮的橘色花…',
+                    hintStyle: TextStyle(color: SketchColors.muted),
+                    border: InputBorder.none,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _saveStatus()),
+              const SizedBox(width: 16),
+              SketchAction(
+                key: const Key('finish-capture-bigtalk'),
+                label: '收好这一刻',
+                filled: true,
+                onPressed: _capture.text.trim().isEmpty || _capture.finishing
+                    ? null
+                    : _finish,
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
