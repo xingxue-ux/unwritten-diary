@@ -1607,16 +1607,12 @@ class _ExperienceShellState extends State<ExperienceShell>
     key: const ValueKey('timeline'),
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      _title('留下的片段', '原始材料和日记分开保存，随时可以回看。'),
+      _title('留下的片段', '原始材料和日记分开保存。'),
       const SizedBox(height: 23),
-      _notice(
-        widget.demoMode
-            ? '这页混合展示示例材料和本次运行新写的文字；真实原件库后续接入。'
-            : '这里显示本地资料库的最近记录；完整时间线正在接入。',
-      ),
-      const SizedBox(height: 18),
+      if (widget.demoMode)
+        _notice('这页混合展示示例材料和本次运行新写的文字。'),
       if (_capture.recent.isEmpty && !_capture.loading)
-        _notice('还没有记录。从「记录」开始，留下第一句话。'),
+        _footnote('还没有记录。'),
     ],
   );
 
@@ -2253,7 +2249,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     children: [
       _title('插件', '看清功能和权限，再决定是否启用。'),
       const SizedBox(height: 20),
-      _notice('插件安装与沙箱尚未接入；下面的开关仅供体验流程。'),
+      _notice('插件还没接上，下面的开关是预览。'),
       const SizedBox(height: 18),
       SketchFrame(
         child: Column(
@@ -2461,8 +2457,7 @@ class _ExperienceShellState extends State<ExperienceShell>
               ),
             ),
           ),
-          const SizedBox(height: 18),
-          _notice('这里展示搜索摘录。原件全文与播放定位仍在接入。'),
+
         ],
       );
     }
@@ -2519,13 +2514,14 @@ class _ExperienceShellState extends State<ExperienceShell>
           ),
         ],
         const SizedBox(height: 20),
-        _notice(
-          capture == null
-              ? (widget.demoMode
-                    ? '来源详情与定位是交互预览；真实文件和播放器需要平台能力接入。'
-                    : '这条记录暂时无法读取，请返回后重试。')
-              : (widget.demoMode ? '这是本次会话中写下的文字；演示不会永久保存。' : '这段文字保存在本机资料库中。'),
-        ),
+        if (capture == null || widget.demoMode)
+          _notice(
+            capture == null
+                ? (widget.demoMode
+                      ? '来源详情与定位是交互预览；真实文件和播放器需要平台能力接入。'
+                      : '这条记录暂时无法读取，请返回后重试。')
+                : '这是本次会话中写下的文字；演示不会永久保存。',
+          ),
         const SizedBox(height: 18),
         SketchFrame(
           padding: const EdgeInsets.all(27),
