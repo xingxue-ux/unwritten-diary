@@ -1028,6 +1028,46 @@ void main() {
     expect(noteY, lessThan(addCardY), reason: '连接结果不该掉到页面底部');
   });
 
+  testWidgets('说大话：全屏写作，文字与普通模式是同一条', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('diary-ui');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+
+    await openApp(tester, MockDiaryApi());
+
+    // 普通模式写一句。
+    await tester.enterText(
+      find.byKey(const Key('capture-editor')),
+      '今天风很大',
+    );
+    await tester.pumpAndSettle();
+
+    // 进全屏：页头收起，输入框换成大画布那个。
+    await tester.tap(find.byKey(const Key('enter-big-talk')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('capture-editor-bigtalk')), findsOneWidget);
+    expect(find.byKey(const Key('capture-editor')), findsNothing);
+    // 页头（导航）收起来了。
+    expect(find.text('我的'), findsNothing);
+
+    // 全屏里接着写：前面那句还在，说明是同一个 controller。
+    await tester.enterText(
+      find.byKey(const Key('capture-editor-bigtalk')),
+      '今天风很大，把伞吹翻了',
+    );
+    await tester.pumpAndSettle();
+
+    // 说小话退出：文字跟着回来。
+    await tester.tap(find.byKey(const Key('exit-big-talk')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('capture-editor')), findsOneWidget);
+    expect(find.text('我的'), findsWidgets);
+    final field = tester.widget<TextField>(
+      find.byKey(const Key('capture-editor')),
+    );
+    expect(field.controller!.text, '今天风很大，把伞吹翻了');
+  });
+
   testWidgets('日记页的空态是一行字，不是告警框', (tester) async {
     final dir = Directory.systemTemp.createTempSync('diary-ui');
     addTearDown(() => dir.deleteSync(recursive: true));
