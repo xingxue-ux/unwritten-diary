@@ -66,7 +66,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 ; 便携包里的所有内容：unwritten_diary.exe、diary_bridge.dll、flutter_windows.dll、
 ; data\（icudtl.dat / app.so / flutter_assets）、legal\、LICENSE
-Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 随包模型单独一条：ONNX 权重本来就压不动，再走 lzma2/max 只是让打包慢十几分钟。
+Source: "{#StageDir}\*"; DestDir: "{app}"; Excludes: "models\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs nocompression
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"

@@ -70,6 +70,7 @@ target/
 models/**/*.onnx
 # 分词器与权重一起按 manifest 记录的哈希获取，不随仓库分发。
 models/**/tokenizer.json
+models/**/tokens.txt
 models/**/*.bin
 models/**/*.gguf
 plugins/**/*.wasm
@@ -90,3 +91,7 @@ performance-reports/*.json
 *.msix
 *.apk
 *.aab
+
+# Windows 原生库（ORT / sherpa-onnx）：体积大，按 tools/stage_windows_models.py
+# 里的固定来源下载，不入库。哈希与来源写在该脚本与 models/manifest 里。
+third_party/windows-native/
