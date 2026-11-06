@@ -21,7 +21,9 @@ import 'package:path/path.dart' as path;
 class BundledModels {
   const BundledModels._();
 
-  static const _semanticRelative = 'models/semantic/bge-small-zh-v1.5';
+  // 用 path.join 拼，避免在 Windows 上写出 `...\\models/semantic/...` 这种混着
+  // 两种分隔符的路径（能用，但看着像 bug）。
+  static List<String> get _semanticParts => const ['models', 'semantic', 'bge-small-zh-v1.5'];
   static const _ortRelative = 'onnxruntime.dll';
   static const _configName = 'core-config.json';
 
@@ -33,7 +35,9 @@ class BundledModels {
     final exeDir = executableDirectory ??
         (Platform.isWindows ? File(Platform.resolvedExecutable).parent : null);
     if (exeDir == null) return false;
-    final semanticDir = Directory(path.join(exeDir.path, _semanticRelative));
+    final semanticDir = Directory(
+      path.joinAll([exeDir.path, ..._semanticParts]),
+    );
     final ortDylib = File(path.join(exeDir.path, _ortRelative));
     // 没有随包模型就什么都不做：不写半套配置，让核心照旧报「没配」。
     if (!File(path.join(semanticDir.path, 'model_quantized.onnx')).existsSync() ||
