@@ -315,9 +315,20 @@ if (Test-Path $legalSource) {
 }
 Copy-Item -Force (Join-Path $Root 'LICENSE') (Join-Path $stage 'LICENSE')
 
+# 随包本地模型与原生库（与鸿蒙版同一份模型）。清单核对不过就整包失败——
+# 宁可不出包，也不要出一个「语义检索和转写都不可用」的安装包。
+Step '5b/7 随包本地模型'
+$stageModels = Join-Path $Root 'tools\stage_windows_models.py'
+if (-not (Test-Path $stageModels)) { Fail "找不到模型准备脚本：$stageModels" }
+& python $stageModels --stage $stage
+if ($LASTEXITCODE -ne 0) {
+  Fail ("随包模型准备失败（退出码 {0}）。先按 tools/stage_windows_models.py 的说明把模型与原生库放好。" -f $LASTEXITCODE)
+}
+
 $zip = "$stage.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
-Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
+# 273 MiB 的 ONNX 权重压不动，Optimal 只是让打包多花几分钟。
+Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Fastest
 
 Step '6/7 Inno Setup 安装包'
 $installerPath = $null

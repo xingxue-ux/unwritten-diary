@@ -6,6 +6,8 @@ import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
+import 'bundled_models.dart';
+
 /// Production wiring. The UI continues to depend only on DiaryApi.
 Future<DiaryApi> createProductionDiaryApi() async {
   if (!Platform.isWindows && !Platform.isAndroid) {
@@ -24,6 +26,8 @@ Future<DiaryApi> createProductionDiaryApi() async {
     path.join(supportDirectory.path, 'unwritten_diary'),
   );
   await libraryDirectory.create(recursive: true);
+  // 随包模型：把语义检索的路径登记进 core-config.json（转写那一路 core 自己按约定找）。
+  await BundledModels.ensureConfigured(libraryDirectory);
 
   // The contract requires an IANA zone, not DateTime.timeZoneName (which may
   // be a localized Windows label or an ambiguous abbreviation such as CST).

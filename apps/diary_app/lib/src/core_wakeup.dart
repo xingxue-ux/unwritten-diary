@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show DartPluginRegistrant;
@@ -41,7 +42,14 @@ class CoreWakeupScheduler {
 
   /// Call after opening the real core. This also reclaims interrupted jobs.
   static Future<void> afterOpen(DiaryApi api, CoreSnapshot opened) async {
-    if (!Platform.isAndroid || !_hasJobs(opened)) return;
+    if (!_hasJobs(opened)) return;
+    if (!Platform.isAndroid) {
+      // 桌面端没有 WorkManager：进程活着的时候自己把队列推起来。
+      // 之前这里直接 return，Windows 上排队的任务**永远没人执行**，
+      // 界面就一直停在「排队中」。
+      _pumpOnDesktop(api, 'startup');
+      return;
+    }
     try {
       final result = await api.runDueJobs(
         budgetMs: _budgetMs,
@@ -64,7 +72,10 @@ class CoreWakeupScheduler {
 
   /// Re-read the core clock after a foreground mutation schedules new work.
   static Future<void> afterCoreMutation(DiaryApi api) async {
-    if (!Platform.isAndroid) return;
+    if (!Platform.isAndroid) {
+      _pumpOnDesktop(api, 'foreground');
+      return;
+    }
     try {
       await _scheduleNext(await api.nextWakeup());
     } on Object catch (error) {
@@ -75,6 +86,41 @@ class CoreWakeupScheduler {
       });
     }
   }
+
+  /// 桌面端（Windows / Linux / macOS）的队列泵。
+  ///
+  /// 没有 WorkManager，就在进程里跑：立刻跑一轮，之后按核心给的
+  /// `nextWakeup` 定一个定时器。窗口关掉就停——桌面端不承诺后台执行。
+  static void _pumpOnDesktop(DiaryApi api, String trigger) {
+    unawaited(_desktopTick(api, trigger));
+  }
+
+  static Future<void> _desktopTick(DiaryApi api, String trigger) async {
+    if (_desktopTimer != null) {
+      _desktopTimer!.cancel();
+      _desktopTimer = null;
+    }
+    try {
+      final result = await api.runDueJobs(budgetMs: _budgetMs, trigger: trigger);
+      await _logQuietly({
+        'trigger': trigger,
+        'observedAt': DateTime.now().toUtc().toIso8601String(),
+        ..._summary(result),
+      });
+      final next = result.nextWakeup;
+      if (next == null) return;
+      final delay = delayUntil(next, DateTime.now());
+      _desktopTimer = Timer(delay, () => unawaited(_desktopTick(api, 'timer')));
+    } on Object catch (error) {
+      await _logQuietly({
+        'trigger': trigger,
+        'observedAt': DateTime.now().toUtc().toIso8601String(),
+        'error': diagnosticErrorCode(error),
+      });
+    }
+  }
+
+  static Timer? _desktopTimer;
 
   static bool _hasJobs(CoreSnapshot opened) =>
       opened.coreInfo.capabilities.contains('jobs.runDue') &&
