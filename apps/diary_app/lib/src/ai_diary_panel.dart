@@ -7,6 +7,7 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
 import 'ai_diary_controller.dart';
+import 'provider_consent.dart';
 import 'core_wakeup.dart';
 import 'sketch_ui.dart';
 import 'ui_strings.dart';
@@ -29,7 +30,9 @@ class AiDiaryPanel extends StatefulWidget {
 
 class _AiDiaryPanelState extends State<AiDiaryPanel> {
   AiDiaryController? _controller;
-  bool _remoteConfirmed = false;
+  /// 用户已经授权过「把材料发送到这个服务」的 id 集合。
+  /// 授权在「模型服务」里做一次，之后不再反复问。
+  Set<String> _consented = const {};
   String? _setupError;
 
   static String _key(DateTime day) =>
@@ -46,6 +49,16 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
       final directory = await getApplicationSupportDirectory();
       final store = FileAiLocalStore(
         File(path.join(directory.path, 'ai-diary-ui.json')),
+      );
+      // 授权表**不挡启动**：晚一点读到也没关系，读到之前按「未授权」处理。
+      // 之前是 await 它，结果多了一次磁盘 I/O 才建控制器，页面白等了一拍。
+      final consent = ProviderConsent(
+        File(path.join(directory.path, 'provider-consent.json')),
+      );
+      unawaited(
+        consent.load().then((granted) {
+          if (mounted) setState(() => _consented = granted);
+        }),
       );
       final controller = AiDiaryController(widget.api, store);
       if (!mounted) {
@@ -76,7 +89,6 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
       lastDate: DateTime.now().add(const Duration(days: 365)),
     );
     if (picked == null) return;
-    setState(() => _remoteConfirmed = false);
     await controller.open(_key(picked));
   }
 
@@ -142,17 +154,16 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
               item.capabilities.contains(ProviderCapability.generateText),
         )
         .toList(growable: false);
-    final remote = eligible.any(_isRemote);
-    final unknownDestination = eligible.any(
-      (item) =>
-          _isRemote(item) &&
-          (Uri.tryParse(item.endpoint ?? '')?.host.isEmpty ?? true),
-    );
+    // 只看**这次真要用的那个服务**要不要授权：别的服务授权过不算数。
+    final remote = provider != null && _isRemote(provider);
+    final unknownDestination =
+        remote && (Uri.tryParse(provider.endpoint ?? '')?.host.isEmpty ?? true);
+    final needsConsent = remote && !_consented.contains(provider.id);
     final canGenerate =
         provider != null &&
         !unknownDestination &&
+        !needsConsent &&
         (controller.day?.materialCounts.captures ?? 0) > 0 &&
-        (!remote || _remoteConfirmed) &&
         !controller.busy &&
         (job == null || job.state.isTerminal);
     return Column(
@@ -193,14 +204,15 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
           const SizedBox(height: 12),
           _notice('服务还没测试通过。'),
         ],
-        if (remote) ...[
+        // 授权只在「模型服务」里做一次；这里不再每次打勾。
+        if (needsConsent) ...[
           const SizedBox(height: 10),
-          CheckboxListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('我确认把当天材料发送到上述服务'),
-            value: _remoteConfirmed,
-            onChanged: (value) =>
-                setState(() => _remoteConfirmed = value ?? false),
+          _notice('这个服务还没授权发送材料。'),
+          const SizedBox(height: 8),
+          SketchAction(
+            label: '去模型服务授权',
+            icon: Icons.settings_outlined,
+            onPressed: widget.onOpenModel,
           ),
         ],
         const SizedBox(height: 18),

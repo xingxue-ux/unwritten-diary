@@ -1,8 +1,13 @@
 import 'dart:async';
+import 'dart:io';
+
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
 
 import 'package:diary_api/diary_api.dart';
 import 'package:flutter/material.dart';
 
+import 'provider_consent.dart';
 import 'sketch_ui.dart';
 
 /// 常用在线服务的预填值。
@@ -84,6 +89,13 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
 
   /// 「添加服务」这张卡片的锚点：表单上方内容变高变矮时，用它把位置钉住。
   final GlobalKey _formKey = GlobalKey();
+
+  /// 已经授权「把材料发送到这个服务」的服务 id。授权一次，之后不再问。
+  ProviderConsent? _consent;
+  Set<String> _consented = const {};
+
+  /// 表单里那个「我同意把材料发送到这个服务」的勾。
+  bool _consentChecked = false;
   String _fill = 'deepseek';
   bool _busy = false;
   bool _obscure = true;
@@ -97,6 +109,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     super.initState();
     _applyFill('deepseek');
     unawaited(_reload());
+    unawaited(_loadConsent());
   }
 
   @override
@@ -136,6 +149,49 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
   void _sayTo(String providerId, String text, {bool error = false, String? detail}) {
     if (!mounted) return;
     setState(() => _notes[providerId] = _Note(text, error: error, detail: detail));
+  }
+
+  Future<ProviderConsent?> _makeConsent() async {
+    try {
+      final directory = await getApplicationSupportDirectory();
+      return ProviderConsent(
+        File(path.join(directory.path, 'provider-consent.json')),
+      );
+    } on Object {
+      return null;
+    }
+  }
+
+  Future<void> _loadConsent() async {
+    try {
+      final consent = await _makeConsent();
+      if (consent == null) return;
+      final granted = await consent.load();
+      if (!mounted) return;
+      setState(() {
+        _consent = consent;
+        _consented = granted;
+      });
+    } on Object {
+      // 读不到授权文件不影响配置服务本身；日记页会再问一次。
+    }
+  }
+
+  /// 这个服务是不是「会把材料发出去」的远端服务。
+  bool _remoteOf(Provider provider) {
+    final host = Uri.tryParse(provider.endpoint ?? '')?.host.toLowerCase() ?? '';
+    return host.isNotEmpty &&
+        host != 'localhost' &&
+        host != '127.0.0.1' &&
+        host != '::1';
+  }
+
+  bool get _formIsRemote {
+    final host = Uri.tryParse(_endpoint.text.trim())?.host.toLowerCase() ?? '';
+    return host.isNotEmpty &&
+        host != 'localhost' &&
+        host != '127.0.0.1' &&
+        host != '::1';
   }
 
   Future<void> _reload() async {
@@ -278,10 +334,19 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       try {
         final saved = await _persist(uri, model: model, clearSecret: true);
         if (saved == null) return;
+        // 授权只在这里落：保存是一次明确的「我要用它」。
+        // 「获取模型列表」「测试连接」也会落库，但那两步不是授权动作。
+        if (_formIsRemote && _consentChecked) {
+          await _consent?.grant(saved.id);
+          if (mounted) {
+            setState(() => _consented = {..._consented, saved.id});
+          }
+        }
         setState(() {
           _editingId = null;
           _formProviderId = null;
           _formModels = const [];
+          _consentChecked = false;
         });
         _say('已保存「${saved.label}」。');
       } on DiaryException catch (failure) {
@@ -385,6 +450,26 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       } finally {
         if (mounted) setState(() => _busy = false);
       }
+    });
+  }
+
+  Future<void> _toggleConsent(Provider provider) async {
+    final consent = _consent ?? await _makeConsent();
+    if (consent == null) return;
+    _consent = consent;
+    final wasGranted = _consented.contains(provider.id);
+    if (wasGranted) {
+      await consent.revoke(provider.id);
+    } else {
+      await consent.grant(provider.id);
+    }
+    if (!mounted) return;
+    // 本地直接改，不再回读文件：这一步只是把刚写下去的结果反映到界面，
+    // 多一次磁盘读只会让按钮看起来「点了没反应」。
+    setState(() {
+      _consented = wasGranted
+          ? ({..._consented}..remove(provider.id))
+          : {..._consented, provider.id};
     });
   }
 
@@ -506,6 +591,22 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                   '${provider.credentialRef == null ? ' · 没有密钥' : ''}',
                   style: const TextStyle(color: SketchColors.muted),
                 ),
+                // 远端服务：把「材料会发出去」这件事在配置时就讲清楚，并记下授权。
+                if (_remoteOf(provider))
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      _consented.contains(provider.id)
+                          ? '已授权发送材料 · 可在下面撤销'
+                          : '还没授权发送材料 · 日记页会拦住',
+                      style: TextStyle(
+                        color: _consented.contains(provider.id)
+                            ? SketchColors.muted
+                            : SketchColors.ink,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 8),
                 Wrap(
                   spacing: 10,
@@ -518,6 +619,15 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                       label: '改模型',
                       onPressed: _busy ? null : () => _editProvider(provider),
                     ),
+                    if (_remoteOf(provider))
+                      SketchAction(
+                        label: _consented.contains(provider.id)
+                            ? '撤销授权'
+                            : '授权发送',
+                        onPressed: _busy
+                            ? null
+                            : () => unawaited(_toggleConsent(provider)),
+                      ),
                     SketchAction(
                       label: '移除',
                       onPressed: _busy
@@ -629,6 +739,22 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                   ),
                 ),
               ),
+              // 远端服务：**在这里确认一次**，之后日记页不再反复打勾。
+              if (_formIsRemote) ...[
+                const SizedBox(height: 4),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _consentChecked ||
+                      (_editingId != null &&
+                          _consented.contains(_editingId)),
+                  onChanged: _busy
+                      ? null
+                      : (value) =>
+                            setState(() => _consentChecked = value ?? false),
+                  title: const Text('我同意把当天材料发送到这个服务'),
+                  subtitle: const Text('只需确认一次，之后不再询问。'),
+                ),
+              ],
               const SizedBox(height: 12),
               SketchAction(
                 label: _busy

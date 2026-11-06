@@ -260,6 +260,18 @@ class LargeCaptureApi extends MockDiaryApi {
   }
 }
 
+
+/// 本地文件 I/O 在 widget 测试里不会自己推进：要让出真实事件循环再 pump。
+Future<void> settleRealIo(WidgetTester tester) async {
+  // 一次授权要连着做几次读写（读表 → 写表 → 再读表），每做一次都要让出事件循环。
+  for (var i = 0; i < 8; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 60)),
+    );
+    await tester.pump();
+  }
+}
+
 Future<void> openApp(WidgetTester tester, MockDiaryApi api) async {
   await tester.pumpWidget(DiaryApp(api: api, demoMode: true));
   await tester.pumpAndSettle();
@@ -1115,6 +1127,44 @@ void main() {
     expect(field.controller!.text, '今天风很大，把伞吹翻了');
   });
 
+  testWidgets('远端服务在模型服务里授权一次，日记页不再反复打勾', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('diary-ui');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+
+    final api = _ProviderUiApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+
+    // ① 没授权时：日记页拦住，并指路去「模型服务」。
+    await tester.tap(find.text('日记').last);
+    // 控制器初始化要读本地 UI 文件，是真实 I/O：让出事件循环才推得动。
+    await settleRealIo(tester);
+    expect(find.textContaining('还没授权发送材料'), findsOneWidget);
+    expect(find.text('去模型服务授权'), findsOneWidget);
+    // 老那个「每次都要打勾」的复选框不该再出现。
+    expect(find.textContaining('我确认把当天材料发送到上述服务'), findsNothing);
+
+    // ② 去模型服务授权。
+    await tester.tap(find.text('去模型服务授权'));
+    await tester.pumpAndSettle();
+    // 模型服务页也要读授权表（真实 I/O），读完才认得出「授权发送」这个动作。
+    await settleRealIo(tester);
+    await tester.ensureVisible(find.text('授权发送'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('授权发送'));
+    await tester.pump();
+    await settleRealIo(tester);
+    expect(find.textContaining('已授权发送材料'), findsOneWidget);
+
+    // ③ 回日记页：不再要求授权，也不再出现复选框。
+    await tester.tap(find.text('日记').last);
+    await settleRealIo(tester);
+    expect(find.textContaining('还没授权发送材料'), findsNothing);
+    expect(find.text('去模型服务授权'), findsNothing);
+    expect(find.textContaining('我确认把当天材料发送到上述服务'), findsNothing);
+  });
+
   testWidgets('日记页的空态是一行字，不是告警框', (tester) async {
     final dir = Directory.systemTemp.createTempSync('diary-ui');
     addTearDown(() => dir.deleteSync(recursive: true));
@@ -1124,9 +1174,8 @@ void main() {
     await tester.pumpWidget(DiaryApp(api: api));
     await tester.pumpAndSettle();
     await tester.tap(find.text('日记').last);
-    // 这一页会一直转圈（假 API 没有实现 diary.getDay），所以只推几帧，不 settle。
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump(const Duration(milliseconds: 300));
 
     // 空态还在，但**走的是淡字样式**，不是告警框。
     // 两者文字一样，靠 `_hint` 的 key 区分：换回 `_notice` 这个 key 就没了。
