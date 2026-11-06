@@ -26,10 +26,13 @@ class BundledModels {
   static const _configName = 'core-config.json';
 
   /// 把随包路径补进 `core-config.json`。返回是否真的写了文件。
-  static Future<bool> ensureConfigured(Directory libraryDirectory) async {
-    if (!Platform.isWindows) return false;
-
-    final exeDir = File(Platform.resolvedExecutable).parent;
+  static Future<bool> ensureConfigured(
+    Directory libraryDirectory, {
+    Directory? executableDirectory,
+  }) async {
+    final exeDir = executableDirectory ??
+        (Platform.isWindows ? File(Platform.resolvedExecutable).parent : null);
+    if (exeDir == null) return false;
     final semanticDir = Directory(path.join(exeDir.path, _semanticRelative));
     final ortDylib = File(path.join(exeDir.path, _ortRelative));
     // 没有随包模型就什么都不做：不写半套配置，让核心照旧报「没配」。
@@ -39,7 +42,9 @@ class BundledModels {
     }
 
     final configFile = File(path.join(libraryDirectory.path, _configName));
-    Map<String, dynamic> config = const {};
+    // 注意：不能用 `const {}`——那是不可变 Map，putIfAbsent 会抛
+    // UnsupportedError，整个启动就挂了。
+    Map<String, dynamic> config = <String, dynamic>{};
     if (configFile.existsSync()) {
       try {
         final decoded = jsonDecode(await configFile.readAsString());
