@@ -456,6 +456,36 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     });
   }
 
+  /// 这个服务能不能承担「整理日记」：在线 + 声明了生成文字。
+  bool _canGenerate(Provider provider) =>
+      provider.capabilities.contains(ProviderCapability.generateText) &&
+      !_isLocalAdapter(provider);
+
+  /// 本机引擎不做文本生成（它的 model 是模型目录），别让它出现在「用它整理」里。
+  bool _isLocalAdapter(Provider provider) =>
+      provider.adapterId != 'openai_compatible';
+
+  /// 指定用它整理。核心的语义是单选：选中的启用，其余在线生成服务停用。
+  Future<void> _selectForOrganize(Provider provider) async {
+    final api = widget.api;
+    if (api is! ProviderSelectionPort) {
+      _say('这个构建不能指定整理服务。', error: true);
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await (api as ProviderSelectionPort).selectGenerationProvider(
+        providerId: provider.id,
+      );
+      await _reload();
+      _say('之后整理日记都用「${provider.label}」。');
+    } on DiaryException catch (failure) {
+      _say(failure.message, error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _toggleConsent(Provider provider) async {
     final consent = _consent ?? await _makeConsent();
     if (consent == null) return;
@@ -616,6 +646,14 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                 Wrap(
                   spacing: 10,
                   children: [
+                    if (_canGenerate(provider))
+                      SketchAction(
+                        label: provider.enabled ? '正在用于整理' : '用它整理',
+                        filled: provider.enabled,
+                        onPressed: _busy || provider.enabled
+                            ? null
+                            : () => unawaited(_selectForOrganize(provider)),
+                      ),
                     SketchAction(
                       label: '测试连接',
                       onPressed: _busy ? null : () => unawaited(_test(provider)),

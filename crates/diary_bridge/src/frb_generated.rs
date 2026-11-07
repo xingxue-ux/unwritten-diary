@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 486938140;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 914017522;
 
 // Section: executor
 
@@ -3742,6 +3742,59 @@ fn wire__crate__api__BridgeSession_search_snapshot_impl(
                     let output_ok = crate::api::BridgeSession::search_snapshot(
                         &*api_that_guard,
                         api_session_id,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__BridgeSession_select_generation_provider_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "BridgeSession_select_generation_provider",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeSession>,
+            >>::sse_decode(&mut deserializer);
+            let api_provider_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::BridgeError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::BridgeSession::select_generation_provider(
+                        &*api_that_guard,
+                        api_provider_id,
                     )?;
                     std::result::Result::Ok(output_ok)
                 })())
@@ -9854,208 +9907,214 @@ fn pde_ffi_dispatcher_primary_impl(
         69 => {
             wire__crate__api__BridgeSession_search_snapshot_impl(port, ptr, rust_vec_len, data_len)
         }
-        70 => wire__crate__api__BridgeSession_set_diary_current_impl(
+        70 => wire__crate__api__BridgeSession_select_generation_provider_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        71 => wire__crate__api__BridgeSession_set_plugin_enabled_impl(
+        71 => wire__crate__api__BridgeSession_set_diary_current_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        72 => wire__crate__api__BridgeSession_start_search_impl(port, ptr, rust_vec_len, data_len),
-        73 => wire__crate__api__BridgeSession_test_provider_impl(port, ptr, rust_vec_len, data_len),
-        74 => {
+        72 => wire__crate__api__BridgeSession_set_plugin_enabled_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        73 => wire__crate__api__BridgeSession_start_search_impl(port, ptr, rust_vec_len, data_len),
+        74 => wire__crate__api__BridgeSession_test_provider_impl(port, ptr, rust_vec_len, data_len),
+        75 => {
             wire__crate__api__BridgeSession_uninstall_plugin_impl(port, ptr, rust_vec_len, data_len)
         }
-        75 => wire__crate__api__BridgeSession_update_organize_settings_impl(
+        76 => wire__crate__api__BridgeSession_update_organize_settings_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        76 => wire__crate__api__BridgeSession_update_recording_state_impl(
+        77 => wire__crate__api__BridgeSession_update_recording_state_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        77 => {
+        78 => {
             wire__crate__api__BridgeSession_upgrade_search_impl(port, ptr, rust_vec_len, data_len)
         }
-        78 => wire__diary_core__model__asset_storage_state_from_wire_impl(
+        79 => wire__diary_core__model__asset_storage_state_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        79 => wire__diary_core__model__asset_storage_state_wire_impl(
+        80 => wire__diary_core__model__asset_storage_state_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        80 => {
+        81 => {
             wire__diary_core__model__author_type_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        81 => wire__diary_core__model__author_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        82 => {
+        82 => wire__diary_core__model__author_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        83 => {
             wire__diary_core__model__capture_state_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        83 => wire__diary_core__model__capture_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        84 => wire__diary_core__model__coverage_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        85 => wire__diary_core__model__coverage_wire_impl(port, ptr, rust_vec_len, data_len),
-        86 => wire__diary_core__model__diary_generation_reason_from_wire_impl(
+        84 => wire__diary_core__model__capture_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        85 => wire__diary_core__model__coverage_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        86 => wire__diary_core__model__coverage_wire_impl(port, ptr, rust_vec_len, data_len),
+        87 => wire__diary_core__model__diary_generation_reason_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        87 => wire__diary_core__model__diary_generation_reason_is_organize_impl(
+        88 => wire__diary_core__model__diary_generation_reason_is_organize_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        88 => wire__diary_core__model__diary_generation_reason_wire_impl(
+        89 => wire__diary_core__model__diary_generation_reason_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        89 => wire__diary_core__model__diary_version_origin_from_wire_impl(
+        90 => wire__diary_core__model__diary_version_origin_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        90 => wire__diary_core__model__diary_version_origin_is_user_authored_impl(
+        91 => wire__diary_core__model__diary_version_origin_is_user_authored_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        91 => wire__diary_core__model__diary_version_origin_wire_impl(
+        92 => wire__diary_core__model__diary_version_origin_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        92 => wire__diary_core__model__event_type_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        93 => wire__diary_core__model__event_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        94 => {
+        93 => wire__diary_core__model__event_type_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        94 => wire__diary_core__model__event_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        95 => {
             wire__diary_core__model__import_origin_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        95 => wire__diary_core__model__import_origin_wire_impl(port, ptr, rust_vec_len, data_len),
-        96 => {
+        96 => wire__diary_core__model__import_origin_wire_impl(port, ptr, rust_vec_len, data_len),
+        97 => {
             wire__diary_core__model__import_state_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        97 => wire__diary_core__model__import_state_is_in_flight_impl(
+        98 => wire__diary_core__model__import_state_is_in_flight_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        98 => wire__diary_core__model__import_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        99 => wire__diary_core__model__job_priority_value_impl(port, ptr, rust_vec_len, data_len),
-        100 => wire__diary_core__model__job_state_from_wire_impl(port, ptr, rust_vec_len, data_len),
-        101 => {
+        99 => wire__diary_core__model__import_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        100 => wire__diary_core__model__job_priority_value_impl(port, ptr, rust_vec_len, data_len),
+        101 => wire__diary_core__model__job_state_from_wire_impl(port, ptr, rust_vec_len, data_len),
+        102 => {
             wire__diary_core__model__job_state_is_terminal_impl(port, ptr, rust_vec_len, data_len)
         }
-        102 => wire__diary_core__model__job_state_wire_impl(port, ptr, rust_vec_len, data_len),
-        103 => {
+        103 => wire__diary_core__model__job_state_wire_impl(port, ptr, rust_vec_len, data_len),
+        104 => {
             wire__diary_core__model__locator_type_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        104 => wire__diary_core__model__locator_type_wire_impl(port, ptr, rust_vec_len, data_len),
-        105 => {
+        105 => wire__diary_core__model__locator_type_wire_impl(port, ptr, rust_vec_len, data_len),
+        106 => {
             wire__diary_core__model__matched_by_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        106 => wire__diary_core__model__matched_by_wire_impl(port, ptr, rust_vec_len, data_len),
-        107 => {
+        107 => wire__diary_core__model__matched_by_wire_impl(port, ptr, rust_vec_len, data_len),
+        108 => {
             wire__diary_core__model__material_counts_default_impl(port, ptr, rust_vec_len, data_len)
         }
-        108 => wire__diary_core__model__plugin_entry_kind_from_wire_impl(
+        109 => wire__diary_core__model__plugin_entry_kind_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        109 => {
+        110 => {
             wire__diary_core__model__plugin_entry_kind_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        110 => wire__diary_core__model__processing_status_from_wire_impl(
+        111 => wire__diary_core__model__processing_status_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        111 => {
+        112 => {
             wire__diary_core__model__processing_status_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        112 => wire__diary_core__model__processing_summary_default_impl(
+        113 => wire__diary_core__model__processing_summary_default_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        113 => wire__diary_core__model__provider_capability_from_wire_impl(
+        114 => wire__diary_core__model__provider_capability_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        114 => wire__diary_core__model__provider_capability_wire_impl(
+        115 => wire__diary_core__model__provider_capability_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        115 => wire__diary_core__model__provider_test_status_from_wire_impl(
+        116 => wire__diary_core__model__provider_test_status_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        116 => wire__diary_core__model__provider_test_status_wire_impl(
+        117 => wire__diary_core__model__provider_test_status_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        117 => wire__diary_core__model__recording_state_from_wire_impl(
+        118 => wire__diary_core__model__recording_state_from_wire_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        118 => {
+        119 => {
             wire__diary_core__model__recording_state_is_open_impl(port, ptr, rust_vec_len, data_len)
         }
-        119 => {
+        120 => {
             wire__diary_core__model__recording_state_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        120 => {
+        121 => {
             wire__diary_core__model__search_filters_default_impl(port, ptr, rust_vec_len, data_len)
         }
-        121 => {
+        122 => {
             wire__diary_core__model__search_mode_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        122 => wire__diary_core__model__search_mode_wire_impl(port, ptr, rust_vec_len, data_len),
-        123 => {
+        123 => wire__diary_core__model__search_mode_wire_impl(port, ptr, rust_vec_len, data_len),
+        124 => {
             wire__diary_core__model__search_phase_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        124 => wire__diary_core__model__search_phase_wire_impl(port, ptr, rust_vec_len, data_len),
-        125 => {
+        125 => wire__diary_core__model__search_phase_wire_impl(port, ptr, rust_vec_len, data_len),
+        126 => {
             wire__diary_core__model__source_kind_from_wire_impl(port, ptr, rust_vec_len, data_len)
         }
-        126 => wire__diary_core__model__source_kind_wire_impl(port, ptr, rust_vec_len, data_len),
-        127 => {
+        127 => wire__diary_core__model__source_kind_wire_impl(port, ptr, rust_vec_len, data_len),
+        128 => {
             wire__diary_core__model__source_locator_document_impl(port, ptr, rust_vec_len, data_len)
         }
-        128 => wire__diary_core__model__source_locator_text_range_impl(
+        129 => wire__diary_core__model__source_locator_text_range_impl(
             port,
             ptr,
             rust_vec_len,

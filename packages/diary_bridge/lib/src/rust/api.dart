@@ -475,6 +475,16 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 读当前快照；会话不存在或索引变了报 `search_expired`。
   Future<SearchSnapshot> searchSnapshot({required String sessionId});
 
+  /// 选择「用哪个服务整理日记」，契约 `providers.selectGeneration`。
+  ///
+  /// 核心的语义是**单选**：选中的那条启用，其余能承担 `generate_text` 的在线服务
+  /// 一并停用。这样「生成闸门」只会挑到用户指定的那一个——不用在每一处调用点
+  /// 各记一份「用户想用哪个」。
+  ///
+  /// 只接受 HTTP 适配器且声明了 `generate_text` 的服务；本机引擎不做文本生成，
+  /// 传它会得到 `invalid_argument`。
+  Future<Provider> selectGenerationProvider({required String providerId});
+
   /// 指定某一天的当前版本，契约 `diary.setCurrent`。
   ///
   /// 只能指向这一天自己的版本（不存在 `not_found`、跨天 `invalid_argument`）；

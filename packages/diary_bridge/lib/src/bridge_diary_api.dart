@@ -64,7 +64,8 @@ class BridgeDiaryApi
         api.DiaryApi,
         api.OrganizeSchedulePort,
         api.ProviderCredentialPort,
-        api.ProviderModelPort {
+        api.ProviderModelPort,
+        api.ProviderSelectionPort {
   BridgeDiaryApi({
     required this.coreLibraryPath,
     required this.libraryPath,
@@ -611,6 +612,17 @@ class BridgeDiaryApi
   /// 宿主凭据接上之后这个方法会被移除（或改成只传 `credentialRef`），调用方不该把它
   /// 当成长期接口。
   @override
+  @override
+  Future<api.Provider> selectGenerationProvider({
+    required String providerId,
+  }) async {
+    final session = _open;
+    final provider = await _translate(
+      () => session.selectGenerationProvider(providerId: providerId),
+    );
+    return _provider(provider);
+  }
+
   Future<List<api.ProviderModel>> listProviderModels({
     required String providerId,
   }) async {
