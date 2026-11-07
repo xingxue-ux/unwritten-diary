@@ -87,6 +87,25 @@ class StyleSettingsController extends ChangeNotifier {
         next[index] = saved;
       }
       styles = List.unmodifiable(next);
+      // **保存之后要真的生效**：没有默认风格时，把它设成默认。
+      // 否则用户改完保存、下次整理还是用内置默认——「风格选择不起作用」就是这么来的。
+      if (selectedStyleId == null && canSelect) {
+        final current = settings;
+        if (current != null) {
+          try {
+            settings = await _api.updateSettings(
+              settings: current.copyWith(defaultStyleId: saved.id),
+              expectedRevision: current.revision,
+            );
+            message = '已保存，并设为之后整理使用的风格。历史日记不会自动重写。';
+            return saved;
+          } on Object {
+            // 设默认失败不影响保存本身，如实说清楚。
+            message = '已保存，但没能设为默认风格；请在列表里点「设为默认」。';
+            return saved;
+          }
+        }
+      }
       message = '风格偏好已保存；历史日记不会自动重写。';
       return saved;
     } on DiaryException catch (error) {

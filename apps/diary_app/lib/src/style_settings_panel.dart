@@ -69,6 +69,12 @@ class StyleSettingsPanelState extends State<StyleSettingsPanel> {
           '让之后生成的文字更像你，同时保留事实边界。',
           style: TextStyle(color: SketchColors.muted, fontSize: 15),
         ),
+        const SizedBox(height: 10),
+        // 当前生效的是哪一个，必须一眼看得到——否则用户改完保存也不知道有没有用上。
+        Text(
+          _inUseLabel(controller),
+          style: const TextStyle(color: SketchColors.muted, fontSize: 13),
+        ),
         const SizedBox(height: 18),
         if (controller.loading)
           const LinearProgressIndicator()
@@ -119,6 +125,16 @@ class StyleSettingsPanelState extends State<StyleSettingsPanel> {
       ],
     ),
   );
+
+  /// 「之后整理会用哪个风格」。没设默认时如实说「内置默认」。
+  String _inUseLabel(StyleSettingsController controller) {
+    final id = controller.selectedStyleId;
+    if (id == null) return '之后整理会用：内置默认风格（还没选过）';
+    for (final profile in controller.styles) {
+      if (profile.id == id) return '之后整理会用：「${profile.label}」';
+    }
+    return '之后整理会用：$id';
+  }
 
   Widget _editor() => SketchFrame(
     child: Column(
