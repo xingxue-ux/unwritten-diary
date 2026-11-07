@@ -27,6 +27,7 @@ import 'revision_diff.dart';
 import 'sketch_ui.dart';
 import 'style_settings_controller.dart';
 import 'style_settings_panel.dart';
+import 'tasks_panel.dart';
 import 'ui_strings.dart';
 
 /// The text, search, and source revision paths use DiaryApi. Remaining preview
@@ -2139,33 +2140,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     ],
   );
 
-  Widget _tasksPanel() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _title('任务中心', '材料保存与后续处理各有自己的状态。'),
-      const SizedBox(height: 20),
-      _notice('以下是示例状态，不代表本机正在运行模型或转写任务。'),
-      const SizedBox(height: 16),
-      _resultTile(
-        '待配置 · 录音转写',
-        '示例 · ${uiStrings.t('job.needs_attention')}',
-        '声音原件仍可保留；配置转写能力后再继续。',
-        () => _openPanel('model'),
-      ),
-      _resultTile(
-        '图片内容提取',
-        '示例 · 等待',
-        '尚未配置图片理解服务，文件名仍可检索。',
-        () => _openPanel('model'),
-      ),
-      _resultTile(
-        '示例日记整理',
-        '示例 · 完成',
-        '已生成候选版；不会自动覆盖人工编辑。',
-        () => _openPanel('versions'),
-      ),
-    ],
-  );
+  Widget _tasksPanel() => TasksPanel(api: widget.api);
 
   Widget _modelPanel() =>
       widget.demoMode ? _modelDemoPanel() : AiProviderPanel(api: widget.api);
