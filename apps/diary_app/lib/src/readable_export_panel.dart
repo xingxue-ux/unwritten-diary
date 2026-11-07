@@ -1,4 +1,8 @@
+import 'dart:io';
+
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as path;
 
 import 'readable_export_controller.dart';
 import 'sketch_ui.dart';
@@ -157,18 +161,79 @@ class _ReadableExportPanelState extends State<ReadableExportPanel> {
                     fontSize: 12,
                   ),
                 ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  children: [
+                    // 核心把文件写在自己的 exports 目录里；用户要的是「存到我能找到的地方」。
+                    SketchAction(
+                      label: '另存为…',
+                      icon: Icons.save_alt,
+                      compact: true,
+                      onPressed: () => _saveAs(package),
+                    ),
+                    SketchAction(
+                      label: '打开所在文件夹',
+                      icon: Icons.folder_open,
+                      compact: true,
+                      onPressed: () => _reveal(package),
+                    ),
+                  ],
+                ),
               ],
             ],
           ),
         ),
         const SizedBox(height: 12),
         const Text(
-          '核心返回可导出的包句柄后，由平台保存层写入用户选择的位置；当前契约尚未提供该复制入口时，不会显示“已保存”。',
+          '导出文件先写在资料库的 exports 目录里；用「另存为…」复制到你选的位置。',
           style: TextStyle(color: SketchColors.muted, fontSize: 12),
         ),
       ],
     ),
   );
+
+  /// 把核心写好的导出文件复制到用户选的位置。
+  ///
+  /// **不移动**：核心那条路径是任务记录里写的产物位置，挪走会让 `jobs` 里的
+  /// `targetIds` 指向不存在的文件。
+  Future<void> _saveAs(String sourcePath) async {
+    try {
+      final location = await getSaveLocation(
+        suggestedName: path.basename(sourcePath),
+      );
+      if (location == null) return;
+      await File(sourcePath).copy(location.path);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已保存到 ${location.path}')),
+      );
+    } on Object catch (failure) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('另存为没完成：$failure')),
+      );
+    }
+  }
+
+  /// 在文件管理器里定位这个文件。Windows 用 `explorer /select,`。
+  Future<void> _reveal(String filePath) async {
+    try {
+      if (Platform.isWindows) {
+        await Process.run('explorer.exe', ['/select,', filePath]);
+      } else if (Platform.isMacOS) {
+        await Process.run('open', ['-R', filePath]);
+      } else {
+        await Process.run('xdg-open', [path.dirname(filePath)]);
+      }
+    } on Object catch (failure) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('打不开文件夹：$failure')),
+      );
+    }
+  }
 
   Future<void> _pickDate(bool start) async {
     final picked = await showDatePicker(
