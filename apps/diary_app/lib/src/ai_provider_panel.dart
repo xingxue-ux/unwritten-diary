@@ -111,8 +111,17 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
   void initState() {
     super.initState();
     _applyFill('deepseek');
+    // 改了任何字段就是「另一条配置」：不再沿用上一次保存的 id，
+    // 否则改完地址再保存会把上一条覆盖掉。
+    for (final controller in [_name, _endpoint, _model]) {
+      controller.addListener(_forgetFormProvider);
+    }
     unawaited(_reload());
     unawaited(_loadConsent());
+  }
+
+  void _forgetFormProvider() {
+    if (_formProviderId != null) _formProviderId = null;
   }
 
   @override
@@ -231,7 +240,9 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
   /// 所以那一步会先把表单落一份——这正是「添加服务」的一部分。
   /// 这个服务已经存过密钥吗？改已有服务时不该逼用户再输一遍。
   bool get _hasStoredCredential {
-    final id = _editingId;
+    // 同一个表单里保存过一次之后，密钥已经在托管里了（输入框会被清空），
+    // 这时再点「保存」不该逼用户重打一遍。
+    final id = _editingId ?? _formProviderId;
     if (id == null) return false;
     for (final provider in _providers) {
       if (provider.id == id) return provider.credentialRef != null;
@@ -315,21 +326,6 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     return box.localToGlobal(Offset.zero).dy;
   }
 
-  /// 已经有「同地址 + 同模型」的服务吗？有就返回它，保存时更新那一条。
-  ///
-  /// 没有这一条的话，用户填完点两次「保存服务」就会多出一条一模一样的配置
-  /// （真机上出现过 `DeepSeek` / `DeepSeek1` 并排）。
-  Provider? _duplicateOf(Uri uri, String model) {
-    final endpoint = uri.toString();
-    for (final provider in _providers) {
-      if (provider.id == _editingId) continue;
-      if (provider.endpoint == endpoint && (provider.model ?? '') == model) {
-        return provider;
-      }
-    }
-    return null;
-  }
-
   Future<void> _save() async {
     if (_busy) return;
     final uri = _checkedEndpoint();
@@ -338,11 +334,6 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     if (model.isEmpty) {
       _say('请填写模型名，例如 deepseek-chat。', error: true);
       return;
-    }
-    final duplicate = _duplicateOf(uri, model);
-    if (duplicate != null) {
-      // 同一条配置：改成更新它，别再建一条。
-      setState(() => _editingId = duplicate.id);
     }
     if (_secret.text.trim().isEmpty && _needsSecret) {
       _say('在线服务要填 API Key。', error: true);
@@ -355,7 +346,9 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     });
     await _keepingFormStill(() async {
       try {
-        final saved = await _persist(uri, model: model, clearSecret: true);
+        // 不在这时清空密钥：改个名字再保存是常见操作，清掉就得重打一遍。
+        // 换预填项、点「编辑」时才会清（那才是「另一份表单」）。
+        final saved = await _persist(uri, model: model);
         if (saved == null) return;
         // 授权只在这里落：保存是一次明确的「我要用它」。
         // 「获取模型列表」「测试连接」也会落库，但那两步不是授权动作。
@@ -367,7 +360,8 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
         }
         setState(() {
           _editingId = null;
-          _formProviderId = null;
+          // **不清 `_formProviderId`**：同一个表单里再点一次「保存」应当更新刚才那条，
+          // 而不是再建一条一模一样的。改了字段才会清（见构造函数里的监听）。
           _formModels = const [];
           _consentChecked = false;
         });
