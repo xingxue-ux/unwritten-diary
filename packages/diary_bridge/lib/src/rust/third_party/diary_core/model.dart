@@ -4099,12 +4099,20 @@ class SourceLocation {
   final String? assetId;
   final String? reason;
 
+  /// 这份原件是什么（文字 / 录音 / 照片 / 视频 / 文件 / 链接）。
+  ///
+  /// 界面要靠它决定「怎么打开」：录音给播放器、照片给预览、文档交给外部程序。
+  /// 以前没有这一项，界面只能猜——于是录音的详情页画不出播放器。
+  /// 找不到来源时是 `None`，不编一个类型出来。
+  final SourceKind? sourceKind;
+
   const SourceLocation({
     required this.sourceRef,
     required this.locator,
     required this.available,
     this.assetId,
     this.reason,
+    this.sourceKind,
   });
 
   @override
@@ -4113,7 +4121,8 @@ class SourceLocation {
       locator.hashCode ^
       available.hashCode ^
       assetId.hashCode ^
-      reason.hashCode;
+      reason.hashCode ^
+      sourceKind.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -4124,7 +4133,8 @@ class SourceLocation {
           locator == other.locator &&
           available == other.available &&
           assetId == other.assetId &&
-          reason == other.reason;
+          reason == other.reason &&
+          sourceKind == other.sourceKind;
 }
 
 /// 定位信息。每个 locator 都带 sourceRevisionId，保证定位到当时的原文版本。

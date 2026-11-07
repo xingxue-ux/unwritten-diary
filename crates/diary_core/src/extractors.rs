@@ -19,7 +19,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::model::{
-    Coverage, ExtractedContent, ExtractedSegment, ProcessingStatus, SourceLocator, SourceLocation,
+    Coverage, ExtractedContent, ExtractedSegment, ProcessingStatus, SourceKind, SourceLocator,
+    SourceLocation,
 };
 use crate::search;
 use crate::support;
@@ -925,8 +926,19 @@ pub(crate) fn locate(
             available: false,
             asset_id: None,
             reason: Some("找不到这个来源".to_owned()),
+            source_kind: None,
         });
     };
+    // 界面要靠类型决定「怎么打开」：录音给播放器、照片给预览、文档交给外部程序。
+    let source_kind: Option<SourceKind> = core
+        .conn
+        .query_row(
+            "SELECT kind FROM source_items WHERE source_id = ?1",
+            params![source_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|wire| SourceKind::from_wire(&wire));
 
     let asset: Option<(String, String, String)> = core
         .conn
@@ -945,6 +957,7 @@ pub(crate) fn locate(
             available: false,
             asset_id: None,
             reason: Some("这个来源没有可打开的原件（例如纯文字）".to_owned()),
+            source_kind,
         });
     };
 
@@ -955,6 +968,7 @@ pub(crate) fn locate(
             available: false,
             asset_id: Some(asset_id),
             reason: Some(format!("原件状态是 {state}，暂时打不开")),
+            source_kind,
         });
     }
     if !root.join(&object_ref).is_file() {
@@ -964,6 +978,7 @@ pub(crate) fn locate(
             available: false,
             asset_id: Some(asset_id),
             reason: Some("原件文件不在文件库里".to_owned()),
+            source_kind,
         });
     }
 
@@ -973,6 +988,7 @@ pub(crate) fn locate(
         available: true,
         asset_id: Some(asset_id),
         reason: None,
+        source_kind,
     })
 }
 

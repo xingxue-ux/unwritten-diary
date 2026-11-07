@@ -28,6 +28,7 @@ import 'schedule_settings_controller.dart';
 import 'revision_controller.dart';
 import 'revision_diff.dart';
 import 'sketch_ui.dart';
+import 'source_original.dart';
 import 'style_settings_controller.dart';
 import 'style_settings_panel.dart';
 import 'tasks_panel.dart';
@@ -94,6 +95,11 @@ class _ExperienceShellState extends State<ExperienceShell>
   String _searchKind = '全部';
   String _activeQuery = '';
   SearchHit? _selectedSearchHit;
+
+  /// 当前打开的来源是什么类型、要定位到哪。搜索命中带来精确位置（音频时间点），
+  /// 从记录详情进来时两者都为空——那时只提供「打开原件」。
+  SourceKind? _revisionSourceKind;
+  SourceLocator? _revisionLocator;
   String _revisionView = '正文';
   bool _editingRevision = false;
   String _candidateDraft = _candidateBody;
@@ -435,6 +441,8 @@ class _ExperienceShellState extends State<ExperienceShell>
     if (!widget.demoMode &&
         capture?.state == CaptureState.committed &&
         capture!.orderedSourceIds.isNotEmpty) {
+      _revisionSourceKind = null;
+      _revisionLocator = null;
       unawaited(
         _revisions.open(
           sourceId: capture.orderedSourceIds.first,
@@ -840,6 +848,8 @@ class _ExperienceShellState extends State<ExperienceShell>
                     hit.snippet ?? '这项材料暂无可展示的文字摘录。',
                     () {
                       if (hit.sourceId != null) {
+                        _revisionSourceKind = hit.sourceKind;
+                        _revisionLocator = hit.locator;
                         unawaited(_revisions.open(sourceId: hit.sourceId!));
                       }
                       setState(() {
@@ -2752,6 +2762,16 @@ class _ExperienceShellState extends State<ExperienceShell>
           ),
         ),
         _title(title, subtitle),
+        if (!widget.demoMode && revisions.sourceId != null) ...[
+          const SizedBox(height: 14),
+          SourceOriginalCard(
+            key: ValueKey('original-${revisions.sourceId}'),
+            api: widget.api,
+            sourceId: revisions.sourceId!,
+            sourceKind: _revisionSourceKind,
+            locator: _revisionLocator,
+          ),
+        ],
         if (diaryDayKey != null && !widget.demoMode) ...[
           const SizedBox(height: 12),
           SketchAction(

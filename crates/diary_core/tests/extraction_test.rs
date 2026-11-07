@@ -8,7 +8,7 @@ use std::path::Path;
 
 use diary_core::{
     Core, Coverage, CreateDraftInput, ImportManifest, ImportOrigin, ImportRequest, JobState,
-    ProcessingStatus, SourceLocator,
+    ProcessingStatus, SourceKind, SourceLocator,
 };
 use sha2::{Digest, Sha256};
 
@@ -439,11 +439,16 @@ fn locate_resolves_a_source_to_its_asset() {
     assert!(location.available, "原件在文件库里就该可用");
     assert_eq!(location.asset_id.as_deref(), Some(asset_id.as_str()));
     assert_eq!(location.locator, locator);
+    // 导入的文件在 `source_items.kind` 里是 `file`（只有用户自己写的记录文字才是
+    // `text`）。界面要靠这个类型决定怎么打开：录音给播放器、照片给预览、
+    // 文件交给外部程序。
+    assert_eq!(location.source_kind, Some(SourceKind::File));
 
     // 找不到的来源：如实说找不到，而不是报错或假装可用。
     let missing = core.locate_source("src_missing", locator).unwrap();
     assert!(!missing.available);
     assert!(missing.reason.unwrap_or_default().contains("找不到"));
+    assert_eq!(missing.source_kind, None, "找不到来源就没有类型，不编一个");
 
     // 纯文字来源没有原件，可用性是 false。
     let mut core2 = new_core(tempfile::tempdir().unwrap().path());

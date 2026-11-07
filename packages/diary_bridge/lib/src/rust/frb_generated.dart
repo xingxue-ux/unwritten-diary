@@ -6198,6 +6198,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SourceKind dco_decode_box_autoadd_source_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_source_kind(raw);
+  }
+
+  @protected
   SourceLocator dco_decode_box_autoadd_source_locator(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_source_locator(raw);
@@ -7158,6 +7164,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SourceKind? dco_decode_opt_box_autoadd_source_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_source_kind(raw);
+  }
+
+  @protected
   SourceLocator? dco_decode_opt_box_autoadd_source_locator(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_source_locator(raw);
@@ -7954,14 +7966,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SourceLocation dco_decode_source_location(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return SourceLocation(
       sourceRef: dco_decode_String(arr[0]),
       locator: dco_decode_source_locator(arr[1]),
       available: dco_decode_bool(arr[2]),
       assetId: dco_decode_opt_String(arr[3]),
       reason: dco_decode_opt_String(arr[4]),
+      sourceKind: dco_decode_opt_box_autoadd_source_kind(arr[5]),
     );
   }
 
@@ -8536,6 +8549,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Settings sse_decode_box_autoadd_settings(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_settings(deserializer));
+  }
+
+  @protected
+  SourceKind sse_decode_box_autoadd_source_kind(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_source_kind(deserializer));
   }
 
   @protected
@@ -9991,6 +10010,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SourceKind? sse_decode_opt_box_autoadd_source_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_source_kind(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   SourceLocator? sse_decode_opt_box_autoadd_source_locator(
     SseDeserializer deserializer,
   ) {
@@ -11040,12 +11072,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_available = sse_decode_bool(deserializer);
     var var_assetId = sse_decode_opt_String(deserializer);
     var var_reason = sse_decode_opt_String(deserializer);
+    var var_sourceKind = sse_decode_opt_box_autoadd_source_kind(deserializer);
     return SourceLocation(
       sourceRef: var_sourceRef,
       locator: var_locator,
       available: var_available,
       assetId: var_assetId,
       reason: var_reason,
+      sourceKind: var_sourceKind,
     );
   }
 
@@ -11642,6 +11676,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_settings(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_source_kind(
+    SourceKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_source_kind(self, serializer);
   }
 
   @protected
@@ -12854,6 +12897,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_source_kind(
+    SourceKind? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_source_kind(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_source_locator(
     SourceLocator? self,
     SseSerializer serializer,
@@ -13610,6 +13666,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.available, serializer);
     sse_encode_opt_String(self.assetId, serializer);
     sse_encode_opt_String(self.reason, serializer);
+    sse_encode_opt_box_autoadd_source_kind(self.sourceKind, serializer);
   }
 
   @protected

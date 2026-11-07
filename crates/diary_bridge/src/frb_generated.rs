@@ -7167,6 +7167,7 @@ const _: fn() = || {
         let _: bool = SourceLocation.available;
         let _: Option<String> = SourceLocation.asset_id;
         let _: Option<String> = SourceLocation.reason;
+        let _: Option<diary_core::model::SourceKind> = SourceLocation.source_kind;
     }
     {
         let SourceLocator = None::<diary_core::model::SourceLocator>.unwrap();
@@ -8999,6 +9000,17 @@ impl SseDecode for Option<diary_core::model::SearchPhase> {
     }
 }
 
+impl SseDecode for Option<diary_core::model::SourceKind> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<diary_core::model::SourceKind>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<diary_core::model::SourceLocator> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -10130,12 +10142,14 @@ impl SseDecode for diary_core::model::SourceLocation {
         let mut var_available = <bool>::sse_decode(deserializer);
         let mut var_assetId = <Option<String>>::sse_decode(deserializer);
         let mut var_reason = <Option<String>>::sse_decode(deserializer);
+        let mut var_sourceKind = <Option<diary_core::model::SourceKind>>::sse_decode(deserializer);
         return diary_core::model::SourceLocation {
             source_ref: var_sourceRef,
             locator: var_locator,
             available: var_available,
             asset_id: var_assetId,
             reason: var_reason,
+            source_kind: var_sourceKind,
         };
     }
 }
@@ -13137,6 +13151,7 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::SourceLocat
             self.0.available.into_into_dart().into_dart(),
             self.0.asset_id.into_into_dart().into_dart(),
             self.0.reason.into_into_dart().into_dart(),
+            self.0.source_kind.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -14647,6 +14662,16 @@ impl SseEncode for Option<diary_core::model::SearchPhase> {
     }
 }
 
+impl SseEncode for Option<diary_core::model::SourceKind> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <diary_core::model::SourceKind>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<diary_core::model::SourceLocator> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -15425,6 +15450,7 @@ impl SseEncode for diary_core::model::SourceLocation {
         <bool>::sse_encode(self.available, serializer);
         <Option<String>>::sse_encode(self.asset_id, serializer);
         <Option<String>>::sse_encode(self.reason, serializer);
+        <Option<diary_core::model::SourceKind>>::sse_encode(self.source_kind, serializer);
     }
 }
 
