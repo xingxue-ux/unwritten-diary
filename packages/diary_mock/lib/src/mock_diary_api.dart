@@ -273,6 +273,13 @@ class MockDiaryApi
 
   /// 假实现也遵守「单选」语义：选中的启用，其余能生成文字的在线服务停用。
   @override
+  Future<void> removeProvider(String providerId) async {
+    providerRows = providerRows
+        .where((item) => item.id != providerId)
+        .toList(growable: false);
+  }
+
+  @override
   Future<api.Provider> selectGenerationProvider({
     required String providerId,
   }) async {
