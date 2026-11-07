@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import 'recording_controller.dart';
 import '../sketch_ui.dart';
+import 'playable_audio.dart';
 import 'waveform.dart';
 
 /// 录音页：**真的收音、真的保存、真的转写**。
@@ -31,6 +32,7 @@ class _RecordingPanelState extends State<RecordingPanel> {
   /// 播放器**按需创建**：没保存过录音、或者用户根本没按播放时，不该去碰平台
   /// 播放器（widget 测试里也没有它）。第一次真的要用时才建。
   AudioPlayer? _player;
+  final PlayableAudio _playable = PlayableAudio();
 
   Waveform? _waveform;
   String? _playbackPath;
@@ -151,7 +153,9 @@ class _RecordingPanelState extends State<RecordingPanel> {
         if (mounted) setState(() => _playing = false);
         return;
       }
-      await _ensurePlayer.play(DeviceFileSource(path));
+      // 文件库里的 blob 没有扩展名，播放器打不开（见 playable_audio.dart）。
+      final playable = await _playable.resolve(path);
+      await _ensurePlayer.play(DeviceFileSource(playable));
       if (mounted) setState(() => _playing = true);
     } on Object catch (failure) {
       if (mounted) setState(() => _playbackError = '播放失败：$failure');

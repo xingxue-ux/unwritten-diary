@@ -537,6 +537,9 @@ class BridgeDiaryApi
       available: location.available,
       assetId: location.assetId,
       reason: location.reason,
+      sourceKind: location.sourceKind == null
+          ? null
+          : api.SourceKind.values.byName(location.sourceKind!.name),
     );
   }
 

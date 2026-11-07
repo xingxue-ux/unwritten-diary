@@ -97,6 +97,10 @@ void main() {
 
     expect(find.text('今天遇见旧朋友。'), findsWidgets);
     expect(find.text('看原正文'), findsNothing);
+    // 详情页顶部现在有「原件」卡片（定位原件），把下面的按钮推到了折叠线以下；
+    // 不先滚过去，tap 会点在空处，编辑框根本不会出现。
+    await tester.ensureVisible(find.text('修改正文'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('修改正文'));
     await tester.pumpAndSettle();
     await tester.enterText(

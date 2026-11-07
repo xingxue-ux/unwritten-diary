@@ -874,6 +874,7 @@ class SourceLocation {
     required this.available,
     this.assetId,
     this.reason,
+    this.sourceKind,
   });
 
   final String sourceRef;
@@ -882,6 +883,12 @@ class SourceLocation {
   final String? assetId;
   final String? reason;
 
+  /// 这份原件是什么（文字 / 录音 / 照片 / 视频 / 文件 / 链接）。
+  ///
+  /// 界面靠它决定「怎么打开」：录音给播放器、照片给预览、文档交给外部程序。
+  /// 找不到来源时为空——**不编一个类型出来**。
+  final SourceKind? sourceKind;
+
   @override
   bool operator ==(Object other) =>
       other is SourceLocation &&
@@ -889,11 +896,12 @@ class SourceLocation {
       other.locator == locator &&
       other.available == available &&
       other.assetId == assetId &&
-      other.reason == reason;
+      other.reason == reason &&
+      other.sourceKind == sourceKind;
 
   @override
   int get hashCode =>
-      Object.hash(sourceRef, locator, available, assetId, reason);
+      Object.hash(sourceRef, locator, available, assetId, reason, sourceKind);
 
   @override
   String toString() => 'SourceLocation($sourceRef, available: $available)';

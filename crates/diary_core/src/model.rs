@@ -1084,6 +1084,12 @@ pub struct SourceLocation {
     pub available: bool,
     pub asset_id: Option<String>,
     pub reason: Option<String>,
+    /// 这份原件是什么（文字 / 录音 / 照片 / 视频 / 文件 / 链接）。
+    ///
+    /// 界面要靠它决定「怎么打开」：录音给播放器、照片给预览、文档交给外部程序。
+    /// 以前没有这一项，界面只能猜——于是录音的详情页画不出播放器。
+    /// 找不到来源时是 `None`，不编一个类型出来。
+    pub source_kind: Option<SourceKind>,
 }
 
 /// 索引覆盖状态，契约第 4.4 节 `indexes.status`。
