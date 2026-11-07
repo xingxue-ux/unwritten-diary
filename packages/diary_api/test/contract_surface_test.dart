@@ -38,6 +38,7 @@ const Map<String, String> kContractToDartMethod = {
   'recordings.updateState': 'updateRecordingState',
   'recordings.finalize': 'finalizeRecording',
   'recordings.recover': 'recoverRecording',
+  'recordings.discard': 'discardRecording',
   'assets.open': 'openAsset',
   'assets.release': 'releaseAsset',
   'sources.locate': 'locateSource',

@@ -792,10 +792,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('照片 · 演示'), findsOneWidget);
 
+    // 录音入口现在是**真的**：演示模式下它必须说清楚自己不收音，
+    // 真模式下它会把这条记录落成草稿再进录音页。
     await tester.ensureVisible(find.text('录音').first);
     await tester.tap(find.text('录音').first);
     await tester.pumpAndSettle();
-    expect(find.textContaining('不会录音'), findsOneWidget);
+    expect(find.textContaining('演示模式不收音'), findsOneWidget);
   });
 
   testWidgets('long action wraps at 320 width and two times text scale', (

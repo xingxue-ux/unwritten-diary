@@ -16,14 +16,15 @@
 //!
 //! # 拼接出来的音频有一个坑：它可能不是**合法**的 WAV
 //!
-//! `recordings::finalize` 是把片段文件的字节直接拼起来的。若每个片段各自带 44 字节
-//! 头，拼出来就是「头 + 数据 + 头 + 数据」——第二个头会被当成 PCM 采样读进来，
-//! 听感上是几毫秒的爆音，转写结果里可能出现一两个莫名其妙的字。这一片**不修**它
-//! （修它要改录音最终化的口径，属于 F1 录音链），但如实记在文档的「没有做到的」里。
-//! 解码器对这种情况的行为是确定的：只认第一个头，后面的字节按采样读。
+//! 片段拼接曾经是「按字节直接拼」的坑：每个片段各自带 44 字节头时，拼出来是
+//! 「头 + 数据 + 头 + 数据」，第二个头会被当成 PCM 采样读进来，听感上是几毫秒的
+//! 爆音，转写结果里可能多出一两个莫名其妙的字。**现在由 `recordings::finalize`
+//! 处理**：片段全是同一格式的 PCM WAV 时，它只取每段的数据区、最后写一个头
+//! （用本模块的 [`probe_pcm`] / [`write_pcm_header`]）；片段不是 WAV（平台层自己
+//! 定的裸 PCM 约定）时退回按字节拼。解码器这边不需要知道是哪种情况。
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crate::error::{CoreError, Result};
@@ -333,6 +334,119 @@ fn bytes_per_sample(format: SampleFormat) -> u64 {
         SampleFormat::Pcm16 => 2,
         SampleFormat::Float32 => 4,
     }
+}
+
+/// 一个片段文件里的 PCM 数据区（不含容器头）。
+///
+/// 录音最终化要把若干个片段拼成一段逻辑音频，而**每个片段都是各自完整的 WAV**
+/// （平台层的编码器在 stop 时回填 RIFF 头）。直接按字节拼会得到
+/// 「头 + 数据 + 头 + 数据」：第二个头会被解码器当成采样读进去，听感上是几毫秒
+/// 的爆音，转写里可能多出一两个字。所以最终化需要知道每段的数据区在哪、多长，
+/// 拼的时候只取数据区，最后自己写**一个**头。
+pub(crate) struct PcmRegion {
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub format: SampleFormat,
+    pub data_offset: u64,
+    pub data_bytes: u64,
+}
+
+impl PcmRegion {
+    pub(crate) fn frame_bytes(&self) -> u64 {
+        u64::from(self.channels) * bytes_per_sample(self.format)
+    }
+
+    /// 数据区对应的时长（毫秒）。按**实际字节数**算，不信片段自报的时长。
+    pub(crate) fn duration_ms(&self) -> i64 {
+        let frames = self.data_bytes / self.frame_bytes().max(1);
+        let ms = u128::from(frames) * 1000 / u128::from(self.sample_rate.max(1));
+        ms.min(i64::MAX as u128) as i64
+    }
+
+    /// 采样格式是否一致——不一致的片段不能拼成同一段音频。
+    pub(crate) fn same_format(&self, other: &Self) -> bool {
+        self.sample_rate == other.sample_rate
+            && self.channels == other.channels
+            && self.format == other.format
+    }
+}
+
+/// 探测一个片段文件的 PCM 数据区。
+///
+/// **不是 RIFF/WAVE 就返回 `Ok(None)`**，不报错：契约允许平台层登记任意容器，
+/// 最终化在那种情况下退回「按字节拼」的老行为（见 `recordings::finalize`）。
+/// 只有「确实是 WAV 但读不出来」才返回错误——那说明片段本身坏了，不能假装能拼。
+pub(crate) fn probe_pcm(path: &Path) -> Result<Option<PcmRegion>> {
+    let mut file = File::open(path).map_err(|error| CoreError::AssetMissing {
+        asset_id: path.to_string_lossy().into_owned(),
+        reason: format!("片段文件打不开：{error}"),
+    })?;
+    let total_len = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let mut magic = [0_u8; 12];
+    if total_len < 12 || read_exact_at(&mut file, &mut magic, 0).is_err() {
+        return Ok(None);
+    }
+    if &magic[0..4] != b"RIFF" || &magic[8..12] != b"WAVE" {
+        return Ok(None);
+    }
+    let label = path.display().to_string();
+    let layout = parse_layout(
+        |offset, buffer| read_exact_at(&mut file, buffer, offset),
+        total_len,
+        &label,
+    )?;
+    Ok(Some(PcmRegion {
+        sample_rate: layout.sample_rate,
+        channels: layout.channels,
+        format: layout.format,
+        data_offset: layout.data_offset,
+        data_bytes: layout.data_bytes,
+    }))
+}
+
+/// 写一个 44 字节的标准 PCM WAV 头（RIFF/WAVE + fmt 16 + data）。
+///
+/// `data_bytes` 是**已经确定**的数据区长度：调用方先把总长度算出来再写头，
+/// 因为流式拼接时不可能回头改头。
+pub(crate) fn write_pcm_header<W: Write>(
+    out: &mut W,
+    region: &PcmRegion,
+    data_bytes: u64,
+) -> Result<()> {
+    let frame_bytes = region.frame_bytes().max(1);
+    let byte_rate = u64::from(region.sample_rate) * frame_bytes;
+    let block_align = u16::try_from(frame_bytes).unwrap_or(u16::MAX);
+    let bits = match region.format {
+        SampleFormat::Pcm16 => 16_u16,
+        SampleFormat::Float32 => 32_u16,
+    };
+    let audio_format = match region.format {
+        SampleFormat::Pcm16 => 1_u16,
+        SampleFormat::Float32 => 3_u16,
+    };
+    // RIFF 的长度字段是 32 位的；超过 4 GiB 的录音在这里截断会让头说谎，
+    // 所以如实报错而不是写一个坏头。
+    let riff_size = data_bytes
+        .checked_add(36)
+        .filter(|size| *size <= u64::from(u32::MAX))
+        .ok_or_else(|| CoreError::ExtractionFailed {
+            reason: format!("录音太长（{data_bytes} 字节数据区），超出 WAV 容器的 4 GiB 上限"),
+        })?;
+    let mut header = Vec::with_capacity(44);
+    header.extend_from_slice(b"RIFF");
+    header.extend_from_slice(&(riff_size as u32).to_le_bytes());
+    header.extend_from_slice(b"WAVEfmt ");
+    header.extend_from_slice(&16_u32.to_le_bytes());
+    header.extend_from_slice(&audio_format.to_le_bytes());
+    header.extend_from_slice(&region.channels.to_le_bytes());
+    header.extend_from_slice(&region.sample_rate.to_le_bytes());
+    header.extend_from_slice(&(byte_rate.min(u64::from(u32::MAX)) as u32).to_le_bytes());
+    header.extend_from_slice(&block_align.to_le_bytes());
+    header.extend_from_slice(&bits.to_le_bytes());
+    header.extend_from_slice(b"data");
+    header.extend_from_slice(&(data_bytes as u32).to_le_bytes());
+    out.write_all(&header)?;
+    Ok(())
 }
 
 fn read_exact_at(file: &mut File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {

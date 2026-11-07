@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 录音：麦克风采集在平台层（record 插件），核心只登记片段。
+         没有这个权限，Android 上按下录音只会立刻失败——不如在安装时就声明。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <application
         android:label="不写日记"
         android:name="${applicationName}"

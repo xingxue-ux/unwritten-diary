@@ -394,6 +394,15 @@ impl BridgeSession {
         Ok(core.recover_recording(recording_id.as_deref())?)
     }
 
+    /// 丢弃一段还没最终化的录音（用户按了录音又放弃）。
+    ///
+    /// 幂等：会话不存在返回成功。已经最终化的会报 `invalid_state`——音频已经
+    /// 挂到记录上，删会话会留下指向空资产的来源。
+    pub fn discard_recording(&self, recording_id: String) -> Result<(), BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.discard_recording(&recording_id)?)
+    }
+
     // ------------------------------------------------------------ 提取与定位
 
     /// 对某个来源（来源 id 或修订 id 都行）跑一次提取。
@@ -1203,6 +1212,7 @@ fn wired_capabilities() -> Vec<String> {
         "recordings.updateState",
         "recordings.finalize",
         "recordings.recover",
+        "recordings.discard",
         "sources.extract",
         "sources.extractedContent",
         "sources.reviseText",

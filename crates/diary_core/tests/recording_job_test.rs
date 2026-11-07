@@ -671,3 +671,150 @@ fn counting_pending_jobs_is_exact_beyond_the_page_limit() {
     // 不带状态筛选时，总数同样精确。
     assert_eq!(core.count_jobs(None).unwrap(), TOTAL as i64);
 }
+
+// ---------------------------------------------------------------- 片段容器
+
+/// 造一个合法的 16 位 PCM WAV：`frames` 个采样帧，值填 `fill`。
+fn wav_of(sample_rate: u32, channels: u16, frames: usize, fill: i16) -> Vec<u8> {
+    let data_bytes = (frames * usize::from(channels) * 2) as u32;
+    let mut wav = Vec::with_capacity(44 + data_bytes as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&channels.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * u32::from(channels) * 2).to_le_bytes());
+    wav.extend_from_slice(&(channels * 2).to_le_bytes());
+    wav.extend_from_slice(&16_u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_bytes.to_le_bytes());
+    for _ in 0..(frames * usize::from(channels)) {
+        wav.extend_from_slice(&fill.to_le_bytes());
+    }
+    wav
+}
+
+/// 每个片段都是各自完整的 WAV 时，最终化必须拼出**一个**合法的 WAV。
+///
+/// 回归：以前是按字节硬拼，结果是「头 + 数据 + 头 + 数据」。第二个头会被解码器
+/// 当成采样读进去——听感上是几毫秒的爆音，转写里可能多出一两个字。这条测试
+/// 同时钉住三件事：只有一个 RIFF 头、数据区是两段之和、时长按实际字节算。
+#[test]
+fn finalize_writes_one_valid_wav_instead_of_concatenating_headers() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let capture_id = draft(&mut core);
+    let ticket = core.prepare_recording(&capture_id, "op-rec").unwrap();
+
+    // 两段各 0.5 秒 / 16 kHz 单声道 16 位 = 8000 帧 = 16000 字节。
+    let first = wav_of(16_000, 1, 8_000, 111);
+    let second = wav_of(16_000, 1, 8_000, 222);
+    add_segment(&mut core, &ticket, 0, &first, 500);
+    add_segment(&mut core, &ticket, 1, &second, 500);
+
+    let result = core
+        .finalize_recording(&ticket.recording_id, 1, "user")
+        .unwrap();
+    assert_eq!(result.state, RecordingState::Saved);
+    assert_eq!(
+        result.logical_duration_ms, 1000,
+        "时长按实际字节算：16000 帧 / 16 kHz = 1000 ms"
+    );
+
+    let lease = core.open_asset(&result.asset_id, "play").unwrap();
+    let bytes = std::fs::read(&lease.handle).unwrap();
+    assert_eq!(&bytes[0..4], b"RIFF", "逻辑音频必须是一个合法的 WAV");
+    assert_eq!(&bytes[8..12], b"WAVE");
+    assert_eq!(
+        bytes.windows(4).filter(|window| *window == b"RIFF").count(),
+        1,
+        "只能有一个 RIFF 头——按字节硬拼会留下第二个"
+    );
+    assert_eq!(
+        bytes.len(),
+        44 + 32_000,
+        "44 字节头 + 两段各 16000 字节数据区（头被剥掉了）"
+    );
+    // 数据区就是两段 PCM 按序接起来：先 111 再 222。
+    assert_eq!(&bytes[44..46], &111_i16.to_le_bytes());
+    assert_eq!(&bytes[44 + 16_000..44 + 16_002], &222_i16.to_le_bytes());
+
+    // 转写链能按窗口读回来：这正是「拼对了」的最终判据。
+    let reader = diary_core::transcription::wav::WavReader::open(
+        std::path::Path::new(&lease.handle),
+    )
+    .unwrap();
+    assert_eq!(reader.sample_rate, 16_000);
+    assert_eq!(reader.channels, 1);
+    assert_eq!(reader.frames(), 16_000);
+    assert_eq!(reader.duration_ms(), 1000);
+}
+
+/// 片段采样格式不一致时**不拼**：明确报错，不产出一段后半截是噪音的音频。
+#[test]
+fn finalize_refuses_to_splice_segments_with_different_sample_formats() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let capture_id = draft(&mut core);
+    let ticket = core.prepare_recording(&capture_id, "op-rec").unwrap();
+
+    add_segment(&mut core, &ticket, 0, &wav_of(16_000, 1, 1_600, 1), 100);
+    add_segment(&mut core, &ticket, 1, &wav_of(48_000, 2, 4_800, 2), 100);
+
+    let error = core
+        .finalize_recording(&ticket.recording_id, 1, "user")
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::IntegrityFailed);
+    assert!(
+        format!("{error}").contains("采样格式"),
+        "错误要说清楚是格式不一致：{error}"
+    );
+}
+
+/// 丢弃：删会话、删暂存目录；已经最终化的拒绝；重复丢弃不报错。
+#[test]
+fn discarding_an_unfinished_recording_cleans_up_and_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let capture_id = draft(&mut core);
+    let ticket = core.prepare_recording(&capture_id, "op-rec").unwrap();
+    add_segment(&mut core, &ticket, 0, b"AAAA", 1000);
+    assert_eq!(core.count_open_recordings().unwrap(), 1);
+
+    core.discard_recording(&ticket.recording_id).unwrap();
+    assert_eq!(
+        core.count_open_recordings().unwrap(),
+        0,
+        "丢弃之后不能再被数成「上次没来得及收尾的录音」"
+    );
+    assert!(
+        !std::path::Path::new(&ticket.staging_ticket).exists(),
+        "暂存目录要跟着删掉，不能留下孤儿片段"
+    );
+    // 幂等：再丢一次不报错。
+    core.discard_recording(&ticket.recording_id).unwrap();
+    // 记录本身不受影响：丢弃的是一段录音，不是那条记录。
+    assert_eq!(core.get_capture(&capture_id).unwrap().revision, 1);
+}
+
+/// 已经最终化的录音不能丢弃：音频已经挂到记录上，删会话会留下指向空资产的来源。
+#[test]
+fn a_finalized_recording_cannot_be_discarded() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let capture_id = draft(&mut core);
+    let ticket = core.prepare_recording(&capture_id, "op-rec").unwrap();
+    add_segment(&mut core, &ticket, 0, &wav_of(16_000, 1, 1_600, 1), 100);
+    let result = core
+        .finalize_recording(&ticket.recording_id, 0, "user")
+        .unwrap();
+
+    let error = core.discard_recording(&ticket.recording_id).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidState);
+    // 资产还在，来源还在。
+    let capture = core.get_capture(&capture_id).unwrap();
+    assert_eq!(capture.ordered_source_ids.len(), 1);
+    assert!(core.open_asset(&result.asset_id, "play").is_ok());
+}
