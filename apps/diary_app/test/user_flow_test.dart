@@ -290,6 +290,22 @@ void main() {
     expect(find.text('已刷新。'), findsOneWidget);
   });
 
+  testWidgets('任务中心读的是真实任务列表，不是示例', (tester) async {
+    final api = _Api();
+    await _boot(tester, api);
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('任务中心'));
+    await tester.tap(find.text('任务中心'));
+    await tester.pumpAndSettle();
+
+    // 示例页会说「示例」；真实页不会。
+    expect(find.textContaining('示例'), findsNothing);
+    // 假 API 没有任务 → 空态文案。
+    expect(find.textContaining('还没有任务'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('搜索：写一条之后能搜到', (tester) async {
     final api = _Api();
     await _boot(tester, api);
