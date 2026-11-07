@@ -103,6 +103,8 @@ pub use provider::local_engine::{
 pub use provider::models::ProviderModelInfo;
 pub use provider::presets::ProviderPreset;
 pub use provider::secret::{FileSecretStore, MemorySecretStore, SecretStore};
+#[cfg(windows)]
+pub use provider::secret::WinCredSecretStore;
 pub use transcription::seam::{
     LocalTranscriptEngine, TranscriptEngine, TranscriptOutcome, TranscriptRequest,
 };
@@ -229,7 +231,8 @@ pub struct Core {
     /// 快速路径保留的候选块数上限（#90）。默认 `FAST_SCAN_DEPTH`；量测与测试可以
     /// 临时改它来扫「深度 vs 延迟」曲线（见 `set_semantic_scan_depth_for_test`）。
     semantic_scan_depth: usize,
-/// 密钥托管。默认实现是资料库目录下权限受限的独立文件；测试与内存库用内存实现。
+    /// 密钥托管。Windows 文件库优先系统凭据管理器，其他平台文件库用受限权限的
+    /// 独立文件；测试与内存库用内存实现。
     /// **明文只在这一层**，`providers` 表里只有引用（见 `provider::secret`）。
     secrets: Box<dyn provider::secret::SecretStore>,
     /// 出站请求的唯一出口。默认：文件库用真实 HTTP（ureq + rustls），
@@ -399,12 +402,11 @@ impl Core {
         // 收拾上次没走完的导入与录音：都如实标成「没完成」，不假装成功。
         assets::recover_on_open(&conn)?;
         recordings::recover_on_open(&conn)?;
-        // 密钥托管：文件库落在资料库目录下的 `secrets/`（与库文件分开），
-        // 内存库（只用于测试）只在内存里。传输层由调用方给（见 `prepare` 的三个调用点）。
-        let secrets: Box<dyn provider::secret::SecretStore> = match &root {
-            Some(dir) => Box::new(provider::secret::FileSecretStore::beside_library(dir)),
-            None => Box::new(provider::secret::MemorySecretStore::new()),
-        };
+        // 密钥托管：Windows 文件库优先系统凭据管理器（不可用时由
+        // `WinCredSecretStore` 自己退回资料库目录下的 `secrets/`），其他平台文件库
+        // 用受限权限的独立文件；内存库（只用于测试）只在内存里。传输层由调用方给
+        // （见 `prepare` 的三个调用点）。
+        let secrets = provider::secret::for_library(root.as_deref());
         // 历史包袱一次性清账：以前因为没有执行者而进「已放弃 + no_handler」的旧任务，
         // 现在有执行者的放回队列（判据自带幂等，见 `jobs::requeue_legacy_no_handler`）。
         jobs::requeue_legacy_no_handler(&mut conn, support::now())?;
