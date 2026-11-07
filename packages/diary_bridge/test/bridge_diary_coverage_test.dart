@@ -282,6 +282,8 @@ void main() {
       'indexes.status',
       'indexes.rebuild',
       'jobs.acknowledgeAttention',
+      'settings.get',
+      'settings.update',
     ]) {
       expect(capabilities, contains(capability), reason: capability);
     }
@@ -292,7 +294,6 @@ void main() {
       'backups.restore',
       'core.setRuntimeState',
       'captures.trash',
-      'settings.get',
       'plugins.invoke',
     ]) {
       expect(capabilities, isNot(contains(capability)), reason: capability);
