@@ -627,6 +627,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProviderTestStatus dco_decode_provider_test_status(dynamic raw);
 
   @protected
+  PurgePreview dco_decode_purge_preview(dynamic raw);
+
+  @protected
+  PurgeResult dco_decode_purge_result(dynamic raw);
+
+  @protected
   (ProviderCapability, ProviderTestStatus)
   dco_decode_record_provider_capability_provider_test_status(dynamic raw);
 
@@ -1462,6 +1468,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProviderTestStatus sse_decode_provider_test_status(
     SseDeserializer deserializer,
   );
+
+  @protected
+  PurgePreview sse_decode_purge_preview(SseDeserializer deserializer);
+
+  @protected
+  PurgeResult sse_decode_purge_result(SseDeserializer deserializer);
 
   @protected
   (ProviderCapability, ProviderTestStatus)
@@ -2540,6 +2552,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     ProviderTestStatus self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_purge_preview(PurgePreview self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_purge_result(PurgeResult self, SseSerializer serializer);
 
   @protected
   void sse_encode_record_provider_capability_provider_test_status(

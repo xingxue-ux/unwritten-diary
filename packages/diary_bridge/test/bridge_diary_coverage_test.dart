@@ -234,33 +234,26 @@ void main() {
   });
 
   test('noSuchMethod 的消息列出仍未实现的方法，不再说过时的「只有记录路径」', () {
+    // 只剩两条没接：`plugins.invoke`（契约要 jobId，核心同步返回）与
+    // `core.setRuntimeState`（核心没有资源调度入口）。
     expect(
-      () => api.moveDay(
-        id: 'cap_x',
-        targetDayKey: '2026-11-07',
-        expectedRevision: 1,
-      ),
+      () => api.invokePlugin(pluginId: 'p', command: 'c'),
       throwsA(
         isA<UnsupportedError>()
             .having(
               (error) => error.message,
               'message',
-              contains('moveDay'),
-            )
-            .having(
-              (error) => error.message,
-              'message',
-              contains('plugins.invoke'),
-            )
-            .having(
-              (error) => error.message,
-              'message',
-              contains('backups.create'),
+              contains('invokePlugin'),
             )
             .having(
               (error) => error.message,
               'message',
               contains('setRuntimeState'),
+            )
+            .having(
+              (error) => error.message,
+              'message',
+              isNot(contains('backups.create')),
             )
             .having(
               (error) => error.message,
@@ -284,16 +277,20 @@ void main() {
       'jobs.acknowledgeAttention',
       'settings.get',
       'settings.update',
+      'captures.moveDay',
+      'captures.trash',
+      'captures.restore',
+      'captures.previewPurge',
+      'captures.purge',
+      'backups.create',
+      'backups.inspect',
+      'backups.restore',
     ]) {
       expect(capabilities, contains(capability), reason: capability);
     }
     for (final capability in [
       // 契约收 PlatformHost 票据，票据解析未实现；只有路径专用入口，故不宣告。
-      'backups.create',
-      'backups.inspect',
-      'backups.restore',
       'core.setRuntimeState',
-      'captures.trash',
       'plugins.invoke',
     ]) {
       expect(capabilities, isNot(contains(capability)), reason: capability);

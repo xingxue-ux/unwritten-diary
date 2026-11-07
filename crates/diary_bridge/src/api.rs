@@ -21,6 +21,7 @@ AiResponse, AssetLease, BackupInspection, BackupReport, Capture, CapturePage, Co
     JobRunSummary, JobState, JobStatus, NativeRecordingStatus, OrganizeSettings, OrganizeStatus,
     OrganizeTemplate, PluginInspection, PluginInstallation, PluginInvocation, PluginRunResult,
     PluginTemplate, Provider, ProviderCapability, ProviderModelInfo, ProviderTestReport,
+    PurgePreview, PurgeResult,
     RecordingFinalizeResult,
     RecordingRecovery,
     RecordingSession, RecordingTicket, ResponseTicket, RestoreReport, SearchRequest,
@@ -948,6 +949,62 @@ impl BridgeSession {
         Ok(core.organize_templates())
     }
 
+    /// 调整记录所属日期，契约 `captures.moveDay`。
+    pub fn move_day(
+        &self,
+        capture_id: String,
+        target_day_key: String,
+        expected_revision: i64,
+    ) -> Result<Capture, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.move_day(&capture_id, &target_day_key, expected_revision)?)
+    }
+
+    /// 移入回收站，契约 `captures.trash`。
+    pub fn trash_capture(
+        &self,
+        capture_id: String,
+        expected_revision: i64,
+        operation_id: String,
+    ) -> Result<Capture, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.trash_capture(&capture_id, expected_revision, &operation_id)?)
+    }
+
+    /// 从回收站恢复，契约 `captures.restore`。
+    pub fn restore_capture(
+        &self,
+        capture_id: String,
+        expected_revision: i64,
+        operation_id: String,
+    ) -> Result<Capture, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.restore_capture(&capture_id, expected_revision, &operation_id)?)
+    }
+
+    /// 预览永久清理的影响，契约 `captures.previewPurge`。
+    pub fn preview_purge(&self, capture_id: String) -> Result<PurgePreview, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.preview_purge(&capture_id)?)
+    }
+
+    /// 永久清理，契约 `captures.purge`。必须带 `previewPurge` 的令牌。
+    pub fn purge_capture(
+        &self,
+        capture_id: String,
+        preview_token: String,
+        delete_diary_versions: bool,
+        operation_id: String,
+    ) -> Result<PurgeResult, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.purge_capture(
+            &capture_id,
+            &preview_token,
+            delete_diary_versions,
+            &operation_id,
+        )?)
+    }
+
     /// 完整设置（契约 `settings.get`）：日记时区、自动整理开关与时间、**默认风格**。
     ///
     /// 之前这里只有「整理那一段」（`organize_settings`），于是界面**读不到也设不了
@@ -1131,6 +1188,12 @@ fn wired_capabilities() -> Vec<String> {
         "captures.commit",
         "captures.get",
         "captures.list",
+        // 回收站五条：核心 `recycle` 模块早就实现，桥这一层之前没接，界面就删不掉记录。
+        "captures.moveDay",
+        "captures.trash",
+        "captures.restore",
+        "captures.previewPurge",
+        "captures.purge",
         "imports.prepare",
         "imports.finish",
         "imports.status",
