@@ -11,7 +11,8 @@ class MockDiaryApi
         DiaryApi,
         OrganizeSchedulePort,
         ProviderCredentialPort,
-        ProviderModelPort {
+        ProviderModelPort,
+        ProviderSelectionPort {
   MockDiaryApi({
     DateTime Function()? clock,
     this.timeZone = 'Asia/Shanghai',
@@ -258,11 +259,45 @@ class MockDiaryApi
   /// 记录写过的密钥引用，供测试断言「密钥只经一次调用、配置里只留引用」。
   final Map<String, String> providerSecrets = {};
 
+  /// 假服务配置。默认空；测试按需塞，`selectGenerationProvider` 会就地改 `enabled`。
+  List<api.Provider> providerRows = const [];
+
+  @override
+  Future<List<api.Provider>> listProviders() async => List.of(providerRows);
+
   /// 假模型列表：够测试断言「下拉里出现这些名字」。
   List<api.ProviderModel> providerModels = const [
     api.ProviderModel(id: 'mock-model-a'),
     api.ProviderModel(id: 'mock-model-b'),
   ];
+
+  /// 假实现也遵守「单选」语义：选中的启用，其余能生成文字的在线服务停用。
+  @override
+  Future<api.Provider> selectGenerationProvider({
+    required String providerId,
+  }) async {
+    final target = providerRows.where((item) => item.id == providerId).firstOrNull;
+    if (target == null) {
+      throw const DiaryException(
+        code: DiaryErrorCode.notFound,
+        message: '找不到这个服务。',
+      );
+    }
+    if (!target.capabilities.contains(api.ProviderCapability.generateText)) {
+      throw const DiaryException(
+        code: DiaryErrorCode.invalidArgument,
+        message: '请选择在线整理服务',
+      );
+    }
+    providerRows = [
+      for (final item in providerRows)
+        if (!item.capabilities.contains(api.ProviderCapability.generateText))
+          item
+        else
+          item.copyWith(enabled: item.id == providerId),
+    ];
+    return providerRows.firstWhere((item) => item.id == providerId);
+  }
 
   @override
   Future<List<api.ProviderModel>> listProviderModels({

@@ -10,6 +10,7 @@ export 'src/diary_api.dart';
 export 'src/organize_port.dart';
 export 'src/provider_credential_port.dart';
 export 'src/provider_model_port.dart';
+export 'src/provider_selection_port.dart';
 export 'src/events.dart';
 export 'src/models_content.dart';
 export 'src/models_diary.dart';

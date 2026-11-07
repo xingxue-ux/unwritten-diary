@@ -701,6 +701,22 @@ impl BridgeSession {
         Ok(core.list_provider_models(&provider_id)?)
     }
 
+    /// 选择「用哪个服务整理日记」，契约 `providers.selectGeneration`。
+    ///
+    /// 核心的语义是**单选**：选中的那条启用，其余能承担 `generate_text` 的在线服务
+    /// 一并停用。这样「生成闸门」只会挑到用户指定的那一个——不用在每一处调用点
+    /// 各记一份「用户想用哪个」。
+    ///
+    /// 只接受 HTTP 适配器且声明了 `generate_text` 的服务；本机引擎不做文本生成，
+    /// 传它会得到 `invalid_argument`。
+    pub fn select_generation_provider(
+        &self,
+        provider_id: String,
+    ) -> Result<Provider, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.select_generation_provider(&provider_id)?)
+    }
+
     /// 保存服务配置，契约 `providers.save`。
     ///
     /// `secret` 是明文密钥，**只在这一次调用里经过桥**：核心把它写进密钥托管后只留

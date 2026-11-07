@@ -1127,6 +1127,25 @@ void main() {
     expect(field.controller!.text, '今天风很大，把伞吹翻了');
   });
 
+  testWidgets('配了多个服务时，能指定用哪个整理', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('diary-ui');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+
+    final api = _ProviderUiApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('模型服务'));
+    await tester.tap(find.text('模型服务'));
+    await tester.pumpAndSettle();
+
+    // 假服务是 enabled 的，所以按钮显示「正在用于整理」。
+    await tester.ensureVisible(find.text('正在用于整理'));
+    expect(find.text('正在用于整理'), findsOneWidget);
+  });
+
   testWidgets('点「编辑」不会崩，表单填回那一条服务', (tester) async {
     final dir = Directory.systemTemp.createTempSync('diary-ui');
     addTearDown(() => dir.deleteSync(recursive: true));
@@ -1373,6 +1392,7 @@ void main() {
 class _ProviderUiApi extends MockDiaryApi {
   int modelCalls = 0;
   int testCalls = 0;
+  String? selected;
 
   @override
   Future<List<Provider>> listProviders() async => const [
@@ -1406,6 +1426,24 @@ class _ProviderUiApi extends MockDiaryApi {
     timeZone: 'Asia/Shanghai',
     updatedAt: DateTime.utc(2026, 11, 5),
   );
+
+  @override
+  Future<Provider> selectGenerationProvider({
+    required String providerId,
+  }) async {
+    selected = providerId;
+    return const Provider(
+      id: 'prv_deepseek',
+      label: 'DeepSeek',
+      adapterId: 'openai_compatible',
+      capabilities: {ProviderCapability.generateText},
+      enabled: true,
+      endpoint: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+      credentialRef: 'secret-1',
+      testStatus: ProviderTestStatus.ok,
+    );
+  }
 
   @override
   Future<Provider> saveProvider(Provider provider) async => provider;
