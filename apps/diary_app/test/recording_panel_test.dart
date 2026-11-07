@@ -1,4 +1,3 @@
-import 'package:diary_api/diary_api.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:unwritten_diary/src/recording/recording_controller.dart';

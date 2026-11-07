@@ -158,7 +158,7 @@ class FakeRecordingApi extends MockDiaryApi {
       );
     }
     this.lastSegmentIndex = lastSegmentIndex;
-    this.lastEndReason = endReason;
+    lastEndReason = endReason;
     sourceIds.add('src-audio');
     return RecordingFinalizeResult(
       recordingId: recordingId,

@@ -34,9 +34,7 @@ void main() {
 
     // 登记的字节数与哈希来自真实文件，不是编的。
     final segment = api.segments.single;
-    final file = File(
-      '${engine.started.single}',
-    );
+    final file = File(engine.started.single);
     expect(segment.byteSize, file.lengthSync());
     expect(segment.sha256, hasLength(64));
     expect(segment.relativeFileName, endsWith('.wav'));
