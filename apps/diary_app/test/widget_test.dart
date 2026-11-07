@@ -1214,7 +1214,9 @@ void main() {
 
     await tester.ensureVisible(find.text('用它整理').first);
     await tester.tap(find.text('用它整理').first);
-    await tester.pumpAndSettle();
+    // 点下去会出现转圈（无限动画），不能用 pumpAndSettle。
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('正在用于整理'), findsOneWidget);
     expect(find.text('用它整理'), findsOneWidget);
   });

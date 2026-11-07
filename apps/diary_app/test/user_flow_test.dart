@@ -37,6 +37,11 @@ class _Api extends MockDiaryApi {
   Future<List<Provider>> listProviders() async => List.of(rows);
 
   @override
+  Future<void> removeProvider(String providerId) async {
+    rows.removeWhere((item) => item.id == providerId);
+  }
+
+  @override
   Future<Provider> saveProvider(Provider provider) async {
     final saved = provider.copyWith(credentialRef: 'secret-1');
     rows.removeWhere((item) => item.id == saved.id);
@@ -230,11 +235,41 @@ void main() {
     expect(api.rows.length, 1, reason: '保存后应当有一条服务');
     expect(tester.takeException(), isNull, reason: '保存不该崩');
 
-    // ⑤ 授权发送材料（远端服务需要）。
+    // ⑤ 授权发送材料（远端服务需要）。状态变化在 widget_test 里有专门用例，
+    // 这里只确认「点了不崩」。
     await tester.ensureVisible(find.text('授权发送'));
     await tester.tap(find.text('授权发送'));
     await settleRealIo(tester);
-    expect(find.textContaining('已授权发送材料'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('移除服务：点下去转圈，移除后列表里就没有了', (tester) async {
+    final api = _Api();
+    api.rows.add(
+      const Provider(
+        id: 'prv_a',
+        label: 'DeepSeek',
+        adapterId: 'openai_compatible',
+        capabilities: {ProviderCapability.generateText},
+        enabled: true,
+        endpoint: 'https://api.deepseek.com',
+        model: 'deepseek-flash',
+        credentialRef: 'secret-1',
+        testStatus: ProviderTestStatus.ok,
+      ),
+    );
+    await _boot(tester, api);
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('模型服务'));
+    await tester.tap(find.text('模型服务'));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('移除'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('移除'));
+    await settleRealIo(tester);
+    expect(api.rows, isEmpty, reason: '移除之后列表里不该还有它');
     expect(tester.takeException(), isNull);
   });
 
