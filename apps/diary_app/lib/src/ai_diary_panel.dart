@@ -33,6 +33,11 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
   /// 用户已经授权过「把材料发送到这个服务」的 id 集合。
   /// 授权在「模型服务」里做一次，之后不再反复问。
   Set<String> _consented = const {};
+
+  /// 「刷新状态」正在跑。没有这个标记时，点下去界面**什么都不变**，
+  /// 用户会以为按钮坏了（真机反馈就是「刷新状态点不动」）。
+  bool _refreshing = false;
+  String? _refreshError;
   String? _setupError;
 
   static String _key(DateTime day) =>
@@ -119,6 +124,21 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
       return '这个服务没填地址，去「模型服务」看一下。';
     }
     return '由本机服务处理：$destination。';
+  }
+
+  /// 刷新状态。**要有反馈**：按钮立刻变成「刷新中…」，跑完再变回来。
+  Future<void> _refresh(AiDiaryController controller) async {
+    if (_refreshing) return;
+    setState(() => _refreshing = true);
+    try {
+      await controller.refresh();
+    } on Object catch (failure) {
+      // `refresh()` 自己会处理 DiaryException；这里兜住别的类型，
+      // 否则异常会变成 unhandled async error，界面上什么都不会发生。
+      if (mounted) setState(() => _refreshError = '$failure');
+    } finally {
+      if (mounted) setState(() => _refreshing = false);
+    }
   }
 
   Future<void> _generate(
@@ -237,15 +257,21 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
                   : null,
             ),
             SketchAction(
-              label: '刷新状态',
+              label: _refreshing ? '刷新中…' : '刷新状态',
               icon: Icons.refresh,
-              onPressed: () => unawaited(controller.refresh()),
+              onPressed: _refreshing
+                  ? null
+                  : () => unawaited(_refresh(controller)),
             ),
           ],
         ),
         if (controller.error != null) ...[
           const SizedBox(height: 14),
           _notice(controller.error!),
+        ],
+        if (_refreshError != null) ...[
+          const SizedBox(height: 14),
+          _notice('刷新没完成：$_refreshError'),
         ],
         if (job != null) ...[
           const SizedBox(height: 22),
