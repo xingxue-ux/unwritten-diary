@@ -481,6 +481,10 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       _say('之后整理日记都用「${provider.label}」。');
     } on DiaryException catch (failure) {
       _say(failure.message, error: true);
+    } on Object catch (failure) {
+      // 只接 `DiaryException` 是不够的：桥层崩了、平台通道断了，都会是别的类型，
+      // 那样异常会直接冒到 widget 层变成红屏。这里兜住，至少让用户看到一句话。
+      _say('移除没完成。', detail: '$failure', error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
