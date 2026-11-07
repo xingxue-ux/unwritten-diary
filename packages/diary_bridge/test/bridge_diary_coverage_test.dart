@@ -235,13 +235,17 @@ void main() {
 
   test('noSuchMethod 的消息列出仍未实现的方法，不再说过时的「只有记录路径」', () {
     expect(
-      () => api.getSettings(),
+      () => api.moveDay(
+        id: 'cap_x',
+        targetDayKey: '2026-11-07',
+        expectedRevision: 1,
+      ),
       throwsA(
         isA<UnsupportedError>()
             .having(
               (error) => error.message,
               'message',
-              contains('getSettings'),
+              contains('moveDay'),
             )
             .having(
               (error) => error.message,
