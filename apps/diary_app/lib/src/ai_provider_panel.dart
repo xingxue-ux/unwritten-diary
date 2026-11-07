@@ -98,6 +98,10 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
 
   /// 表单里那个「我同意把材料发送到这个服务」的勾。
   bool _consentChecked = false;
+
+  /// 正在对某个服务做「授权 / 撤销 / 移除」。按 id 记，只让那一条转圈，
+  /// 不要把整页的按钮都禁掉。
+  final Set<String> _pending = {};
   /// 当前选中的预填项；改已有服务时为 null（那套值不是任何预填）。
   String? _fill = 'deepseek';
   bool _busy = false;
@@ -174,9 +178,15 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     setState(() => _notes[providerId] = _Note(text, error: error, detail: detail));
   }
 
+  /// 缓存的 support 目录。点按钮时**不再等平台通道**——那一步在测试里会卡住，
+  /// 真机上也会让按钮先转半秒才动。
+  Directory? _supportDirectory;
+
   Future<ProviderConsent?> _makeConsent() async {
     try {
-      final directory = await getApplicationSupportDirectory();
+      final directory =
+          _supportDirectory ?? await getApplicationSupportDirectory();
+      _supportDirectory = directory;
       return ProviderConsent(
         File(path.join(directory.path, 'provider-consent.json')),
       );
@@ -187,14 +197,14 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
 
   Future<void> _loadConsent() async {
     try {
+      _supportDirectory = await getApplicationSupportDirectory();
       final consent = await _makeConsent();
       if (consent == null) return;
+      // **先记住 consent 对象**：授权按钮立刻可用，不用等读文件。
+      if (mounted) setState(() => _consent = consent);
       final granted = await consent.load();
       if (!mounted) return;
-      setState(() {
-        _consent = consent;
-        _consented = granted;
-      });
+      setState(() => _consented = granted);
     } on Object {
       // 读不到授权文件不影响配置服务本身；日记页会再问一次。
     }
@@ -523,28 +533,41 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
       // 那样异常会直接冒到 widget 层变成红屏。这里兜住，至少让用户看到一句话。
       _say('移除没完成。', detail: '$failure', error: true);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _pending.remove(provider.id));
     }
   }
 
+  /// 授权 / 撤销授权。
+  ///
+  /// **不等 I/O**：界面立刻变，写盘在后台跑。授权是本地小文件，失败概率极低；
+  /// 真失败了再报错并回滚。这样按钮不会「转半天没反应」。
   Future<void> _toggleConsent(Provider provider) async {
-    final consent = _consent ?? await _makeConsent();
-    if (consent == null) return;
-    _consent = consent;
-    final wasGranted = _consented.contains(provider.id);
-    if (wasGranted) {
-      await consent.revoke(provider.id);
-    } else {
-      await consent.grant(provider.id);
+    final consent = _consent;
+    if (consent == null) {
+      _say('授权状态还没读出来，稍后再试。', error: true);
+      return;
     }
-    if (!mounted) return;
-    // 本地直接改，不再回读文件：这一步只是把刚写下去的结果反映到界面，
-    // 多一次磁盘读只会让按钮看起来「点了没反应」。
+    final wasGranted = _consented.contains(provider.id);
     setState(() {
       _consented = wasGranted
           ? ({..._consented}..remove(provider.id))
           : {..._consented, provider.id};
     });
+    try {
+      if (wasGranted) {
+        await consent.revoke(provider.id);
+      } else {
+        await consent.grant(provider.id);
+      }
+    } on Object catch (failure) {
+      if (!mounted) return;
+      setState(() {
+        _consented = wasGranted
+            ? {..._consented, provider.id}
+            : ({..._consented}..remove(provider.id));
+      });
+      _say('授权没保存。', detail: '$failure', error: true);
+    }
   }
 
   /// 把某个已有服务填回「添加服务」表单，改完保存是**更新那一条**，不会多出一条。
@@ -604,8 +627,8 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
   }
 
   Future<void> _remove(Provider provider) async {
-    if (_busy) return;
-    setState(() => _busy = true);
+    if (_busy || _pending.contains(provider.id)) return;
+    setState(() => _pending.add(provider.id));
     try {
       await widget.api.removeProvider(provider.id);
       await _reload();
@@ -699,7 +722,11 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                             ? '正在用于整理'
                             : '用它整理',
                         filled: _selectedId == provider.id,
-                        onPressed: _busy || _selectedId == provider.id
+                        busy: _pending.contains(provider.id),
+                        onPressed:
+                            _busy ||
+                                _pending.contains(provider.id) ||
+                                _selectedId == provider.id
                             ? null
                             : () => unawaited(_selectForOrganize(provider)),
                       ),
@@ -723,7 +750,8 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                       ),
                     SketchAction(
                       label: '移除',
-                      onPressed: _busy
+                      busy: _pending.contains(provider.id),
+                      onPressed: _busy || _pending.contains(provider.id)
                           ? null
                           : () => unawaited(_remove(provider)),
                     ),
@@ -853,9 +881,8 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
               ],
               const SizedBox(height: 12),
               SketchAction(
-                label: _busy
-                    ? '处理中…'
-                    : (_editingId == null ? '保存服务' : '更新这个服务'),
+                label: _editingId == null ? '保存服务' : '更新这个服务',
+                busy: _busy,
                 onPressed: _busy ? null : () => unawaited(_save()),
               ),
               // 表单自己的提示留在这张卡片里：它说的是「这次填写」，不是整页。
