@@ -158,6 +158,8 @@ class BridgeDiaryApi
     'diary.setCurrent',
     'diary.merge',
     'diary.listDays',
+    'settings.get',
+    'settings.update',
     'styles.list',
     'styles.get',
     'styles.save',
@@ -961,6 +963,28 @@ class BridgeDiaryApi
   // ------------------------------------------------------------ 风格（#114）
 
   @override
+  Future<api.Settings> getSettings() async {
+    final session = _open;
+    final value = await _translate(() => session.getSettings());
+    return _settings(value);
+  }
+
+  @override
+  Future<api.Settings> updateSettings({
+    required api.Settings settings,
+    required int expectedRevision,
+  }) async {
+    final session = _open;
+    final value = await _translate(
+      () => session.updateSettings(
+        settings: _bridgeSettings(settings),
+        expectedRevision: expectedRevision,
+      ),
+    );
+    return _settings(value);
+  }
+
+  @override
   Future<List<api.StyleProfile>> listStyles() async {
     final styles = await _translate(() => _open.listStyles());
     return styles.map(_styleProfile).toList(growable: false);
@@ -1658,6 +1682,25 @@ class BridgeDiaryApi
       captureCount: info.captureCount.toInt(),
     );
   }
+
+  /// 契约 `Settings` ↔ 桥 `Settings`。字段名一致，只做搬运。
+  api.Settings _settings(bridge.Settings value) => api.Settings(
+    diaryTimeZone: value.diaryTimeZone,
+    revision: value.revision,
+    updatedAt: value.updatedAt,
+    autoOrganizeEnabled: value.autoOrganizeEnabled,
+    autoOrganizeTime: value.autoOrganizeTime,
+    defaultStyleId: value.defaultStyleId,
+  );
+
+  bridge.Settings _bridgeSettings(api.Settings value) => bridge.Settings(
+    diaryTimeZone: value.diaryTimeZone,
+    revision: value.revision,
+    updatedAt: value.updatedAt,
+    autoOrganizeEnabled: value.autoOrganizeEnabled,
+    autoOrganizeTime: value.autoOrganizeTime,
+    defaultStyleId: value.defaultStyleId,
+  );
 
   api.Provider _provider(bridge.Provider value) => api.Provider(
     id: value.id,

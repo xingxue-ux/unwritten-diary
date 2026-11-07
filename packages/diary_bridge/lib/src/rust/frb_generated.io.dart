@@ -187,6 +187,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SegmentManifest dco_decode_box_autoadd_segment_manifest(dynamic raw);
 
   @protected
+  Settings dco_decode_box_autoadd_settings(dynamic raw);
+
+  @protected
   SourceLocator dco_decode_box_autoadd_source_locator(dynamic raw);
 
   @protected
@@ -677,6 +680,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SegmentReceipt dco_decode_segment_receipt(dynamic raw);
 
   @protected
+  Settings dco_decode_settings(dynamic raw);
+
+  @protected
   SourceKind dco_decode_source_kind(dynamic raw);
 
   @protected
@@ -910,6 +916,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SegmentManifest sse_decode_box_autoadd_segment_manifest(
     SseDeserializer deserializer,
   );
+
+  @protected
+  Settings sse_decode_box_autoadd_settings(SseDeserializer deserializer);
 
   @protected
   SourceLocator sse_decode_box_autoadd_source_locator(
@@ -1514,6 +1523,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SegmentReceipt sse_decode_segment_receipt(SseDeserializer deserializer);
 
   @protected
+  Settings sse_decode_settings(SseDeserializer deserializer);
+
+  @protected
   SourceKind sse_decode_source_kind(SseDeserializer deserializer);
 
   @protected
@@ -1809,6 +1821,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     SegmentManifest self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_box_autoadd_settings(Settings self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_source_locator(
@@ -2613,6 +2628,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     SegmentReceipt self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_settings(Settings self, SseSerializer serializer);
 
   @protected
   void sse_encode_source_kind(SourceKind self, SseSerializer serializer);

@@ -24,8 +24,8 @@ AiResponse, AssetLease, BackupInspection, BackupReport, Capture, CapturePage, Co
     RecordingFinalizeResult,
     RecordingRecovery,
     RecordingSession, RecordingTicket, ResponseTicket, RestoreReport, SearchRequest,
-    SearchSnapshot, SegmentManifest, SegmentReceipt, SourceLocation, SourceLocator, SourceRevision,
-    StyleProfile,
+    SearchSnapshot, SegmentManifest, SegmentReceipt, Settings, SourceLocation, SourceLocator,
+    SourceRevision, StyleProfile,
 };
 use flutter_rust_bridge::frb;
 
@@ -946,6 +946,28 @@ impl BridgeSession {
     pub fn organize_templates(&self) -> Result<Vec<OrganizeTemplate>, BridgeError> {
         let core = self.lock()?;
         Ok(core.organize_templates())
+    }
+
+    /// 完整设置（契约 `settings.get`）：日记时区、自动整理开关与时间、**默认风格**。
+    ///
+    /// 之前这里只有「整理那一段」（`organize_settings`），于是界面**读不到也设不了
+    /// `defaultStyleId`**——用户配好风格却选不中，整理时用的是「没有风格」。
+    pub fn get_settings(&self) -> Result<Settings, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.get_settings()?)
+    }
+
+    /// 更新完整设置（契约 `settings.update`）：整份替换 + `expectedRevision`。
+    ///
+    /// 与 `update_organize_settings` 同一个口径：校验先行、被拒零改动、
+    /// 值没变就是无操作。
+    pub fn update_settings(
+        &self,
+        settings: Settings,
+        expected_revision: i64,
+    ) -> Result<Settings, BridgeError> {
+        let mut core = self.lock()?;
+        Ok(core.update_settings(&settings, expected_revision)?)
     }
 
     /// 整理设置：开关（**默认关**）、模板与参数、各项上限与计划触发时间。
