@@ -244,6 +244,13 @@ pub enum CoreError {
     #[error("库里的数据不合法：{message}")]
     CorruptedData { message: String },
 
+    /// 系统凭据接口失败（Windows Credential Manager 等）。
+    ///
+    /// 消息里只有操作与系统错误码，**不含密钥明文**。映射到 `invalid_state`：
+    /// 不是输入写错了，而是当前环境里这个后端用不了；调用方可以退回文件存储。
+    #[error("系统凭据接口失败：{reason}")]
+    SecretStoreUnavailable { reason: String },
+
     #[error("数据库错误：{0}")]
     Database(#[from] rusqlite::Error),
 
@@ -292,7 +299,9 @@ impl CoreError {
             Self::PluginBudgetExceeded { .. } => ErrorCode::QuotaExceeded,
             Self::PluginFailed { .. } => ErrorCode::InvalidState,
             Self::Io(err) => io_code(err),
-            Self::CorruptedData { .. } | Self::Serialization(_) => ErrorCode::InvalidState,
+            Self::CorruptedData { .. }
+            | Self::SecretStoreUnavailable { .. }
+            | Self::Serialization(_) => ErrorCode::InvalidState,
             Self::Database(err) => database_code(err),
         }
     }

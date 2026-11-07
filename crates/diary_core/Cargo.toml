@@ -45,6 +45,12 @@ wasmi = { version = "2.0.0", default-features = false, features = ["std", "valid
 # `#[ignore]` 的手动量测）。许可证：libloading 是 ISC（宽松，随包无附加义务）。
 libloading = "0.9"
 
+# Windows 系统凭据（Credential Manager）：`CredWriteW` / `CredReadW` / `CredDeleteW`
+# 在 `Win32_Security_Credentials`，`GetLastError` 在 `Win32_Foundation`。
+# 只在 Windows 上编译/链接，Linux CI 不引入这个依赖。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Security_Credentials", "Win32_Foundation"] }
+
 [features]
 # AI 质量集的**判定器**（issue #93，B4b-ai-quality）。默认不开：判定器不是产品代码，
 # 产品路径一个字节都不该为它变大。由 `tools/probe` 与下面的 `[[test]]` 显式打开。
