@@ -1127,6 +1127,73 @@ void main() {
     expect(field.controller!.text, '今天风很大，把伞吹翻了');
   });
 
+  testWidgets('同一个表单里点两次「保存服务」不会多出一条', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('diary-ui');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+
+    final api = _SavingApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('模型服务'));
+    await tester.tap(find.text('模型服务'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.widgetWithText(TextField, 'API Key'), 'sk-test');
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('保存服务'));
+    await tester.tap(find.text('保存服务'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('保存服务'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存服务'));
+    await tester.pumpAndSettle();
+    expect(api.savedIds.length, 2, reason: '两次都该真的保存');
+    expect(
+      api.savedIds.toSet().length,
+      1,
+      reason: '同一个表单连点两次应当更新同一条，而不是建两条',
+    );
+  });
+
+  testWidgets('改了字段再保存，算另一条配置', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('diary-ui');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+
+    final api = _SavingApi();
+    await tester.pumpWidget(DiaryApp(api: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('模型服务'));
+    await tester.tap(find.text('模型服务'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.widgetWithText(TextField, 'API Key'), 'sk-test');
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('保存服务'));
+    await tester.tap(find.text('保存服务'));
+    await tester.pumpAndSettle();
+
+    // 改名字 = 另一条配置（用户可能就是想给同一个服务起两个名字）。
+    await tester.enterText(find.widgetWithText(TextField, '名称'), 'DeepSeek1');
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('保存服务'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存服务'));
+    await tester.pumpAndSettle();
+
+    expect(api.savedIds.length, 2, reason: '两次都该真的保存');
+    expect(
+      api.savedIds.toSet().length,
+      2,
+      reason: '改了字段就该新建一条，不能覆盖上一条',
+    );
+  });
+
   testWidgets('两个服务都启用时，两个都显示「用它整理」而不是都「正在用于整理」', (tester) async {
     final dir = Directory.systemTemp.createTempSync('diary-ui');
     addTearDown(() => dir.deleteSync(recursive: true));
@@ -1547,3 +1614,20 @@ class _TwoEnabledApi extends _ProviderUiApi {
   }
 }
 
+/// 记录每次保存用的 id，用来判断「更新」还是「新建」。
+class _SavingApi extends _ProviderUiApi {
+  final List<String> savedIds = [];
+  final List<Provider> rows = [];
+
+  @override
+  Future<List<Provider>> listProviders() async => List.of(rows);
+
+  @override
+  Future<Provider> saveProvider(Provider provider) async {
+    savedIds.add(provider.id);
+    final saved = provider.copyWith(credentialRef: 'secret-x');
+    rows.removeWhere((item) => item.id == saved.id);
+    rows.add(saved);
+    return saved;
+  }
+}
