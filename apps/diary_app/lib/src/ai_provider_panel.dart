@@ -705,6 +705,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                       ),
                     SketchAction(
                       label: '测试连接',
+                      busy: _busy,
                       onPressed: _busy ? null : () => unawaited(_test(provider)),
                     ),
                     SketchAction(
@@ -790,12 +791,14 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                 children: [
                   SketchAction(
                     label: '获取模型列表',
+                    busy: _busy,
                     onPressed: _busy
                         ? null
                         : () => unawaited(_loadModelsForForm()),
                   ),
                   SketchAction(
                     label: '测试连接',
+                    busy: _busy,
                     onPressed: _busy ? null : () => unawaited(_testForm()),
                   ),
                 ],

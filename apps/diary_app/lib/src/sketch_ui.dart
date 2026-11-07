@@ -100,6 +100,7 @@ class SketchAction extends StatelessWidget {
     this.icon,
     this.filled = false,
     this.compact = false,
+    this.busy = false,
   });
 
   final String label;
@@ -108,17 +109,21 @@ class SketchAction extends StatelessWidget {
   final bool filled;
   final bool compact;
 
+  /// 正在跑。图标位置换成转圈，按钮同时禁用——**点下去必须有看得见的变化**，
+  /// 否则用户会以为按钮坏了（「刷新状态点不动」就是这么来的）。
+  final bool busy;
+
   @override
   Widget build(BuildContext context) => Semantics(
     button: true,
-    enabled: onPressed != null,
+    enabled: onPressed != null && !busy,
     label: label,
-    onTap: onPressed,
+    onTap: busy ? null : onPressed,
     excludeSemantics: true,
     child: Opacity(
       opacity: onPressed == null ? .42 : 1,
       child: InkWell(
-        onTap: onPressed,
+        onTap: busy ? null : onPressed,
         excludeFromSemantics: true,
         hoverColor: SketchColors.soft,
         splashColor: SketchColors.blush.withValues(alpha: .4),
@@ -134,7 +139,17 @@ class SketchAction extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                if (icon != null) ...[
+                if (busy) ...[
+                  SizedBox(
+                    width: compact ? 14 : 16,
+                    height: compact ? 14 : 16,
+                    child: const CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: SketchColors.ink,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                ] else if (icon != null) ...[
                   Icon(icon, size: compact ? 16 : 18, color: SketchColors.ink),
                   const SizedBox(width: 8),
                 ],
