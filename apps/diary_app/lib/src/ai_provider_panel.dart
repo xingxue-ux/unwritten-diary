@@ -552,7 +552,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
   @override
   Widget build(BuildContext context) {
     // 改已有服务时 `_fill` 是 null：这里不能 firstWhere，否则抛 StateError
-    // （「点改模型就出错」就是这么来的）。
+    // （「点编辑就出错」就是这么来的）。
     final fill = _quickFills.where((item) => item.id == _fill).firstOrNull;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -621,7 +621,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                       onPressed: _busy ? null : () => unawaited(_test(provider)),
                     ),
                     SketchAction(
-                      label: '改模型',
+                      label: '编辑',
                       onPressed: _busy ? null : () => _editProvider(provider),
                     ),
                     if (_remoteOf(provider))
