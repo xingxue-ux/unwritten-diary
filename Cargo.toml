@@ -24,7 +24,7 @@ uuid = { version = "1", features = ["v7"] }
 sha2 = "0.10"
 encoding_rs = "0.8"
 chardetng = "1"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 quick-xml = "0.42"
 pdf-extract = "0.12"
 # 中文分词：M0 实测选定的「jieba 分词 + 2-gram 并集」需要它。
