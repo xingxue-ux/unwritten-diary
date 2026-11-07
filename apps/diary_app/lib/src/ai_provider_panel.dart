@@ -29,7 +29,9 @@ const List<_QuickFill> _quickFills = [
     'deepseek',
     'DeepSeek',
     'https://api.deepseek.com',
-    'deepseek-chat',
+    // 用 `/models` 真列出来的那个，别用历史别名：别名还能路由，但不在列表里，
+    // 用户看到「列表里没有这个名字」会以为配错了。
+    'deepseek-flash',
     'API Key 必填。地址填到域名。',
   ),
   _QuickFill(
@@ -96,7 +98,8 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
 
   /// 表单里那个「我同意把材料发送到这个服务」的勾。
   bool _consentChecked = false;
-  String _fill = 'deepseek';
+  /// 当前选中的预填项；改已有服务时为 null（那套值不是任何预填）。
+  String? _fill = 'deepseek';
   bool _busy = false;
   bool _obscure = true;
   bool _showDetail = false;
@@ -478,7 +481,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     setState(() {
       _editingId = provider.id;
       _formProviderId = null;
-      _fill = '';
+      _fill = null;
       _name.text = provider.label;
       _endpoint.text = provider.endpoint ?? '';
       _model.text = provider.model ?? '';
@@ -548,7 +551,9 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final fill = _quickFills.firstWhere((item) => item.id == _fill);
+    // 改已有服务时 `_fill` 是 null：这里不能 firstWhere，否则抛 StateError
+    // （「点改模型就出错」就是这么来的）。
+    final fill = _quickFills.where((item) => item.id == _fill).firstOrNull;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -666,10 +671,11 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                 ],
               ),
               const SizedBox(height: 8),
-              Text(
-                fill.hint,
-                style: const TextStyle(color: SketchColors.muted, fontSize: 13),
-              ),
+              if (fill != null)
+                Text(
+                  fill.hint,
+                  style: const TextStyle(color: SketchColors.muted, fontSize: 13),
+                ),
               const SizedBox(height: 12),
               TextField(
                 controller: _name,
