@@ -138,6 +138,61 @@ void main() {
     '封面与加载动画',
   ];
 
+  // 主页面（记录 / 日记 / 搜索 / 片段）里的按钮同样要点一遍。
+  for (final tab in ['记录', '日记', '搜索', '片段']) {
+    testWidgets('$tab 页里点每个按钮都不炸', (tester) async {
+      final dir = Directory.systemTemp.createTempSync('tab-smoke');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+
+      tester.view.physicalSize = const Size(1400, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(DiaryApp(api: _RichApi()));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(tab).last);
+      await tester.pumpAndSettle();
+
+      bool isButton(Widget widget) => widget is InkWell && widget.onTap != null;
+      final labels = <String>[];
+      for (final element in find.byWidgetPredicate(isButton).evaluate()) {
+        final texts = find
+            .descendant(
+              of: find.byWidget(element.widget),
+              matching: find.byType(Text),
+            )
+            .evaluate()
+            .map((item) => (item.widget as Text).data)
+            .whereType<String>();
+        if (texts.isNotEmpty) labels.add(texts.first);
+      }
+      expect(labels, isNotEmpty, reason: '$tab 页里一个按钮都没找到');
+
+      const nav = {'记录', '日记', '搜索', '片段', '我的', '返回'};
+      for (final label in labels.where((item) => !nav.contains(item))) {
+        final matches = find.text(label);
+        if (matches.evaluate().isEmpty) continue;
+        final target = matches.first;
+        var tapped = true;
+        try {
+          await tester.ensureVisible(target);
+          await tester.tap(target, warnIfMissed: false);
+        } on Object {
+          tapped = false;
+        }
+        if (!tapped) continue;
+        await tester.pump(const Duration(milliseconds: 200));
+        expect(
+          tester.takeException(),
+          isNull,
+          reason: '$tab 页里点「$label」抛异常了',
+        );
+      }
+    });
+  }
+
   for (final panel in panels) {
     testWidgets('$panel 面板里点每个按钮都不炸', (tester) async {
       final dir = Directory.systemTemp.createTempSync('panel-smoke');
