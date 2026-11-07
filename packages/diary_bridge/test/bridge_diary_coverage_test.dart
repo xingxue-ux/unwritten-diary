@@ -7,6 +7,8 @@ import 'package:diary_bridge/diary_bridge.dart'
     show BridgeDiaryApi, BridgeSession;
 import 'package:test/test.dart';
 
+import 'path_assertions.dart';
+
 import 'expected_schema.dart';
 
 /// 这一轮新接上的契约方法，全部**只经 `DiaryApi`** 走真核心 + 真 SQLite：
@@ -139,7 +141,11 @@ void main() {
     expect(lease.byteSize, greaterThan(0));
     expect(File(lease.handle).existsSync(), isTrue);
     // 句柄是资料库私有目录里的路径，不是调用方给的任意路径。
-    expect(lease.handle, startsWith(workDir.path));
+    expect(
+      normalizePath(lease.handle),
+      startsWith(normalizePath(workDir.path)),
+      reason: '句柄必须在资料库私有目录里：${lease.handle}',
+    );
 
     await api.releaseAsset(lease.leaseId);
     // 重复释放是真实的 not_found，不静默成功。
@@ -218,7 +224,7 @@ void main() {
     final session = await BridgeSession.open(libraryPath: libraryPath);
     try {
       final report = await session.createBackup(targetPath: package);
-      expect(report.packagePath, package);
+      expect(samePath(report.packagePath, package), isTrue);
       expect(File(package).existsSync(), isTrue);
     } finally {
       session.dispose();

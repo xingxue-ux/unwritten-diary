@@ -31,13 +31,19 @@ class LibraryCareApi extends MockDiaryApi {
     return const JobTicket(jobId: 'backup-job');
   }
 
+  /// 恢复任务的 targetIds 是 `[恢复出来的 libraryPath, rootDir]`（核心的约定）。
+  String? restoredLibraryPath;
+
   @override
   Future<Job> getJob(String id) async => Job(
     id: id,
-    kind: 'backup',
+    kind: id == 'restore-job' ? 'restore' : 'backup',
     state: JobState.succeeded,
     createdAt: now,
     updatedAt: now,
+    targetIds: id == 'restore-job' && restoredLibraryPath != null
+        ? [restoredLibraryPath!, '/tmp/root']
+        : const [],
     progress: const JobProgress(completed: 1, total: 1),
   );
 
@@ -156,6 +162,44 @@ void main() {
     await controller.restoreInspectedBackup();
     expect(api.restoreCalls, 1);
     expect(controller.phase, LibraryCarePhase.succeeded);
+  });
+
+  test('恢复完成之后要报出恢复出来的库路径', () async {
+    // 没有这条路径，界面就没法提供「打开恢复后的资料库」——用户恢复完、重开
+    // 应用，仍然回到旧库。
+    final api = LibraryCareApi()
+      ..restoredLibraryPath = '/tmp/restored/library.sqlite';
+    final controller = LibraryCareController(
+      api,
+      capabilities: const {
+        'backups.inspect',
+        'backups.restore',
+        'jobs.get',
+      },
+      captureCount: 1,
+    );
+    addTearDown(controller.dispose);
+
+    await controller.inspectBackup('/tmp/pkg.diarybak');
+    await controller.restoreInspectedBackup();
+    await controller.refreshActiveJob();
+
+    expect(controller.restoredLibraryPath, '/tmp/restored/library.sqlite');
+    expect(controller.message, contains('新的资料库'));
+  });
+
+  test('备份任务不会给出「恢复后的库」路径', () async {
+    final api = LibraryCareApi();
+    final controller = LibraryCareController(
+      api,
+      capabilities: const {'backups.create', 'jobs.get'},
+      captureCount: 1,
+    );
+    addTearDown(controller.dispose);
+
+    await controller.createBackup('/tmp/pkg.diarybak');
+    await controller.refreshActiveJob();
+    expect(controller.restoredLibraryPath, isNull);
   });
 
   test('trash requires preview token before permanent purge', () async {

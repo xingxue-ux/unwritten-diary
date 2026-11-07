@@ -6,6 +6,8 @@ import 'package:diary_bridge/diary_bridge.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:test/test.dart';
 
+import 'path_assertions.dart';
+
 /// B7 的桥接端到端：Dart → `createBackup` / `inspectBackup` / `restoreBackup`
 /// → 真核心 + 真 SQLite + 真 zip 包。
 ///
@@ -106,7 +108,11 @@ void main() {
       // 备份。
       final package = '${caseDir.path}/bridge.diarybak';
       final report = await session.createBackup(targetPath: package);
-      expect(report.packagePath, package);
+      expect(
+        samePath(report.packagePath, package),
+        isTrue,
+        reason: '备份包路径要指向同一个文件：${report.packagePath} vs $package',
+      );
       expect(File(package).existsSync(), isTrue);
       expect(report.blobCount, 1);
       expect(report.counts.captures, 1);

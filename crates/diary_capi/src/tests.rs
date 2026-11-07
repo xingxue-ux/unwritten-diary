@@ -18,6 +18,16 @@ use serde_json::{json, Value};
 use super::*;
 
 // ---------------------------------------------------------------- 脚手架
+
+/// 比较路径时用的规范形。
+///
+/// Windows 上 `fs::canonicalize` 会带回 `\\?\` 前缀和**磁盘上的真实大小写**，而
+/// `tempfile` 给的是 `%TEMP%` 里那套写法（`E:\data\Temp` vs `E:\Data\Temp`）。
+/// 两者指的是同一个位置，字符串却不相等——所以断言前统一规范化，而不是把产品
+/// 返回的路径改回去：核心返回真实路径是对的，错的是拿字面量做相等比较。
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
 //
 // 下面这些辅助函数都是**安全函数**（内部各自一个 `unsafe` 块）：测试体里只在直接调
 // 导出入口时才写 `unsafe {}`，这样不会出现「不必要的 unsafe 块」的告警。
@@ -78,6 +88,25 @@ fn open_temp(tag: &str) -> (PathBuf, PathBuf, *mut Handle) {
     let path = dir.join("library.sqlite");
     let handle = open(&path);
     (dir, path, handle)
+}
+
+/// 删掉一个临时资料库目录。
+///
+/// Windows 上 `remove_dir_all` 会在「还有句柄没放开」时直接失败（`os error 32`：
+/// 另一个程序正在使用此文件）。SQLite 的 WAL/-shm 在连接关闭后由系统回收，可能
+/// 比 `diary_close` 晚一拍——所以这里重试几次再放弃。**放弃也不让测试失败**：
+/// 临时目录会被系统清理，而「清理没成功」不是被测行为。
+fn cleanup(dir: &Path) {
+    for attempt in 0..10 {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) if attempt < 9 => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => return,
+        }
+    }
 }
 
 fn open(path: &Path) -> *mut Handle {
@@ -344,7 +373,7 @@ fn version_and_last_error_travel_through_the_c_api() {
     assert!(last_error().is_none(), "成功之后 last-error 应当被清空");
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `diary_last_error()` 的形状：**顶层就是 `error` 对象**，不是整条失败信封。
@@ -391,7 +420,7 @@ fn last_error_is_the_error_object_not_the_envelope() {
         "diary_call",
     );
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 
     let missing_dir = std::env::temp_dir().join(format!(
         "diary-capi-last-error-{}-不存在的目录",
@@ -520,7 +549,7 @@ fn bad_input_never_crashes_and_always_reports_an_error() {
     assert_eq!(diary_close(handle), 0);
     assert_eq!(diary_close(handle), 2, "重复关闭要报 2，不是崩溃");
     expect_error(&call(handle, "jobs.status", Value::Null), "invalid_state");
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 端到端：打开 → 建草稿 → 保存 → 提交 → 抽取 → 检索命中 → 排索引任务 → 跑任务 → 关闭。
@@ -657,7 +686,7 @@ fn end_to_end_draft_to_search_to_jobs() {
     assert!(info["last_event_sequence"].as_i64().unwrap() > 0);
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `indexes.rebuildSemantic`（契约 4.4，C ABI 之前没接）+ `core.info.runtime_config` 的形状。
@@ -730,7 +759,7 @@ fn semantic_rebuild_and_runtime_config_are_wired() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 录音交接：prepare → registerSegment → updateState → finalize → 重开 → recover。
@@ -763,9 +792,10 @@ fn recordings_flow_prepare_register_finalize_and_recover() {
     let asset_id = ticket["asset_id"].as_str().unwrap().to_owned();
     let staging = PathBuf::from(ticket["staging_ticket"].as_str().unwrap());
     assert!(
-        staging.starts_with(&dir),
-        "暂存目录必须在资料库根目录下：{}",
-        staging.display()
+        canonical(&staging).starts_with(canonical(&dir)),
+        "暂存目录必须在资料库根目录下：{}（资料库 {}）",
+        staging.display(),
+        dir.display()
     );
 
     // 第 0 段：WAV 头 + 1 秒 16 kHz/单声道/16 bit PCM（32,000 B）。
@@ -996,7 +1026,7 @@ fn recordings_flow_prepare_register_finalize_and_recover() {
     );
 
     assert_eq!(diary_close(reopened), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 录音参数错误：拼错字段、字节数不符、未知录音都要报核心码，不能静默成功。
@@ -1064,7 +1094,7 @@ fn recordings_bad_input_reports_core_errors() {
     assert!(text.contains("unknown field"), "{text}");
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 44 字节 PCM WAV 头：16 kHz / 单声道 / 16 bit，长度字段用流式占位（总长停止时才定）。
@@ -1143,7 +1173,7 @@ fn close_releases_the_core_only_after_the_last_handle() {
     let reopened = open(&path);
     expect_ok(&call(reopened, "jobs.status", Value::Null));
     assert_eq!(diary_close(reopened), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 所有权：返回的每个字符串都能被 `diary_string_free` 释放，且计数回到原处。
@@ -1177,7 +1207,7 @@ fn returned_strings_are_freed_by_diary_string_free() {
     assert_eq!(live_strings(), baseline);
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 只调用、不解析：留给所有权测试逐个释放。
@@ -1256,7 +1286,7 @@ fn core_error_codes_pass_through_unchanged() {
     assert!(idem.contains("幂等冲突"), "{idem}");
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// panic 注入：核心 panic 变成 `ok:false`，进程不中止；句柄之后仍然可用。
@@ -1272,7 +1302,7 @@ fn core_panic_becomes_an_error_and_the_handle_survives() {
     expect_ok(&call(handle, "jobs.status", Value::Null));
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 跨线程：两个线程并发调同一个句柄，核心串行，结果正确。
@@ -1336,7 +1366,7 @@ fn two_threads_can_share_one_handle() {
     assert_eq!(saved["durable"], json!(true));
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 #[test]
@@ -1389,7 +1419,7 @@ fn providers_select_generation_contract() {
         "invalid_argument",
     );
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `providers.save` / `list` / `test` / `remove` 的 C ABI 形状、校验与错误码。
@@ -1562,7 +1592,7 @@ fn providers_crud_contract_shapes_and_validation() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `providers.presets` / `providers.models` 两条新方法：真调用，真字段名。
@@ -1714,7 +1744,7 @@ fn provider_presets_and_models_are_wired() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `providers.save` 的 `config` 是**显式参数结构体**，不是直接透传核心的 `Provider`。
@@ -1839,7 +1869,7 @@ fn provider_save_keeps_credential_ref_written_in_camel_case() {
     assert!(path.is_file(), "报错不能有副作用：密钥文件还在");
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `sources.locate` 的 `locator` 也是显式参数结构体：核心 `SourceLocator` 同样没有
@@ -1913,7 +1943,7 @@ fn locate_source_locator_accepts_contract_field_names() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 第 1 组：`captures.get` / `captures.list`——「看今天」、历史列表、条目详情的
@@ -2013,7 +2043,7 @@ fn captures_get_and_list_use_real_cursor_pagination() {
     assert!(message.contains("游标"), "{message}");
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 第 3 组：`diary.*`——「日记」一级入口的数据源（契约 §2.2 / §4.3）。
@@ -2237,7 +2267,7 @@ fn diary_day_and_versions_are_wired() {
     assert_eq!(capture["state"], json!("committed"));
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 生成用例的服务配置：一条 `generate_text` 能力的假服务（不联网，传输层另换）。
@@ -2364,7 +2394,7 @@ fn generate_without_provider_returns_ticket_and_waits_for_configuration() {
     assert_eq!(day["material_counts"]["captures"], json!(1));
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 同一条 `operationId` 重放：返回**原票据**，不重复产版本、不重复调模型。
@@ -2422,7 +2452,7 @@ fn generate_same_operation_id_does_not_duplicate_version() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 有 provider（回放传输，不联网）：`runDue` 后 `diary.getDay` 能看到 `currentVersionId`。
@@ -2489,7 +2519,7 @@ fn generate_with_provider_becomes_current_after_run_due() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `reason` 传非法值：桥面在调用核心之前就报 `invalid_argument`，不落快照、不排任务。
@@ -2548,7 +2578,7 @@ fn generate_rejects_invalid_reason_before_touching_the_core() {
     assert_eq!(jobs["jobs"], json!([]));
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// camelCase 别名 + 可选 `style_id` + 票据字段名：`Models.ets` 能照实际 JSON 声明。
@@ -2615,7 +2645,7 @@ fn generate_accepts_camel_case_aliases_and_optional_style() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 第 2 组：`indexes.status`——语义就绪 / reasons / model_version 原样可读。
@@ -2676,7 +2706,7 @@ fn indexes_status_exposes_semantic_readiness_and_scope() {
     assert!(message.contains("参数不合法"), "{message}");
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 第 3 组：`jobs.list` / `jobs.get`——逐条任务（`attention_key` / `progress` 在里面），
@@ -2789,7 +2819,7 @@ fn jobs_list_and_get_use_real_cursor_pagination() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 第 4 组：`jobs.retry` / `jobs.cancel` / `jobs.acknowledgeAttention`。
@@ -2940,7 +2970,7 @@ fn jobs_retry_cancel_and_acknowledge_attention() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `search.start` 省略 `mode` 时默认 **`hybrid`**（共享契约 §2.6 与 Dart 侧同一口径）。
@@ -2988,7 +3018,7 @@ fn search_start_defaults_to_hybrid_mode() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 第 5 组：`search.nextPage` / `search.upgrade` / `search.cancel`。
@@ -3173,7 +3203,7 @@ fn search_pagination_upgrade_and_cancel() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 能力清单必须随接线增长：`core.info.capabilities` 与 `WIRED_METHODS` **逐项相同**，
@@ -3236,7 +3266,7 @@ fn capabilities_include_every_wired_method() {
     }
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 // ---------------------------------------------------------------- 本批（P0 的 8 条）
@@ -3453,7 +3483,7 @@ fn sources_revisions_content_and_locate_are_wired() {
     assert_eq!(alias["source_ref"], json!(source_id));
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `sources.locate` 的**可用**路径：有原件的来源返回 `available:true` + `asset_id`。
@@ -3488,7 +3518,7 @@ fn locate_reports_an_available_asset_for_a_real_file_source() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 #[test]
 fn events_poll_by_sequence_and_report_truncation() {
@@ -3628,7 +3658,7 @@ fn events_poll_by_sequence_and_report_truncation() {
     assert_eq!(alias["truncated"], json!(true));
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `backups.create` / `inspect` / `restore`：真实落盘、自校验、恢复到新库。
@@ -3644,7 +3674,11 @@ fn backups_create_inspect_and_restore_round_trip() {
         "backups.create",
         json!({"target_path": package_text}),
     ));
-    assert_eq!(created["package_path"], json!(package_text));
+    assert_eq!(
+        canonical(Path::new(created["package_path"].as_str().unwrap())),
+        canonical(&package),
+        "备份包路径要指向同一个文件（Windows 上大小写/长路径前缀会不同）"
+    );
     // 备份清单里的 `apiVersion` 必须与核心同源（`diary_core::API_VERSION`），
     // 不是某个写死的字面量。这条断言原本写死 "1.0"，用来钉「#153 加 8 个方法
     // 不抬版本」；但 #160 因为给 `SearchHit` 加了一个**必填**响应字段把版本抬到
@@ -3803,7 +3837,7 @@ fn backups_create_inspect_and_restore_round_trip() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `backups.inspect` 的**损坏包 `issues` 路径**：清单读得出来、但某个原件哈希对不上时，
@@ -3867,7 +3901,7 @@ fn inspect_reports_corrupted_entries_as_issues() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 // ---------------------------------------------------------------- 备份包读写（测试脚手架）
@@ -4041,7 +4075,7 @@ fn settings_get_and_update_roundtrip_through_the_c_abi() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// 复审第 4 条：`settings.update` 的 `defaultStyleId` **省略 ≠ 显式 null**。
@@ -4151,7 +4185,7 @@ fn settings_update_keeps_the_default_style_when_the_field_is_omitted() {
     assert_eq!(after, before, "非法参数必须零改动");
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 // ---------------------------------------------------------------- 回收站（契约 4.1 / §8）
@@ -4549,7 +4583,7 @@ fn recycle_trash_restore_preview_and_purge_are_wired() {
     assert!(message.contains(capture_id.as_str()), "{message}");
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 // ------------------------------------------------ 本批：风格 / 天列表 / 导出 / 归属日
@@ -4736,7 +4770,7 @@ fn styles_list_get_and_save_are_wired() {
     );
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `diary.listDays`：真游标分页、范围过滤、坏游标 `cursor_expired`、外层 camelCase。
@@ -4839,7 +4873,7 @@ fn diary_list_days_pages_and_rejects_bad_cursor() {
     assert!(clamped["nextCursor"].is_string());
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `exports.create`：真文件、`restorable == false`、重名加后缀不覆盖、格式/原件开关明确拒绝。
@@ -4882,7 +4916,7 @@ fn exports_create_writes_real_files_and_never_overwrites() {
     let exported = Path::new(&path);
     assert!(exported.is_file(), "导出文件必须真实存在：{path}");
     assert!(
-        exported.starts_with(dir.join("exports")),
+        canonical(exported).starts_with(canonical(&dir).join("exports")),
         "产物必须在资料库的 exports/ 下：{path}"
     );
     assert_eq!(
@@ -5042,7 +5076,7 @@ fn exports_create_writes_real_files_and_never_overwrites() {
         .set_export_sandbox_only_for_test(false);
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }
 
 /// `captures.moveDay`：改归属日、时间戳不动、`diary.listDays` 看到迁移、乐观锁与同一天无操作。
@@ -5172,5 +5206,5 @@ fn captures_move_day_updates_the_day_and_list_days_sees_it() {
     assert!(message.contains("回收站"), "{message}");
 
     assert_eq!(diary_close(handle), 0);
-    std::fs::remove_dir_all(dir).unwrap();
+    cleanup(&dir);
 }

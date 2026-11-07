@@ -88,6 +88,13 @@ class LibraryCareController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 恢复出来的资料库路径（`restore` 任务成功后才有）。
+  ///
+  /// 核心把 `targetIds` 记成 `[恢复出来的 libraryPath, rootDir]`，这里取第一个。
+  /// 界面据此提供「打开恢复后的资料库」——不然用户恢复完、重开应用，仍然回到
+  /// 原来那个库，恢复等于白做。
+  String? restoredLibraryPath;
+
   Future<void> restoreInspectedBackup() async {
     final inspected = inspection;
     if (inspected == null || inspected.issues.isNotEmpty) {
@@ -112,6 +119,7 @@ class LibraryCareController extends ChangeNotifier {
     Future<String> Function() enqueue,
   ) async {
     _poller?.cancel();
+    restoredLibraryPath = null;
     phase = LibraryCarePhase.working;
     message = workingMessage;
     activeJob = null;
@@ -155,6 +163,10 @@ class LibraryCareController extends ChangeNotifier {
       if (job.state == JobState.succeeded) {
         phase = LibraryCarePhase.succeeded;
         message = '任务已完成。';
+        if (job.kind == 'restore' && job.targetIds.isNotEmpty) {
+          restoredLibraryPath = job.targetIds.first;
+          message = '恢复完成，新的资料库已经生成。';
+        }
         _poller?.cancel();
       } else if (job.state == JobState.failed) {
         phase = LibraryCarePhase.failed;
