@@ -238,6 +238,26 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('刷新状态：点下去要有反应', (tester) async {
+    final api = _Api();
+    await _boot(tester, api);
+    await tester.tap(find.text('日记').last);
+    await settleRealIo(tester);
+
+    await tester.ensureVisible(find.text('刷新状态'));
+    await tester.tap(find.text('刷新状态'));
+    // 点下去立刻要有反馈：按钮变成「刷新中…」。
+    await tester.pump();
+    expect(
+      find.text('刷新中…'),
+      findsOneWidget,
+      reason: '点了没反应，用户会以为按钮坏了',
+    );
+    await settleRealIo(tester);
+    expect(find.text('刷新状态'), findsOneWidget, reason: '跑完要变回来');
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('搜索：写一条之后能搜到', (tester) async {
     final api = _Api();
     await _boot(tester, api);
