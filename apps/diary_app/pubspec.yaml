@@ -16,6 +16,15 @@ dependencies:
   diary_bridge:
     path: ../../packages/diary_bridge
   flutter_timezone: ^5.1.1
+  # 麦克风采集与播放：录音链的**平台层**（核心只负责登记与拼装，见
+  # crates/diary_core/src/recordings.rs）。`record` 在 Windows 上走 Media
+  # Foundation，在 Android 上走 MediaRecorder/AudioRecord，两边都能直接写
+  # PCM WAV——转写链只认 PCM WAV，所以编码器必须是 wav，不能用 aac/m4a。
+  record: ^7.1.2
+  # 片段登记要报 sha256（核心会自己重算一遍，不信声明）。
+  crypto: ^3.0.6
+  # 播放已保存的录音。Windows 走 winmm/Media Foundation，Android 走 ExoPlayer。
+  audioplayers: ^6.8.1
   path: ^1.9.1
   path_provider: ^2.1.6
   workmanager: ^0.10.10

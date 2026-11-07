@@ -37,7 +37,12 @@ void main() {
     final config = jsonDecode(
       File(path.join(library.path, 'core-config.json')).readAsStringSync(),
     ) as Map<String, dynamic>;
-    expect(config['modelDir'], path.join(exe.path, 'models/semantic/bge-small-zh-v1.5'));
+    // 用 path.join 拼期望值：写死 `models/semantic/...` 在 Windows 上会跟
+    // `path.join` 产生的反斜杠对不上，测试红得莫名其妙。
+    expect(
+      config['modelDir'],
+      path.join(exe.path, 'models', 'semantic', 'bge-small-zh-v1.5'),
+    );
     expect(config['ortDylib'], path.join(exe.path, 'onnxruntime.dll'));
   });
 

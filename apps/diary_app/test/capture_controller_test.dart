@@ -249,6 +249,37 @@ void main() {
     await initialization;
   });
 
+  test('只录了音、一个字都没写的记录也能收好', () async {
+    // 「不写日记」的核心用法就是只录一段音。以前「收好这一刻」要求正文非空，
+    // 于是录完音之后按钮是灰的——这条路被堵死了。
+    final api = _SourceOnlyApi();
+    final controller = CaptureController(api);
+    await controller.initialize();
+    final captureId = await controller.ensureDraftId();
+    expect(captureId, isNotNull);
+
+    // 录音挂到这条记录上（模拟最终化之后的重新读取）。
+    api.attachSource(captureId!);
+    await controller.refresh();
+
+    expect(controller.hasSources, isTrue);
+    expect(controller.canFinish, isTrue, reason: '有材料就能收好，不需要正文');
+    expect(await controller.finish(), isTrue);
+    expect(api.commits, 1);
+    controller.dispose();
+  });
+
+  test('既没有正文也没有材料时仍然不能收好', () async {
+    final api = _SourceOnlyApi();
+    final controller = CaptureController(api);
+    await controller.initialize();
+    await controller.ensureDraftId();
+    expect(controller.canFinish, isFalse);
+    expect(await controller.finish(), isFalse);
+    expect(api.commits, 0);
+    controller.dispose();
+  });
+
   test('typing during draft recovery is not overwritten', () async {
     final api = SlowListApi();
     final draft = await api.createDraft(operationId: 'create-existing');
@@ -267,4 +298,46 @@ void main() {
     expect(controller.text, '新输入');
     controller.dispose();
   });
+}
+
+
+/// 可以「挂上一段录音」的假核心：模拟最终化之后记录多了一个来源。
+class _SourceOnlyApi extends MockDiaryApi {
+  final Map<String, List<String>> _sources = {};
+  int commits = 0;
+  int _revision = 1;
+
+  void attachSource(String captureId) {
+    _sources.putIfAbsent(captureId, () => []).add('src-audio');
+    _revision += 1;
+  }
+
+  @override
+  Future<Capture> getCapture(String id) async => _capture(id);
+
+  @override
+  Future<CommitResult> commit({
+    required String id,
+    required int expectedRevision,
+    required String operationId,
+  }) async {
+    commits++;
+    return CommitResult(
+      capture: _capture(id).copyWith(state: CaptureState.committed),
+      originalTextRevision: null,
+    );
+  }
+
+  Capture _capture(String id) => Capture(
+    id: id,
+    revision: _revision,
+    state: CaptureState.draft,
+    occurredAt: DateTime.utc(2026, 11, 7),
+    createdAt: DateTime.utc(2026, 11, 7),
+    updatedAt: DateTime.utc(2026, 11, 7),
+    timeZone: 'Asia/Shanghai',
+    utcOffsetMinutes: 480,
+    dayKey: '2026-11-07',
+    orderedSourceIds: List.of(_sources[id] ?? const []),
+  );
 }

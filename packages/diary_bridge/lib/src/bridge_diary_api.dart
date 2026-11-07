@@ -143,6 +143,7 @@ class BridgeDiaryApi
     'recordings.updateState',
     'recordings.finalize',
     'recordings.recover',
+    'recordings.discard',
     'search.upgrade',
     'providers.list',
     'providers.save',
@@ -222,6 +223,7 @@ class BridgeDiaryApi
     'recordings.updateState',
     'recordings.finalize',
     'recordings.recover',
+    'recordings.discard',
     'assets.open',
     'assets.release',
     'sources.locate',
@@ -1317,6 +1319,11 @@ class BridgeDiaryApi
       gapMs: recovery.gapMs,
       notes: recovery.notes,
     );
+  }
+
+  @override
+  Future<void> discardRecording({required String recordingId}) async {
+    await _translate(() => _open.discardRecording(recordingId: recordingId));
   }
 
   @override

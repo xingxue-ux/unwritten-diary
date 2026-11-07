@@ -8,7 +8,7 @@
 //!    最终化也不会因为缺片段就假装完整。
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -280,22 +280,54 @@ pub(crate) fn finalize(
     }
 
     // 流式拼接：内存占用与录音长度无关。
+    //
+    // 两条路，按片段的真实容器决定：
+    // - **全是同一格式的 PCM WAV**：只取每段的数据区，最后写一个头。平台层每段
+    //   都写的是完整 WAV（各自 44 或 46 字节头），按字节硬拼会得到
+    //   「头 + 数据 + 头 + 数据」，第二个头被当成采样读进去，听感是爆音、
+    //   转写里可能多出莫名其妙的字。
+    // - **有任何一个不是 WAV**：退回按字节拼的老行为。契约允许平台层登记别的
+    //   容器，这里不替它猜；拼出来的东西能不能解码由转写链如实报告。
     let concat_path = root.join(format!("staging/{recording_id}.logical.part"));
     let mut hasher = Sha256::new();
     let mut total_duration_ms = 0_i64;
+    let regions = probe_regions(&staging_dir, &present)?;
     {
         let mut output = fs::File::create(&concat_path)?;
         let mut buffer = vec![0_u8; CONCAT_BUFFER_BYTES];
-        for row in &present {
-            total_duration_ms += row.duration_ms;
-            let mut input = fs::File::open(staging_dir.join(&row.relative_file_name))?;
-            loop {
-                let read = input.read(&mut buffer)?;
-                if read == 0 {
-                    break;
+        match &regions {
+            Some(regions) => {
+                // 头里的长度必须是**已经确定**的值：先把数据区总长算出来。
+                let data_bytes: u64 = regions.iter().map(|region| region.data_bytes).sum();
+                let mut header = Vec::with_capacity(44);
+                crate::transcription::wav::write_pcm_header(&mut header, &regions[0], data_bytes)?;
+                output.write_all(&header)?;
+                hasher.update(&header);
+                for (row, region) in present.iter().zip(regions) {
+                    // 时长按**实际字节数**算，不信片段自报的时长。
+                    total_duration_ms += region.duration_ms();
+                    copy_region(
+                        &mut fs::File::open(staging_dir.join(&row.relative_file_name))?,
+                        region,
+                        &mut output,
+                        &mut hasher,
+                        &mut buffer,
+                    )?;
                 }
-                output.write_all(&buffer[..read])?;
-                hasher.update(&buffer[..read]);
+            }
+            None => {
+                for row in &present {
+                    total_duration_ms += row.duration_ms;
+                    let mut input = fs::File::open(staging_dir.join(&row.relative_file_name))?;
+                    loop {
+                        let read = input.read(&mut buffer)?;
+                        if read == 0 {
+                            break;
+                        }
+                        output.write_all(&buffer[..read])?;
+                        hasher.update(&buffer[..read]);
+                    }
+                }
             }
         }
         output.sync_all()?;
@@ -415,6 +447,101 @@ pub(crate) fn finalize(
         transcription_queued: true,
         logical_duration_ms: total_duration_ms,
     })
+}
+
+/// 探测所有片段是不是**同一格式**的 PCM WAV。
+///
+/// 返回 `Ok(None)` 表示「至少有一段不是 WAV」，最终化退回按字节拼的老行为。
+/// 但「都是 WAV、格式却不一样」（比如中途换了输入设备，一段 16 kHz 一段 48 kHz）
+/// **不退回**：按第一个头去解码后半段只会得到噪音，那比明确报错坏得多。
+fn probe_regions(
+    staging_dir: &std::path::Path,
+    rows: &[&SegmentRow],
+) -> Result<Option<Vec<crate::transcription::wav::PcmRegion>>> {
+    let mut regions: Vec<crate::transcription::wav::PcmRegion> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let path = staging_dir.join(&row.relative_file_name);
+        let Some(region) = crate::transcription::wav::probe_pcm(&path)? else {
+            return Ok(None);
+        };
+        if let Some(first) = regions.first() {
+            if !first.same_format(&region) {
+                return Err(CoreError::IntegrityFailed {
+                    reason: format!(
+                        "片段 {} 的采样格式与第一段不一致（第一段 {} Hz/{} 声道，这一段 {} Hz/{} 声道）：\
+                         拼成一段音频只会让后半段变成噪音，所以不拼",
+                        row.segment_index,
+                        first.sample_rate,
+                        first.channels,
+                        region.sample_rate,
+                        region.channels
+                    ),
+                });
+            }
+        }
+        regions.push(region);
+    }
+    Ok(Some(regions))
+}
+
+/// 只把一个片段的数据区（不含容器头）追加到逻辑音频里，同时喂哈希。
+fn copy_region(
+    input: &mut fs::File,
+    region: &crate::transcription::wav::PcmRegion,
+    output: &mut fs::File,
+    hasher: &mut Sha256,
+    buffer: &mut [u8],
+) -> Result<()> {
+    input.seek(SeekFrom::Start(region.data_offset))?;
+    let mut remaining = region.data_bytes;
+    while remaining > 0 {
+        let want = remaining.min(buffer.len() as u64) as usize;
+        let read = input.read(&mut buffer[..want])?;
+        if read == 0 {
+            return Err(CoreError::IntegrityFailed {
+                reason: format!("片段的数据区比声明的短（还差 {remaining} 字节）"),
+            });
+        }
+        output.write_all(&buffer[..read])?;
+        hasher.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    Ok(())
+}
+
+/// 丢弃一段**还没最终化**的录音。
+///
+/// 契约里 `prepare` 之后只有 `finalize` 一条出路，于是「按下录音又立刻放弃」的
+/// 会话会永远停在 `preparing`/`recording`：下次启动被 `count_open_recordings`
+/// 数成「上次没来得及收尾的录音」，`recover` 也会一直把它报出来。那是假警报。
+///
+/// 这里补的就是那条出口，边界写死：
+/// - **只删还没最终化的会话**。已经 `saved` 的拒绝——音频已经挂到记录上，
+///   删掉会话会留下一个指向空资产的来源。
+/// - 会话不存在时返回 `Ok(())`：丢弃是幂等的，重试不该报错。
+/// - 片段文件在暂存目录里，随会话一起删；`blobs` 里没有它的东西（最终化才建）。
+pub(crate) fn discard(core: &mut Core, recording_id: &str) -> Result<()> {
+    let root = core.root_dir()?.to_path_buf();
+    let session = match load_session_opt(&core.conn, recording_id)? {
+        Some(session) => session,
+        None => return Ok(()),
+    };
+    if session.state == RecordingState::Saved {
+        return Err(CoreError::InvalidState {
+            entity: "录音",
+            id: recording_id.to_owned(),
+            state: "已经最终化，音频已经挂到记录上，不能丢弃".to_owned(),
+        });
+    }
+    core.conn.execute(
+        "DELETE FROM recording_sessions WHERE id = ?1",
+        params![recording_id],
+    )?;
+    let staging = root.join(&session.staging_rel_path);
+    if staging.exists() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    Ok(())
 }
 
 /// 恢复：不假设最后一段完好。
@@ -551,6 +678,13 @@ impl SegmentManifest {
 }
 
 fn load_session(conn: &Connection, recording_id: &str) -> Result<SessionRow> {
+    load_session_opt(conn, recording_id)?.ok_or_else(|| CoreError::NotFound {
+        entity: "录音",
+        id: recording_id.to_owned(),
+    })
+}
+
+fn load_session_opt(conn: &Connection, recording_id: &str) -> Result<Option<SessionRow>> {
     conn.query_row(
         "SELECT id, capture_id, asset_id, staging_rel_path, state, started_at, \
          last_segment_index, elapsed_ms, durable_through_ms, error_message \
@@ -572,32 +706,25 @@ fn load_session(conn: &Connection, recording_id: &str) -> Result<SessionRow> {
         },
     )
     .optional()?
-    .map_or_else(
-        || {
-            Err(CoreError::NotFound {
-                entity: "录音",
-                id: recording_id.to_owned(),
-            })
-        },
-        |row| {
-            Ok(SessionRow {
-                id: row.0,
-                capture_id: row.1,
-                asset_id: row.2,
-                staging_rel_path: row.3,
-                state: RecordingState::from_wire(&row.4).ok_or_else(|| {
-                    CoreError::CorruptedData {
-                        message: format!("未知录音状态：{}", row.4),
-                    }
-                })?,
-                started_at: support::parse_iso(&row.5)?,
-                last_segment_index: row.6,
-                elapsed_ms: row.7,
-                durable_through_ms: row.8,
-                error_message: row.9,
-            })
-        },
-    )
+    .map(|row| {
+        Ok(SessionRow {
+            id: row.0,
+            capture_id: row.1,
+            asset_id: row.2,
+            staging_rel_path: row.3,
+            state: RecordingState::from_wire(&row.4).ok_or_else(|| {
+                CoreError::CorruptedData {
+                    message: format!("未知录音状态：{}", row.4),
+                }
+            })?,
+            started_at: support::parse_iso(&row.5)?,
+            last_segment_index: row.6,
+            elapsed_ms: row.7,
+            durable_through_ms: row.8,
+            error_message: row.9,
+        })
+    })
+    .transpose()
 }
 
 fn latest_open_session(conn: &Connection) -> Result<Option<SessionRow>> {

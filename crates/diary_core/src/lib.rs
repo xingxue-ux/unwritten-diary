@@ -1200,6 +1200,14 @@ impl Core {
         recordings::recover(self, recording_id)
     }
 
+    /// 丢弃一段还没最终化的录音（用户按了录音又放弃）。
+    ///
+    /// 幂等：会话不存在返回 `Ok(())`。已经最终化的拒绝——音频已经挂到记录上，
+    /// 删会话会留下指向空资产的来源。见 `recordings::discard` 的注释。
+    pub fn discard_recording(&mut self, recording_id: &str) -> Result<()> {
+        recordings::discard(self, recording_id)
+    }
+
     pub fn recording_session(&self, recording_id: &str) -> Result<RecordingSession> {
         recordings::session(self, recording_id)
     }

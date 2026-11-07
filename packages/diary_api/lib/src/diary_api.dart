@@ -183,6 +183,17 @@ abstract class DiaryApi {
   /// 恢复录音：不假设最后一段完好，明确报告末尾缺口。
   Future<RecordingRecovery> recoverRecording({String? recordingId});
 
+  /// 丢弃一段**还没最终化**的录音（用户按了录音又放弃）。
+  ///
+  /// 契约原本只给了 `prepare → finalize` 一条出路，于是「按下录音又立刻放弃」
+  /// 的会话会永远停在 `preparing`/`recording`，下次启动被数成「上次没来得及
+  /// 收尾的录音」——一句假警报。这个方法是那条出口。
+  ///
+  /// - 幂等：会话不存在时正常返回（重试不该报错）。
+  /// - 已经最终化的录音会报 `invalidState`：音频已经挂到记录上，删会话会留下
+  ///   指向空资产的来源。
+  Future<void> discardRecording({required String recordingId});
+
   /// 打开只读句柄或限域租约。
   Future<AssetLease> openAsset({
     required String assetId,

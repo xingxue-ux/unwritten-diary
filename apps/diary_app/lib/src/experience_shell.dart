@@ -19,6 +19,9 @@ import 'index_settings_panel.dart';
 import 'library_care_controller.dart';
 import 'library_care_panel.dart';
 import 'readable_export_controller.dart';
+import 'recording/recording_controller.dart';
+import 'recording/recording_engine.dart';
+import 'recording/recording_panel.dart';
 import 'readable_export_panel.dart';
 import 'search_controller.dart';
 import 'schedule_settings_controller.dart';
@@ -95,7 +98,12 @@ class _ExperienceShellState extends State<ExperienceShell>
   bool _editingRevision = false;
   String _candidateDraft = _candidateBody;
   bool _pluginEnabled = false;
-  String _recordingDemoState = 'idle';
+  /// 录音控制器：**由外壳持有**，不是面板持有。
+  ///
+  /// 录音时用户可能切到别的页面看一眼再回来；控制器跟着面板一起销毁的话，
+  /// 那一趟就会把正在录的会话丢成「没来得及收尾」。
+  RecordingController? _recording;
+  String? _recordingCaptureId;
   final List<String> _attachments = [];
 
   static const _demoBody =
@@ -206,6 +214,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     _styleSettings.dispose();
     _scheduleSettings.dispose();
     _readableExport.dispose();
+    _recording?.dispose();
     _editor.dispose();
     _search.removeListener(_onSearchValueChanged);
     _search.dispose();
@@ -443,10 +452,18 @@ class _ExperienceShellState extends State<ExperienceShell>
     });
   }
 
-  void _back() => setState(() {
-    _panel = null;
-    _detail = null;
-  });
+  void _back() {
+    final leaving = _panel;
+    setState(() {
+      _panel = null;
+      _detail = null;
+    });
+    // 从录音页回来：材料列表要重新读，否则刚录好的音频不在「这一条」里，
+    // 用户会以为没存上。
+    if (leaving == 'recording' && !widget.demoMode) {
+      unawaited(_capture.refresh());
+    }
+  }
 
   Future<void> _confirmTrash(Capture capture) async {
     final confirmed = await showDialog<bool>(
@@ -1236,9 +1253,7 @@ class _ExperienceShellState extends State<ExperienceShell>
     key: const Key('finish-capture-bigtalk'),
     label: '收好这一刻',
     filled: true,
-    onPressed: _capture.text.trim().isEmpty || _capture.finishing
-        ? null
-        : _finish,
+    onPressed: !_capture.canFinish || _capture.finishing ? null : _finish,
   );
 
   Widget _editorCard(bool desktop) => Column(
@@ -1333,6 +1348,31 @@ class _ExperienceShellState extends State<ExperienceShell>
             ],
             const Divider(color: SketchColors.ink, thickness: .8),
             const SizedBox(height: 6),
+            if (!widget.demoMode && _capture.hasSources)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.attach_file,
+                      size: 15,
+                      color: SketchColors.muted,
+                    ),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        // 录音/文件挂在草稿上，这一页不重复画它们的内容；
+                        // 说清楚「在哪能看到」比画一个空壳有用。
+                        '这条记录上已经有材料（录音或文件）。收好之后可以在「片段」里看到。',
+                        style: const TextStyle(
+                          color: SketchColors.muted,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             _saveStatus(),
             const SizedBox(height: 12),
             Wrap(
@@ -1353,9 +1393,7 @@ class _ExperienceShellState extends State<ExperienceShell>
                   label: '录音',
                   icon: Icons.mic_none,
                   compact: true,
-                  onPressed: widget.demoMode
-                      ? () => _openPanel('recording')
-                      : () => _toast('录音正在接入，当前只能保存文字。'),
+                  onPressed: () => unawaited(_openRecording()),
                 ),
               ],
             ),
@@ -1367,9 +1405,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         key: const Key('finish-capture'),
         label: '收好这一刻',
         filled: true,
-        onPressed: _capture.text.trim().isEmpty || _capture.finishing
-            ? null
-            : _finish,
+        onPressed: !_capture.canFinish || _capture.finishing ? null : _finish,
       ),
     ],
   );
@@ -2451,80 +2487,51 @@ class _ExperienceShellState extends State<ExperienceShell>
     ],
   );
 
-  Widget _recordingPanel() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _title('录音', '一句话或一次长谈，用同一个入口。'),
-      const SizedBox(height: 20),
-      _notice('真实麦克风采集尚未接入。此页只预览准备、录制、暂停、保存的布局，不会录音。'),
-      const SizedBox(height: 18),
-      SketchFrame(
-        child: Column(
-          children: [
-            const Icon(Icons.mic_none, size: 55, color: SketchColors.ink),
-            const SizedBox(height: 15),
-            Text(
-              switch (_recordingDemoState) {
-                'recording' => '流程预览：录制中（没有采集声音）',
-                'paused' => '流程预览：已暂停',
-                'saved' => '流程预览：片段已收好',
-                _ => '等待麦克风准备',
-              },
-              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 7),
-            const Text(
-              '获得真实首个音频缓冲后，才显示“正在录音”。',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: SketchColors.muted),
-            ),
-            const SizedBox(height: 20),
-            Wrap(
-              alignment: WrapAlignment.center,
-              spacing: 9,
-              runSpacing: 9,
-              children: [
-                if (_recordingDemoState == 'idle' ||
-                    _recordingDemoState == 'saved')
-                  SketchAction(
-                    label: '模拟开始',
-                    icon: Icons.fiber_manual_record,
-                    onPressed: () =>
-                        setState(() => _recordingDemoState = 'recording'),
-                  ),
-                if (_recordingDemoState == 'recording')
-                  SketchAction(
-                    label: '模拟暂停',
-                    icon: Icons.pause,
-                    onPressed: () =>
-                        setState(() => _recordingDemoState = 'paused'),
-                  ),
-                if (_recordingDemoState == 'paused')
-                  SketchAction(
-                    label: '模拟继续',
-                    icon: Icons.play_arrow,
-                    onPressed: () =>
-                        setState(() => _recordingDemoState = 'recording'),
-                  ),
-                if (_recordingDemoState == 'recording' ||
-                    _recordingDemoState == 'paused')
-                  SketchAction(
-                    label: '模拟结束',
-                    icon: Icons.stop,
-                    onPressed: () => setState(() {
-                      _recordingDemoState = 'saved';
-                      _attachments.add('录音占位');
-                    }),
-                  ),
-                SketchAction(label: '返回文字记录', filled: true, onPressed: _back),
-              ],
-            ),
-          ],
-        ),
-      ),
-    ],
-  );
+  /// 打开录音页：先把「这一条」落成草稿，录音才有地方挂。
+  ///
+  /// 草稿建不出来就不进页面——进去也只能录一段挂不上去的音，那是骗人。
+  Future<void> _openRecording() async {
+    if (widget.demoMode) {
+      _toast('演示模式不收音，也不会写进资料库。');
+      return;
+    }
+    final existing = _recording;
+    if (existing != null && existing.isActive) {
+      _openPanel('recording');
+      return;
+    }
+    final captureId = await _capture.ensureDraftId();
+    if (!mounted) return;
+    if (captureId == null) {
+      _toast('这条记录还没建好，现在不能录音。');
+      return;
+    }
+    if (_recordingCaptureId != captureId) {
+      _recording?.dispose();
+      _recording = RecordingController(
+        api: widget.api,
+        engine: MicrophoneRecordingEngine(),
+        captureId: captureId,
+      );
+      _recordingCaptureId = captureId;
+    }
+    _openPanel('recording');
+  }
+
+  Widget _recordingPanel() {
+    final controller = _recording;
+    if (controller == null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _title('录音', '一句话或一次长谈，用同一个入口。'),
+          const SizedBox(height: 20),
+          _notice('录音还没有准备好：这条记录还没建好。返回后重试。'),
+        ],
+      );
+    }
+    return RecordingPanel(api: widget.api, controller: controller);
+  }
 
   Widget _coverPanel() => Center(
     child: ConstrainedBox(

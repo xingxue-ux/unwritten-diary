@@ -77,6 +77,12 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// **这不是备份**：`restorable` 恒为 false，不能用于恢复资料库。
   Future<ExportTicket> createExport({required ExportRequest request});
 
+  /// 丢弃一段还没最终化的录音（用户按了录音又放弃）。
+  ///
+  /// 幂等：会话不存在返回成功。已经最终化的会报 `invalid_state`——音频已经
+  /// 挂到记录上，删会话会留下指向空资产的来源。
+  Future<void> discardRecording({required String recordingId});
+
   /// 从某个序号之后读取持久业务事件。
   ///
   /// 核心按**分页**读（`Core::events_page`，SQL 带 `LIMIT`）；这一层为了保持 Dart

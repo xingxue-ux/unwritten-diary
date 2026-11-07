@@ -19,7 +19,16 @@ Dart 侧访问 Rust 核心的唯一入口，含 [flutter_rust_bridge](https://cj
 
 对应 Rust 侧在 `crates/diary_bridge/`，生成入口是仓库根目录的 `flutter_rust_bridge.yaml`。
 
-**`diary_api` 适配层当前覆盖 64/76 个契约方法**：记录与导入、来源修订/提取/定位、资产租约、事件流、检索与索引、Provider、日记生成与版本、**风格 `styles.list` / `styles.get` / `styles.save`（#114 / #166）**、**天列表 `diary.listDays`（#168）**、**阅读导出 `exports.create`（#113 / #167）**、任务读取/取消/重试/到期执行/确认提醒、插件管理。**没接的 12 条**会在 `noSuchMethod` 里被点名，且不出现在 `capabilities` 里——回收站五条（#155 已合进 main，但适配层这一轮还没接）、`settings.*` 两条属于另一条线、`core.setRuntimeState`（核心没有资源调度入口）、`plugins.invoke`（核心同步入口没有可读的任务结果），以及契约收 `PlatformHost` 限域票据而票据解析尚未实现的 `backups.*` 三条。备份本轮只有**路径专用**的 `createBackupAtPath` / `inspectBackupAtPath` / `restoreBackupAtPath`（非契约、不写进 capabilities）：同步完成之后写一条 `succeeded` 的 `backup` / `restore` 任务记录，`jobId` 指向已完成记录，不是排队任务（取舍见 m5 文档）。票据解析就绪后，契约入口应先在宿主侧解析再接到这三条上。设计与取舍见 [M1 · DiaryApi 适配层](../../docs/architecture/m1-DiaryApi适配层.md)。
+**`diary_api` 适配层当前覆盖 75/77 个契约方法**：记录与导入、来源修订/提取/定位、资产租约、事件流、检索与索引、Provider、设置、日记生成与版本、风格、天列表、阅读导出、任务读取/取消/重试/到期执行/确认提醒、插件管理、备份与恢复、回收站五条、**录音五条 + `recordings.discard`**。
+
+**没接的 2 条**会在 `noSuchMethod` 里被点名，且不出现在 `capabilities` 里：
+
+- `core.setRuntimeState`：核心没有资源调度入口，报「已设置」就是撒谎；
+- `plugins.invoke`：契约要求返回 `jobId`，而核心的插件执行是同步的、没有可读的任务结果。
+
+**能力清单是两层的交集**：Dart 侧 `_wiredMethods` ∩ Rust 侧 `wired_capabilities()`。只改一边不够——
+UI 只认 `capabilities`，方法能调但没声明，按钮照样是灰的（这一条踩过两次，见
+[m1-桥接接线](../../docs/architecture/m1-桥接接线.md)）。
 
 **阅读导出（#113）**：核心同步生成 Markdown/纯文本到资料库的 `exports/` 下，并写一条
 `state = succeeded` 的 `export` 任务记录。契约的 `ExportTicket` 只有 `jobId` /

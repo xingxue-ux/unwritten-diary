@@ -44,6 +44,15 @@ class CaptureController extends ChangeNotifier {
   bool get canChangeDate =>
       _draft == null && _createOperationId == null && _finishing == null;
   bool get finishing => _finishing != null;
+
+  /// 这一条记录上有没有材料（录音、导入的文件）。
+  ///
+  /// 「不写日记」允许**只录一段音就收好**，所以「有没有正文」不能当成能不能
+  /// 收好的判据——那会把「只录音不写字」这条路堵死。
+  bool get hasSources => _draft?.orderedSourceIds.isNotEmpty ?? false;
+
+  /// 现在能不能「收好这一刻」：有正文，或者有材料。
+  bool get canFinish => text.trim().isNotEmpty || hasSources;
   bool get needsManualRecovery => _conflictCode != null;
 
   void _notify() {
@@ -91,12 +100,28 @@ class CaptureController extends ChangeNotifier {
     }
   }
 
+  /// 重新读列表，并且**把当前草稿也读回来**。
+  ///
+  /// 只刷列表是不够的：录音最终化会推进记录的 revision（往记录上挂一个音频
+  /// 来源）。手里那份草稿的 revision 就旧了，下一次 `saveDraft` 会被核心判成
+  /// `revision_conflict`——用户看到的是「内容已被修改」，其实是他自己刚录的音。
   Future<void> refresh() async {
     final page = await api.listCaptures(pageSize: 20);
     if (_disposed) return;
     recent = page.captures;
     _nextCursor = page.nextCursor;
     loadMoreError = null;
+    final draft = _draft;
+    if (draft != null) {
+      try {
+        final fresh = await api.getCapture(draft.id);
+        if (_disposed) return;
+        _draft = fresh;
+        _savedText = fresh.draftText;
+      } on Object {
+        // 读不回来就保持原样：下一次保存会如实报冲突，不会悄悄写坏。
+      }
+    }
     _notify();
   }
 
@@ -239,6 +264,39 @@ class CaptureController extends ChangeNotifier {
     }
   }
 
+  /// 录音要挂到「这一条」记录上，所以录音前先把它落成草稿。
+  ///
+  /// 复用 [_createOperationId]：录音和打字抢同一个草稿时，重试仍然只建一条。
+  /// 失败返回 `null`，调用方据此告诉用户「现在还不能录」——不要在这里抛，
+  /// 录音面板自己会显示原因。
+  Future<String?> ensureDraftId() async {
+    if (_disposed) return null;
+    final existing = _draft;
+    if (existing != null) return existing.id;
+    _createOperationId ??= _newOperation();
+    try {
+      final draft = await api.createDraft(
+        occurredAt: occurredAt?.toUtc(),
+        operationId: _createOperationId!,
+      );
+      if (_disposed) return null;
+      _draft = draft;
+      _createOperationId = null;
+      recent = [
+        draft,
+        ...recent.where((capture) => capture.id != draft.id),
+      ];
+      _notify();
+      return draft.id;
+    } on Object catch (failure) {
+      if (_disposed) return null;
+      _blockOnConflict(failure);
+      error = _message(failure);
+      _notify();
+      return null;
+    }
+  }
+
   Future<bool> finish() {
     if (_disposed) return Future.value(false);
     if (_finishing != null) return _finishing!;
@@ -255,7 +313,7 @@ class CaptureController extends ChangeNotifier {
 
   Future<bool> _finishOnce() async {
     _debounce?.cancel();
-    if (text.trim().isEmpty || needsManualRecovery) return false;
+    if (!canFinish || needsManualRecovery) return false;
     if (!await saveNow()) {
       if (!_disposed) {
         error ??= '记录还没有保存成功，请重试。';
