@@ -315,6 +315,21 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     return box.localToGlobal(Offset.zero).dy;
   }
 
+  /// 已经有「同地址 + 同模型」的服务吗？有就返回它，保存时更新那一条。
+  ///
+  /// 没有这一条的话，用户填完点两次「保存服务」就会多出一条一模一样的配置
+  /// （真机上出现过 `DeepSeek` / `DeepSeek1` 并排）。
+  Provider? _duplicateOf(Uri uri, String model) {
+    final endpoint = uri.toString();
+    for (final provider in _providers) {
+      if (provider.id == _editingId) continue;
+      if (provider.endpoint == endpoint && (provider.model ?? '') == model) {
+        return provider;
+      }
+    }
+    return null;
+  }
+
   Future<void> _save() async {
     if (_busy) return;
     final uri = _checkedEndpoint();
@@ -323,6 +338,11 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     if (model.isEmpty) {
       _say('请填写模型名，例如 deepseek-chat。', error: true);
       return;
+    }
+    final duplicate = _duplicateOf(uri, model);
+    if (duplicate != null) {
+      // 同一条配置：改成更新它，别再建一条。
+      setState(() => _editingId = duplicate.id);
     }
     if (_secret.text.trim().isEmpty && _needsSecret) {
       _say('在线服务要填 API Key。', error: true);
@@ -454,6 +474,17 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
         if (mounted) setState(() => _busy = false);
       }
     });
+  }
+
+  /// 当前「用于整理」的那个服务。
+  ///
+  /// 不能拿 `enabled` 当判据：新建的服务默认就是启用的，两个服务都会显示
+  /// 「正在用于整理」，而且**两个都点不动**——用户被卡死。
+  /// 只有「恰好一个启用」才算选过；多个启用说明还没选。
+  String? get _selectedId {
+    final candidates = _providers.where(_canGenerate).toList(growable: false);
+    final enabled = candidates.where((item) => item.enabled).toList(growable: false);
+    return enabled.length == 1 ? enabled.single.id : null;
   }
 
   /// 这个服务能不能承担「整理日记」：在线 + 声明了生成文字。
@@ -652,9 +683,11 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
                   children: [
                     if (_canGenerate(provider))
                       SketchAction(
-                        label: provider.enabled ? '正在用于整理' : '用它整理',
-                        filled: provider.enabled,
-                        onPressed: _busy || provider.enabled
+                        label: _selectedId == provider.id
+                            ? '正在用于整理'
+                            : '用它整理',
+                        filled: _selectedId == provider.id,
+                        onPressed: _busy || _selectedId == provider.id
                             ? null
                             : () => unawaited(_selectForOrganize(provider)),
                       ),

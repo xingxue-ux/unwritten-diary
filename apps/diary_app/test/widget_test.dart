@@ -1127,6 +1127,31 @@ void main() {
     expect(field.controller!.text, '今天风很大，把伞吹翻了');
   });
 
+  testWidgets('两个服务都启用时，两个都显示「用它整理」而不是都「正在用于整理」', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('diary-ui');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+
+    await tester.pumpWidget(DiaryApp(api: _TwoEnabledApi()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('模型服务'));
+    await tester.tap(find.text('模型服务'));
+    await tester.pumpAndSettle();
+
+    // 之前拿 `enabled` 当「已选中」，两个服务都启用时两边都显示「正在用于整理」，
+    // 而且两个按钮都是禁用的——用户根本没法选。
+    expect(find.text('正在用于整理'), findsNothing);
+    expect(find.text('用它整理'), findsNWidgets(2));
+
+    await tester.ensureVisible(find.text('用它整理').first);
+    await tester.tap(find.text('用它整理').first);
+    await tester.pumpAndSettle();
+    expect(find.text('正在用于整理'), findsOneWidget);
+    expect(find.text('用它整理'), findsOneWidget);
+  });
+
   testWidgets('配了多个服务时，能指定用哪个整理', (tester) async {
     final dir = Directory.systemTemp.createTempSync('diary-ui');
     addTearDown(() => dir.deleteSync(recursive: true));
@@ -1477,3 +1502,48 @@ class _ProviderUiApi extends MockDiaryApi {
     );
   }
 }
+
+/// 两个都启用的服务：模拟「新建的服务默认启用」造成的歧义状态。
+class _TwoEnabledApi extends _ProviderUiApi {
+  /// 真实核心的 `selectGeneration` 会把其余在线生成服务**停用**，这里照着模拟，
+  /// 否则 `_selectedId` 永远算不出来。
+  List<Provider> rows = const [
+    Provider(
+      id: 'prv_a',
+      label: 'DeepSeek',
+      adapterId: 'openai_compatible',
+      capabilities: {ProviderCapability.generateText},
+      enabled: true,
+      endpoint: 'https://api.deepseek.com',
+      model: 'deepseek-flash',
+      credentialRef: 'secret-1',
+      testStatus: ProviderTestStatus.ok,
+    ),
+    Provider(
+      id: 'prv_b',
+      label: 'DeepSeek1',
+      adapterId: 'openai_compatible',
+      capabilities: {ProviderCapability.generateText},
+      enabled: true,
+      endpoint: 'https://api.deepseek.com',
+      model: 'deepseek-flash',
+      credentialRef: 'secret-2',
+      testStatus: ProviderTestStatus.untested,
+    ),
+  ];
+
+  @override
+  Future<List<Provider>> listProviders() async => List.of(rows);
+
+  @override
+  Future<Provider> selectGenerationProvider({
+    required String providerId,
+  }) async {
+    selected = providerId;
+    rows = [
+      for (final item in rows) item.copyWith(enabled: item.id == providerId),
+    ];
+    return rows.firstWhere((item) => item.id == providerId);
+  }
+}
+
