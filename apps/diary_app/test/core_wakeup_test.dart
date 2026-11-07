@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:diary_api/diary_api.dart';
 import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter/services.dart';
@@ -53,6 +55,7 @@ void main() {
   });
 
   _wakeupDesktopTests();
+  _afterOpenIsNotAndroidOnly();
 }
 
 /// 桌面端必须**自己**把队列推起来。
@@ -79,6 +82,26 @@ class _PumpApi extends MockDiaryApi {
       nextWakeup: scheduledWakeup,
     );
   }
+}
+
+/// `afterOpen` 必须在**所有平台**都被调用。
+///
+/// 之前 `main.dart` 里写的是 `if (Platform.isAndroid && ...)`，于是桌面端
+/// 连这个函数都进不去——里面分平台的逻辑再对也没用。
+void _afterOpenIsNotAndroidOnly() {
+  test('main 里不再按平台 gate afterOpen', () {
+    final source = File('lib/main.dart').readAsStringSync();
+    expect(
+      source.contains('Platform.isAndroid && !widget.demoMode'),
+      isFalse,
+      reason: 'afterOpen 被 Android 条件挡住了，桌面端排队的任务永远不会执行',
+    );
+    expect(
+      source.contains('CoreWakeupScheduler.afterOpen'),
+      isTrue,
+      reason: '启动时仍然要调 afterOpen',
+    );
+  });
 }
 
 void _wakeupDesktopTests() {
