@@ -86,6 +86,8 @@ class _ExperienceShellState extends State<ExperienceShell>
   bool _adopted = false;
   bool _showOldVersions = false;
   String? _reply;
+  bool _responseBusy = false;
+  String? _responseError;
   String _searchKind = '全部';
   String _activeQuery = '';
   SearchHit? _selectedSearchHit;
@@ -1849,6 +1851,8 @@ class _ExperienceShellState extends State<ExperienceShell>
             'tasks',
             Icons.inbox_outlined,
           ),
+          // 正式模式下也要有入口：之前只有演示页能进「主动回应」。
+          ('主动回应', '就这一天的材料问一句', 'response', Icons.chat_bubble_outline),
         ]),
         const SizedBox(height: 18),
         _section('资料与应用', [
@@ -2088,13 +2092,23 @@ class _ExperienceShellState extends State<ExperienceShell>
     ],
   );
 
+  /// 主动回应：**真的调核心**（`responses.request` → `jobs.runDue` → `responses.get`）。
+  ///
+  /// 之前这一页是「看看回应示例」，点了给一段写死的文案——用户以为 AI 回应就是这个。
   Widget _responsePanel() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       _title('主动回应', '只有你点下请求，才会出现一段回应。'),
       const SizedBox(height: 20),
-      _notice('演示不会调用 AI，也不会上传材料；下方只展示回应会如何单独呈现。'),
-      const SizedBox(height: 18),
+      if (_responseBusy)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 12),
+          child: LinearProgressIndicator(),
+        ),
+      if (_responseError != null) ...[
+        _notice(_responseError!),
+        const SizedBox(height: 12),
+      ],
       SketchFrame(
         child: TextField(
           controller: _responseText,
@@ -2110,11 +2124,10 @@ class _ExperienceShellState extends State<ExperienceShell>
       Align(
         alignment: Alignment.centerLeft,
         child: SketchAction(
-          label: '看看回应示例',
+          label: '请求回应',
           filled: true,
-          onPressed: () => setState(
-            () => _reply = '你已经把那个短暂的停留记下来了。那束花的颜色，以及你愿意看它一会儿的心情，都可以先留在这里。',
-          ),
+          busy: _responseBusy,
+          onPressed: _responseBusy ? null : () => unawaited(_requestResponse()),
         ),
       ),
       if (_reply != null) ...[
@@ -2125,7 +2138,7 @@ class _ExperienceShellState extends State<ExperienceShell>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                '回应示例 · 与日记正文分开展示',
+                '回应 · 与日记正文分开展示',
                 style: TextStyle(color: SketchColors.muted, fontSize: 12),
               ),
               const SizedBox(height: 10),
@@ -2139,6 +2152,48 @@ class _ExperienceShellState extends State<ExperienceShell>
       ],
     ],
   );
+
+  /// 请求一段回应：受理 → 推一轮队列 → 读回结果。
+  Future<void> _requestResponse() async {
+    final text = _responseText.text.trim();
+    if (text.isEmpty) {
+      setState(() => _responseError = '先写一句想让它回应的话。');
+      return;
+    }
+    final captures = _capture.recent.take(5).map((item) => item.id).toList();
+    if (captures.isEmpty) {
+      setState(() => _responseError = '还没有记录可以引用；先写一条再来。');
+      return;
+    }
+    setState(() {
+      _responseBusy = true;
+      _responseError = null;
+      _reply = null;
+    });
+    try {
+      final ticket = await widget.api.requestResponse(
+        captureIds: captures,
+        requestText: text,
+      );
+      // 桌面端没有后台执行器，这里推一轮；推不动就如实说「还在排队」。
+      await widget.api.runDueJobs(budgetMs: 60000, trigger: 'ui-response');
+      final responseId = ticket.responseId;
+      if (responseId == null) {
+        if (!mounted) return;
+        setState(() => _responseError = '已经排上了，回应还没出来；稍后在任务中心看进度。');
+        return;
+      }
+      final response = await widget.api.getResponse(responseId);
+      if (!mounted) return;
+      setState(() => _reply = response.body);
+    } on DiaryException catch (failure) {
+      if (mounted) setState(() => _responseError = failure.message);
+    } on Object catch (failure) {
+      if (mounted) setState(() => _responseError = '回应没拿到：$failure');
+    } finally {
+      if (mounted) setState(() => _responseBusy = false);
+    }
+  }
 
   Widget _tasksPanel() => TasksPanel(api: widget.api);
 
