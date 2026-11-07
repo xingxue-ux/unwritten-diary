@@ -7,7 +7,7 @@ import '../../frb_generated.dart';
 import '../../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Asset`, `JobPage`, `NewJob`, `OrganizePlanSummary`, `PluginProviderFailure`, `PurgePreview`, `PurgeResult`, `SourceItem`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Asset`, `JobPage`, `NewJob`, `OrganizePlanSummary`, `PluginProviderFailure`, `SourceItem`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`, `partial_cmp`
 // These functions have error during generation (see debug logs or enable `stop_on_error: true` for more details): `new`, `scheduled_at`, `targeting`, `with_snapshot`
 
@@ -3231,6 +3231,162 @@ enum ProviderTestStatus {
 
   Future<void> wire() =>
       RustLib.instance.api.diaryCoreModelProviderTestStatusWire(that: this);
+}
+
+/// 永久清理的影响预览，契约 4.1 节 `captures.previewPurge`。
+///
+/// 清单是**这一次预览时**数据库里的真实行：原件（assets）、派生内容
+/// （extracted_contents，含它的片段与检索词项）、仍引用这条记录的日记版本，以及
+/// 引用它的 AI 回应。`preview_token` 一次性、带过期、绑定 `capture_id`；
+/// `purge_capture` 必须带上它，而且如果预览之后清单变了（又有新原件/新日记版本），
+/// 核心会拒绝并让用户重新预览。
+///
+/// `retained_source_snapshot_ids` 是**清理后仍会保留**的输入快照：它们的 `body`
+/// 里冻结了这条记录的材料正文，但快照没有「快照 → 来源」映射，无法外科式脱敏
+/// （#161 方案 A）。预览与结果都如实列出，绝不假装删干净。
+///
+/// 日记版本分三类，**只有第一类会随 `deleteDiaryVersions` 删除**：
+/// - `diary_versions_still_referencing`：与这条记录**有可判定关联**的版本。关联口径是
+///   「`provenance_links` 指向它的来源」**或**「这一版的输入快照里冻结了它的材料」——
+///   草稿期的材料还没有 `source_id`，只能靠快照 `materials[].capture_id` 认（#155 复审）；
+/// - `derived_diary_version_ids`：正文由上面那些版本派生/合并来的版本（`user_edit` /
+///   `merge`）。**不删**：正文是用户自己确认过的内容；但它们可能仍含被清理记录的文字，
+///   所以如实列出，不让界面把「没删」说成「没有」；
+/// - `undetermined_diary_version_ids`：**归属判不出来**的版本（没有输入快照可核对，
+///   谱系又断了，例如父版本行已经不在、快照正文解析不了）。查不出来 ≠ 没有：
+///   **一个都不删**，如实列出由用户自己处置。
+class PurgePreview {
+  final String captureId;
+  final String previewToken;
+  final List<String> assetIds;
+  final List<String> derivedContentIds;
+  final List<String> diaryVersionsStillReferencing;
+
+  /// 引用这条记录、会被一并清理的 AI 回应（`ai_responses` 的请求与正文一起删）。
+  final List<String> aiResponseIds;
+
+  /// 清理后仍保留的日记输入快照（`body` 里可能含这条记录的正文；#161 方案 A）。
+  final List<String> retainedSourceSnapshotIds;
+
+  /// 由 `diary_versions_still_referencing` 派生/合并来的版本：**不会被删除**，
+  /// 但正文可能仍含这条记录的文字，预览与结果都如实列出。
+  final List<String> derivedDiaryVersionIds;
+
+  /// 归属判不出来的版本：**不会被删除**（判不出来就不删），如实列出。
+  final List<String> undeterminedDiaryVersionIds;
+
+  const PurgePreview({
+    required this.captureId,
+    required this.previewToken,
+    required this.assetIds,
+    required this.derivedContentIds,
+    required this.diaryVersionsStillReferencing,
+    required this.aiResponseIds,
+    required this.retainedSourceSnapshotIds,
+    required this.derivedDiaryVersionIds,
+    required this.undeterminedDiaryVersionIds,
+  });
+
+  @override
+  int get hashCode =>
+      captureId.hashCode ^
+      previewToken.hashCode ^
+      assetIds.hashCode ^
+      derivedContentIds.hashCode ^
+      diaryVersionsStillReferencing.hashCode ^
+      aiResponseIds.hashCode ^
+      retainedSourceSnapshotIds.hashCode ^
+      derivedDiaryVersionIds.hashCode ^
+      undeterminedDiaryVersionIds.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PurgePreview &&
+          runtimeType == other.runtimeType &&
+          captureId == other.captureId &&
+          previewToken == other.previewToken &&
+          assetIds == other.assetIds &&
+          derivedContentIds == other.derivedContentIds &&
+          diaryVersionsStillReferencing ==
+              other.diaryVersionsStillReferencing &&
+          aiResponseIds == other.aiResponseIds &&
+          retainedSourceSnapshotIds == other.retainedSourceSnapshotIds &&
+          derivedDiaryVersionIds == other.derivedDiaryVersionIds &&
+          undeterminedDiaryVersionIds == other.undeterminedDiaryVersionIds;
+}
+
+/// 永久清理结果，契约 4.1 节 `captures.purge`。
+///
+/// `purged_*` 就是真的删掉的 id；`retained_*` 是**如实保留**的 id。
+/// `purged_diary_version_ids` / `retained_diary_version_ids` 按调用方的
+/// `delete_diary_versions` 二选一：删除时前者等于预览里的
+/// `diary_versions_still_referencing`；保留时后者等于它，日记日与当前指针不动。
+/// `derived_diary_version_ids` / `undetermined_diary_version_ids` 与预览同名项一致，
+/// 且**与 `delete_diary_versions` 无关**：这两类版本一个都不会被删除（前者正文是
+/// 用户确认的内容，后者归属判不出来），结果里如实回填，绝不假装删干净。
+/// `retained_source_snapshot_ids` 与预览同名项一致：快照 body 里的材料正文不删
+/// （#161 方案 A），`purge` 后用同一 operationId 重放也不会吐出正文——该记录的非
+/// purge 回执已经一起清掉。
+class PurgeResult {
+  final String captureId;
+  final List<String> purgedAssetIds;
+  final List<String> purgedDerivedContentIds;
+  final List<String> purgedDiaryVersionIds;
+  final List<String> purgedAiResponseIds;
+  final List<String> retainedDiaryVersionIds;
+  final List<String> retainedSourceSnapshotIds;
+
+  /// 由被删除版本派生/合并来的版本：**保留**，但正文可能仍含这条记录的文字。
+  final List<String> derivedDiaryVersionIds;
+
+  /// 归属判不出来的版本：**保留**（判不出来就不删）。
+  final List<String> undeterminedDiaryVersionIds;
+
+  /// 被清掉的该记录幂等回执数量（`captures.purge` 自己的回执保留，供重放）。
+  final PlatformInt64 cleanedReceiptCount;
+
+  const PurgeResult({
+    required this.captureId,
+    required this.purgedAssetIds,
+    required this.purgedDerivedContentIds,
+    required this.purgedDiaryVersionIds,
+    required this.purgedAiResponseIds,
+    required this.retainedDiaryVersionIds,
+    required this.retainedSourceSnapshotIds,
+    required this.derivedDiaryVersionIds,
+    required this.undeterminedDiaryVersionIds,
+    required this.cleanedReceiptCount,
+  });
+
+  @override
+  int get hashCode =>
+      captureId.hashCode ^
+      purgedAssetIds.hashCode ^
+      purgedDerivedContentIds.hashCode ^
+      purgedDiaryVersionIds.hashCode ^
+      purgedAiResponseIds.hashCode ^
+      retainedDiaryVersionIds.hashCode ^
+      retainedSourceSnapshotIds.hashCode ^
+      derivedDiaryVersionIds.hashCode ^
+      undeterminedDiaryVersionIds.hashCode ^
+      cleanedReceiptCount.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PurgeResult &&
+          runtimeType == other.runtimeType &&
+          captureId == other.captureId &&
+          purgedAssetIds == other.purgedAssetIds &&
+          purgedDerivedContentIds == other.purgedDerivedContentIds &&
+          purgedDiaryVersionIds == other.purgedDiaryVersionIds &&
+          purgedAiResponseIds == other.purgedAiResponseIds &&
+          retainedDiaryVersionIds == other.retainedDiaryVersionIds &&
+          retainedSourceSnapshotIds == other.retainedSourceSnapshotIds &&
+          derivedDiaryVersionIds == other.derivedDiaryVersionIds &&
+          undeterminedDiaryVersionIds == other.undeterminedDiaryVersionIds &&
+          cleanedReceiptCount == other.cleanedReceiptCount;
 }
 
 /// 最终化结果。转写不阻塞完成。

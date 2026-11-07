@@ -160,6 +160,17 @@ class BridgeDiaryApi
     'diary.listDays',
     'settings.get',
     'settings.update',
+    // 回收站五条（核心 `recycle` 已实现，桥这一层补上）。
+    'captures.moveDay',
+    'captures.trash',
+    'captures.restore',
+    'captures.previewPurge',
+    'captures.purge',
+    // 备份三条：契约的「票据」目前由宿主直接给文件系统路径，
+    // 适配层把路径原样接到 `*AtPath` 入口（见类注释）。
+    'backups.create',
+    'backups.inspect',
+    'backups.restore',
     'styles.list',
     'styles.get',
     'styles.save',
@@ -963,6 +974,105 @@ class BridgeDiaryApi
   // ------------------------------------------------------------ 风格（#114）
 
   @override
+  Future<api.Capture> moveDay({
+    required String id,
+    required String targetDayKey,
+    required int expectedRevision,
+  }) async {
+    final session = _open;
+    final value = await _translate(
+      () => session.moveDay(
+        captureId: id,
+        targetDayKey: targetDayKey,
+        expectedRevision: expectedRevision,
+      ),
+    );
+    return _capture(value);
+  }
+
+  @override
+  Future<api.Capture> trashCapture({
+    required String id,
+    required int expectedRevision,
+    required String operationId,
+  }) async {
+    final session = _open;
+    final value = await _translate(
+      () => session.trashCapture(
+        captureId: id,
+        expectedRevision: expectedRevision,
+        operationId: operationId,
+      ),
+    );
+    return _capture(value);
+  }
+
+  @override
+  Future<api.Capture> restoreCapture({
+    required String id,
+    required int expectedRevision,
+    required String operationId,
+  }) async {
+    final session = _open;
+    final value = await _translate(
+      () => session.restoreCapture(
+        captureId: id,
+        expectedRevision: expectedRevision,
+        operationId: operationId,
+      ),
+    );
+    return _capture(value);
+  }
+
+  @override
+  Future<api.PurgePreview> previewPurge(String id) async {
+    final session = _open;
+    final value = await _translate(() => session.previewPurge(captureId: id));
+    return _purgePreview(value);
+  }
+
+  @override
+  Future<api.PurgeResult> purgeCapture({
+    required String id,
+    required String previewToken,
+    bool deleteDiaryVersions = false,
+    required String operationId,
+  }) async {
+    final session = _open;
+    final value = await _translate(
+      () => session.purgeCapture(
+        captureId: id,
+        previewToken: previewToken,
+        deleteDiaryVersions: deleteDiaryVersions,
+        operationId: operationId,
+      ),
+    );
+    return _purgeResult(value);
+  }
+
+  @override
+  Future<api.JobTicket> createBackup(api.BackupRequest request) =>
+      createBackupAtPath(
+        request.targetTicket,
+        includeAssets: request.includeAssets,
+      );
+
+  @override
+  Future<api.BackupInspection> inspectBackup(String packageTicket) =>
+      inspectBackupAtPath(packageTicket);
+
+  @override
+  Future<api.JobTicket> restoreBackup({
+    required String packageTicket,
+    api.RestoreOptions options = const api.RestoreOptions(),
+  }) => restoreBackupAtPath(
+    packagePath: packageTicket,
+    // 契约让宿主给目标目录；这里用备份包旁边的同名目录，避免覆盖当前库。
+    targetDir: '$packageTicket.restored',
+    options: options,
+  );
+
+  @override
   Future<api.Settings> getSettings() async {
     final session = _open;
     final value = await _translate(() => session.getSettings());
@@ -1682,6 +1792,31 @@ class BridgeDiaryApi
       captureCount: info.captureCount.toInt(),
     );
   }
+
+  api.PurgePreview _purgePreview(bridge.PurgePreview value) => api.PurgePreview(
+    captureId: value.captureId,
+    previewToken: value.previewToken,
+    assetIds: value.assetIds,
+    derivedContentIds: value.derivedContentIds,
+    diaryVersionsStillReferencing: value.diaryVersionsStillReferencing,
+    aiResponseIds: value.aiResponseIds,
+    retainedSourceSnapshotIds: value.retainedSourceSnapshotIds,
+    derivedDiaryVersionIds: value.derivedDiaryVersionIds,
+    undeterminedDiaryVersionIds: value.undeterminedDiaryVersionIds,
+  );
+
+  api.PurgeResult _purgeResult(bridge.PurgeResult value) => api.PurgeResult(
+    captureId: value.captureId,
+    purgedAssetIds: value.purgedAssetIds,
+    purgedDerivedContentIds: value.purgedDerivedContentIds,
+    purgedDiaryVersionIds: value.purgedDiaryVersionIds,
+    purgedAiResponseIds: value.purgedAiResponseIds,
+    retainedDiaryVersionIds: value.retainedDiaryVersionIds,
+    retainedSourceSnapshotIds: value.retainedSourceSnapshotIds,
+    derivedDiaryVersionIds: value.derivedDiaryVersionIds,
+    undeterminedDiaryVersionIds: value.undeterminedDiaryVersionIds,
+    cleanedReceiptCount: value.cleanedReceiptCount,
+  );
 
   /// 契约 `Settings` ↔ 桥 `Settings`。字段名一致，只做搬运。
   api.Settings _settings(bridge.Settings value) => api.Settings(

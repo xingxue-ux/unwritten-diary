@@ -257,6 +257,13 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
+  /// 调整记录所属日期，契约 `captures.moveDay`。
+  Future<Capture> moveDay({
+    required String captureId,
+    required String targetDayKey,
+    required PlatformInt64 expectedRevision,
+  });
+
   /// 建议的下次唤醒时刻；没有待办时为空。
   Future<DateTime?> nextWakeup();
 
@@ -315,12 +322,23 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String operationId,
   });
 
+  /// 预览永久清理的影响，契约 `captures.previewPurge`。
+  Future<PurgePreview> previewPurge({required String captureId});
+
   /// 取某个来源**当前修订的父修订**（上一版正文），供界面「看原正文」用。
   ///
   /// 没有上一版时返回空。返回的是修订，不是 diff：差在哪由前端算。
   /// 父修订可能是原件型修订（`text` 为空、`asset_id` 有值），前端要按这个分支
   /// 决定是显示文字还是提供「打开原件」。
   Future<SourceRevision?> previousSourceRevision({required String sourceId});
+
+  /// 永久清理，契约 `captures.purge`。必须带 `previewPurge` 的令牌。
+  Future<PurgeResult> purgeCapture({
+    required String captureId,
+    required String previewToken,
+    required bool deleteDiaryVersions,
+    required String operationId,
+  });
 
   /// 排一条关键词索引重建任务，契约第 4.4 节 `indexes.rebuild`。
   ///
@@ -401,6 +419,13 @@ abstract class BridgeSession implements RustOpaqueInterface {
   Future<Job> restoreBackupJob({
     required String packagePath,
     required String targetDir,
+  });
+
+  /// 从回收站恢复，契约 `captures.restore`。
+  Future<Capture> restoreCapture({
+    required String captureId,
+    required PlatformInt64 expectedRevision,
+    required String operationId,
   });
 
   /// Retry a failed job with an idempotent user action identifier.
@@ -523,6 +548,13 @@ abstract class BridgeSession implements RustOpaqueInterface {
   Future<ProviderTestReport> testProvider({
     required String providerId,
     required List<ProviderCapability> scope,
+  });
+
+  /// 移入回收站，契约 `captures.trash`。
+  Future<Capture> trashCapture({
+    required String captureId,
+    required PlatformInt64 expectedRevision,
+    required String operationId,
   });
 
   /// 卸载。`remove_private_state` 对齐契约的「可选择的私有缓存」；执行文件总会清理。

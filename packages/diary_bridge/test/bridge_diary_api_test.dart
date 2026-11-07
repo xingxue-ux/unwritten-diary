@@ -331,16 +331,25 @@ void main() {
     expect(snapshot.coreInfo.capabilities, contains('indexes.rebuildSemantic'));
     expect(snapshot.coreInfo.capabilities, contains('jobs.get'));
     expect(snapshot.coreInfo.capabilities, contains('jobs.list'));
-    // 备份契约三条**不宣告**：契约收的是 PlatformHost 的限域票据，而票据解析
-    // 尚未实现；本轮只有显式带 AtPath 的路径专用入口（见适配层类注释）。
-    // 仍然没接的（原因见 `noSuchMethod` 与适配层文档）：不列进能力清单。
+    // 回收站五条与备份三条现在都接上了。
     for (final capability in [
+      'captures.moveDay',
+      'captures.trash',
+      'captures.restore',
+      'captures.previewPurge',
+      'captures.purge',
       'backups.create',
       'backups.inspect',
       'backups.restore',
+    ]) {
+      expect(snapshot.coreInfo.capabilities, contains(capability), reason: capability);
+    }
+    // 仍然没接的（原因见 `noSuchMethod` 与适配层文档）：不列进能力清单。
+    // 只剩两条：`plugins.invoke`（契约要 jobId，核心是同步返回，硬套会造出
+    // 「有 id 没结果」的假票据）与 `core.setRuntimeState`（核心没有资源调度入口）。
+    for (final capability in [
       // settings.get / update 已经接上（并且 Rust 侧也宣告了），不再属于「没接」。
       'plugins.invoke',
-      'captures.trash',
       'core.setRuntimeState',
     ]) {
       expect(
@@ -350,14 +359,15 @@ void main() {
       );
     }
 
-    // 契约入口必须诚实报错，而不是把票据当路径或返回空结果。
+    // 备份入口现在接上了：票据形态的输入**如实拒绝**（不是静默当成路径），
+    // 提示调用方先在宿主侧把票据解析成授权路径。
     await expectLater(
       () => api.inspectBackup('ticket:backup-package'),
       throwsA(
-        isA<UnsupportedError>().having(
+        isA<DiaryException>().having(
           (error) => error.message,
           'message',
-          contains('backups.inspect'),
+          contains('票据'),
         ),
       ),
     );
