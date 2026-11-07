@@ -4,7 +4,7 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 配置并验证的服务**」：配置模型、密钥托管、能力协商与门控、连接测试、错误归一化、可注入传输层，
 以及「默认不联网」这条硬约束。**不做**日记正文生成与提示词（B4b），也不做插件模型能力（M4）。
 
-代码在 `crates/diary_core/src/provider/`（`mod.rs` 配置与门控、`secret.rs` 密钥托管、
+代码在 `crates/diary_core/src/provider/`（`mod.rs` 配置与门控、`secret/` 密钥托管、
 `transport.rs` 传输层、`adapter.rs` 协议适配器、`normalize.rs` 错误归一化、
 `endpoint.rs` 本机 endpoint 判定、`presets.rs` 内置服务预设、`models.rs` 模型列表检测），
 契约形状见 [共享接口契约](../development/01-共享接口契约.md) 第 2.7、4.3、4.4、7 节。
@@ -105,34 +105,54 @@ issue [#66](https://github.com/xingxue-ux/unwritten-diary/issues/66)。这一片
 `http://127.0.0.1:11434/v1/chat/completions` 这个**请求构造**，没有对真实 Ollama 实例联调；
 `note` 里就写「请求构造已验证，未对真实 Ollama 实例联调」。
 
-## 密钥存放与它的妥协
+## 密钥存放
 
 契约第 2.7 / 4.4 节：**API 返回凭据存在与否，不返回密钥明文**；密钥不进配置表明文。
 落地成两层：
 
-- `SecretStore` trait：`put` / `get` / `delete` / `contains`。`providers.credential_ref`
-  只是它的键；换实现不用动表结构；
-- 默认实现 `FileSecretStore`：一个凭据一个文件，落在**资料库目录下的 `secrets/`**
-  （与库文件分开）。Unix 上目录 `0700`、文件 `0600`，先写临时文件再改名。
+- `SecretStore` trait：`put` / `get` / `delete` / `contains` / `describe`。
+  `providers.credential_ref` 只是它的键；换实现不用动表结构；
+- 按平台选实现（`provider::secret::for_library`）：
+  - **Windows**：`WinCredSecretStore` 走系统凭据管理器（`CredWriteW` / `CredReadW` /
+    `CredDeleteW`，`CRED_TYPE_GENERIC` + `CRED_PERSIST_LOCAL_MACHINE`）。TargetName 是
+    `unwritten-diary/cred/<credential_ref>`，按当前 Windows 用户隔离；密钥不再以明文文件
+    躺在资料库旁边；
+  - **Android / Linux / macOS 等其他平台**：`FileSecretStore`，一个凭据一个文件，落在
+    **资料库目录下的 `secrets/`**（与库文件分开）。Unix 上目录 `0700`、文件 `0600`，
+    先写临时文件再改名；
+  - 内存库：`MemorySecretStore`，不落盘。
 
-**这是妥协，不是系统钥匙串**（如实写在代码注释里，也写在这里）：
+**Windows 的回退与迁移**（如实写在代码注释里，也写在这里）：
 
-- Windows 上 `set_permissions` 只映射只读位，**没有 ACL 语义**——文件权限实际由所在目录的
-  继承 ACL 决定。这一层不做加密，也不假装做了；
-- 同用户身份下的任何本地进程都能读到明文。系统钥匙串能给的是「按用户/应用隔离 + 由 OS 保管」，
-  这里没有；
+- 打开资料库时先做一次「写 → 读回 → 删」探测。`CredWriteW` / `CredReadW` / `CredDeleteW`
+  任何一步失败（例如组策略禁用凭据管理器），就退回 `FileSecretStore`，原因写进
+  `describe()`；不静默假装成功，也不因为凭据管理器坏了就让人完全无法配模型；
+- 旧版本留在 `secrets/` 的明文文件会在首次以凭据管理器打开时迁进去：**先把所有明文读出来、
+  全部写成功，再删旧文件**；任何一次写入失败都回滚已写入的凭据并保留全部旧文件。
+  迁移幂等，重复执行不会丢密钥；
+- 临时目录里的资料库不写系统凭据（测试与导入演练会大量创建临时库，否则随机引用会永久
+  留在用户的「Windows 凭据」里）；这类资料库仍用 `secrets/` 下的文件。
+
+**Android 上仍然是明文文件**（不要读成「已经用了系统钥匙串」）：
+
+- Android 没有接 Android Keystore，密钥就是资料库目录下 `secrets/` 里的明文文件
+  （Unix 上目录 `0700`、文件 `0600`）；
+- 拿到这个目录的本地进程（同用户身份）就能读到明文。系统钥匙串能给的是
+  「按用户/应用隔离 + 由 OS 保管」，Android 这一半还没有；
+- Windows 回退到文件实现时同样有这条限制：`set_permissions` 只映射只读位，**没有 ACL
+  语义**——文件权限实际由所在目录的继承 ACL 决定。这一层不做加密，也不假装做了；
 - 密钥与资料库同目录，**备份实现必须显式排除 `secrets/`**（契约第 8 节要求密钥不进备份）。
-  这一片没有备份入口，所以这是约束，不是已经实现的保证；
-- 后续方向：Windows DPAPI / Android Keystore（即契约第 5 节 `PlatformHost.storeCredential` /
-  `readCredential`）。宿主凭据桥接接上后换一个 `SecretStore` 实现即可，表里的引用形状不用动。
+  这一片没有备份入口，所以这是约束，不是已经实现的保证。
 
 明文只在三个瞬间存在于内存：用户输入、`SecretStore::get`、拼 `Authorization` 头。
 请求的 `Debug` 是手写的（敏感头的值一律 `***`），错误消息过一遍密钥擦除（`redact`），
-所以日志/错误/返回值里都不会有明文。
+所以日志/错误/返回值里都不会有明文。Windows 凭据管理器的错误只报操作与系统错误码，
+不把密钥内容放进消息。
 
-从设置页输入密钥目前走**桥接层的过渡入口**：`save_provider(config, secret)`（Rust）/ 适配层
+从设置页输入密钥目前仍走**桥接层的过渡入口**：`save_provider(config, secret)`（Rust）/ 适配层
 `BridgeDiaryApi.saveProviderCredential`（Dart）。契约冻结的 `DiaryApi.saveProvider(Provider)`
-签名里没有密钥（也不该有），而平台层的凭据桥接还没接（F1/F2），所以本片给一条能用的路，
+签名里没有密钥（也不该有），而平台层的凭据桥接（`PlatformHost.storeCredential`）还没接；
+Windows 核心现在直接走系统凭据管理器，但设置页到核心这一段仍是明文参数。本片给一条能用的路，
 并在文档里写明它是过渡而不是长期接口。
 
 ## 能力协商与门控
@@ -382,8 +402,9 @@ python3 tools/check_docs.py
 
 ## 没有做到的
 
-- **没有用 OS 钥匙串**：默认实现是受限权限的独立文件（上面「密钥存放与它的妥协」写清了三条妥协）。
-  Windows DPAPI / Android Keystore 要等 `PlatformHost` 凭据桥接；
+- **Android 还没有用系统钥匙串**：Windows 已经走 Credential Manager（见上面「密钥存放」），
+  Android 仍是资料库目录下 `secrets/` 的明文文件（Unix 0600）。Android Keystore 要等
+  `PlatformHost` 凭据桥接；
 - **没有配额与用量统计**：契约第 2.7 节说「用量回传由 Provider 如实提供，核心只记录不猜测」，
   这一片连「记录」都没做——没有 `usage` 表、没有计费估算。远端返回的 token 数被丢掉了。
   现在要做的话，需要新表 + 新的 DTO 字段（契约变更），见下面「需要拍板」；
