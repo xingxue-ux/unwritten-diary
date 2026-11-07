@@ -105,9 +105,16 @@ class _BootGateState extends State<_BootGate> {
     _opening = _open();
   }
 
-  Future<({DiaryApi api, CoreSnapshot snapshot})> _open() async {
+  /// 打开资料库。[libraryPath] 为空时用默认路径（或用户上次选的那个）。
+  Future<({DiaryApi api, CoreSnapshot snapshot})> _open({String? libraryPath}) async {
     try {
-      final api = widget.api ?? await createProductionDiaryApi();
+      // 注入 api 时（测试、演示）不读「上次选的库」：那条路要做真实文件 I/O，
+      // 而 widget 测试跑在假时钟里，真 I/O 的 future 永远不会完成——整个启动
+      // 会卡在转圈上。生产路径（`widget.api == null`）才需要这个选择。
+      final api = widget.api ??
+          await createProductionDiaryApi(
+            libraryPath: libraryPath ?? await readChosenLibrary(),
+          );
       final snapshot = await api.open();
       final appMajor = int.tryParse(kApiVersion.split('.').first);
       final coreMajor = int.tryParse(
@@ -148,6 +155,25 @@ class _BootGateState extends State<_BootGate> {
     }
   }
 
+  /// 切到另一个资料库（恢复备份之后用）。
+  ///
+  /// 顺序是刻意的：先记住选择，再关旧库，最后重开。关掉旧库之前调用方要先把
+  /// 当前草稿存好——这里不替它猜「还有什么没保存」。
+  /// [libraryPath] 为空表示回到默认资料库（应用支持目录下那个）。
+  Future<void> _switchLibrary(String? libraryPath) async {
+    await writeChosenLibrary(libraryPath);
+    final previous = _opening;
+    setState(() {
+      _opening = _open(libraryPath: libraryPath);
+    });
+    // 旧库在后台关掉：它已经不在界面上了，关失败也不该挡住新库。
+    unawaited(
+      previous
+          .then((value) => value.api.close())
+          .catchError((Object _) {}),
+    );
+  }
+
   @override
   Widget build(BuildContext context) =>
       FutureBuilder<({DiaryApi api, CoreSnapshot snapshot})>(
@@ -155,9 +181,13 @@ class _BootGateState extends State<_BootGate> {
         builder: (context, result) {
           if (result.hasData) {
             return ExperienceShell(
+              // 换库之后整棵树要重建：控制器都绑在旧 api 上，复用 State 会
+              // 让它们继续对着一个已经关掉的会话说话。
+              key: ValueKey(identityHashCode(result.data!.api)),
               api: result.data!.api,
               demoMode: widget.demoMode,
               snapshot: result.data!.snapshot,
+              onSwitchLibrary: widget.api == null ? _switchLibrary : null,
               supportsHybridUpgrade: result.data!.snapshot.coreInfo.capabilities
                   .contains('search.upgrade'),
             );

@@ -39,6 +39,16 @@ fn sha_of(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// 比较路径时用的规范形。
+///
+/// Windows 上核心返回的是 `fs::canonicalize` 之后的路径：带 `\\?\` 前缀、大小写
+/// 按磁盘上的真实写法（`E:\Data\Temp`），而 `tempfile` 给的是 `%TEMP%` 那套写法
+/// （`E:\data\Temp`）。两者是同一个位置，字符串却不相等——断言前统一规范化，
+/// 而不是让产品把真实路径改回去。
+fn canonical(path: &std::path::Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn new_core(root: &Path) -> Core {
     Core::open(root.join("library.sqlite")).expect("打开资料库")
 }
@@ -1607,9 +1617,15 @@ fn backup_and_restore_jobs_are_succeeded_records_with_real_targets() {
     assert_eq!(backup.kind, "backup");
     assert_eq!(backup.state, JobState::Succeeded);
     assert_eq!(
-        backup.target_ids,
-        vec![package.to_string_lossy().into_owned()],
-        "备份任务的 targetIds 必须是包路径"
+        backup.target_ids.len(),
+        1,
+        "备份任务的 targetIds 就是包路径：{:?}",
+        backup.target_ids
+    );
+    assert_eq!(
+        canonical(std::path::Path::new(&backup.target_ids[0])),
+        canonical(&package),
+        "备份任务的 targetIds 必须指向那个包"
     );
     assert_eq!(
         core.get_job(&backup.id).expect("任务可查").state,
@@ -1625,10 +1641,12 @@ fn backup_and_restore_jobs_are_succeeded_records_with_real_targets() {
         .expect("恢复到新库 + 任务记录");
     assert_eq!(restore.kind, "restore");
     assert_eq!(restore.state, JobState::Succeeded);
+    let expected_library = canonical(&restored_dir.join("library.sqlite"));
     assert!(
         restore
             .target_ids
-            .contains(&restored_dir.join("library.sqlite").to_string_lossy().into_owned()),
+            .iter()
+            .any(|id| canonical(std::path::Path::new(id)) == expected_library),
         "恢复任务的 targetIds 必须包含恢复出来的库路径：{:?}",
         restore.target_ids
     );

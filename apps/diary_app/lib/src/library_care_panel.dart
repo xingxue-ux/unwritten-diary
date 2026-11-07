@@ -13,11 +13,16 @@ class BackupRestorePanel extends StatelessWidget {
     required this.controller,
     required this.pickBackupTarget,
     required this.pickBackupPackage,
+    this.openRestoredLibrary,
   });
 
   final LibraryCareController controller;
   final TicketPicker pickBackupTarget;
   final TicketPicker pickBackupPackage;
+
+  /// 打开恢复出来的那个资料库。为空表示当前环境不支持切换（演示模式）。
+  /// 切库。[libraryPath] 为空表示回到默认资料库。
+  final Future<void> Function(String? libraryPath)? openRestoredLibrary;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -116,7 +121,10 @@ class BackupRestorePanel extends StatelessWidget {
         ),
         if (controller.message != null || controller.activeJobId != null) ...[
           const SizedBox(height: 18),
-          _JobStatus(controller: controller),
+          _JobStatus(
+            controller: controller,
+            openRestoredLibrary: openRestoredLibrary,
+          ),
         ],
       ],
     ),
@@ -353,8 +361,10 @@ class _CapabilityNotice extends StatelessWidget {
 }
 
 class _JobStatus extends StatelessWidget {
-  const _JobStatus({required this.controller});
+  const _JobStatus({required this.controller, this.openRestoredLibrary});
   final LibraryCareController controller;
+  /// 切库。[libraryPath] 为空表示回到默认资料库。
+  final Future<void> Function(String? libraryPath)? openRestoredLibrary;
 
   @override
   Widget build(BuildContext context) {
@@ -368,6 +378,35 @@ class _JobStatus extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(controller.message ?? '任务已提交。'),
+          // 恢复出来的库不会自动打开：应用启动仍然打开原来那个。给一个明确的
+          // 入口，否则用户恢复完、重开应用，看到的还是旧库。
+          if (controller.restoredLibraryPath != null &&
+              openRestoredLibrary != null) ...[
+            const SizedBox(height: 10),
+            const Text(
+              '新库是独立的一份，当前资料库不会被覆盖。打开之后，应用下次启动会'
+              '直接进这个新库；想回到原来的库，用下面的「回到默认资料库」。',
+              style: TextStyle(color: SketchColors.muted, fontSize: 12),
+            ),
+            const SizedBox(height: 10),
+            SketchAction(
+              key: const ValueKey('open-restored-library'),
+              label: '打开恢复后的资料库',
+              icon: Icons.folder_open,
+              filled: true,
+              onPressed: () => openRestoredLibrary!(
+                controller.restoredLibraryPath!,
+              ),
+            ),
+            const SizedBox(height: 8),
+            SketchAction(
+              key: const ValueKey('open-default-library'),
+              label: '回到默认资料库',
+              icon: Icons.home_outlined,
+              compact: true,
+              onPressed: () => openRestoredLibrary!(null),
+            ),
+          ],
           if (controller.activeJobId != null) ...[
             const SizedBox(height: 5),
             Text(

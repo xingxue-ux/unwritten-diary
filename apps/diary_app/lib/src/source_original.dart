@@ -5,7 +5,8 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:diary_api/diary_api.dart';
 import 'package:flutter/material.dart';
 
-import 'recording/playable_audio.dart';
+import 'file_url.dart';
+import 'materialized_file.dart';
 import 'sketch_ui.dart';
 
 /// 原件定位：把「这条片段是从哪来的」变成**能打开的东西**。
@@ -46,7 +47,7 @@ class _SourceOriginalCardState extends State<SourceOriginalCard> {
   String? _error;
 
   AudioPlayer? _player;
-  final PlayableAudio _playable = PlayableAudio();
+  final MaterializedFile _materialized = MaterializedFile();
   bool _playing = false;
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
@@ -169,7 +170,7 @@ class _SourceOriginalCardState extends State<SourceOriginalCard> {
     });
     // 先把位置摆到命中点：用户点「定位原件」要的就是那一刻，不是从头放。
     try {
-      final playable = await _playable.resolve(path);
+      final playable = await _materialized.resolve(path, extension: 'wav');
       await player.setSource(DeviceFileSource(playable));
       if (_startMs > 0) {
         await player.seek(Duration(milliseconds: _startMs));
@@ -192,7 +193,7 @@ class _SourceOriginalCardState extends State<SourceOriginalCard> {
         if (mounted) setState(() => _playing = false);
         return;
       }
-      final playable = await _playable.resolve(lease.handle);
+      final playable = await _materialized.resolve(lease.handle, extension: 'wav');
       final position = _position;
       await player.play(DeviceFileSource(playable));
       if (position > Duration.zero) {
@@ -206,14 +207,26 @@ class _SourceOriginalCardState extends State<SourceOriginalCard> {
 
   /// 用系统默认程序打开。**这是唯一一条把路径交给外部程序的路径**，只对
   /// 用户点下去的这一个原件生效。
+  ///
+  /// 文件库的 blob 没有扩展名，直接交出去 Windows 只会问「你要如何打开此文件」。
+  /// 所以先按内容嗅探出一个带后缀的副本（见 `materialized_file.dart`）。
   Future<void> _openExternal(String path) async {
     try {
+      final openable = await _materialized.resolve(path);
       if (Platform.isWindows) {
-        await Process.start('explorer.exe', [path], mode: ProcessStartMode.detached);
+        await Process.start(
+          'explorer.exe',
+          [openable],
+          mode: ProcessStartMode.detached,
+        );
       } else if (Platform.isMacOS) {
-        await Process.start('open', [path], mode: ProcessStartMode.detached);
+        await Process.start('open', [openable], mode: ProcessStartMode.detached);
       } else {
-        await Process.start('xdg-open', [path], mode: ProcessStartMode.detached);
+        await Process.start(
+          'xdg-open',
+          [openable],
+          mode: ProcessStartMode.detached,
+        );
       }
     } on Object catch (failure) {
       if (mounted) setState(() => _error = '打不开原件：$failure');
@@ -221,17 +234,31 @@ class _SourceOriginalCardState extends State<SourceOriginalCard> {
   }
 
   /// 带着页码打开：交给系统的 URL 处理器，浏览器类程序会认 `#page=N`。
+  ///
+  /// URL 必须由 [fileUrlFor] 拼：文件库给的是 `\\?\E:\…` 这种长路径，手工换
+  /// 斜杠会得到 `file:////?/E:/…`——URI 解析器把 `//` 当 authority，真实路径
+  /// 落到 query 里，打开的是一个不存在的位置。
   Future<void> _openAtPage(String path) async {
     final page = _pageNumber;
     if (page == null) return;
-    final normalized = path.replaceAll('\\', '/');
-    final url = 'file:///${normalized.startsWith('/') ? normalized.substring(1) : normalized}#page=$page';
     try {
-      await Process.start(
-        'cmd.exe',
-        ['/c', 'start', '', url],
-        mode: ProcessStartMode.detached,
-      );
+      // 交给外部程序之前同样要一份带 `.pdf` 的副本：没有扩展名时，URL 处理器
+      // 连「用什么打开」都定不下来。
+      final openable = await _materialized.resolve(path);
+      final url = fileUrlFor(openable, page: page);
+      if (Platform.isWindows) {
+        // 用 rundll32 的 URL 处理器而不是 `cmd /c start`：后者会把 URL 里的
+        // `&`、`^` 当命令分隔符，路径里带这些字符时会打开错的东西。
+        await Process.start(
+          'rundll32.exe',
+          ['url.dll,FileProtocolHandler', url],
+          mode: ProcessStartMode.detached,
+        );
+      } else if (Platform.isMacOS) {
+        await Process.start('open', [url], mode: ProcessStartMode.detached);
+      } else {
+        await Process.start('xdg-open', [url], mode: ProcessStartMode.detached);
+      }
     } on Object catch (failure) {
       if (mounted) setState(() => _error = '打不开第 $page 页：$failure');
     }

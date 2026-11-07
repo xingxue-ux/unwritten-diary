@@ -43,12 +43,17 @@ class ExperienceShell extends StatefulWidget {
     required this.demoMode,
     this.snapshot,
     this.supportsHybridUpgrade = false,
+    this.onSwitchLibrary,
   });
 
   final DiaryApi api;
   final bool demoMode;
   final CoreSnapshot? snapshot;
   final bool supportsHybridUpgrade;
+
+  /// 切到另一个资料库（恢复备份之后用）。为空表示当前环境不支持切换
+  /// （演示模式、测试注入的 api）。
+  final Future<void> Function(String? libraryPath)? onSwitchLibrary;
 
   @override
   State<ExperienceShell> createState() => _ExperienceShellState();
@@ -1993,6 +1998,9 @@ class _ExperienceShellState extends State<ExperienceShell>
         controller: _libraryCare,
         pickBackupTarget: _pickBackupTarget,
         pickBackupPackage: _pickBackupPackage,
+        openRestoredLibrary: widget.onSwitchLibrary == null
+            ? null
+            : _switchLibrary,
       ),
       'export' => ReadableExportPanel(controller: _readableExport),
       'storage' => StorageTrashPanel(controller: _libraryCare),
@@ -2496,6 +2504,27 @@ class _ExperienceShellState extends State<ExperienceShell>
       ),
     ],
   );
+
+  /// 切到恢复出来的资料库。
+  ///
+  /// 切之前必须把当前草稿存好：新库打开之后，旧库里的这条草稿在界面上就没了，
+  /// 没存的部分等于丢了。存失败就不切——宁可让用户重试，也不能悄悄丢内容。
+  Future<void> _switchLibrary(String? libraryPath) async {
+    final switchTo = widget.onSwitchLibrary;
+    if (switchTo == null) return;
+    if (_capture.canFinish || _capture.text.trim().isNotEmpty) {
+      final saved = await _capture.saveNow();
+      if (!saved) {
+        if (mounted) _toast('当前这条还没保存好，先不切换资料库。');
+        return;
+      }
+    }
+    // 录音会话绑在旧库上，切之前收掉，别让它继续往一个关掉的库里写。
+    _recording?.dispose();
+    _recording = null;
+    _recordingCaptureId = null;
+    await switchTo(libraryPath);
+  }
 
   /// 打开录音页：先把「这一条」落成草稿，录音才有地方挂。
   ///

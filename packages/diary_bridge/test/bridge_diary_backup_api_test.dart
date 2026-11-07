@@ -8,6 +8,8 @@ import 'package:diary_bridge/diary_bridge.dart'
     show BridgeDiaryApi, BridgeSession;
 import 'package:test/test.dart';
 
+import 'path_assertions.dart';
+
 /// 备份**路径专用入口**（`*AtPath`）的端到端测试。
 ///
 /// 契约 `backups.*` 收的是 `PlatformHost` 的限域票据，而票据解析尚未实现；这些
@@ -84,7 +86,16 @@ void main() {
     final job = await api.getJob(ticket.jobId);
     expect(job.kind, 'backup');
     expect(job.state, JobState.succeeded);
-    expect(job.targetIds, [package], reason: '任务的 targetIds 是包路径');
+    expect(
+      job.targetIds,
+      hasLength(1),
+      reason: '任务的 targetIds 是包路径',
+    );
+    expect(
+      samePath(job.targetIds.single, package),
+      isTrue,
+      reason: 'targetIds 要指向那个包：${job.targetIds.single} vs $package',
+    );
     expect(File(package).existsSync(), isTrue);
 
     final inspection = await api.inspectBackupAtPath(package);
