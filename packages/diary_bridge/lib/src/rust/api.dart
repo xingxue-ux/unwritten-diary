@@ -145,6 +145,12 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 读取一条回应，契约 `responses.get`。还没生成时正文为空（如实，不编内容）。
   Future<AiResponse> getResponse({required String responseId});
 
+  /// 完整设置（契约 `settings.get`）：日记时区、自动整理开关与时间、**默认风格**。
+  ///
+  /// 之前这里只有「整理那一段」（`organize_settings`），于是界面**读不到也设不了
+  /// `defaultStyleId`**——用户配好风格却选不中，整理时用的是「没有风格」。
+  Future<Settings> getSettings();
+
   /// 读一条风格的当前版本；不存在报 `not_found`。
   Future<StyleProfile> getStyle({required String styleId});
 
@@ -538,6 +544,15 @@ abstract class BridgeSession implements RustOpaqueInterface {
 
   Future<RecordingSession> updateRecordingState({
     required NativeRecordingStatus status,
+  });
+
+  /// 更新完整设置（契约 `settings.update`）：整份替换 + `expectedRevision`。
+  ///
+  /// 与 `update_organize_settings` 同一个口径：校验先行、被拒零改动、
+  /// 值没变就是无操作。
+  Future<Settings> updateSettings({
+    required Settings settings,
+    required PlatformInt64 expectedRevision,
   });
 
   /// 把混合会话从关键词阶段升级到融合阶段（#69）；幂等，重复调用不重复算。
