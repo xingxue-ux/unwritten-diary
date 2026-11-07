@@ -338,8 +338,7 @@ void main() {
       'backups.create',
       'backups.inspect',
       'backups.restore',
-      'settings.get',
-      'settings.update',
+      // settings.get / update 已经接上（并且 Rust 侧也宣告了），不再属于「没接」。
       'plugins.invoke',
       'captures.trash',
       'core.setRuntimeState',

@@ -1177,6 +1177,13 @@ fn wired_capabilities() -> Vec<String> {
         "diary.setCurrent",
         "diary.merge",
         "diary.listDays",
+        // 完整设置（日记时区 / 自动整理开关与时间 / **默认风格**）。
+        //
+        // 这一条容易漏：Dart 适配层的能力 = **Rust 宣告 ∩ Dart 方法表**。
+        // 只在 Dart 那边加名字、不在这里宣告，界面照样拿不到 `settings.update`，
+        // 「设为默认」按钮就一直是禁用的（真机上就是这么卡住的）。
+        "settings.get",
+        "settings.update",
         // #114 风格管理：三种方法都走真实存储；生成时的风格快照已是版本行。
         "styles.list",
         "styles.get",
