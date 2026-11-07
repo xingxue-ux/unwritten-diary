@@ -36,6 +36,37 @@ class _Api extends MockDiaryApi {
   @override
   Future<List<Provider>> listProviders() async => List.of(rows);
 
+  int responseCalls = 0;
+
+  @override
+  Future<ResponseTicket> requestResponse({
+    required List<String> captureIds,
+    required String requestText,
+    String? providerId,
+  }) async {
+    responseCalls++;
+    return const ResponseTicket(jobId: 'job-r', responseId: 'resp-1');
+  }
+
+  @override
+  Future<AiResponse> getResponse(String responseId) async => AiResponse(
+    id: responseId,
+    requestText: '问一句',
+    body: '这是真的回应，不是示例。',
+    createdAt: DateTime.utc(2026, 11, 7),
+  );
+
+  @override
+  Future<DueRunSummary> runDueJobs({
+    required int budgetMs,
+    required String trigger,
+  }) async => DueRunSummary(
+    startedAt: DateTime.utc(2026, 11, 7),
+    trigger: trigger,
+    processed: 1,
+    succeeded: 1,
+  );
+
   @override
   Future<void> removeProvider(String providerId) async {
     rows.removeWhere((item) => item.id == providerId);
@@ -288,6 +319,43 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     // 完成后给一句 toast，刷新这种「结果和原来一样」的动作才看得出来。
     expect(find.text('已刷新。'), findsOneWidget);
+  });
+
+  testWidgets('主动回应真的调核心，不是固定示例', (tester) async {
+    final api = _Api();
+    await _boot(tester, api);
+
+    // 先写一条，回应要引用记录。
+    await tester.enterText(
+      find.byKey(const Key('capture-editor')),
+      '今天风很大。',
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('finish-capture')));
+    await tester.tap(find.byKey(const Key('finish-capture')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('任务中心'));
+    await tester.pumpAndSettle();
+
+    // 正式模式下入口在「我的 → 主动回应」。
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('主动回应'));
+    await tester.tap(find.text('主动回应'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).last, '今天怎么样？');
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('请求回应'));
+    await tester.tap(find.text('请求回应'));
+    await settleRealIo(tester);
+
+    expect(api.responseCalls, 1, reason: '点一次就该真的请求一次');
+    expect(find.textContaining('这是真的回应'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('任务中心读的是真实任务列表，不是示例', (tester) async {
