@@ -127,7 +127,11 @@ class _BootGateState extends State<_BootGate> {
       )) {
         throw _CoreUnavailable('资料库缺少记录所需能力，请更新核心后再打开。');
       }
-      if (Platform.isAndroid && !widget.demoMode) {
+      // **不要按平台判断**：桌面端没有 WorkManager，但它同样需要在启动时把
+      // 排队的任务推起来（`afterOpen` 内部自己分平台处理）。
+      // 这里曾经是 `Platform.isAndroid && ...`，导致 Windows 上排队的任务
+      // 永远没人执行——「昨天的日记一直没整理好」就是这么来的。
+      if (!widget.demoMode) {
         unawaited(CoreWakeupScheduler.afterOpen(api, snapshot));
       }
       return (api: api, snapshot: snapshot);
