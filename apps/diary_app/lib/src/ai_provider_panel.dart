@@ -120,8 +120,19 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     unawaited(_loadConsent());
   }
 
+  /// 落库那一刻的字段快照。只有**内容真的变了**才算「另一条配置」。
+  ///
+  /// 不能用 controller 的通知直接判断：`TextEditingController` 在**光标/选区变化**时
+  /// 也会通知，点一下输入框就会把 id 清掉，于是「拿模型列表 → 点候选 → 测连接」
+  /// 会多建一条服务（流程测试抓到的）。
+  String _formSnapshot = '';
+
+  String get _currentFormSnapshot =>
+      '${_name.text}\u0000${_endpoint.text}\u0000${_model.text}';
+
   void _forgetFormProvider() {
-    if (_formProviderId != null) _formProviderId = null;
+    if (_formProviderId == null) return;
+    if (_currentFormSnapshot != _formSnapshot) _formProviderId = null;
   }
 
   @override
@@ -291,6 +302,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     // 这时候把输入框清掉等于让用户重打一遍密钥。
     if (clearSecret) _secret.clear();
     _formProviderId = saved.id;
+    _formSnapshot = _currentFormSnapshot;
     await _reload();
     return saved;
   }
@@ -578,11 +590,17 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
   }
 
   /// 表单里点一个候选：只填进「模型名」，保存仍由用户按。
+  ///
+  /// **要保住 `_formProviderId`**：点候选会改 `_model`，而改字段的监听会把它清掉，
+  /// 于是「拿模型列表 → 选一个 → 测连接」会多建一条服务（真机流程测试抓到的）。
+  /// 选模型是同一份表单里的动作，不是「另一条配置」。
   void _pickFormModel(String id) {
     setState(() {
       _model.text = id;
       _formModels = const [];
     });
+    // 选模型是同一份表单里的动作：把快照跟上，避免被判成「另一条配置」。
+    if (_formProviderId != null) _formSnapshot = _currentFormSnapshot;
   }
 
   Future<void> _remove(Provider provider) async {
