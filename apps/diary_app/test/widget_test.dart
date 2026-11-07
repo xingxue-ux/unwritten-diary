@@ -1127,7 +1127,7 @@ void main() {
     expect(field.controller!.text, '今天风很大，把伞吹翻了');
   });
 
-  testWidgets('点「改模型」不会崩，表单填回那一条服务', (tester) async {
+  testWidgets('点「编辑」不会崩，表单填回那一条服务', (tester) async {
     final dir = Directory.systemTemp.createTempSync('diary-ui');
     addTearDown(() => dir.deleteSync(recursive: true));
     PathProviderPlatform.instance = _FakePathProvider(dir.path);
@@ -1140,12 +1140,12 @@ void main() {
     await tester.tap(find.text('模型服务'));
     await tester.pumpAndSettle();
 
-    await tester.ensureVisible(find.text('改模型'));
-    await tester.tap(find.text('改模型'));
+    await tester.ensureVisible(find.text('编辑'));
+    await tester.tap(find.text('编辑'));
     await tester.pumpAndSettle();
 
     // 之前这里会抛 StateError（firstWhere 找不到预填项），整页变红。
-    expect(tester.takeException(), isNull, reason: '改模型不该崩');
+    expect(tester.takeException(), isNull, reason: '编辑不该崩');
     // 表单里填的是这条服务的值，按钮变成「更新这个服务」。
     expect(find.text('更新这个服务'), findsOneWidget);
     final model = tester.widget<TextField>(
