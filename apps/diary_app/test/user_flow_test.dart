@@ -238,7 +238,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('刷新状态：点下去要有反应', (tester) async {
+  testWidgets('刷新状态：转圈 + 完成后有提示', (tester) async {
     final api = _Api();
     await _boot(tester, api);
     await tester.tap(find.text('日记').last);
@@ -246,16 +246,13 @@ void main() {
 
     await tester.ensureVisible(find.text('刷新状态'));
     await tester.tap(find.text('刷新状态'));
-    // 点下去立刻要有反馈：按钮变成「刷新中…」。
     await tester.pump();
-    expect(
-      find.text('刷新中…'),
-      findsOneWidget,
-      reason: '点了没反应，用户会以为按钮坏了',
-    );
+    // 图标位置换成转圈：这是「点下去了」最直接的信号。
+    expect(find.byType(CircularProgressIndicator), findsWidgets);
     await settleRealIo(tester);
-    expect(find.text('刷新状态'), findsOneWidget, reason: '跑完要变回来');
-    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(milliseconds: 300));
+    // 完成后给一句 toast，刷新这种「结果和原来一样」的动作才看得出来。
+    expect(find.text('已刷新。'), findsOneWidget);
   });
 
   testWidgets('搜索：写一条之后能搜到', (tester) async {
@@ -337,7 +334,9 @@ void main() {
 
     await tester.ensureVisible(find.text('整理这一天'));
     await tester.tap(find.text('整理这一天'));
-    await tester.pumpAndSettle();
+    // 点下去会出现转圈（busy 态），`pumpAndSettle` 会一直等动画停下——用固定帧数。
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(api.generateCalls, 1, reason: '点一次整理就该受理一次');
     expect(tester.takeException(), isNull, reason: '整理不该崩');
   });

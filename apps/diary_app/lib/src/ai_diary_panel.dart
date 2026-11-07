@@ -38,6 +38,9 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
   /// 用户会以为按钮坏了（真机反馈就是「刷新状态点不动」）。
   bool _refreshing = false;
   String? _refreshError;
+
+  /// 点「整理这一天」之后、票据回来之前。
+  bool _generating = false;
   String? _setupError;
 
   static String _key(DateTime day) =>
@@ -129,9 +132,13 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
   /// 刷新状态。**要有反馈**：按钮立刻变成「刷新中…」，跑完再变回来。
   Future<void> _refresh(AiDiaryController controller) async {
     if (_refreshing) return;
-    setState(() => _refreshing = true);
+    setState(() {
+      _refreshing = true;
+      _refreshError = null;
+    });
     try {
       await controller.refresh();
+      if (mounted && controller.error == null) _toast('已刷新。');
     } on Object catch (failure) {
       // `refresh()` 自己会处理 DiaryException；这里兜住别的类型，
       // 否则异常会变成 unhandled async error，界面上什么都不会发生。
@@ -141,13 +148,31 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
     }
   }
 
+  /// 一句短提示。刷新这种「结果和原来一样」的动作，只靠按钮变化还是不明显。
+  void _toast(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+    );
+  }
+
   Future<void> _generate(
     AiDiaryController controller, {
     bool again = false,
   }) async {
-    await controller.generate(regenerate: again);
-    if (controller.job != null) {
-      unawaited(CoreWakeupScheduler.afterCoreMutation(widget.api));
+    if (_generating) return;
+    setState(() => _generating = true);
+    try {
+      await controller.generate(regenerate: again);
+      if (controller.job != null) {
+        unawaited(CoreWakeupScheduler.afterCoreMutation(widget.api));
+        if (mounted) _toast('已经排上了，整理好会出现在「整理候选」。');
+      } else if (mounted && controller.error != null) {
+        _toast(controller.error!);
+      }
+    } on Object catch (failure) {
+      if (mounted) _toast('整理没排上：$failure');
+    } finally {
+      if (mounted) setState(() => _generating = false);
     }
   }
 
@@ -249,16 +274,18 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
           runSpacing: 9,
           children: [
             SketchAction(
-              label: '整理这一天',
+              label: _generating ? '正在安排…' : '整理这一天',
               icon: Icons.auto_awesome_outlined,
               filled: true,
-              onPressed: canGenerate
+              busy: _generating,
+              onPressed: canGenerate && !_generating
                   ? () => unawaited(_generate(controller))
                   : null,
             ),
             SketchAction(
               label: _refreshing ? '刷新中…' : '刷新状态',
               icon: Icons.refresh,
+              busy: _refreshing,
               onPressed: _refreshing
                   ? null
                   : () => unawaited(_refresh(controller)),
