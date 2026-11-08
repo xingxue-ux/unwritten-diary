@@ -190,6 +190,12 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required List<String> grants,
   });
 
+  /// 调用插件并留一条已完成的任务记录（契约 `plugins.invoke`）。
+  ///
+  /// 返回的 `Job` 是**已经完成**的记录，票据里的 `jobId` 就是它；运行结果用
+  /// `plugin_run` 按这个 id 读回来。
+  Future<Job> invokePlugin({required PluginInvocation invocation});
+
   /// 任务面板状态：各状态计数、到期积压、下次唤醒与最近错误。
   ///
   /// 最近错误只有 kind + 错误码 + 时间（外加不透明的任务 ID），**没有用户内容**。
@@ -270,7 +276,6 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required PlatformInt64 expectedRevision,
   });
 
-  /// 建议的下次唤醒时刻；没有待办时为空。
   Future<DateTime?> nextWakeup();
 
   /// 打开（或创建）资料库。
@@ -309,6 +314,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 模板的规则是**产品指令**（只在 system 消息里），参数只接受整数与布尔——
   /// 两者都不接受自由文本，所以「把材料里的文字变成指令」没有入口。
   Future<List<OrganizeTemplate>> organizeTemplates();
+
+  /// 读回一次插件运行的结果；没有这条记录时返回 `None`。
+  Future<PluginRunResult?> pluginRun({required String jobId});
 
   /// 声明式模板缓存（可按插件过滤）。启动/列表路径不会碰插件文件。
   Future<List<PluginTemplate>> pluginTemplates({String? pluginId});
@@ -538,6 +546,11 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String pluginId,
     required bool enabled,
   });
+
+  /// 建议的下次唤醒时刻；没有待办时为空。
+  /// 上报运行环境（契约 `core.setRuntimeState`）。只影响调度：录音中、电量或
+  /// 内存告急时，到期任务里那些重活这一轮不领，留在队列里等下次。
+  Future<void> setRuntimeState({required RuntimeState state});
 
   /// 发起一次检索，契约第 4.4 节 `search.start`。
   Future<SearchSnapshot> startSearch({

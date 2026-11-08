@@ -375,13 +375,17 @@ pub(crate) fn claim_next_due_record(
     core: &mut Core,
     now: DateTime<Utc>,
 ) -> Result<Option<ClaimedJob>> {
+    // 运行环境给一个**优先级下限**：录音中、电量/内存告急时，重活这轮不领。
+    // 它们留在队列里，状态不变，下一次照常领取——让路不是丢弃。
+    let floor = core.runtime_state().priority_floor();
     let candidate: Option<String> = core
         .conn
         .query_row(
             "SELECT id FROM jobs WHERE state IN ('queued', 'retry_wait') \
              AND (next_attempt_at IS NULL OR next_attempt_at <= ?1) \
+             AND (?2 IS NULL OR priority >= ?2) \
              ORDER BY priority DESC, created_at, id LIMIT 1",
-            params![support::to_iso(now)],
+            params![support::to_iso(now), floor],
             |row| row.get(0),
         )
         .optional()?;

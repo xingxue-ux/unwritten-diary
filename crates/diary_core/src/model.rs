@@ -691,6 +691,60 @@ impl JobState {
     }
 }
 
+/// 平台上报的运行环境。契约 `core.setRuntimeState`。
+///
+/// 核心拿它**调整调度**，不拿它做别的事：录音正在进行、电量或内存告急时，
+/// 少跑重活。它不改变任何已经写进库里的数据。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeState {
+    pub foreground: bool,
+    pub recording_active: bool,
+    pub memory_pressure: PressureLevel,
+    pub battery_pressure: PressureLevel,
+}
+
+impl Default for RuntimeState {
+    fn default() -> Self {
+        Self {
+            foreground: true,
+            recording_active: false,
+            memory_pressure: PressureLevel::Normal,
+            battery_pressure: PressureLevel::Normal,
+        }
+    }
+}
+
+impl RuntimeState {
+    /// 现在允许领取的最低任务优先级。
+    ///
+    /// 返回 `None` 表示不限制。规则只有两条，都是「别在用户正忙/设备吃紧时抢资源」：
+    /// - **录音进行中**：只跑保存与用户直接发起的整理（`>= 40`），后台提取与维护让路；
+    /// - **电量或内存告急**：只跑 `>= 30`，维护类（`AutoOrganize` / `Maintenance`）让路。
+    ///
+    /// 让路不是丢弃：任务留在队列里，状态不变，下一次 `run_due` 照常领取。
+    pub fn priority_floor(self) -> Option<i64> {
+        let critical = self.memory_pressure == PressureLevel::Critical
+            || self.battery_pressure == PressureLevel::Critical;
+        if self.recording_active {
+            Some(JobPriority::UserOrganize.value())
+        } else if critical {
+            Some(JobPriority::BackgroundExtract.value())
+        } else {
+            None
+        }
+    }
+}
+
+/// 压力档位。契约 `PressureLevel`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressureLevel {
+    Normal,
+    Moderate,
+    Critical,
+}
+
 /// 任务优先级，任务书 7.1 节。数字越大越先做。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

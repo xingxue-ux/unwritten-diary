@@ -255,10 +255,14 @@ CREATE TABLE IF NOT EXISTS plugin_grants (...);
   `ExportRequest`；
 - 插件导出产物仍是同步返回的 `PluginRunResult.output` + `PluginArtifact`，与
   `exports.create` 的核心管理导出目录是**两条路**：前者归插件、后者归核心；
-- 桥接适配层已接上插件管理（inspect/install/enable/disable/uninstall/list）；
-  `DiaryApi.invokePlugin` 是「返回 jobId」的票据形状，而核心 `run_plugin` 同步返回完整
-  结果，两者还没任务化对齐，因此 `plugins.invoke` 仍不在 Dart 适配层的能力清单里；
-  完整结果可以通过生成的 `BridgeSession.runPlugin` 直接取。
+- 桥接适配层已接上插件管理（inspect/install/enable/disable/uninstall/list）与
+  **调用**（`plugins.invoke` / `plugins.run`）；
+- 契约的 `invokePlugin` 是票据形状，而核心的 `run_plugin` 同步返回完整结果。取舍与
+  备份/导出完全一致：**同步执行完之后写一条 `plugin` 任务记录**，票据指向这条已经
+  完成的记录（不是排队任务）；运行结果按 `jobId` 落在资料库的 `plugin-runs/<jobId>.json`，
+  用 `plugins.run(jobId)` 读回来。插件自己报失败时任务行是 `failed`，不是 `succeeded`；
+- 声明式插件要带 `templateId`（模板列表现在随 `Plugin.templates` 一起返回），
+  导出类插件可以带 `versionIds` / `fromDayKey` / `toDayKey`。
 
 ## 11. 没有做到的（如实）
 

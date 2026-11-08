@@ -39,6 +39,17 @@ use crate::provider::{self};
 use crate::support;
 use crate::Core;
 
+/// 插件调用在 `jobs.kind` 上的名字。
+///
+/// 契约的 `plugins.invoke` 返回票据（`jobId`），而核心的执行是**同步**的。
+/// 取舍与备份/导出一致：同步做完之后写一条 `state = succeeded` 的任务记录，
+/// 票据指向这条**已经完成**的记录，不是排队任务。运行结果按 `jobId` 落在
+/// 资料库的 `plugin-runs/` 下，`Core::plugin_run` 读得回来。
+pub const KIND_PLUGIN: &str = "plugin";
+
+/// 运行结果文件所在目录（相对资料库根）。
+const RUNS_DIR: &str = "plugin-runs";
+
 pub use manifest::PERM_READ_RANGE;
 pub use manifest::PERM_READ_SELECTED;
 pub use manifest::PERM_DERIVED;
@@ -327,6 +338,68 @@ impl Core {
     }
 
     /// 运行一个插件。激活点必须是清单声明过的；权限、预算、隔离都在这里收口。
+    /// 调用插件并留一条**已完成**的任务记录（契约 `plugins.invoke` 的核心入口）。
+    ///
+    /// 为什么是「同步执行 + 事后记录」而不是「排队等执行」：核心的插件执行本来
+    /// 就是同步的（沙箱有 fuel 预算，单次调用有上限），再包一层队列只会让票据
+    /// 指向一个没人执行的空任务。取舍与 `create_backup_job` / `exports.create`
+    /// 完全一致：**票据指向已经完成的记录**，不是排队任务。
+    ///
+    /// 运行结果按 `jobId` 落在资料库的 `plugin-runs/<jobId>.json`，用
+    /// [`Self::plugin_run`] 读回来。内存库没有根目录，结果只随返回值给出，
+    /// 之后读不回来——这一点在文档里写明，不假装持久化。
+    pub fn invoke_plugin(
+        &mut self,
+        invocation: &PluginInvocation,
+    ) -> Result<(crate::model::Job, PluginRunResult)> {
+        let result = self.run_plugin(invocation)?;
+        // 运行结果自己报了失败，任务行就得是失败：任务中心显示「已完成」而插件
+        // 什么都没产出，是最容易让人白等的一种谎。
+        let state = if result.status == "failed" {
+            crate::model::JobState::Failed
+        } else {
+            crate::model::JobState::Succeeded
+        };
+        let job = crate::backup::record_completed_job_with_state(
+            self,
+            KIND_PLUGIN,
+            vec![result.plugin_id.clone(), result.run_id.clone()],
+            state,
+        )?;
+        self.persist_plugin_run(&job.id, &result)?;
+        Ok((job, result))
+    }
+
+    /// 读回一次插件运行的结果。没有这条记录（或内存库）时返回 `None`。
+    pub fn plugin_run(&self, job_id: &str) -> Result<Option<PluginRunResult>> {
+        if !valid_job_id(job_id) {
+            return Err(CoreError::InvalidArgument {
+                reason: format!("任务 id 不合法：{job_id}"),
+            });
+        }
+        let root = match self.root.as_deref() {
+            Some(root) => root,
+            None => return Ok(None),
+        };
+        let path = root.join(RUNS_DIR).join(format!("{job_id}.json"));
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn persist_plugin_run(&self, job_id: &str, result: &PluginRunResult) -> Result<()> {
+        let Some(root) = self.root.as_deref() else {
+            return Ok(());
+        };
+        let dir = root.join(RUNS_DIR);
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{job_id}.json"));
+        std::fs::write(&path, serde_json::to_vec(result)?)?;
+        Ok(())
+    }
+
     pub fn run_plugin(&mut self, invocation: &PluginInvocation) -> Result<PluginRunResult> {
         let installation = self
             .find_installation(&invocation.plugin_id)?
@@ -1206,4 +1279,13 @@ fn sanitize_file_name(value: &str) -> Option<String> {
         return None;
     }
     Some(trimmed.to_owned())
+}
+
+/// 任务 id 只允许我们自己生成的字符集：它会被拼进文件名。
+fn valid_job_id(job_id: &str) -> bool {
+    !job_id.is_empty()
+        && job_id.len() <= 64
+        && job_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }

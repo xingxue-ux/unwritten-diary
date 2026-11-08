@@ -763,6 +763,45 @@ class Provider {
 }
 
 /// 插件。模型提供者插件可请求核心代为调用已配置服务。契约第 2.7 节。
+/// 插件声明的模板（声明式插件用）。
+///
+/// 调用声明式插件必须带 `templateId`：同一个插件可能同时提供风格模板与导出模板，
+/// 选哪个由用户决定，核心不替它猜。
+class PluginTemplate {
+  const PluginTemplate({
+    required this.id,
+    required this.kind,
+    required this.label,
+    this.description = '',
+    this.format = '',
+  });
+
+  final String id;
+
+  /// `style`（风格模板）或 `export`（导出模板）。
+  final String kind;
+  final String label;
+  final String description;
+
+  /// `style_instruction` / `markdown` / `plain_text`。
+  final String format;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PluginTemplate &&
+      other.id == id &&
+      other.kind == kind &&
+      other.label == label &&
+      other.description == description &&
+      other.format == format;
+
+  @override
+  int get hashCode => Object.hash(id, kind, label, description, format);
+
+  @override
+  String toString() => 'PluginTemplate($id, $kind)';
+}
+
 class Plugin {
   const Plugin({
     required this.id,
@@ -774,6 +813,7 @@ class Plugin {
     this.activationEvents = const [],
     this.requestedPermissions = const {},
     this.grantedPermissions = const {},
+    this.templates = const [],
     this.lastError,
   });
 
@@ -790,6 +830,9 @@ class Plugin {
   final List<String> activationEvents;
   final Set<String> requestedPermissions;
   final Set<String> grantedPermissions;
+
+  /// 声明式插件缓存下来的模板；代码插件为空。
+  final List<PluginTemplate> templates;
   final String? lastError;
 
   Plugin copyWith({
@@ -808,6 +851,7 @@ class Plugin {
         activationEvents: activationEvents,
         requestedPermissions: requestedPermissions,
         grantedPermissions: grantedPermissions ?? this.grantedPermissions,
+        templates: templates,
         lastError: clearError ? null : (lastError ?? this.lastError),
       );
 
@@ -836,6 +880,7 @@ class Plugin {
         Object.hashAll(activationEvents),
         unorderedHash(requestedPermissions),
         unorderedHash(grantedPermissions),
+        Object.hashAll(templates),
         lastError,
       );
 

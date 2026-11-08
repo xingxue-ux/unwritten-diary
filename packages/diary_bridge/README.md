@@ -19,12 +19,17 @@ Dart 侧访问 Rust 核心的唯一入口，含 [flutter_rust_bridge](https://cj
 
 对应 Rust 侧在 `crates/diary_bridge/`，生成入口是仓库根目录的 `flutter_rust_bridge.yaml`。
 
-**`diary_api` 适配层当前覆盖 75/77 个契约方法**：记录与导入、来源修订/提取/定位、资产租约、事件流、检索与索引、Provider、设置、日记生成与版本、风格、天列表、阅读导出、任务读取/取消/重试/到期执行/确认提醒、插件管理、备份与恢复、回收站五条、**录音五条 + `recordings.discard`**。
+**`diary_api` 适配层当前覆盖 78/78 个契约方法**：记录与导入、来源修订/提取/定位、资产租约、事件流、检索与索引、Provider、设置、日记生成与版本、风格、天列表、阅读导出、任务读取/取消/重试/到期执行/确认提醒、插件管理、备份与恢复、回收站五条、录音五条 + `recordings.discard`、**插件调用 `plugins.invoke` 与结果读取 `plugins.run`**。
 
-**没接的 2 条**会在 `noSuchMethod` 里被点名，且不出现在 `capabilities` 里：
+**没有「没接的」了**：`noSuchMethod` 仍留着兜底（防止将来契约加了方法忘了接），
+但当前 78 条全部有实现。`core.setRuntimeState` 接的是**调度**：录音进行中、电量或
+内存告急时，`run_due_jobs` 不领取重活——任务留在队列里，状态不变，下一次照常领取。
 
-- `core.setRuntimeState`：核心没有资源调度入口，报「已设置」就是撒谎；
-- `plugins.invoke`：契约要求返回 `jobId`，而核心的插件执行是同步的、没有可读的任务结果。
+**插件调用是「同步执行 + 已完成任务」**：核心的插件执行本来就是同步的（沙箱有 fuel
+预算），所以 `plugins.invoke` 返回的票据指向一条**已经写完**的 `plugin` 任务记录，
+不是排队任务；运行结果按 `jobId` 落在资料库的 `plugin-runs/` 下，用 `plugins.run`
+读回来。插件自己报失败时，任务行也是 `failed`——任务中心显示「已完成」而插件什么都
+没产出，是最容易让人白等的一种谎。取舍与备份/导出一致。
 
 **能力清单是两层的交集**：Dart 侧 `_wiredMethods` ∩ Rust 侧 `wired_capabilities()`。只改一边不够——
 UI 只认 `capabilities`，方法能调但没声明，按钮照样是灰的（这一条踩过两次，见

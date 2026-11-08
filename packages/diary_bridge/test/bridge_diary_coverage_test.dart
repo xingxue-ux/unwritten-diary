@@ -239,34 +239,24 @@ void main() {
     expect(inspection.issues, isEmpty);
   });
 
-  test('noSuchMethod 的消息列出仍未实现的方法，不再说过时的「只有记录路径」', () {
-    // 只剩两条没接：`plugins.invoke`（契约要 jobId，核心同步返回）与
-    // `core.setRuntimeState`（核心没有资源调度入口）。
-    expect(
-      () => api.invokePlugin(pluginId: 'p', command: 'c'),
+  test('契约方法全部接上：没有「未实现」的入口了', () async {
+    // 以前这里断言 `invokePlugin` 会抛 UnsupportedError 并点名 `setRuntimeState`。
+    // 两条都接上之后，这条测试改成钉住**反面**：调用真的走到核心，不再抛
+    // UnsupportedError（插件不存在时报的是核心的 not_found，不是「没实现」）。
+    await api.open();
+    await expectLater(
+      () => api.invokePlugin(pluginId: 'no-such-plugin', command: 'export.start'),
       throwsA(
-        isA<UnsupportedError>()
-            .having(
-              (error) => error.message,
-              'message',
-              contains('invokePlugin'),
-            )
-            .having(
-              (error) => error.message,
-              'message',
-              contains('setRuntimeState'),
-            )
-            .having(
-              (error) => error.message,
-              'message',
-              isNot(contains('backups.create')),
-            )
-            .having(
-              (error) => error.message,
-              'message',
-              isNot(contains('当前只有记录路径')),
-            ),
+        isA<DiaryException>().having(
+          (error) => error.code,
+          'code',
+          DiaryErrorCode.notFound,
+        ),
       ),
+    );
+    // 运行环境上报不报错（核心只记下来，用于调度）。
+    await api.setRuntimeState(
+      const RuntimeState(foreground: false, recordingActive: true),
     );
   });
 
@@ -294,12 +284,13 @@ void main() {
     ]) {
       expect(capabilities, contains(capability), reason: capability);
     }
+    // 已经全部接上：这两条必须在能力清单里，否则界面会把能用的入口藏起来。
     for (final capability in [
-      // 契约收 PlatformHost 票据，票据解析未实现；只有路径专用入口，故不宣告。
       'core.setRuntimeState',
       'plugins.invoke',
+      'plugins.run',
     ]) {
-      expect(capabilities, isNot(contains(capability)), reason: capability);
+      expect(capabilities, contains(capability), reason: capability);
     }
   });
 }

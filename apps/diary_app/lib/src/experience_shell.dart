@@ -19,6 +19,7 @@ import 'index_settings_panel.dart';
 import 'library_care_controller.dart';
 import 'library_care_panel.dart';
 import 'readable_export_controller.dart';
+import 'plugins_panel.dart';
 import 'recording/recording_controller.dart';
 import 'recording/recording_engine.dart';
 import 'recording/recording_panel.dart';
@@ -108,13 +109,17 @@ class _ExperienceShellState extends State<ExperienceShell>
   String _revisionView = '正文';
   bool _editingRevision = false;
   String _candidateDraft = _candidateBody;
-  bool _pluginEnabled = false;
   /// 录音控制器：**由外壳持有**，不是面板持有。
   ///
   /// 录音时用户可能切到别的页面看一眼再回来；控制器跟着面板一起销毁的话，
   /// 那一趟就会把正在录的会话丢成「没来得及收尾」。
   RecordingController? _recording;
   String? _recordingCaptureId;
+
+  /// 运行环境上报（契约 `core.setRuntimeState`）。核心拿它调整调度：
+  /// 录音中、电量或内存告急时，到期任务里的重活这一轮不领。
+  bool _foreground = true;
+  bool _recordingActive = false;
   final List<String> _attachments = [];
 
   static const _demoBody =
@@ -171,6 +176,8 @@ class _ExperienceShellState extends State<ExperienceShell>
       unawaited(_indexSettings.load());
     }
     _search.addListener(_onSearchValueChanged);
+    // 启动就报一次：核心默认是「前台、无压力」，平台层不报的话它永远不知道真实情况。
+    unawaited(Future<void>.microtask(_reportRuntimeState));
     unawaited(
       _capture.initialize(opened: true).then((_) {
         if (mounted && _editor.text.isEmpty && _capture.text.isNotEmpty) {
@@ -237,8 +244,35 @@ class _ExperienceShellState extends State<ExperienceShell>
     super.dispose();
   }
 
+  /// 把当前运行环境报给核心。失败不打扰用户：它只影响调度，不影响正确性。
+  void _reportRuntimeState() {
+    if (widget.demoMode) return;
+    unawaited(
+      widget.api
+          .setRuntimeState(
+            RuntimeState(
+              foreground: _foreground,
+              recordingActive: _recordingActive,
+            ),
+          )
+          .catchError((Object _) {}),
+    );
+  }
+
+  void _onRecordingChanged() {
+    final active = _recording?.isActive ?? false;
+    if (active == _recordingActive) return;
+    _recordingActive = active;
+    _reportRuntimeState();
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final foreground = state == AppLifecycleState.resumed;
+    if (foreground != _foreground) {
+      _foreground = foreground;
+      _reportRuntimeState();
+    }
     if (state == AppLifecycleState.resumed && !widget.demoMode) {
       unawaited(_indexSettings.load());
     }
@@ -1993,7 +2027,11 @@ class _ExperienceShellState extends State<ExperienceShell>
       'index' => IndexSettingsPanel(controller: _indexSettings),
       'model' => _modelPanel(),
       'schedule' => _schedulePanel(),
-      'plugins' => _pluginsPanel(),
+      'plugins' => PluginsPanel(
+        api: widget.api,
+        pickPackage: _pickPluginPackage,
+        capabilities: widget.snapshot?.coreInfo.capabilities ?? const {},
+      ),
       'backup' => BackupRestorePanel(
         controller: _libraryCare,
         pickBackupTarget: _pickBackupTarget,
@@ -2470,41 +2508,6 @@ class _ExperienceShellState extends State<ExperienceShell>
     await controller.setAutoOrganizeTime(text);
   }
 
-  Widget _pluginsPanel() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _title('插件', '看清功能和权限，再决定是否启用。'),
-      const SizedBox(height: 20),
-      _notice('插件还没接上，下面的开关是预览。'),
-      const SizedBox(height: 18),
-      SketchFrame(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '示例导出插件 · v0.1',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              '作者：社区示例 · Windows / Android',
-              style: TextStyle(color: SketchColors.muted),
-            ),
-            const SizedBox(height: 12),
-            const Text('权限：读取用户选中的日记；写入用户指定的导出位置。'),
-            const Divider(color: SketchColors.line, height: 27),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('演示启用状态'),
-              value: _pluginEnabled,
-              onChanged: (value) => setState(() => _pluginEnabled = value),
-            ),
-          ],
-        ),
-      ),
-    ],
-  );
-
   /// 切到恢复出来的资料库。
   ///
   /// 切之前必须把当前草稿存好：新库打开之后，旧库里的这条草稿在界面上就没了，
@@ -2529,6 +2532,17 @@ class _ExperienceShellState extends State<ExperienceShell>
   /// 打开录音页：先把「这一条」落成草稿，录音才有地方挂。
   ///
   /// 草稿建不出来就不进页面——进去也只能录一段挂不上去的音，那是骗人。
+  /// 选一个插件包（`.zip`）。核心只接受它自己认识的包结构，检查不通过就装不上。
+  Future<String?> _pickPluginPackage() async {
+    try {
+      final file = await openFile();
+      return file?.path;
+    } on Object {
+      if (mounted) _toast('打不开文件选择器，请稍后重试。');
+      return null;
+    }
+  }
+
   Future<void> _openRecording() async {
     if (widget.demoMode) {
       _toast('演示模式不收音，也不会写进资料库。');
@@ -2551,7 +2565,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         api: widget.api,
         engine: MicrophoneRecordingEngine(),
         captureId: captureId,
-      );
+      )..addListener(_onRecordingChanged);
       _recordingCaptureId = captureId;
     }
     _openPanel('recording');
