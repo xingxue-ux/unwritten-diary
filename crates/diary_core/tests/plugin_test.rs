@@ -1356,3 +1356,77 @@ fn materials_pending_activation_is_supported() {
     let result = core.run_plugin(&run).unwrap();
     assert_eq!(result.output.as_deref(), Some("平静 / 轻声"));
 }
+
+// ---------------------------------------------------------------- 契约：invoke 的票据与结果
+
+/// 契约的 `plugins.invoke` 返回票据（`jobId`），核心的执行是同步的。
+///
+/// 这条测试钉住三件事：
+/// 1. 票据指向一条**已经完成**的 `plugin` 任务记录（不是排队任务、不是假 id）；
+/// 2. 运行结果按 `jobId` 真的读得回来（落在资料库的 `plugin-runs/` 下）；
+/// 3. 读不存在的 id 返回 `None`，不报错也不编一个结果。
+#[test]
+fn invoke_returns_a_completed_job_and_the_run_result_is_readable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins/examples/style-daily-note");
+    core.install_plugin(&example, "linux", &[]).unwrap();
+
+    let profile = PluginStyleProfile {
+        id: "style-1".to_owned(),
+        label: "我的日常".to_owned(),
+        revision: 1,
+        updated_at: chrono::Utc::now(),
+        length_preference: Some("三百字以内".to_owned()),
+        person: None,
+        tone: None,
+        emotional_temperature: None,
+        rhetoric_level: None,
+        examples: Vec::new(),
+        banned_expressions: Vec::new(),
+    };
+    let mut run = invocation("example.style-daily-note", "organize.template.select");
+    run.template_id = Some("style.daily-note".to_owned());
+    run.style_profile = Some(profile);
+
+    let (job, result) = core.invoke_plugin(&run).unwrap();
+    assert_eq!(job.kind, "plugin");
+    assert_eq!(job.state, diary_core::JobState::Succeeded);
+    assert_eq!(result.status, "succeeded");
+    assert_eq!(job.target_ids, vec![result.plugin_id.clone(), result.run_id.clone()]);
+
+    // 结果真的落在库里，按 jobId 读得回来，内容一致。
+    let stored = core.plugin_run(&job.id).unwrap().expect("结果必须读得回来");
+    assert_eq!(stored.run_id, result.run_id);
+    assert_eq!(stored.output, result.output);
+    assert_eq!(stored.activation, "organize.template.select");
+    assert!(
+        dir.path().join("plugin-runs").join(format!("{}.json", job.id)).is_file(),
+        "结果文件要在资料库的 plugin-runs/ 下"
+    );
+
+    // 不存在的 id：返回 None，不报错。
+    assert!(core.plugin_run("job_does_not_exist").unwrap().is_none());
+    // 非法 id 直接拒绝（它会被拼进文件名）。
+    let error = core.plugin_run("../escape").unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+}
+
+/// 插件执行失败时，票据不应该存在——不能给一个「有 id 没结果」的假票据。
+#[test]
+fn a_failed_invocation_does_not_leave_a_completed_job() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins/examples/style-daily-note");
+    core.install_plugin(&example, "linux", &[]).unwrap();
+
+    // 未声明的激活点：执行前就拒绝。
+    let wrong = invocation("example.style-daily-note", "export.start");
+    assert!(core.invoke_plugin(&wrong).is_err());
+    assert!(
+        core.list_jobs(None, 50).unwrap().is_empty(),
+        "失败不该留下一条 succeeded 的任务"
+    );
+}

@@ -1143,6 +1143,25 @@ impl BridgeSession {
         Ok(core.plugin_templates(plugin_id.as_deref())?)
     }
 
+    /// 调用插件并留一条已完成的任务记录（契约 `plugins.invoke`）。
+    ///
+    /// 返回的 `Job` 是**已经完成**的记录，票据里的 `jobId` 就是它；运行结果用
+    /// `plugin_run` 按这个 id 读回来。
+    pub fn invoke_plugin(
+        &self,
+        invocation: PluginInvocation,
+    ) -> Result<Job, BridgeError> {
+        let mut core = self.lock()?;
+        let (job, _) = core.invoke_plugin(&invocation)?;
+        Ok(job)
+    }
+
+    /// 读回一次插件运行的结果；没有这条记录时返回 `None`。
+    pub fn plugin_run(&self, job_id: String) -> Result<Option<PluginRunResult>, BridgeError> {
+        let core = self.lock()?;
+        Ok(core.plugin_run(&job_id)?)
+    }
+
     /// 运行插件（`plugins.invoke`）。激活点、权限、预算与隔离都由核心收口。
     pub fn run_plugin(&self, invocation: PluginInvocation) -> Result<PluginRunResult, BridgeError> {
         let mut core = self.lock()?;
@@ -1279,6 +1298,7 @@ fn wired_capabilities() -> Vec<String> {
         "plugins.uninstall",
         "plugins.list",
         "plugins.invoke",
+        "plugins.run",
         "plugins.templates",
     ]
     .iter()

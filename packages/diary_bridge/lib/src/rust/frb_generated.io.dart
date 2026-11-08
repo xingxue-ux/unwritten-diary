@@ -160,6 +160,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PluginInvocation dco_decode_box_autoadd_plugin_invocation(dynamic raw);
 
   @protected
+  PluginRunResult dco_decode_box_autoadd_plugin_run_result(dynamic raw);
+
+  @protected
   ProcessingStatus dco_decode_box_autoadd_processing_status(dynamic raw);
 
   @protected
@@ -502,6 +505,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PluginEntryKind? dco_decode_opt_box_autoadd_plugin_entry_kind(dynamic raw);
+
+  @protected
+  PluginRunResult? dco_decode_opt_box_autoadd_plugin_run_result(dynamic raw);
 
   @protected
   ProcessingStatus? dco_decode_opt_box_autoadd_processing_status(dynamic raw);
@@ -887,6 +893,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PluginInvocation sse_decode_box_autoadd_plugin_invocation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PluginRunResult sse_decode_box_autoadd_plugin_run_result(
     SseDeserializer deserializer,
   );
 
@@ -1315,6 +1326,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PluginEntryKind? sse_decode_opt_box_autoadd_plugin_entry_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PluginRunResult? sse_decode_opt_box_autoadd_plugin_run_result(
     SseDeserializer deserializer,
   );
 
@@ -1794,6 +1810,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_plugin_invocation(
     PluginInvocation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_plugin_run_result(
+    PluginRunResult self,
     SseSerializer serializer,
   );
 
@@ -2340,6 +2362,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_plugin_entry_kind(
     PluginEntryKind? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_plugin_run_result(
+    PluginRunResult? self,
     SseSerializer serializer,
   );
 

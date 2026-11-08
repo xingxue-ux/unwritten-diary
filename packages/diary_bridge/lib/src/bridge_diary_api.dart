@@ -49,8 +49,12 @@ import '../diary_bridge.dart' as bridge;
 ///   `createExport`）：核心实现还在 PR #159；
 /// - `setRuntimeState`：核心没有资源调度入口，不造一个只记不做的假实现；
 /// - `getSettings` / `updateSettings`：由设置那条线负责，本分支不碰；
-/// - `invokePlugin`：契约是票据式（返回 `jobId`），核心 `run_plugin` 同步返回完整
-///   结果且没有结果读取入口；硬套 jobId 会造出「有 id 没结果」的假票据，保持不接。
+/// - `core.setRuntimeState`：核心没有资源调度入口，报「已设置」就是撒谎。
+///
+/// **`plugins.invoke` 已接**：核心的插件执行是同步的（沙箱有 fuel 预算），所以走
+/// 「同步执行 + 写一条 `succeeded` 的 `plugin` 任务记录」这条路，票据指向**已经
+/// 完成**的记录；运行结果按 `jobId` 落在资料库的 `plugin-runs/` 下，用
+/// `pluginRun(jobId)` 读回来。与备份/导出的取舍一致。
 ///
 /// 设计取舍：
 /// - **不另造 DTO**：桥接的字段名已经和契约对得上，这里只做映射与改名，
@@ -185,6 +189,8 @@ class BridgeDiaryApi
     'plugins.disable',
     'plugins.uninstall',
     'plugins.list',
+    'plugins.invoke',
+    'plugins.run',
   };
 
   /// 契约 `DiaryApi` 的全部方法名（按能力分组）。
@@ -267,6 +273,7 @@ class BridgeDiaryApi
     'plugins.disable',
     'plugins.uninstall',
     'plugins.list',
+    'plugins.run',
     'plugins.invoke',
     'backups.create',
     'backups.inspect',
@@ -1540,6 +1547,84 @@ class BridgeDiaryApi
   }
 
   @override
+  Future<api.PluginInvocationTicket> invokePlugin({
+    required String pluginId,
+    required String command,
+    List<String>? captureIds,
+    String? templateId,
+    String? format,
+    String? inputText,
+    List<String>? versionIds,
+    String? fromDayKey,
+    String? toDayKey,
+  }) async {
+    final job = await _translate(
+      () => _open.invokePlugin(
+        invocation: bridge.PluginInvocation(
+          pluginId: pluginId,
+          activation: command,
+          templateId: templateId,
+          selectedVersionIds: versionIds ?? const [],
+          selectedCaptureIds: captureIds ?? const [],
+          fromDayKey: fromDayKey,
+          toDayKey: toDayKey,
+          format: format,
+          inputText: inputText,
+        ),
+      ),
+    );
+    return api.PluginInvocationTicket(jobId: job.id);
+  }
+
+  @override
+  Future<api.PluginRunResult?> pluginRun(String jobId) async {
+    final result = await _translate(() => _open.pluginRun(jobId: jobId));
+    if (result == null) return null;
+    return api.PluginRunResult(
+      runId: result.runId,
+      pluginId: result.pluginId,
+      activation: result.activation,
+      status: result.status,
+      output: result.output,
+      artifacts: result.artifacts
+          .map(
+            (item) => api.PluginArtifact(
+              fileName: item.fileName,
+              mediaType: item.mediaType,
+              byteSize: item.byteSize.toInt(),
+              sha256: item.sha256,
+              path: item.path,
+              content: item.content,
+            ),
+          )
+          .toList(),
+      derivedContents: result.derivedContents
+          .map(
+            (item) => api.PluginDerivedContent(
+              kind: item.kind,
+              text: item.text,
+              sourceRefs: item.sourceRefs
+                  .map(
+                    (ref) => api.PluginSourceRef(
+                      sourceId: ref.sourceId,
+                      sourceRevisionId: ref.sourceRevisionId,
+                      locatorJson: ref.locatorJson,
+                    ),
+                  )
+                  .toList(),
+            ),
+          )
+          .toList(),
+      logs: result.logs,
+      warnings: result.warnings,
+      errorCode: result.errorCode,
+      errorMessage: result.errorMessage,
+      durationMs: result.durationMs.toInt(),
+      instructionsUsed: result.instructionsUsed?.toInt(),
+    );
+  }
+
+  @override
   Future<api.Plugin> enablePlugin(String pluginId) async {
     final installed = await _translate(
       () => _open.setPluginEnabled(pluginId: pluginId, enabled: true),
@@ -1895,6 +1980,17 @@ class BridgeDiaryApi
     activationEvents: value.activationEvents,
     requestedPermissions: value.requestedPermissions.toSet(),
     grantedPermissions: value.permissions.toSet(),
+    templates: value.templates
+        .map(
+          (item) => api.PluginTemplate(
+            id: item.id,
+            kind: item.kind,
+            label: item.label,
+            description: item.description,
+            format: item.format,
+          ),
+        )
+        .toList(),
     lastError: value.lastError,
   );
 

@@ -477,11 +477,33 @@ abstract class DiaryApi {
   Future<List<Plugin>> listPlugins();
 
   /// 调用插件，受授权与执行预算约束。
+  ///
+  /// 票据指向一条**已经完成**的任务记录（核心的插件执行是同步的，沙箱有预算上限），
+  /// 不是排队任务。结果用 [pluginRun] 按 `jobId` 读回来。
   Future<PluginInvocationTicket> invokePlugin({
     required String pluginId,
     required String command,
     List<String>? captureIds,
+
+    /// 声明式插件必填：调用哪个模板（见 [Plugin.templates]）。
+    String? templateId,
+
+    /// 导出模板的输出格式；必须与模板声明的 format 一致。
+    String? format,
+
+    /// 作为**数据**交给插件的附加文字（不是指令），有大小上限。
+    String? inputText,
+
+    /// 用户选定的日记版本（导出类插件用）。
+    List<String>? versionIds,
+
+    /// 日期范围（闭区间，最多 366 天）；导出类插件可以按日期导出。
+    String? fromDayKey,
+    String? toDayKey,
   });
+
+  /// 读回一次插件调用的结果。没有这条记录（例如内存库）时返回 `null`。
+  Future<PluginRunResult?> pluginRun(String jobId);
 
   // ------------------------------------------------------- 备份与导出
 

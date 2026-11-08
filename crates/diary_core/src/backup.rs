@@ -1779,9 +1779,23 @@ pub(crate) fn record_completed_job(
     kind: &str,
     target_ids: Vec<String>,
 ) -> Result<Job> {
+    record_completed_job_with_state(core, kind, target_ids, JobState::Succeeded)
+}
+
+/// 同上，但可以记成**失败**。
+///
+/// 插件调用用得上：执行本身跑完了（有完整的运行结果），但插件报告失败。
+/// 这时候任务行写 `succeeded` 就是在骗人——任务中心会显示一条绿色的「已完成」，
+/// 而用户点开的插件其实什么都没产出。
+pub(crate) fn record_completed_job_with_state(
+    core: &mut Core,
+    kind: &str,
+    target_ids: Vec<String>,
+    state: JobState,
+) -> Result<Job> {
     let job = NewJob::new(kind, JobPriority::UserOrganize).targeting(target_ids);
     let tx = core.conn.transaction()?;
-    let job = crate::jobs::enqueue_in_tx_with_state(&tx, job, JobState::Succeeded, None)?;
+    let job = crate::jobs::enqueue_in_tx_with_state(&tx, job, state, None)?;
     tx.commit()?;
     Ok(job)
 }

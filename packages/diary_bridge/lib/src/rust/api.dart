@@ -190,6 +190,12 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required List<String> grants,
   });
 
+  /// 调用插件并留一条已完成的任务记录（契约 `plugins.invoke`）。
+  ///
+  /// 返回的 `Job` 是**已经完成**的记录，票据里的 `jobId` 就是它；运行结果用
+  /// `plugin_run` 按这个 id 读回来。
+  Future<Job> invokePlugin({required PluginInvocation invocation});
+
   /// 任务面板状态：各状态计数、到期积压、下次唤醒与最近错误。
   ///
   /// 最近错误只有 kind + 错误码 + 时间（外加不透明的任务 ID），**没有用户内容**。
@@ -309,6 +315,9 @@ abstract class BridgeSession implements RustOpaqueInterface {
   /// 模板的规则是**产品指令**（只在 system 消息里），参数只接受整数与布尔——
   /// 两者都不接受自由文本，所以「把材料里的文字变成指令」没有入口。
   Future<List<OrganizeTemplate>> organizeTemplates();
+
+  /// 读回一次插件运行的结果；没有这条记录时返回 `None`。
+  Future<PluginRunResult?> pluginRun({required String jobId});
 
   /// 声明式模板缓存（可按插件过滤）。启动/列表路径不会碰插件文件。
   Future<List<PluginTemplate>> pluginTemplates({String? pluginId});

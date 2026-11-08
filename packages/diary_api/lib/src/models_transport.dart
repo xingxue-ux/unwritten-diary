@@ -1321,6 +1321,173 @@ class PluginPackageReport {
       'PluginPackageReport($packageId, compatible: $compatible)';
 }
 
+/// 插件产出的一份文件（导出物）。
+class PluginArtifact {
+  const PluginArtifact({
+    required this.fileName,
+    required this.mediaType,
+    required this.byteSize,
+    required this.sha256,
+    this.path,
+    this.content,
+  });
+
+  final String fileName;
+  final String mediaType;
+  final int byteSize;
+  final String sha256;
+
+  /// 文件库里的绝对路径；内存库没有落盘时为空。
+  final String? path;
+
+  /// 文本内容的副本（最多 1 MiB），二进制为空。
+  final String? content;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PluginArtifact &&
+      other.fileName == fileName &&
+      other.mediaType == mediaType &&
+      other.byteSize == byteSize &&
+      other.sha256 == sha256 &&
+      other.path == path &&
+      other.content == content;
+
+  @override
+  int get hashCode =>
+      Object.hash(fileName, mediaType, byteSize, sha256, path, content);
+
+  @override
+  String toString() => 'PluginArtifact($fileName, $byteSize 字节)';
+}
+
+/// 派生内容的来源定位。
+class PluginSourceRef {
+  const PluginSourceRef({
+    required this.sourceId,
+    this.sourceRevisionId,
+    this.locatorJson,
+  });
+
+  final String sourceId;
+  final String? sourceRevisionId;
+
+  /// 可读定位的 JSON 文本（例如 `{"type":"text_range",...}`）。
+  final String? locatorJson;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PluginSourceRef &&
+      other.sourceId == sourceId &&
+      other.sourceRevisionId == sourceRevisionId &&
+      other.locatorJson == locatorJson;
+
+  @override
+  int get hashCode => Object.hash(sourceId, sourceRevisionId, locatorJson);
+}
+
+/// 插件返回的**候选**派生内容。不会自动写进日记。
+class PluginDerivedContent {
+  const PluginDerivedContent({
+    required this.kind,
+    required this.text,
+    this.sourceRefs = const [],
+  });
+
+  final String kind;
+  final String text;
+  final List<PluginSourceRef> sourceRefs;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PluginDerivedContent &&
+      other.kind == kind &&
+      other.text == text &&
+      listEquals(other.sourceRefs, sourceRefs);
+
+  @override
+  int get hashCode => Object.hash(kind, text, Object.hashAll(sourceRefs));
+}
+
+/// 一次插件调用的完整结果。
+///
+/// 契约的 `invokePlugin` 只给票据（`jobId`）；结果用 `pluginRun(jobId)` 读回来。
+class PluginRunResult {
+  const PluginRunResult({
+    required this.runId,
+    required this.pluginId,
+    required this.activation,
+    required this.status,
+    this.output,
+    this.artifacts = const [],
+    this.derivedContents = const [],
+    this.logs = const [],
+    this.warnings = const [],
+    this.errorCode,
+    this.errorMessage,
+    this.durationMs = 0,
+    this.instructionsUsed,
+  });
+
+  final String runId;
+  final String pluginId;
+  final String activation;
+
+  /// `succeeded` / `failed` 等，由核心给。
+  final String status;
+
+  final String? output;
+  final List<PluginArtifact> artifacts;
+  final List<PluginDerivedContent> derivedContents;
+  final List<String> logs;
+  final List<String> warnings;
+  final String? errorCode;
+  final String? errorMessage;
+  final int durationMs;
+
+  /// 这一轮消耗的 Wasm 指令预算；声明式插件为空。
+  final int? instructionsUsed;
+
+  bool get failed => errorCode != null || status == 'failed';
+
+  @override
+  bool operator ==(Object other) =>
+      other is PluginRunResult &&
+      other.runId == runId &&
+      other.pluginId == pluginId &&
+      other.activation == activation &&
+      other.status == status &&
+      other.output == output &&
+      listEquals(other.artifacts, artifacts) &&
+      listEquals(other.derivedContents, derivedContents) &&
+      listEquals(other.logs, logs) &&
+      listEquals(other.warnings, warnings) &&
+      other.errorCode == errorCode &&
+      other.errorMessage == errorMessage &&
+      other.durationMs == durationMs &&
+      other.instructionsUsed == instructionsUsed;
+
+  @override
+  int get hashCode => Object.hash(
+    runId,
+    pluginId,
+    activation,
+    status,
+    output,
+    Object.hashAll(artifacts),
+    Object.hashAll(derivedContents),
+    Object.hashAll(logs),
+    Object.hashAll(warnings),
+    errorCode,
+    errorMessage,
+    durationMs,
+    instructionsUsed,
+  );
+
+  @override
+  String toString() => 'PluginRunResult($pluginId, $status)';
+}
+
 /// 插件调用票据。invoke 受授权与预算约束。
 class PluginInvocationTicket {
   const PluginInvocationTicket({required this.jobId});

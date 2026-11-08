@@ -1,0 +1,342 @@
+import 'package:diary_api/diary_api.dart';
+import 'package:diary_mock/diary_mock.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:unwritten_diary/src/plugins_panel.dart';
+import 'package:unwritten_diary/src/sketch_ui.dart';
+
+/// 插件页以前是预览：一张写死的卡片，开关只改内存变量。现在每个按钮都落到核心。
+class _PluginsApi extends MockDiaryApi {
+  final List<Plugin> plugins = [];
+  final List<String> calls = [];
+  final List<Set<String>> grants = [];
+  PluginPackageReport? report;
+  String? installError;
+
+  @override
+  Future<List<Plugin>> listPlugins() async => List.of(plugins);
+
+  @override
+  Future<Plugin> enablePlugin(String pluginId) async {
+    calls.add('enable:$pluginId');
+    final plugin = plugins.firstWhere((item) => item.id == pluginId);
+    final updated = plugin.copyWith(state: PluginState.enabled);
+    plugins[plugins.indexOf(plugin)] = updated;
+    return updated;
+  }
+
+  @override
+  Future<Plugin> disablePlugin(String pluginId) async {
+    calls.add('disable:$pluginId');
+    final plugin = plugins.firstWhere((item) => item.id == pluginId);
+    final updated = plugin.copyWith(state: PluginState.disabled);
+    plugins[plugins.indexOf(plugin)] = updated;
+    return updated;
+  }
+
+  @override
+  Future<void> uninstallPlugin(String pluginId) async {
+    calls.add('uninstall:$pluginId');
+    plugins.removeWhere((item) => item.id == pluginId);
+  }
+
+  PluginRunResult? runResult;
+  final List<String> runs = [];
+
+  @override
+  Future<PluginInvocationTicket> invokePlugin({
+    required String pluginId,
+    required String command,
+    List<String>? captureIds,
+    String? templateId,
+    String? format,
+    String? inputText,
+    List<String>? versionIds,
+    String? fromDayKey,
+    String? toDayKey,
+  }) async {
+    runs.add('$pluginId@$command');
+    return const PluginInvocationTicket(jobId: 'job_plugin_1');
+  }
+
+  @override
+  Future<PluginRunResult?> pluginRun(String jobId) async => runResult;
+
+  @override
+  Future<PluginPackageReport> inspectPluginPackage(String ticket) async {
+    calls.add('inspect:$ticket');
+    return report ??
+        const PluginPackageReport(
+          packageId: 'demo.export',
+          version: '0.1.0',
+          apiRange: '>=1.0.0 <2.0.0',
+          compatible: true,
+        );
+  }
+
+  @override
+  Future<Plugin> installPlugin({
+    required String ticket,
+    required Set<String> grantedPermissions,
+  }) async {
+    calls.add('install:$ticket');
+    grants.add(grantedPermissions);
+    if (installError != null) {
+      throw DiaryException(
+        code: DiaryErrorCode.invalidArgument,
+        message: installError!,
+      );
+    }
+    final plugin = Plugin(
+      id: 'demo.export',
+      version: '0.1.0',
+      apiRange: '>=1.0.0 <2.0.0',
+      entryKind: PluginEntryKind.declarative,
+      state: PluginState.disabled,
+      grantedPermissions: grantedPermissions,
+    );
+    plugins.add(plugin);
+    return plugin;
+  }
+}
+
+const _allCapabilities = {
+  'plugins.list',
+  'plugins.invoke',
+  'plugins.inspectPackage',
+  'plugins.install',
+  'plugins.enable',
+  'plugins.disable',
+  'plugins.uninstall',
+};
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  Future<void> pump(
+    WidgetTester tester,
+    _PluginsApi api, {
+    Set<String> capabilities = _allCapabilities,
+    String? package,
+  }) async {
+    tester.view.physicalSize = const Size(1200, 2000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: PluginsPanel(
+              api: api,
+              pickPackage: () async => package,
+              capabilities: capabilities,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+
+  testWidgets('列出真实安装的插件，开关落到核心', (tester) async {
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'demo.export',
+          version: '0.1.0',
+          apiRange: '>=1.0.0 <2.0.0',
+          entryKind: PluginEntryKind.declarative,
+          state: PluginState.disabled,
+          grantedPermissions: {'export_write'},
+        ),
+      );
+    await pump(tester, api);
+
+    expect(find.text('demo.export'), findsOneWidget);
+    expect(find.textContaining('export_write'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('plugin-switch-demo.export')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(api.calls, contains('enable:demo.export'));
+    expect(find.text('已启用'), findsOneWidget);
+  });
+
+  testWidgets('卸载要先确认，取消就不动', (tester) async {
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'demo.export',
+          version: '0.1.0',
+          apiRange: '>=1.0.0 <2.0.0',
+          entryKind: PluginEntryKind.declarative,
+          state: PluginState.enabled,
+        ),
+      );
+    await pump(tester, api);
+
+    await tester.tap(find.byKey(const ValueKey('plugin-uninstall-demo.export')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(api.calls, isNot(contains('uninstall:demo.export')));
+
+    await tester.tap(find.byKey(const ValueKey('plugin-uninstall-demo.export')));
+    await tester.pumpAndSettle();
+    // 卡片上也有一个「卸载」按钮，这里只点对话框里那个。
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('卸载'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('uninstall:demo.export'));
+  });
+
+  testWidgets('安装要经过检查与逐项授权', (tester) async {
+    final api = _PluginsApi()
+      ..report = const PluginPackageReport(
+        packageId: 'demo.export',
+        version: '0.2.0',
+        apiRange: '>=1.0.0 <2.0.0',
+        compatible: true,
+        requestedPermissions: {'export_write', 'read_captures'},
+      );
+    await pump(tester, api, package: '/tmp/demo.zip');
+
+    await tester.tap(find.byKey(const ValueKey('plugin-install')));
+    await tester.pumpAndSettle();
+
+    expect(api.calls, contains('inspect:/tmp/demo.zip'));
+    // 权限清单里两项都在，默认全勾；取消一项之后只授权剩下的。
+    expect(find.text('export_write'), findsOneWidget);
+    await tester.tap(find.text('read_captures'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('安装'));
+    await tester.pumpAndSettle();
+
+    expect(api.grants.single, {'export_write'});
+  });
+
+  testWidgets('检查不通过的包装不上，也不弹授权框', (tester) async {
+    final api = _PluginsApi()
+      ..report = const PluginPackageReport(
+        packageId: 'demo.export',
+        version: '0.2.0',
+        apiRange: '>=2.0.0',
+        compatible: false,
+        issues: ['接口版本不兼容'],
+      );
+    await pump(tester, api, package: '/tmp/demo.zip');
+
+    await tester.tap(find.byKey(const ValueKey('plugin-install')));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('接口版本不兼容'), findsOneWidget);
+    expect(api.calls, isNot(contains('install:/tmp/demo.zip')));
+  });
+
+  testWidgets('运行插件：结果读回来，候选内容不自动写进日记', (tester) async {
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'demo.export',
+          version: '0.1.0',
+          apiRange: '>=1.0.0 <2.0.0',
+          entryKind: PluginEntryKind.declarative,
+          state: PluginState.enabled,
+          activationEvents: ['export.start'],
+        ),
+      )
+      ..runResult = const PluginRunResult(
+        runId: 'run_1',
+        pluginId: 'demo.export',
+        activation: 'export.start',
+        status: 'succeeded',
+        output: '# 2026-11-08',
+        durationMs: 12,
+      );
+    await pump(tester, api);
+
+    await tester.tap(
+      find.byKey(const ValueKey('plugin-run-demo.export-export.start')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(api.runs, ['demo.export@export.start']);
+    expect(find.textContaining('跑完了'), findsOneWidget);
+    expect(find.textContaining('# 2026-11-08'), findsOneWidget);
+    expect(find.textContaining('不会自动写进日记'), findsOneWidget);
+  });
+
+  testWidgets('插件报错时如实显示，不假装成功', (tester) async {
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'demo.export',
+          version: '0.1.0',
+          apiRange: '>=1.0.0 <2.0.0',
+          entryKind: PluginEntryKind.code,
+          state: PluginState.enabled,
+          activationEvents: ['export.start'],
+        ),
+      )
+      ..runResult = const PluginRunResult(
+        runId: 'run_2',
+        pluginId: 'demo.export',
+        activation: 'export.start',
+        status: 'failed',
+        errorCode: 'plugin_failed',
+        errorMessage: '指令预算用完',
+      );
+    await pump(tester, api);
+
+    await tester.tap(
+      find.byKey(const ValueKey('plugin-run-demo.export-export.start')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(find.textContaining('没有成功'), findsOneWidget);
+    expect(find.textContaining('指令预算用完'), findsWidgets);
+  });
+
+  testWidgets('没有 invoke 能力时不画运行按钮', (tester) async {
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'demo.export',
+          version: '0.1.0',
+          apiRange: '>=1.0.0 <2.0.0',
+          entryKind: PluginEntryKind.declarative,
+          state: PluginState.enabled,
+          activationEvents: ['export.start'],
+        ),
+      );
+    await pump(
+      tester,
+      api,
+      capabilities: const {'plugins.list', 'plugins.enable', 'plugins.disable'},
+    );
+    expect(
+      find.byKey(const ValueKey('plugin-run-demo.export-export.start')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('核心没有插件能力时不画能按的入口', (tester) async {
+    final api = _PluginsApi();
+    await pump(tester, api, capabilities: const {'plugins.list'});
+
+    final install = tester.widget<SketchAction>(
+      find.byKey(const ValueKey('plugin-install')),
+    );
+    expect(install.onPressed, isNull, reason: '没有能力就不该能按');
+    expect(find.textContaining('不支持安装插件'), findsOneWidget);
+  });
+}

@@ -84,6 +84,7 @@ const Map<String, String> kContractToDartMethod = {
   'plugins.uninstall': 'uninstallPlugin',
   'plugins.list': 'listPlugins',
   'plugins.invoke': 'invokePlugin',
+  'plugins.run': 'pluginRun',
   'backups.create': 'createBackup',
   'backups.inspect': 'inspectBackup',
   'backups.restore': 'restoreBackup',
