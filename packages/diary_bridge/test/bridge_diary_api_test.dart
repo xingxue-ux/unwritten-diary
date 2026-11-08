@@ -344,17 +344,16 @@ void main() {
     ]) {
       expect(snapshot.coreInfo.capabilities, contains(capability), reason: capability);
     }
-    // 仍然没接的（原因见 `noSuchMethod` 与适配层文档）：不列进能力清单。
-    // 只剩两条：`plugins.invoke`（契约要 jobId，核心是同步返回，硬套会造出
-    // 「有 id 没结果」的假票据）与 `core.setRuntimeState`（核心没有资源调度入口）。
+    // 已经没有「没接的」了：`plugins.invoke`（票据 + 结果读取）与
+    // `core.setRuntimeState`（调度下限）都接上了，两条都必须在能力清单里。
     for (final capability in [
-      // settings.get / update 已经接上（并且 Rust 侧也宣告了），不再属于「没接」。
       'plugins.invoke',
+      'plugins.run',
       'core.setRuntimeState',
     ]) {
       expect(
         snapshot.coreInfo.capabilities,
-        isNot(contains(capability)),
+        contains(capability),
         reason: capability,
       );
     }

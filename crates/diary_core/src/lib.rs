@@ -125,6 +125,7 @@ pub use model::{
     OrganizeSkippedDay, OrganizeStatus, OrganizeTemplate, OrganizeTemplateParam, ProcessingStatus,
     ProcessingSummary, PluginArtifact, PluginDerivedContent, PluginEntryKind, PluginInspection,
     PluginInstallation, PluginInvocation, PluginManifest, PluginPermission, PluginProviderFailure,
+    PressureLevel, RuntimeState,
 PluginRunResult, PluginSourceRef, PluginTemplate, ProvenanceLink, Provider, ProviderCapability,
     ProviderTestReport, ProviderTestStatus, PurgePreview, PurgeResult,
     RecordingFinalizeResult, RecordingRecovery, RecordingSession, RecordingState, RecordingTicket,
@@ -235,6 +236,10 @@ pub struct Core {
     /// 独立文件；测试与内存库用内存实现。
     /// **明文只在这一层**，`providers` 表里只有引用（见 `provider::secret`）。
     secrets: Box<dyn provider::secret::SecretStore>,
+
+    /// 平台上报的运行环境（`core.setRuntimeState`）。只影响**调度**：录音中、
+    /// 电量或内存告急时少跑重活；不改变任何已经写进库里的数据。
+    runtime_state: crate::model::RuntimeState,
     /// 出站请求的唯一出口。默认：文件库用真实 HTTP（ureq + rustls），
     /// 内存库用「一旦被调用就 panic」的替身——内存库只用于测试，不该真的出网。
     transport: std::sync::Arc<dyn provider::transport::Transport>,
@@ -426,6 +431,7 @@ impl Core {
             current_dims,
             semantic_scan_depth: semantic::FAST_SCAN_DEPTH,
             secrets,
+            runtime_state: crate::model::RuntimeState::default(),
             transport,
             asr_engine: std::sync::Arc::new(transcription::sherpa::SherpaOnnxEngine),
             asr_config_for_test: None,
@@ -1324,6 +1330,19 @@ impl Core {
     /// 建议的下次唤醒时刻；没有待办时为 None。
     pub fn next_wakeup(&self) -> Result<Option<DateTime<Utc>>> {
         jobs::next_wakeup(self)
+    }
+
+    /// 上报运行环境（契约 `core.setRuntimeState`）。
+    ///
+    /// 只影响**调度**：录音进行中、电量或内存告急时，`run_due_jobs` 不领取重活
+    /// （它们留在队列里，状态不变，下一次照常领取）。它不改任何已落库的数据，
+    /// 也不假装能「暂停」正在跑的任务——核心不做抢占。
+    pub fn set_runtime_state(&mut self, state: crate::model::RuntimeState) {
+        self.runtime_state = state;
+    }
+
+    pub fn runtime_state(&self) -> crate::model::RuntimeState {
+        self.runtime_state
     }
 
     /// 任务面板状态：各状态计数、到期积压、下次唤醒与最近错误。

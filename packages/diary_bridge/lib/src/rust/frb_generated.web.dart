@@ -180,6 +180,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RecordingState dco_decode_box_autoadd_recording_state(dynamic raw);
 
   @protected
+  RuntimeState dco_decode_box_autoadd_runtime_state(dynamic raw);
+
+  @protected
   SearchMode dco_decode_box_autoadd_search_mode(dynamic raw);
 
   @protected
@@ -615,6 +618,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PluginTemplate dco_decode_plugin_template(dynamic raw);
 
   @protected
+  PressureLevel dco_decode_pressure_level(dynamic raw);
+
+  @protected
   ProcessingStatus dco_decode_processing_status(dynamic raw);
 
   @protected
@@ -674,6 +680,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RestoreReport dco_decode_restore_report(dynamic raw);
+
+  @protected
+  RuntimeState dco_decode_runtime_state(dynamic raw);
 
   @protected
   SearchFilters dco_decode_search_filters(dynamic raw);
@@ -923,6 +932,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RecordingState sse_decode_box_autoadd_recording_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RuntimeState sse_decode_box_autoadd_runtime_state(
     SseDeserializer deserializer,
   );
 
@@ -1468,6 +1482,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PluginTemplate sse_decode_plugin_template(SseDeserializer deserializer);
 
   @protected
+  PressureLevel sse_decode_pressure_level(SseDeserializer deserializer);
+
+  @protected
   ProcessingStatus sse_decode_processing_status(SseDeserializer deserializer);
 
   @protected
@@ -1541,6 +1558,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RestoreReport sse_decode_restore_report(SseDeserializer deserializer);
+
+  @protected
+  RuntimeState sse_decode_runtime_state(SseDeserializer deserializer);
 
   @protected
   SearchFilters sse_decode_search_filters(SseDeserializer deserializer);
@@ -1845,6 +1865,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_recording_state(
     RecordingState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_runtime_state(
+    RuntimeState self,
     SseSerializer serializer,
   );
 
@@ -2563,6 +2589,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_pressure_level(PressureLevel self, SseSerializer serializer);
+
+  @protected
   void sse_encode_processing_status(
     ProcessingStatus self,
     SseSerializer serializer,
@@ -2669,6 +2698,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_restore_report(RestoreReport self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_runtime_state(RuntimeState self, SseSerializer serializer);
 
   @protected
   void sse_encode_search_filters(SearchFilters self, SseSerializer serializer);

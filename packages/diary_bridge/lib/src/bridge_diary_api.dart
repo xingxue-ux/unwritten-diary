@@ -39,22 +39,19 @@ import '../diary_bridge.dart' as bridge;
 /// `jobId` 指向这条**已经完成**的记录，不是排队任务。任务的 `targetIds` 记真实
 /// 产物路径（备份包 / 恢复出来的库），`getJob` 读得到。
 ///
-/// **仍没接的**（都会走 [noSuchMethod] 并在异常消息里点名）：
-/// - 备份三条（`backups.create` / `backups.inspect` / `backups.restore`）：
-///   契约收 `PlatformHost` 的限域票据，票据解析协议尚未实现；本轮只有路径专用
-///   入口，不宣告契约能力；
-/// - 回收站五条（`moveDay` / `trashCapture` / `restoreCapture` / `previewPurge` /
-///   `purgeCapture`）：核心实现还在 PR #155，main 上没有对应入口；
-/// - 天列表与风格/导出（`listDays` / `listStyles` / `getStyle` / `saveStyle` /
-///   `createExport`）：核心实现还在 PR #159；
-/// - `setRuntimeState`：核心没有资源调度入口，不造一个只记不做的假实现；
-/// - `getSettings` / `updateSettings`：由设置那条线负责，本分支不碰；
-/// - `core.setRuntimeState`：核心没有资源调度入口，报「已设置」就是撒谎。
+/// **`core.setRuntimeState` 已接**：核心拿它调整**调度**——录音进行中、电量或内存
+/// 告急时，`run_due_jobs` 不领取重活（任务留在队列里，状态不变，下一次照常领取）。
+/// 它不改任何已落库的数据，也不假装能抢占正在跑的任务。
 ///
 /// **`plugins.invoke` 已接**：核心的插件执行是同步的（沙箱有 fuel 预算），所以走
-/// 「同步执行 + 写一条 `succeeded` 的 `plugin` 任务记录」这条路，票据指向**已经
-/// 完成**的记录；运行结果按 `jobId` 落在资料库的 `plugin-runs/` 下，用
-/// `pluginRun(jobId)` 读回来。与备份/导出的取舍一致。
+/// 「同步执行 + 写一条 `plugin` 任务记录」这条路，票据指向**已经完成**的记录；
+/// 运行结果按 `jobId` 落在资料库的 `plugin-runs/` 下，用 `pluginRun(jobId)` 读回来。
+/// 插件自己报失败时任务行是 `failed`，不是 `succeeded`。与备份/导出的取舍一致。
+///
+/// **仍没接的**（会走 [noSuchMethod] 并在异常消息里点名）：
+/// - 备份三条（`backups.create` / `backups.inspect` / `backups.restore`）：
+///   契约收 `PlatformHost` 的限域票据，票据解析协议尚未实现；本轮只有路径专用
+///   入口，不宣告契约能力。
 ///
 /// 设计取舍：
 /// - **不另造 DTO**：桥接的字段名已经和契约对得上，这里只做映射与改名，
@@ -115,6 +112,7 @@ class BridgeDiaryApi
     'core.snapshot',
     'core.close',
     'core.events',
+    'core.setRuntimeState',
     'captures.createDraft',
     'captures.saveDraft',
     'captures.commit',
@@ -826,6 +824,25 @@ class BridgeDiaryApi
     return api.DiaryGenerationTicket(
       jobId: ticket.jobId,
       sourceSnapshotId: ticket.sourceSnapshotId,
+    );
+  }
+
+  @override
+  @override
+  Future<void> setRuntimeState(api.RuntimeState state) async {
+    await _translate(
+      () => _open.setRuntimeState(
+        state: bridge.RuntimeState(
+          foreground: state.foreground,
+          recordingActive: state.recordingActive,
+          memoryPressure: bridge.PressureLevel.values.byName(
+            state.memoryPressure.name,
+          ),
+          batteryPressure: bridge.PressureLevel.values.byName(
+            state.batteryPressure.name,
+          ),
+        ),
+      ),
     );
   }
 

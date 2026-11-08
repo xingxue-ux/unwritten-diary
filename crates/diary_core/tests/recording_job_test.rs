@@ -818,3 +818,65 @@ fn a_finalized_recording_cannot_be_discarded() {
     assert_eq!(capture.ordered_source_ids.len(), 1);
     assert!(core.open_asset(&result.asset_id, "play").is_ok());
 }
+
+// ---------------------------------------------------------------- 运行环境与调度
+
+/// 录音进行中：后台重活这一轮不领，但保存类任务照跑，任务不会丢。
+#[test]
+fn recording_lets_heavy_jobs_wait_without_dropping_them() {
+    use diary_core::{PressureLevel, RuntimeState};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    core.enqueue_job(NewJob::new("semantic_index", JobPriority::Maintenance)).unwrap();
+    core.enqueue_job(NewJob::new("extract", JobPriority::BackgroundExtract)).unwrap();
+
+    // 录音中：只跑「用户直接发起」及以上的任务。
+    core.set_runtime_state(RuntimeState {
+        foreground: true,
+        recording_active: true,
+        memory_pressure: PressureLevel::Normal,
+        battery_pressure: PressureLevel::Normal,
+    });
+    let claimed = core.claim_next_due_job(Utc::now()).unwrap();
+    assert!(
+        claimed.is_none(),
+        "录音中不该领取后台提取与维护任务，实际领到 {:?}",
+        claimed.map(|job| job.kind)
+    );
+    assert_eq!(
+        core.count_jobs(Some(&[JobState::Queued])).unwrap(),
+        2,
+        "让路不是丢弃：两条都还在队列里"
+    );
+
+    // 停止录音之后照常领取（优先级高的先跑）。
+    core.set_runtime_state(RuntimeState::default());
+    let claimed = core.claim_next_due_job(Utc::now()).unwrap().expect("恢复后要领到");
+    assert_eq!(claimed.kind, "extract");
+}
+
+/// 电量或内存告急：维护类让路，提取类照跑。
+#[test]
+fn critical_pressure_only_skips_maintenance() {
+    use diary_core::{PressureLevel, RuntimeState};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    core.enqueue_job(NewJob::new("semantic_index", JobPriority::Maintenance)).unwrap();
+    core.enqueue_job(NewJob::new("extract", JobPriority::BackgroundExtract)).unwrap();
+
+    core.set_runtime_state(RuntimeState {
+        foreground: false,
+        recording_active: false,
+        memory_pressure: PressureLevel::Critical,
+        battery_pressure: PressureLevel::Normal,
+    });
+    let claimed = core.claim_next_due_job(Utc::now()).unwrap().expect("提取类照跑");
+    assert_eq!(claimed.kind, "extract");
+    assert_eq!(
+        core.count_jobs(Some(&[JobState::Queued])).unwrap(),
+        1,
+        "维护类还在队列里等"
+    );
+}

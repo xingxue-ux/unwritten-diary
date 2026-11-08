@@ -276,7 +276,6 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required PlatformInt64 expectedRevision,
   });
 
-  /// 建议的下次唤醒时刻；没有待办时为空。
   Future<DateTime?> nextWakeup();
 
   /// 打开（或创建）资料库。
@@ -547,6 +546,11 @@ abstract class BridgeSession implements RustOpaqueInterface {
     required String pluginId,
     required bool enabled,
   });
+
+  /// 建议的下次唤醒时刻；没有待办时为空。
+  /// 上报运行环境（契约 `core.setRuntimeState`）。只影响调度：录音中、电量或
+  /// 内存告急时，到期任务里那些重活这一轮不领，留在队列里等下次。
+  Future<void> setRuntimeState({required RuntimeState state});
 
   /// 发起一次检索，契约第 4.4 节 `search.start`。
   Future<SearchSnapshot> startSearch({

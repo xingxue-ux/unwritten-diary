@@ -24,7 +24,7 @@ AiResponse, AssetLease, BackupInspection, BackupReport, Capture, CapturePage, Co
     PurgePreview, PurgeResult,
     RecordingFinalizeResult,
     RecordingRecovery,
-    RecordingSession, RecordingTicket, ResponseTicket, RestoreReport, SearchRequest,
+    RecordingSession, RecordingTicket, ResponseTicket, RestoreReport, RuntimeState, SearchRequest,
     SearchSnapshot, SegmentManifest, SegmentReceipt, Settings, SourceLocation, SourceLocator,
     SourceRevision, StyleProfile,
 };
@@ -639,6 +639,14 @@ impl BridgeSession {
     }
 
     /// 建议的下次唤醒时刻；没有待办时为空。
+    /// 上报运行环境（契约 `core.setRuntimeState`）。只影响调度：录音中、电量或
+    /// 内存告急时，到期任务里那些重活这一轮不领，留在队列里等下次。
+    pub fn set_runtime_state(&self, state: RuntimeState) -> Result<(), BridgeError> {
+        let mut core = self.lock()?;
+        core.set_runtime_state(state);
+        Ok(())
+    }
+
     pub fn next_wakeup(&self) -> Result<Option<DateTime<Utc>>, BridgeError> {
         let core = self.lock()?;
         Ok(core.next_wakeup()?)
@@ -1284,6 +1292,7 @@ fn wired_capabilities() -> Vec<String> {
         // 与 `backups.*` 是不同入口，不能用于恢复。
         "exports.create",
         "core.events",
+        "core.setRuntimeState",
         // B7：备份与恢复这一轮是**同步**入口（契约那三行返回 jobId，任务化见 #70）。
         // 名字照契约写，界面看到的仍是 Dart 适配层窄化过的清单。
         "backups.create",

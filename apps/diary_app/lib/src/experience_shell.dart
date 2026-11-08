@@ -115,6 +115,11 @@ class _ExperienceShellState extends State<ExperienceShell>
   /// 那一趟就会把正在录的会话丢成「没来得及收尾」。
   RecordingController? _recording;
   String? _recordingCaptureId;
+
+  /// 运行环境上报（契约 `core.setRuntimeState`）。核心拿它调整调度：
+  /// 录音中、电量或内存告急时，到期任务里的重活这一轮不领。
+  bool _foreground = true;
+  bool _recordingActive = false;
   final List<String> _attachments = [];
 
   static const _demoBody =
@@ -171,6 +176,8 @@ class _ExperienceShellState extends State<ExperienceShell>
       unawaited(_indexSettings.load());
     }
     _search.addListener(_onSearchValueChanged);
+    // 启动就报一次：核心默认是「前台、无压力」，平台层不报的话它永远不知道真实情况。
+    unawaited(Future<void>.microtask(_reportRuntimeState));
     unawaited(
       _capture.initialize(opened: true).then((_) {
         if (mounted && _editor.text.isEmpty && _capture.text.isNotEmpty) {
@@ -237,8 +244,35 @@ class _ExperienceShellState extends State<ExperienceShell>
     super.dispose();
   }
 
+  /// 把当前运行环境报给核心。失败不打扰用户：它只影响调度，不影响正确性。
+  void _reportRuntimeState() {
+    if (widget.demoMode) return;
+    unawaited(
+      widget.api
+          .setRuntimeState(
+            RuntimeState(
+              foreground: _foreground,
+              recordingActive: _recordingActive,
+            ),
+          )
+          .catchError((Object _) {}),
+    );
+  }
+
+  void _onRecordingChanged() {
+    final active = _recording?.isActive ?? false;
+    if (active == _recordingActive) return;
+    _recordingActive = active;
+    _reportRuntimeState();
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final foreground = state == AppLifecycleState.resumed;
+    if (foreground != _foreground) {
+      _foreground = foreground;
+      _reportRuntimeState();
+    }
     if (state == AppLifecycleState.resumed && !widget.demoMode) {
       unawaited(_indexSettings.load());
     }
@@ -2531,7 +2565,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         api: widget.api,
         engine: MicrophoneRecordingEngine(),
         captureId: captureId,
-      );
+      )..addListener(_onRecordingChanged);
       _recordingCaptureId = captureId;
     }
     _openPanel('recording');
