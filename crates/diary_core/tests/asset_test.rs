@@ -3,6 +3,10 @@
 //! 对应验收计划的 E07（导入后删除外部原文件仍能打开）、E08（多文件导入其中一个
 //! 失败）、E09（超大文件不占满内存、中断可恢复）与 E06 的原件关系部分。
 
+// `write_all` 只在 Linux 的「大文件不整体读进内存」那条用例里用到（它靠
+// `/proc/self/status` 读峰值内存，别的平台没有等价物）。不加 cfg 的话，Windows 上
+// 严格 clippy 会报未使用导入。
+#[cfg(target_os = "linux")]
 use std::io::Write;
 
 use diary_core::{
@@ -346,6 +350,11 @@ fn imports_need_a_library_root() {
     assert_eq!(error.code(), ErrorCode::InvalidState);
 }
 
+/// 读本进程的峰值常驻内存（Linux 的 `VmHWM`）。
+///
+/// 只有那条 Linux 用例用得到；别的平台没有等价物，所以整个函数跟着 cfg 走——
+/// 否则 Windows 上严格 clippy 会报「未使用的函数」。
+#[cfg(target_os = "linux")]
 fn peak_rss_mib() -> Option<f64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {

@@ -51,6 +51,17 @@ class _PluginsPanelState extends State<PluginsPanel> {
   String? _runPluginId;
   PluginRunResult? _runResult;
 
+  /// 用户保存过的风格。风格模板必须带一份 `StyleProfile`——核心不替用户编风格，
+  /// 所以界面上得真的能选一份。
+  List<StyleProfile> _styles = const [];
+  bool _stylesLoaded = false;
+
+  /// 每个插件选中的模板 / 风格 / 日期范围（按插件 id 记）。
+  final Map<String, String> _templateChoice = {};
+  final Map<String, String> _styleChoice = {};
+  final Map<String, String> _fromDay = {};
+  final Map<String, String> _toDay = {};
+
   bool get _canInstall =>
       widget.capabilities.contains('plugins.install') &&
       widget.capabilities.contains('plugins.inspectPackage');
@@ -78,6 +89,7 @@ class _PluginsPanelState extends State<PluginsPanel> {
       final plugins = await widget.api.listPlugins();
       if (!mounted) return;
       setState(() => _plugins = plugins);
+      await _loadStyles();
     } on DiaryException catch (failure) {
       if (mounted) setState(() => _error = failure.message);
     } on Object catch (failure) {
@@ -85,6 +97,48 @@ class _PluginsPanelState extends State<PluginsPanel> {
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  /// 风格列表只在有插件需要它时读；读不到就如实说，不假装能跑风格模板。
+  Future<void> _loadStyles() async {
+    if (_stylesLoaded) return;
+    final needsStyles = _plugins.any(
+      (plugin) => plugin.templates.any((template) => template.kind == 'style'),
+    );
+    if (!needsStyles) return;
+    try {
+      final styles = await widget.api.listStyles();
+      if (!mounted) return;
+      setState(() {
+        _styles = styles;
+        _stylesLoaded = true;
+      });
+    } on Object {
+      if (mounted) setState(() => _stylesLoaded = true);
+    }
+  }
+
+  PluginTemplate? _selectedTemplate(Plugin plugin) {
+    if (plugin.templates.isEmpty) return null;
+    final chosen = _templateChoice[plugin.id];
+    return plugin.templates
+            .where((template) => template.id == chosen)
+            .firstOrNull ??
+        plugin.templates.first;
+  }
+
+  StyleProfile? _selectedStyle(Plugin plugin) {
+    if (_styles.isEmpty) return null;
+    final chosen = _styleChoice[plugin.id];
+    return _styles.where((style) => style.id == chosen).firstOrNull ??
+        _styles.first;
+  }
+
+  String _todayKey() {
+    final now = DateTime.now();
+    final month = now.month.toString().padLeft(2, '0');
+    final day = now.day.toString().padLeft(2, '0');
+    return '${now.year}-$month-$day';
   }
 
   Future<void> _toggle(Plugin plugin, bool enable) async {
@@ -206,6 +260,12 @@ class _PluginsPanelState extends State<PluginsPanel> {
   /// 跑一次插件。票据指向**已经完成**的任务记录，结果按 `jobId` 读回来。
   Future<void> _run(Plugin plugin, String activation) async {
     if (_busy) return;
+    final template = _selectedTemplate(plugin);
+    final style = template?.kind == 'style' ? _selectedStyle(plugin) : null;
+    if (template != null && template.kind == 'style' && style == null) {
+      setState(() => _error = '这个模板要用一份风格，但你还没有保存过风格。先到「风格」里存一份。');
+      return;
+    }
     setState(() {
       _busy = true;
       _pendingId = plugin.id;
@@ -218,6 +278,15 @@ class _PluginsPanelState extends State<PluginsPanel> {
       final ticket = await widget.api.invokePlugin(
         pluginId: plugin.id,
         command: activation,
+        templateId: template?.id,
+        format: template?.kind == 'export' ? template?.format : null,
+        styleProfile: style,
+        fromDayKey: template?.kind == 'export'
+            ? (_fromDay[plugin.id] ?? _todayKey())
+            : null,
+        toDayKey: template?.kind == 'export'
+            ? (_toDay[plugin.id] ?? _todayKey())
+            : null,
       );
       final result = await widget.api.pluginRun(ticket.jobId);
       if (!mounted) return;
@@ -363,6 +432,10 @@ class _PluginsPanelState extends State<PluginsPanel> {
               style: const TextStyle(color: SketchColors.ink, fontSize: 12),
             ),
           ],
+          if (_canInvoke && plugin.templates.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            _templateInputs(plugin),
+          ],
           if (_canInvoke && plugin.activationEvents.isNotEmpty) ...[
             const SizedBox(height: 12),
             Wrap(
@@ -420,6 +493,97 @@ class _PluginsPanelState extends State<PluginsPanel> {
           ),
         ],
       ),
+    );
+  }
+
+  /// 模板 / 风格 / 日期范围的选择。
+  ///
+  /// 没有这些输入，声明式插件根本跑不起来（核心会直接报「需要 templateId」、
+  /// 「风格模板需要 styleProfile」）。以前界面只传插件 id 与激活点，等于把
+  /// 「能运行」写在了按钮上，实际按下去只会报错。
+  Widget _templateInputs(Plugin plugin) {
+    final template = _selectedTemplate(plugin);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('用哪个模板', style: TextStyle(fontSize: 13)),
+        const SizedBox(height: 6),
+        DropdownButton<String>(
+          key: ValueKey('plugin-template-${plugin.id}'),
+          value: template?.id,
+          isExpanded: true,
+          items: [
+            for (final item in plugin.templates)
+              DropdownMenuItem(
+                value: item.id,
+                child: Text(
+                  '${item.label}（${item.kind}）',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+          onChanged: (value) => setState(() {
+            if (value != null) _templateChoice[plugin.id] = value;
+          }),
+        ),
+        if (template?.kind == 'style') ...[
+          const SizedBox(height: 10),
+          const Text('用哪份风格', style: TextStyle(fontSize: 13)),
+          const SizedBox(height: 6),
+          if (_styles.isEmpty)
+            Text(
+              _stylesLoaded
+                  ? '你还没有保存过风格。风格模板需要一份真实的风格，先去「风格」里存一份再来。'
+                  : '正在读取风格…',
+              style: const TextStyle(color: SketchColors.muted, fontSize: 12),
+            )
+          else
+            DropdownButton<String>(
+              key: ValueKey('plugin-style-${plugin.id}'),
+              value: _selectedStyle(plugin)?.id,
+              isExpanded: true,
+              items: [
+                for (final style in _styles)
+                  DropdownMenuItem(
+                    value: style.id,
+                    child: Text(style.label, overflow: TextOverflow.ellipsis),
+                  ),
+              ],
+              onChanged: (value) => setState(() {
+                if (value != null) _styleChoice[plugin.id] = value;
+              }),
+            ),
+        ],
+        if (template?.kind == 'export') ...[
+          const SizedBox(height: 10),
+          const Text(
+            '导出哪几天（闭区间，格式 2026-11-08）',
+            style: TextStyle(fontSize: 13),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: TextFormField(
+                  key: ValueKey('plugin-from-${plugin.id}'),
+                  initialValue: _fromDay[plugin.id] ?? _todayKey(),
+                  decoration: const InputDecoration(labelText: '从'),
+                  onChanged: (value) => _fromDay[plugin.id] = value,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextFormField(
+                  key: ValueKey('plugin-to-${plugin.id}'),
+                  initialValue: _toDay[plugin.id] ?? _todayKey(),
+                  decoration: const InputDecoration(labelText: '到'),
+                  onChanged: (value) => _toDay[plugin.id] = value,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
     );
   }
 

@@ -4157,6 +4157,14 @@ class SourceLocation {
   /// 找不到来源时是 `None`，不编一个类型出来。
   final SourceKind? sourceKind;
 
+  /// 原件导入时的文件名与核心判定的 MIME。
+  ///
+  /// 文件库里的 blob 用内容哈希当文件名、**没有扩展名**，外部程序据此无法判断
+  /// 类型（Windows 只会弹「你要如何打开此文件」）。界面要能把「这是 .txt / .pdf /
+  /// .docx」这件事交出去，所以这里把可信的原始信息一并返回——**不是**让界面去猜。
+  final String? originalName;
+  final String? mimeType;
+
   const SourceLocation({
     required this.sourceRef,
     required this.locator,
@@ -4164,6 +4172,8 @@ class SourceLocation {
     this.assetId,
     this.reason,
     this.sourceKind,
+    this.originalName,
+    this.mimeType,
   });
 
   @override
@@ -4173,7 +4183,9 @@ class SourceLocation {
       available.hashCode ^
       assetId.hashCode ^
       reason.hashCode ^
-      sourceKind.hashCode;
+      sourceKind.hashCode ^
+      originalName.hashCode ^
+      mimeType.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -4185,7 +4197,9 @@ class SourceLocation {
           available == other.available &&
           assetId == other.assetId &&
           reason == other.reason &&
-          sourceKind == other.sourceKind;
+          sourceKind == other.sourceKind &&
+          originalName == other.originalName &&
+          mimeType == other.mimeType;
 }
 
 /// 定位信息。每个 locator 都带 sourceRevisionId，保证定位到当时的原文版本。

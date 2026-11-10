@@ -927,6 +927,8 @@ pub(crate) fn locate(
             asset_id: None,
             reason: Some("找不到这个来源".to_owned()),
             source_kind: None,
+            original_name: None,
+            mime_type: None,
         });
     };
     // 界面要靠类型决定「怎么打开」：录音给播放器、照片给预览、文档交给外部程序。
@@ -940,17 +942,18 @@ pub(crate) fn locate(
         .optional()?
         .map(|wire| SourceKind::from_wire(&wire));
 
-    let asset: Option<(String, String, String)> = core
+    let asset: Option<(String, String, String, String, String)> = core
         .conn
         .query_row(
-            "SELECT a.id, a.object_ref, a.storage_state FROM source_revisions r \
-             JOIN assets a ON a.id = r.asset_id WHERE r.revision_id = ?1",
+            "SELECT a.id, a.object_ref, a.storage_state, a.original_name, a.detected_mime \
+             FROM source_revisions r JOIN assets a ON a.id = r.asset_id \
+             WHERE r.revision_id = ?1",
             params![revision_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
         .optional()?;
 
-    let Some((asset_id, object_ref, state)) = asset else {
+    let Some((asset_id, object_ref, state, original_name, mime_type)) = asset else {
         return Ok(SourceLocation {
             source_ref: source_id.clone(),
             locator,
@@ -958,6 +961,8 @@ pub(crate) fn locate(
             asset_id: None,
             reason: Some("这个来源没有可打开的原件（例如纯文字）".to_owned()),
             source_kind,
+            original_name: None,
+            mime_type: None,
         });
     };
 
@@ -969,6 +974,8 @@ pub(crate) fn locate(
             asset_id: Some(asset_id),
             reason: Some(format!("原件状态是 {state}，暂时打不开")),
             source_kind,
+            original_name: Some(original_name.clone()),
+            mime_type: Some(mime_type.clone()),
         });
     }
     if !root.join(&object_ref).is_file() {
@@ -979,6 +986,8 @@ pub(crate) fn locate(
             asset_id: Some(asset_id),
             reason: Some("原件文件不在文件库里".to_owned()),
             source_kind,
+            original_name: Some(original_name.clone()),
+            mime_type: Some(mime_type.clone()),
         });
     }
 
@@ -989,6 +998,8 @@ pub(crate) fn locate(
         asset_id: Some(asset_id),
         reason: None,
         source_kind,
+        original_name: Some(original_name),
+        mime_type: Some(mime_type),
     })
 }
 

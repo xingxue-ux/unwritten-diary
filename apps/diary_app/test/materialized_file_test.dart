@@ -71,6 +71,70 @@ void main() {
     expect(p.extension(await materialized.resolve(unknown.path)), '.bin');
   });
 
+  test('用原件记下来的文件名定后缀：TXT / Markdown / DOCX', () async {
+    // 文件库里的 blob 没有扩展名，靠嗅探认不出纯文本（TXT/MD/DOCX 都没有魔数），
+    // 以前一律落到 `.bin`，Windows 就没法用正常的文件关联打开。
+    final root = Directory.systemTemp.createTempSync('named');
+    addTearDown(() => root.deleteSync(recursive: true));
+    final materialized = MaterializedFile(
+      cacheDirectory: Directory(p.join(root.path, 'cache')),
+    );
+    final blob = File(p.join(root.path, 'blob_plain'))
+      ..writeAsBytesSync('就是一段普通文字'.codeUnits);
+
+    expect(
+      p.extension(await materialized.resolve(blob.path, originalName: '日记.txt')),
+      '.txt',
+    );
+    expect(
+      p.extension(
+        await materialized.resolve(blob.path, originalName: '读书笔记.md'),
+      ),
+      '.md',
+    );
+    expect(
+      p.extension(
+        await materialized.resolve(blob.path, originalName: '合同.docx'),
+      ),
+      '.docx',
+    );
+  });
+
+  test('没有文件名时按 MIME 定后缀', () async {
+    final root = Directory.systemTemp.createTempSync('mime');
+    addTearDown(() => root.deleteSync(recursive: true));
+    final materialized = MaterializedFile(
+      cacheDirectory: Directory(p.join(root.path, 'cache')),
+    );
+    final blob = File(p.join(root.path, 'blob_zip'))
+      ..writeAsBytesSync([0x50, 0x4B, 0x03, 0x04, 0, 0, 0, 0]);
+    expect(
+      p.extension(
+        await materialized.resolve(
+          blob.path,
+          mimeType:
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ),
+      ),
+      '.docx',
+    );
+  });
+
+  test('文件名里的怪后缀不会被拼进缓存文件名', () async {
+    final root = Directory.systemTemp.createTempSync('weird');
+    addTearDown(() => root.deleteSync(recursive: true));
+    final materialized = MaterializedFile(
+      cacheDirectory: Directory(p.join(root.path, 'cache')),
+    );
+    final blob = File(p.join(root.path, 'blob_x'))
+      ..writeAsBytesSync([1, 2, 3, 4]);
+    final resolved = await materialized.resolve(
+      blob.path,
+      originalName: 'a.verylongextensionname',
+    );
+    expect(p.extension(resolved), '.bin', reason: '认不出来就用 .bin，不猜');
+  });
+
   test('已经有扩展名的路径原样返回，不复制', () async {
     final root = Directory.systemTemp.createTempSync('playable3');
     addTearDown(() => root.deleteSync(recursive: true));

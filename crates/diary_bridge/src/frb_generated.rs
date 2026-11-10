@@ -7395,6 +7395,8 @@ const _: fn() = || {
         let _: Option<String> = SourceLocation.asset_id;
         let _: Option<String> = SourceLocation.reason;
         let _: Option<diary_core::model::SourceKind> = SourceLocation.source_kind;
+        let _: Option<String> = SourceLocation.original_name;
+        let _: Option<String> = SourceLocation.mime_type;
     }
     {
         let SourceLocator = None::<diary_core::model::SourceLocator>.unwrap();
@@ -10412,6 +10414,8 @@ impl SseDecode for diary_core::model::SourceLocation {
         let mut var_assetId = <Option<String>>::sse_decode(deserializer);
         let mut var_reason = <Option<String>>::sse_decode(deserializer);
         let mut var_sourceKind = <Option<diary_core::model::SourceKind>>::sse_decode(deserializer);
+        let mut var_originalName = <Option<String>>::sse_decode(deserializer);
+        let mut var_mimeType = <Option<String>>::sse_decode(deserializer);
         return diary_core::model::SourceLocation {
             source_ref: var_sourceRef,
             locator: var_locator,
@@ -10419,6 +10423,8 @@ impl SseDecode for diary_core::model::SourceLocation {
             asset_id: var_assetId,
             reason: var_reason,
             source_kind: var_sourceKind,
+            original_name: var_originalName,
+            mime_type: var_mimeType,
         };
     }
 }
@@ -13483,6 +13489,8 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::SourceLocat
             self.0.asset_id.into_into_dart().into_dart(),
             self.0.reason.into_into_dart().into_dart(),
             self.0.source_kind.into_into_dart().into_dart(),
+            self.0.original_name.into_into_dart().into_dart(),
+            self.0.mime_type.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -15819,6 +15827,8 @@ impl SseEncode for diary_core::model::SourceLocation {
         <Option<String>>::sse_encode(self.asset_id, serializer);
         <Option<String>>::sse_encode(self.reason, serializer);
         <Option<diary_core::model::SourceKind>>::sse_encode(self.source_kind, serializer);
+        <Option<String>>::sse_encode(self.original_name, serializer);
+        <Option<String>>::sse_encode(self.mime_type, serializer);
     }
 }
 

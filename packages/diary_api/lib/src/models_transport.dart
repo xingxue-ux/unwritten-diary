@@ -875,6 +875,8 @@ class SourceLocation {
     this.assetId,
     this.reason,
     this.sourceKind,
+    this.originalName,
+    this.mimeType,
   });
 
   final String sourceRef;
@@ -889,6 +891,13 @@ class SourceLocation {
   /// 找不到来源时为空——**不编一个类型出来**。
   final SourceKind? sourceKind;
 
+  /// 原件导入时的文件名与核心判定的 MIME。
+  ///
+  /// 文件库里的 blob 用内容哈希当文件名、没有扩展名，外部程序据此判断不了类型。
+  /// 界面要能把这件**可信的**原始信息交出去，而不是靠嗅探猜。
+  final String? originalName;
+  final String? mimeType;
+
   @override
   bool operator ==(Object other) =>
       other is SourceLocation &&
@@ -897,11 +906,21 @@ class SourceLocation {
       other.available == available &&
       other.assetId == assetId &&
       other.reason == reason &&
-      other.sourceKind == sourceKind;
+      other.sourceKind == sourceKind &&
+      other.originalName == originalName &&
+      other.mimeType == mimeType;
 
   @override
-  int get hashCode =>
-      Object.hash(sourceRef, locator, available, assetId, reason, sourceKind);
+  int get hashCode => Object.hash(
+    sourceRef,
+    locator,
+    available,
+    assetId,
+    reason,
+    sourceKind,
+    originalName,
+    mimeType,
+  );
 
   @override
   String toString() => 'SourceLocation($sourceRef, available: $available)';

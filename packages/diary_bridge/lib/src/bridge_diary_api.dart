@@ -545,6 +545,8 @@ class BridgeDiaryApi
       sourceKind: location.sourceKind == null
           ? null
           : api.SourceKind.values.byName(location.sourceKind!.name),
+      originalName: location.originalName,
+      mimeType: location.mimeType,
     );
   }
 
@@ -1574,6 +1576,7 @@ class BridgeDiaryApi
     List<String>? versionIds,
     String? fromDayKey,
     String? toDayKey,
+    api.StyleProfile? styleProfile,
   }) async {
     final job = await _translate(
       () => _open.invokePlugin(
@@ -1585,6 +1588,8 @@ class BridgeDiaryApi
           selectedCaptureIds: captureIds ?? const [],
           fromDayKey: fromDayKey,
           toDayKey: toDayKey,
+          styleProfile:
+              styleProfile == null ? null : _bridgeStyleProfile(styleProfile),
           format: format,
           inputText: inputText,
         ),
@@ -2131,6 +2136,21 @@ class BridgeDiaryApi
     ),
     coverage: api.Coverage.values.byName(value.coverage.name),
   );
+
+  bridge.StyleProfile _bridgeStyleProfile(api.StyleProfile value) =>
+      bridge.StyleProfile(
+        id: value.id,
+        label: value.label,
+        revision: value.revision,
+        updatedAt: value.updatedAt,
+        lengthPreference: value.lengthPreference,
+        person: value.person,
+        tone: value.tone,
+        emotionalTemperature: value.emotionalTemperature,
+        rhetoricLevel: value.rhetoricLevel,
+        examples: value.examples,
+        bannedExpressions: value.bannedExpressions,
+      );
 
   api.StyleProfile _styleProfile(bridge.StyleProfile value) => api.StyleProfile(
     id: value.id,

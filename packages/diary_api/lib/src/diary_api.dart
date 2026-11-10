@@ -500,6 +500,9 @@ abstract class DiaryApi {
     /// 日期范围（闭区间，最多 366 天）；导出类插件可以按日期导出。
     String? fromDayKey,
     String? toDayKey,
+
+    /// 风格模板的输入。`kind == style` 的模板必填——核心不替用户编一份风格。
+    StyleProfile? styleProfile,
   });
 
   /// 读回一次插件调用的结果。没有这条记录（例如内存库）时返回 `null`。

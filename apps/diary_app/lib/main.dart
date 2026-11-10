@@ -5,6 +5,7 @@ import 'package:diary_api/diary_api.dart';
 import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as path;
 
 import 'src/app_services.dart';
 import 'src/core_wakeup.dart';
@@ -97,7 +98,17 @@ class _BootGate extends StatefulWidget {
 }
 
 class _BootGateState extends State<_BootGate> {
-  late Future<({DiaryApi api, CoreSnapshot snapshot})> _opening;
+  /// 启动结果：核心 api、快照，以及**实际打开的是哪个库**（默认库路径也带上，
+  /// 界面据此判断要不要给「回到默认资料库」）。
+  late Future<
+    ({
+      DiaryApi api,
+      CoreSnapshot snapshot,
+      String? libraryPath,
+      String? defaultLibraryPath,
+    })
+  >
+  _opening;
 
   @override
   void initState() {
@@ -106,15 +117,26 @@ class _BootGateState extends State<_BootGate> {
   }
 
   /// 打开资料库。[libraryPath] 为空时用默认路径（或用户上次选的那个）。
-  Future<({DiaryApi api, CoreSnapshot snapshot})> _open({String? libraryPath}) async {
+  Future<
+    ({
+      DiaryApi api,
+      CoreSnapshot snapshot,
+      String? libraryPath,
+      String? defaultLibraryPath,
+    })
+  >
+  _open({String? libraryPath}) async {
     try {
       // 注入 api 时（测试、演示）不读「上次选的库」：那条路要做真实文件 I/O，
       // 而 widget 测试跑在假时钟里，真 I/O 的 future 永远不会完成——整个启动
       // 会卡在转圈上。生产路径（`widget.api == null`）才需要这个选择。
-      final api = widget.api ??
-          await createProductionDiaryApi(
-            libraryPath: libraryPath ?? await readChosenLibrary(),
-          );
+      final chosen = widget.api == null
+          ? (libraryPath ?? await readChosenLibrary())
+          : null;
+      final api = widget.api ?? await createProductionDiaryApi(libraryPath: chosen);
+      final defaultLibraryPath = widget.api == null
+          ? path.join((await defaultLibraryDirectory()).path, 'library.sqlite')
+          : null;
       final snapshot = await api.open();
       final appMajor = int.tryParse(kApiVersion.split('.').first);
       final coreMajor = int.tryParse(
@@ -141,7 +163,12 @@ class _BootGateState extends State<_BootGate> {
       if (!widget.demoMode) {
         unawaited(CoreWakeupScheduler.afterOpen(api, snapshot));
       }
-      return (api: api, snapshot: snapshot);
+      return (
+        api: api,
+        snapshot: snapshot,
+        libraryPath: chosen ?? defaultLibraryPath,
+        defaultLibraryPath: defaultLibraryPath,
+      );
     } catch (failure, stackTrace) {
       // The release UI stays concise; debug runs retain the actual bridge or
       // SQLite error so a mismatched Rust/Dart build can be diagnosed.
@@ -176,7 +203,14 @@ class _BootGateState extends State<_BootGate> {
 
   @override
   Widget build(BuildContext context) =>
-      FutureBuilder<({DiaryApi api, CoreSnapshot snapshot})>(
+      FutureBuilder<
+        ({
+          DiaryApi api,
+          CoreSnapshot snapshot,
+          String? libraryPath,
+          String? defaultLibraryPath,
+        })
+      >(
         future: _opening,
         builder: (context, result) {
           if (result.hasData) {
@@ -187,6 +221,8 @@ class _BootGateState extends State<_BootGate> {
               api: result.data!.api,
               demoMode: widget.demoMode,
               snapshot: result.data!.snapshot,
+              libraryPath: result.data!.libraryPath,
+              defaultLibraryPath: result.data!.defaultLibraryPath,
               onSwitchLibrary: widget.api == null ? _switchLibrary : null,
               supportsHybridUpgrade: result.data!.snapshot.coreInfo.capabilities
                   .contains('search.upgrade'),

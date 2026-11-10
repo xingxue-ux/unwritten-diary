@@ -72,8 +72,18 @@ Future<DiaryApi> createProductionDiaryApi({String? libraryPath}) async {
 
   final libraryDirectory = await defaultLibraryDirectory();
   await libraryDirectory.create(recursive: true);
-  // 随包模型：把语义检索的路径登记进 core-config.json（转写那一路 core 自己按约定找）。
-  await BundledModels.ensureConfigured(libraryDirectory);
+  // 随包模型：把语义检索的路径登记进 **实际要打开的那个库** 旁边的 `core-config.json`
+  // （转写那一路 core 自己按约定找）。
+  //
+  // 这里以前固定写默认目录，于是「切到恢复出来的库」之后，新库旁边没有这份配置，
+  // 语义重建会一直停在 `waitingConfiguration`——核心只读当前库旁边的配置，备份恢复
+  // 也不会替新目录补一份设备配置。
+  final targetLibraryPath =
+      libraryPath ?? path.join(libraryDirectory.path, 'library.sqlite');
+  final configDirectory =
+      libraryPath == null ? libraryDirectory : Directory(path.dirname(libraryPath));
+  await configDirectory.create(recursive: true);
+  await BundledModels.ensureConfigured(configDirectory);
 
   // The contract requires an IANA zone, not DateTime.timeZoneName (which may
   // be a localized Windows label or an ambiguous abbreviation such as CST).
@@ -84,8 +94,7 @@ Future<DiaryApi> createProductionDiaryApi({String? libraryPath}) async {
 
   return BridgeDiaryApi(
     coreLibraryPath: coreLibraryPath,
-    libraryPath: libraryPath ??
-        path.join(libraryDirectory.path, 'library.sqlite'),
+    libraryPath: targetLibraryPath,
     timeZone: timeZone,
     utcOffsetMinutes: DateTime.now().timeZoneOffset.inMinutes,
   );

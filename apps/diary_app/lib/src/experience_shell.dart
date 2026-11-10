@@ -45,6 +45,8 @@ class ExperienceShell extends StatefulWidget {
     this.snapshot,
     this.supportsHybridUpgrade = false,
     this.onSwitchLibrary,
+    this.libraryPath,
+    this.defaultLibraryPath,
   });
 
   final DiaryApi api;
@@ -55,6 +57,13 @@ class ExperienceShell extends StatefulWidget {
   /// 切到另一个资料库（恢复备份之后用）。为空表示当前环境不支持切换
   /// （演示模式、测试注入的 api）。
   final Future<void> Function(String? libraryPath)? onSwitchLibrary;
+
+  /// 当前打开的是哪个库，以及默认库在哪。
+  ///
+  /// 界面靠这两个值判断「要不要显示『回到默认资料库』」——**不能**依赖「刚恢复完」
+  /// 这个临时状态：切库会重建整棵树，重启更是什么都不剩，用户就再也回不去了。
+  final String? libraryPath;
+  final String? defaultLibraryPath;
 
   @override
   State<ExperienceShell> createState() => _ExperienceShellState();
@@ -2039,6 +2048,8 @@ class _ExperienceShellState extends State<ExperienceShell>
         openRestoredLibrary: widget.onSwitchLibrary == null
             ? null
             : _switchLibrary,
+        libraryPath: widget.libraryPath,
+        defaultLibraryPath: widget.defaultLibraryPath,
       ),
       'export' => ReadableExportPanel(controller: _readableExport),
       'storage' => StorageTrashPanel(controller: _libraryCare),
