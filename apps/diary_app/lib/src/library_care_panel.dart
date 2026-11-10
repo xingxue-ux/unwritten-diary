@@ -14,6 +14,8 @@ class BackupRestorePanel extends StatelessWidget {
     required this.pickBackupTarget,
     required this.pickBackupPackage,
     this.openRestoredLibrary,
+    this.libraryPath,
+    this.defaultLibraryPath,
   });
 
   final LibraryCareController controller;
@@ -24,6 +26,13 @@ class BackupRestorePanel extends StatelessWidget {
   /// 切库。[libraryPath] 为空表示回到默认资料库。
   final Future<void> Function(String? libraryPath)? openRestoredLibrary;
 
+  /// 当前打开的是哪个库；[defaultLibraryPath] 是默认库。
+  ///
+  /// 两者不同就说明用户在用恢复出来的库，界面必须给一条**长期可用**的回头路——
+  /// 不能只在「刚恢复完」那一次显示。
+  final String? libraryPath;
+  final String? defaultLibraryPath;
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: controller,
@@ -33,7 +42,14 @@ class BackupRestorePanel extends StatelessWidget {
         const _PanelTitle(title: '备份与恢复', subtitle: '备份能恢复，导出只能看。'),
         const SizedBox(height: 18),
         _CapabilityNotice(controller: controller),
-        const SizedBox(height: 18),
+        if (libraryPath != null && defaultLibraryPath != null) ...[
+          _LibraryBlock(
+            libraryPath: libraryPath!,
+            defaultLibraryPath: defaultLibraryPath!,
+            openRestoredLibrary: openRestoredLibrary,
+          ),
+          const SizedBox(height: 18),
+        ],
         SketchFrame(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -398,14 +414,6 @@ class _JobStatus extends StatelessWidget {
                 controller.restoredLibraryPath!,
               ),
             ),
-            const SizedBox(height: 8),
-            SketchAction(
-              key: const ValueKey('open-default-library'),
-              label: '回到默认资料库',
-              icon: Icons.home_outlined,
-              compact: true,
-              onPressed: () => openRestoredLibrary!(null),
-            ),
           ],
           if (controller.activeJobId != null) ...[
             const SizedBox(height: 5),
@@ -583,4 +591,67 @@ String _bytes(int value) {
     return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
   return '${(value / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+}
+
+/// 当前打开的是哪个资料库，以及「回到默认资料库」的入口。
+///
+/// 这一段**不依赖恢复任务的结果**：用户切到恢复库、关掉应用、第二天再打开，
+/// 这里照样显示「你在用另一个库」和回去的按钮。以前只有「刚恢复完」才显示，
+/// 切库重建界面之后那个临时字段就没了，用户被卡在新库里。
+class _LibraryBlock extends StatelessWidget {
+  const _LibraryBlock({
+    required this.libraryPath,
+    required this.defaultLibraryPath,
+    this.openRestoredLibrary,
+  });
+
+  final String libraryPath;
+  final String defaultLibraryPath;
+  final Future<void> Function(String? libraryPath)? openRestoredLibrary;
+
+  bool get _isDefault => libraryPath == defaultLibraryPath;
+
+  @override
+  Widget build(BuildContext context) => SketchFrame(
+    fill: SketchColors.soft,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.folder_outlined, size: 18, color: SketchColors.ink),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _isDefault ? '正在用默认资料库' : '正在用另一个资料库',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        SelectableText(
+          libraryPath,
+          style: const TextStyle(color: SketchColors.muted, fontSize: 12),
+        ),
+        if (!_isDefault) ...[
+          const SizedBox(height: 6),
+          const Text(
+            '默认资料库还在原处，没有被覆盖。想回去随时可以切，切之前当前草稿会先存好。',
+            style: TextStyle(color: SketchColors.muted, fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+          SketchAction(
+            key: const ValueKey('open-default-library'),
+            label: '回到默认资料库',
+            icon: Icons.home_outlined,
+            compact: true,
+            onPressed: openRestoredLibrary == null
+                ? null
+                : () => openRestoredLibrary!(null),
+          ),
+        ],
+      ],
+    ),
+  );
 }

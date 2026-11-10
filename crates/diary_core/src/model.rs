@@ -1144,6 +1144,14 @@ pub struct SourceLocation {
     /// 以前没有这一项，界面只能猜——于是录音的详情页画不出播放器。
     /// 找不到来源时是 `None`，不编一个类型出来。
     pub source_kind: Option<SourceKind>,
+
+    /// 原件导入时的文件名与核心判定的 MIME。
+    ///
+    /// 文件库里的 blob 用内容哈希当文件名、**没有扩展名**，外部程序据此无法判断
+    /// 类型（Windows 只会弹「你要如何打开此文件」）。界面要能把「这是 .txt / .pdf /
+    /// .docx」这件事交出去，所以这里把可信的原始信息一并返回——**不是**让界面去猜。
+    pub original_name: Option<String>,
+    pub mime_type: Option<String>,
 }
 
 /// 索引覆盖状态，契约第 4.4 节 `indexes.status`。

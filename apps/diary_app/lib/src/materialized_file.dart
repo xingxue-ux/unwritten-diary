@@ -30,11 +30,26 @@ class MaterializedFile {
 
   /// 返回一个外部程序能打开的路径。
   ///
-  /// [extension] 是调用方已经知道的类型（例如录音链一定是 `wav`）；不传就嗅探。
+  /// 后缀的来源按可信度排序：
+  /// 1. [extension]：调用方已经知道的类型（录音链一定是 `wav`）；
+  /// 2. [originalName]：原件导入时的文件名（`.txt` / `.docx` / `.md`…）——这是
+  ///    **核心记下来的事实**，比嗅探可靠得多；
+  /// 3. [mimeType]：核心判定的 MIME；
+  /// 4. 文件头嗅探；
+  /// 5. `.bin`（认不出来就认不出来，不猜一个会误导系统的后缀）。
+  ///
   /// [handle] 本身已经有扩展名时原样返回，不复制。
-  Future<String> resolve(String handle, {String? extension}) async {
+  Future<String> resolve(
+    String handle, {
+    String? extension,
+    String? originalName,
+    String? mimeType,
+  }) async {
     if (p.extension(handle).isNotEmpty) return handle;
-    final suffix = extension ?? await _sniff(handle);
+    final suffix = extension ??
+        _fromName(originalName) ??
+        _fromMime(mimeType) ??
+        await _sniff(handle);
     final name = p.basename(handle);
     final target = File(p.join(_cache.path, '$name.$suffix'));
     if (await target.exists()) return target.path;
@@ -44,6 +59,49 @@ class MaterializedFile {
     await File(handle).copy(partial.path);
     await partial.rename(target.path);
     return target.path;
+  }
+
+  /// 从原始文件名取后缀。只接受短的、字母数字的后缀，避免把奇怪的东西拼进文件名。
+  String? _fromName(String? name) {
+    if (name == null) return null;
+    final ext = p.extension(name);
+    if (ext.length < 2 || ext.length > 10) return null;
+    final body = ext.substring(1);
+    if (!RegExp(r'^[A-Za-z0-9]+$').hasMatch(body)) return null;
+    return body.toLowerCase();
+  }
+
+  /// 从 MIME 推后缀。只覆盖**导入链真的会产出**的那几种；认不出来返回 null，
+  /// 交给嗅探——不为了「看起来完整」编一张大表。
+  String? _fromMime(String? mime) {
+    if (mime == null) return null;
+    final normalized = mime.split(';').first.trim().toLowerCase();
+    return switch (normalized) {
+      'text/plain' => 'txt',
+      'text/markdown' => 'md',
+      'text/csv' => 'csv',
+      'text/html' => 'html',
+      'application/pdf' => 'pdf',
+      'application/json' => 'json',
+      'application/rtf' => 'rtf',
+      'application/msword' => 'doc',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document' =>
+        'docx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' =>
+        'xlsx',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation' =>
+        'pptx',
+      'application/epub+zip' => 'epub',
+      'image/jpeg' => 'jpg',
+      'image/png' => 'png',
+      'image/gif' => 'gif',
+      'image/webp' => 'webp',
+      'audio/wav' || 'audio/x-wav' || 'audio/wave' => 'wav',
+      'audio/mpeg' => 'mp3',
+      'audio/mp4' || 'audio/x-m4a' => 'm4a',
+      'video/mp4' => 'mp4',
+      _ => null,
+    };
   }
 
   /// 按文件头认类型。认不出来就用 `.bin`——**不猜**一个可能误导系统的后缀。

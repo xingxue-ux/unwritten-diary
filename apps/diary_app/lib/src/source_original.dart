@@ -212,7 +212,11 @@ class _SourceOriginalCardState extends State<SourceOriginalCard> {
   /// 所以先按内容嗅探出一个带后缀的副本（见 `materialized_file.dart`）。
   Future<void> _openExternal(String path) async {
     try {
-      final openable = await _materialized.resolve(path);
+      final openable = await _materialized.resolve(
+        path,
+        originalName: _location?.originalName,
+        mimeType: _location?.mimeType,
+      );
       if (Platform.isWindows) {
         await Process.start(
           'explorer.exe',
@@ -244,7 +248,11 @@ class _SourceOriginalCardState extends State<SourceOriginalCard> {
     try {
       // 交给外部程序之前同样要一份带 `.pdf` 的副本：没有扩展名时，URL 处理器
       // 连「用什么打开」都定不下来。
-      final openable = await _materialized.resolve(path);
+      final openable = await _materialized.resolve(
+        path,
+        originalName: _location?.originalName,
+        mimeType: _location?.mimeType,
+      );
       final url = fileUrlFor(openable, page: page);
       if (Platform.isWindows) {
         // 用 rundll32 的 URL 处理器而不是 `cmd /c start`：后者会把 URL 里的

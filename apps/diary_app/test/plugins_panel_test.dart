@@ -42,6 +42,8 @@ class _PluginsApi extends MockDiaryApi {
 
   PluginRunResult? runResult;
   final List<String> runs = [];
+  final List<Map<String, Object?>> invocations = [];
+  List<StyleProfile> styles = const [];
 
   @override
   Future<PluginInvocationTicket> invokePlugin({
@@ -54,13 +56,24 @@ class _PluginsApi extends MockDiaryApi {
     List<String>? versionIds,
     String? fromDayKey,
     String? toDayKey,
+    StyleProfile? styleProfile,
   }) async {
     runs.add('$pluginId@$command');
+    invocations.add({
+      'templateId': templateId,
+      'styleProfile': styleProfile?.id,
+      'fromDayKey': fromDayKey,
+      'toDayKey': toDayKey,
+      'format': format,
+    });
     return const PluginInvocationTicket(jobId: 'job_plugin_1');
   }
 
   @override
   Future<PluginRunResult?> pluginRun(String jobId) async => runResult;
+
+  @override
+  Future<List<StyleProfile>> listStyles() async => styles;
 
   @override
   Future<PluginPackageReport> inspectPluginPackage(String ticket) async {
@@ -304,6 +317,133 @@ void main() {
 
     expect(find.textContaining('没有成功'), findsOneWidget);
     expect(find.textContaining('指令预算用完'), findsWidgets);
+  });
+
+  testWidgets('风格模板：选模板 + 选风格，两样都传下去', (tester) async {
+    // 以前只传 pluginId + command，按下去只会得到「声明式插件需要 templateId」，
+    // 补了模板还会得到「风格模板需要 styleProfile」。
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'demo.style',
+          version: '0.1.0',
+          apiRange: '>=1.0.0 <2.0.0',
+          entryKind: PluginEntryKind.declarative,
+          state: PluginState.enabled,
+          activationEvents: ['organize.template.select'],
+          templates: [
+            PluginTemplate(
+              id: 'style.daily-note',
+              kind: 'style',
+              label: '日常便签',
+              format: 'style_instruction',
+            ),
+          ],
+        ),
+      )
+      ..styles = [
+        StyleProfile(
+          id: 'style-1',
+          label: '我的日记风格',
+          revision: 3,
+          updatedAt: DateTime.utc(2026, 11, 8),
+          tone: '平静',
+        ),
+      ]
+      ..runResult = const PluginRunResult(
+        runId: 'run_1',
+        pluginId: 'demo.style',
+        activation: 'organize.template.select',
+        status: 'succeeded',
+        output: '篇幅：三百字以内',
+      );
+    await pump(tester, api);
+
+    expect(find.text('用哪个模板'), findsOneWidget);
+    expect(find.text('用哪份风格'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey('plugin-run-demo.style-organize.template.select')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(api.invocations.single['templateId'], 'style.daily-note');
+    expect(api.invocations.single['styleProfile'], 'style-1');
+    expect(find.textContaining('篇幅：三百字以内'), findsOneWidget);
+  });
+
+  testWidgets('没有保存过风格时不假装能跑风格模板', (tester) async {
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'demo.style',
+          version: '0.1.0',
+          apiRange: '>=1.0.0 <2.0.0',
+          entryKind: PluginEntryKind.declarative,
+          state: PluginState.enabled,
+          activationEvents: ['organize.template.select'],
+          templates: [
+            PluginTemplate(
+              id: 'style.daily-note',
+              kind: 'style',
+              label: '日常便签',
+              format: 'style_instruction',
+            ),
+          ],
+        ),
+      );
+    await pump(tester, api);
+
+    await tester.tap(
+      find.byKey(const ValueKey('plugin-run-demo.style-organize.template.select')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(api.runs, isEmpty, reason: '没有风格就不该发起调用');
+    expect(find.textContaining('还没有保存过风格'), findsWidgets);
+  });
+
+  testWidgets('导出模板：把日期范围传下去', (tester) async {
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'demo.export',
+          version: '0.1.0',
+          apiRange: '>=1.0.0 <2.0.0',
+          entryKind: PluginEntryKind.declarative,
+          state: PluginState.enabled,
+          activationEvents: ['export.start'],
+          templates: [
+            PluginTemplate(
+              id: 'export.markdown',
+              kind: 'export',
+              label: '按天导出 Markdown',
+              format: 'markdown',
+            ),
+          ],
+        ),
+      )
+      ..runResult = const PluginRunResult(
+        runId: 'run_2',
+        pluginId: 'demo.export',
+        activation: 'export.start',
+        status: 'succeeded',
+      );
+    await pump(tester, api);
+
+    await tester.tap(
+      find.byKey(const ValueKey('plugin-run-demo.export-export.start')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    final invocation = api.invocations.single;
+    expect(invocation['templateId'], 'export.markdown');
+    expect(invocation['format'], 'markdown');
+    expect(invocation['fromDayKey'], isNotNull);
+    expect(invocation['toDayKey'], isNotNull);
   });
 
   testWidgets('没有 invoke 能力时不画运行按钮', (tester) async {

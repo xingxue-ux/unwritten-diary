@@ -81,6 +81,36 @@ use crate::Core;
 /// 两边引用同一个）。
 pub(crate) const KIND_TRANSCRIBE: &str = "transcribe";
 
+/// 判定「这一段没有声音」的峰值门限（满刻度 1.0）。
+///
+/// -50 dBFS 左右：正常对着麦克风说话，峰值通常在 0.05 以上（-26 dBFS）；安静房间的
+/// 底噪一般在 0.001 以下。取 0.003 是**明确没有声音**的一侧，不是「小声也算静音」。
+/// 宁可漏挡（把很轻的说话交给引擎），也不要误挡。
+const SILENCE_PEAK: f32 = 0.003;
+
+/// 整段窗口是不是静音：峰值与平均能量都低于门限才算。
+///
+/// 只看峰值会被单个爆点骗过（咔哒声），只看平均会被短促的语音拉低；两个都看更稳。
+fn is_silent(samples: &[f32]) -> bool {
+    if samples.is_empty() {
+        return true;
+    }
+    let mut peak = 0.0_f32;
+    let mut sum_squares = 0.0_f64;
+    for sample in samples {
+        let magnitude = sample.abs();
+        if magnitude > peak {
+            peak = magnitude;
+        }
+        sum_squares += f64::from(*sample) * f64::from(*sample);
+    }
+    if peak >= SILENCE_PEAK {
+        return false;
+    }
+    let rms = (sum_squares / samples.len() as f64).sqrt();
+    rms < f64::from(SILENCE_PEAK) / 3.0
+}
+
 /// 转写结果这个「提取器」的标识。
 ///
 /// 名字里的 `local_` 是刻意的：走远端 Provider 的转写（#99 的
@@ -334,6 +364,19 @@ fn run_windows(
         }
 
         let samples = reader.read_window(window.start_frame, window.frames)?;
+        // **静音门**：整段几乎没有能量时，不把窗口交给引擎。
+        //
+        // 实测 SenseVoice 在纯静音上会吐出 `그.` 这种无意义短串（模型行为）。照单
+        // 全收的话，一段没人说话的录音会留下一句可以进检索、进整理的「正文」——
+        // 那比空着坏得多。这里只挡**明确没有声音**的窗口：阈值取得很保守，
+        // 正常说话的音量远在它之上（见 `SILENCE_PEAK`）。
+        if is_silent(&samples) {
+            empty_windows += 1;
+            persist_window(core, target, content_id, window, "")?;
+            *completed += 1;
+            crate::jobs::report_progress(core, &job.id, *completed, windows.len() as i64)?;
+            continue;
+        }
         let outcome = engine.transcribe(
             config,
             &PcmRequest {

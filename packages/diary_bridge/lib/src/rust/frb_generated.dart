@@ -8199,8 +8199,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SourceLocation dco_decode_source_location(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return SourceLocation(
       sourceRef: dco_decode_String(arr[0]),
       locator: dco_decode_source_locator(arr[1]),
@@ -8208,6 +8208,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       assetId: dco_decode_opt_String(arr[3]),
       reason: dco_decode_opt_String(arr[4]),
       sourceKind: dco_decode_opt_box_autoadd_source_kind(arr[5]),
+      originalName: dco_decode_opt_String(arr[6]),
+      mimeType: dco_decode_opt_String(arr[7]),
     );
   }
 
@@ -11357,6 +11359,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_assetId = sse_decode_opt_String(deserializer);
     var var_reason = sse_decode_opt_String(deserializer);
     var var_sourceKind = sse_decode_opt_box_autoadd_source_kind(deserializer);
+    var var_originalName = sse_decode_opt_String(deserializer);
+    var var_mimeType = sse_decode_opt_String(deserializer);
     return SourceLocation(
       sourceRef: var_sourceRef,
       locator: var_locator,
@@ -11364,6 +11368,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       assetId: var_assetId,
       reason: var_reason,
       sourceKind: var_sourceKind,
+      originalName: var_originalName,
+      mimeType: var_mimeType,
     );
   }
 
@@ -13997,6 +14003,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.assetId, serializer);
     sse_encode_opt_String(self.reason, serializer);
     sse_encode_opt_box_autoadd_source_kind(self.sourceKind, serializer);
+    sse_encode_opt_String(self.originalName, serializer);
+    sse_encode_opt_String(self.mimeType, serializer);
   }
 
   @protected

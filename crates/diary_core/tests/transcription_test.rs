@@ -46,7 +46,21 @@ fn new_core(dir: &std::path::Path) -> Core {
 }
 
 /// 造一段合法的 16 位 PCM WAV（全零＝静音，测试不伪造人声）。
+/// 造一段**有声音**的 WAV（220 Hz 正弦，约 -20 dBFS）。
+///
+/// 以前这里填的是全零，等于「静音」。转写链现在有一道静音门（明确没有能量的窗口
+/// 不交给引擎），全零的测试音频会连引擎都不调用——于是这些用例测的就不再是转写
+/// 链路了。测试音频要像真的录音：有能量、但不刺耳。
 fn wav_of(duration_ms: i64, sample_rate: u32) -> Vec<u8> {
+    wav_with_amplitude(duration_ms, sample_rate, 0.1)
+}
+
+/// 全零 PCM：**明确没有声音**的那一档，用来验静音门。
+fn silent_wav_of(duration_ms: i64, sample_rate: u32) -> Vec<u8> {
+    wav_with_amplitude(duration_ms, sample_rate, 0.0)
+}
+
+fn wav_with_amplitude(duration_ms: i64, sample_rate: u32, amplitude: f64) -> Vec<u8> {
     let frames = (sample_rate as u64 * duration_ms as u64 / 1000).max(1);
     let data_bytes = (frames * 2) as u32;
     let mut wav = Vec::with_capacity(44 + data_bytes as usize);
@@ -63,7 +77,11 @@ fn wav_of(duration_ms: i64, sample_rate: u32) -> Vec<u8> {
     wav.extend_from_slice(&16_u16.to_le_bytes());
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&data_bytes.to_le_bytes());
-    wav.resize(44 + data_bytes as usize, 0);
+    for frame in 0..frames {
+        let phase = 2.0 * std::f64::consts::PI * 220.0 * frame as f64 / sample_rate as f64;
+        let value = (phase.sin() * amplitude * 32767.0) as i16;
+        wav.extend_from_slice(&value.to_le_bytes());
+    }
     wav
 }
 
@@ -71,6 +89,15 @@ fn wav_of(duration_ms: i64, sample_rate: u32) -> Vec<u8> {
 fn record_and_finalize(
     core: &mut Core,
     duration_ms: i64,
+) -> (String, String, String) {
+    record_and_finalize_with(core, duration_ms, &wav_of(duration_ms, 16_000))
+}
+
+/// 同上，但用调用方给的音频字节（例如全零静音）。
+fn record_and_finalize_with(
+    core: &mut Core,
+    duration_ms: i64,
+    audio: &[u8],
 ) -> (String, String, String) {
     let capture_id = core
         .create_draft(CreateDraftInput {
@@ -82,7 +109,7 @@ fn record_and_finalize(
         .unwrap()
         .id;
     let ticket: RecordingTicket = core.prepare_recording(&capture_id, "op-rec").unwrap();
-    let bytes = wav_of(duration_ms, 16_000);
+    let bytes = audio.to_vec();
     let name = "seg-0.wav";
     std::fs::write(
         std::path::Path::new(&ticket.staging_ticket).join(name),
@@ -545,6 +572,68 @@ fn silence_is_reported_as_no_text_instead_of_a_fake_transcript() {
     assert_eq!(job.state, JobState::Succeeded);
 }
 
+/// **静音门**：整段没有能量的音频不交给引擎，也就不可能落下一句虚构的正文。
+///
+/// 实测 SenseVoice 在纯静音上会吐出 `그.` 这种无意义短串。照单全收的话，一段没人
+/// 说话的录音会留下一句能进检索、进整理的文字——比空着坏得多。
+#[test]
+fn a_silent_recording_never_reaches_the_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = new_core(dir.path());
+    // 用全零 PCM：明确没有声音的那一档。
+    let capture_id = core
+        .create_draft(CreateDraftInput {
+            occurred_at: None,
+            time_zone: "Asia/Shanghai",
+            utc_offset_minutes: 480,
+            operation_id: "op-create",
+        })
+        .unwrap()
+        .id;
+    let ticket = core.prepare_recording(&capture_id, "op-rec").unwrap();
+    let bytes = silent_wav_of(3_000, 16_000);
+    std::fs::write(
+        std::path::Path::new(&ticket.staging_ticket).join("seg-0.wav"),
+        &bytes,
+    )
+    .unwrap();
+    core.register_segment(
+        &ticket.recording_id,
+        0,
+        SegmentManifest {
+            segment_id: "seg0".to_owned(),
+            relative_file_name: "seg-0.wav".to_owned(),
+            duration_ms: 3_000,
+            sha256: sha_of(&bytes),
+            byte_size: bytes.len() as i64,
+            closed_at: None,
+        },
+    )
+    .unwrap();
+    let result = core.finalize_recording(&ticket.recording_id, 0, "user").unwrap();
+    let source_id = core
+        .get_capture(&capture_id)
+        .unwrap()
+        .ordered_source_ids[0]
+        .clone();
+    assert_eq!(result.state, diary_core::RecordingState::Saved);
+
+    use_stub_config(&mut core);
+    let engine = StubEngine::new(&["그."]);
+    core.set_asr_engine_for_test(engine.clone());
+    run_due(&mut core);
+
+    assert_eq!(engine.calls(), 0, "整段静音不该调用引擎");
+    let content = core.extracted_content(&source_id).unwrap().unwrap();
+    assert_eq!(content.text, "", "静音不能落下一句虚构的正文");
+    assert_eq!(content.coverage, Coverage::MetadataOnly);
+    assert!(content
+        .coverage_reason
+        .as_deref()
+        .unwrap_or_default()
+        .contains("没有识别出文字"));
+}
+
 /// 不认识的容器：如实报不支持（不是「转写成功但文本为空」）。
 #[test]
 fn an_unsupported_container_fails_honestly() {
@@ -893,7 +982,11 @@ fn real_engine_transcribes_a_real_recording() {
     let mut core = new_core(dir.path());
     std::env::set_var("DIARY_ASR_MODEL_DIR", &model_dir);
     std::env::set_var("DIARY_ASR_ENGINE_LIB", &engine_lib);
-    let (_asset_id, source_id, _capture) = record_and_finalize(&mut core, 3_000);
+    // **全零静音**：以前这条会得到 `coverage=Complete` + 正文 `그.`——一段没人
+    // 说话的录音留下一句能进检索的文字。现在静音门在调引擎之前就把它挡掉。
+    let silence = silent_wav_of(3_000, 16_000);
+    let (_asset_id, source_id, _capture) =
+        record_and_finalize_with(&mut core, 3_000, &silence);
     run_due(&mut core);
     let _ = &model_dir;
     let content = core.extracted_content(&source_id).unwrap().unwrap();
@@ -904,4 +997,9 @@ fn real_engine_transcribes_a_real_recording() {
     assert_eq!(content.segments.len(), 1);
     assert_eq!(content.segments[0].locator.start_ms, Some(0));
     assert_eq!(content.segments[0].locator.end_ms, Some(3_000));
+    assert_eq!(
+        content.text, "",
+        "静音不该落下一句虚构的正文（以前是 `그.`）"
+    );
+    assert_eq!(content.coverage, Coverage::MetadataOnly);
 }

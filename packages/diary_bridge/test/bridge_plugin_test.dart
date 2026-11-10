@@ -94,4 +94,73 @@ void main() {
     // 不存在的 id：返回 null，不报错。
     expect(await api.pluginRun('job_does_not_exist'), isNull);
   });
+
+  test('声明式风格模板：带模板与风格才跑得通', () async {
+    if (!available) {
+      markTestSkipped('DIARY_BRIDGE_LIB 未指向可用的核心动态库');
+      return;
+    }
+    final dir = Directory.systemTemp.createTempSync('bridge-plugin-style');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final api = BridgeDiaryApi(
+      coreLibraryPath: libraryPath,
+      libraryPath: path.join(dir.path, 'library.sqlite'),
+      timeZone: 'Asia/Shanghai',
+      utcOffsetMinutes: 480,
+    );
+    addTearDown(api.close);
+    await api.open();
+
+    final package = path.normalize(
+      path.join(
+        Directory.current.path,
+        '..',
+        '..',
+        'plugins',
+        'examples',
+        'style-daily-note',
+      ),
+    );
+    final report = await api.inspectPluginPackage(package);
+    final installed = await api.installPlugin(
+      ticket: package,
+      grantedPermissions: report.requestedPermissions,
+    );
+    expect(installed.templates, isNotEmpty, reason: '声明式插件要带模板列表');
+
+    // 只传插件与激活点：核心如实拒绝（这正是界面以前踩的坑）。
+    await expectLater(
+      () => api.invokePlugin(
+        pluginId: installed.id,
+        command: 'organize.template.select',
+      ),
+      throwsA(
+        isA<DiaryException>().having(
+          (error) => error.message,
+          'message',
+          contains('templateId'),
+        ),
+      ),
+    );
+
+    // 带上模板与风格：成功，且输出里能看到风格字段。
+    final ticket = await api.invokePlugin(
+      pluginId: installed.id,
+      command: 'organize.template.select',
+      templateId: installed.templates.single.id,
+      styleProfile: StyleProfile(
+        id: 'style-1',
+        label: '我的日记风格',
+        revision: 1,
+        updatedAt: DateTime.utc(2026, 11, 8),
+        lengthPreference: '三百字以内',
+        tone: '平静口语',
+      ),
+    );
+    final result = await api.pluginRun(ticket.jobId);
+    expect(result, isNotNull);
+    expect(result!.status, 'succeeded', reason: result.errorMessage ?? '');
+    expect(result.output, contains('三百字以内'));
+    expect(result.output, contains('平静口语'));
+  });
 }
