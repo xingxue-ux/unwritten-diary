@@ -50,11 +50,11 @@ void main() {
   }
 
   testWidgets('恢复完成后出现「打开恢复后的资料库」，点下去把路径交出去', (tester) async {
-    String? opened;
+    var opened = '<没调用>';
     await pump(
       tester,
       restoredPath: '/tmp/restored/library.sqlite',
-      onOpen: (path) async => opened = path,
+      onOpen: (path) async => opened = path ?? '<null>',
     );
 
     final button = find.byKey(const ValueKey('open-restored-library'));
@@ -75,10 +75,13 @@ void main() {
   testWidgets('用着恢复库时，「回到默认资料库」一直在（不依赖刚恢复完）', (tester) async {
     // 切库会重建整棵树、重启更是什么都不剩。这条回头路必须由**当前用的是哪个库**
     // 决定，而不是由「刚恢复完」这个临时状态决定。
-    String? opened;
+    //
+    // 用哨兵值而不是 null 作初值：回调传的就是 null（表示回到默认库），
+    // 初值也用 null 的话「回调根本没执行」和「回调传了 null」分不出来。
+    var opened = '<没调用>';
     await pump(
       tester,
-      onOpen: (path) async => opened = path,
+      onOpen: (path) async => opened = path ?? '<null>',
       libraryPath: '/tmp/restored/library.sqlite',
       defaultLibraryPath: '/app/default/library.sqlite',
     );
@@ -88,7 +91,7 @@ void main() {
     await tester.ensureVisible(back);
     await tester.tap(back);
     await tester.pump();
-    expect(opened, isNull, reason: '传 null 表示回到默认库');
+    expect(opened, '<null>', reason: '传 null 表示回到默认库');
   });
 
   testWidgets('用着默认库时不显示「回到默认资料库」', (tester) async {
