@@ -116,6 +116,9 @@ class _ExperienceShellState extends State<ExperienceShell>
   SourceKind? _revisionSourceKind;
   SourceLocator? _revisionLocator;
   String _revisionView = '正文';
+
+  /// 片段页的查看方式：列表（卡片）或表格。
+  String _snippetView = '列表';
   bool _editingRevision = false;
   String _candidateDraft = _candidateBody;
   /// 录音控制器：**由外壳持有**，不是面板持有。
@@ -1036,21 +1039,27 @@ class _ExperienceShellState extends State<ExperienceShell>
             child: _sliverContent(_timelineHeader(desktop), desktop),
           ),
         ),
-        SliverList.builder(
-          itemCount: _capture.recent.length,
-          itemBuilder: (context, index) {
-            final capture = _capture.recent[index];
-            return _sliverContent(
-              _resultTile(
-                capture.state == CaptureState.draft ? '正在写的草稿' : '刚刚收好的记录',
-                '${widget.demoMode ? '本次会话文字' : '本地文字'} · ${capture.state == CaptureState.draft ? uiStrings.t('state.draft') : uiStrings.t('state.committed')} · ${_dateLabel(capture.occurredAt.toLocal())}',
-                capture.draftText,
-                () => _openDetail(capture.id),
-              ),
-              desktop,
-            );
-          },
-        ),
+        if (_snippetView == '表格')
+          SliverToBoxAdapter(
+            child: _sliverContent(_snippetTable(desktop), desktop),
+          )
+        else
+          SliverList.builder(
+            itemCount: _capture.recent.length,
+            itemBuilder: (context, index) {
+              final capture = _capture.recent[index];
+              return _sliverContent(
+                _resultTile(
+                  capture.state == CaptureState.draft ? '正在写的草稿' : '刚刚收好的记录',
+                  '${widget.demoMode ? '本次会话文字' : '本地文字'} · ${capture.state == CaptureState.draft ? uiStrings.t('state.draft') : uiStrings.t('state.committed')} · ${_dateLabel(capture.occurredAt.toLocal())}',
+                  capture.draftText,
+                  () => _openDetail(capture.id),
+                  uniform: true,
+                ),
+                desktop,
+              );
+            },
+          ),
         SliverToBoxAdapter(child: _sliverContent(_timelineFooter(), desktop)),
         const SliverToBoxAdapter(child: SizedBox(height: 40)),
       ],
@@ -1802,12 +1811,18 @@ class _ExperienceShellState extends State<ExperienceShell>
     });
   }
 
+  /// 一条片段。
+  ///
+  /// [uniform] 让每一张卡**一样高**：摘要固定占两行的高度（不足两行也留白），
+  /// 标题固定一行。以前只有 `maxLines: 2`，一行摘要的卡就比两行的矮一截，
+  /// 一列看下去参差不齐。
   Widget _resultTile(
     String title,
     String eyebrow,
     String excerpt,
-    VoidCallback onTap,
-  ) => Padding(
+    VoidCallback onTap, {
+    bool uniform = false,
+  }) => Padding(
     padding: const EdgeInsets.only(bottom: 11),
     child: InkWell(
       onTap: onTap,
@@ -1818,11 +1833,15 @@ class _ExperienceShellState extends State<ExperienceShell>
           children: [
             Text(
               eyebrow,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: SketchColors.muted, fontSize: 12),
             ),
             const SizedBox(height: 7),
             Text(
               title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: SketchColors.ink,
                 fontSize: 17,
@@ -1830,12 +1849,23 @@ class _ExperienceShellState extends State<ExperienceShell>
               ),
             ),
             const SizedBox(height: 5),
-            Text(
-              excerpt,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: SketchColors.text),
-            ),
+            if (uniform)
+              SizedBox(
+                height: 44,
+                child: Text(
+                  excerpt,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: SketchColors.text),
+                ),
+              )
+            else
+              Text(
+                excerpt,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: SketchColors.text),
+              ),
           ],
         ),
       ),
@@ -1847,12 +1877,118 @@ class _ExperienceShellState extends State<ExperienceShell>
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       _title('留下的片段', '原始材料和日记分开保存。'),
-      const SizedBox(height: 23),
+      const SizedBox(height: 14),
+      Wrap(
+        spacing: 8,
+        children: [
+          for (final view in const ['列表', '表格'])
+            ChoiceChip(
+              key: ValueKey('snippet-view-$view'),
+              label: Text(view),
+              selected: _snippetView == view,
+              onSelected: (_) => setState(() => _snippetView = view),
+            ),
+        ],
+      ),
+      const SizedBox(height: 18),
       if (widget.demoMode)
         _notice('这页混合展示示例材料和本次运行新写的文字。'),
       if (_capture.recent.isEmpty && !_capture.loading)
         _footnote('还没有记录。'),
     ],
+  );
+
+  /// 表格视图：一行一条，列固定，方便一眼扫过去比对。
+  ///
+  /// 用一张 `Table` 而不是「每行一个 `Row`」：只有同一张表里的列才会真的对齐。
+  Widget _snippetTable(bool desktop) {
+    final rows = _capture.recent;
+    if (rows.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 11),
+        child: _footnote('还没有记录。'),
+      );
+    }
+    const headerStyle = TextStyle(
+      color: SketchColors.muted,
+      fontSize: 12,
+      fontWeight: FontWeight.w700,
+    );
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 11),
+      child: SketchFrame(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        child: Table(
+          columnWidths: const {
+            0: FixedColumnWidth(104),
+            1: FixedColumnWidth(76),
+            2: FlexColumnWidth(),
+            3: FixedColumnWidth(28),
+          },
+          defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+          children: [
+            TableRow(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Text('日期', style: headerStyle),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Text('状态', style: headerStyle),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Text('摘要', style: headerStyle),
+                ),
+                const SizedBox.shrink(),
+              ],
+            ),
+            for (final capture in rows)
+              TableRow(
+                children: [
+                  _tableCell(
+                    _compactDate(capture.occurredAt.toLocal()),
+                    key: ValueKey('snippet-row-${capture.id}'),
+                    onTap: () => _openDetail(capture.id),
+                  ),
+                  _tableCell(
+                    capture.state == CaptureState.draft
+                        ? uiStrings.t('state.draft')
+                        : uiStrings.t('state.committed'),
+                    onTap: () => _openDetail(capture.id),
+                  ),
+                  _tableCell(
+                    capture.draftText.trim().isEmpty
+                        ? '（没有文字，只有材料）'
+                        : capture.draftText.replaceAll('\n', ' '),
+                    onTap: () => _openDetail(capture.id),
+                  ),
+                  _tableCell('›', onTap: () => _openDetail(capture.id)),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _tableCell(
+    String text, {
+    Key? key,
+    required VoidCallback onTap,
+  }) => InkWell(
+    key: key,
+    onTap: onTap,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 11),
+      child: Text(
+        text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 13),
+      ),
+    ),
   );
 
   Widget _timelineFooter() => Column(
@@ -3049,4 +3185,9 @@ class _ExperienceShellState extends State<ExperienceShell>
 
   String _dateLabel(DateTime date) =>
       '${date.year} 年 ${date.month} 月 ${date.day} 日';
+
+  /// 表格里的日期用紧凑写法：列宽有限，「2026 年 11 月 6 日」会被截成
+  /// 「2026 年 11 月 …」，反而看不清是哪天。
+  String _compactDate(DateTime date) =>
+      '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
 }
