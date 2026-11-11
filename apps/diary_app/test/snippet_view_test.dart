@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:diary_api/diary_api.dart';
 import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter/material.dart';
@@ -7,15 +9,32 @@ import 'package:unwritten_diary/src/ui_strings.dart';
 
 /// 片段页：卡片**一样高**，并且能在「列表」和「表格」两种查看方式之间切。
 class _SnippetsApi extends MockDiaryApi {
-  _SnippetsApi(this.rows);
+  _SnippetsApi(this.rows, {this.secondPage});
+
+  /// 第一页；[secondPage] 非空时 `nextCursor` 指向它，用来验翻页骨架。
   final List<Capture> rows;
+  final List<Capture>? secondPage;
+  int pages = 0;
+
+  /// 让第二页「晚点回来」：翻页中的骨架才有机会被看到。
+  final Completer<void> secondPageGate = Completer<void>();
 
   @override
   Future<CapturePage> listCaptures({
     String? dayKey,
     String? cursor,
     int pageSize = 20,
-  }) async => CapturePage(captures: rows, nextCursor: null);
+  }) async {
+    pages++;
+    if (secondPage == null) {
+      return CapturePage(captures: rows, nextCursor: null);
+    }
+    if (cursor == null) {
+      return CapturePage(captures: rows, nextCursor: 'more');
+    }
+    await secondPageGate.future;
+    return CapturePage(captures: secondPage!, nextCursor: null);
+  }
 }
 
 Capture _capture(String id, String text, {int day = 1}) => Capture(
@@ -71,6 +90,34 @@ void main() {
       closeTo(heights[1], 0.5),
       reason: '同一页的卡片必须一样高，否则一列看下去参差不齐',
     );
+  });
+
+  testWidgets('翻页时末尾出现占位骨架，翻完换成真卡', (tester) async {
+    final api = _SnippetsApi(
+      [for (var index = 0; index < 8; index++) _capture('p$index', '第 $index 条。')],
+      secondPage: [_capture('q0', '第二页第一条。')],
+    );
+    await openSnippets(tester, api);
+    await tester.tap(find.byKey(const ValueKey('snippet-view-表格')));
+    await tester.pumpAndSettle();
+
+    // 第一页 8 条，还没有骨架。
+    expect(find.byKey(const ValueKey('snippet-skeleton')), findsNothing);
+
+    // 滚到底触发翻页：第二页还没回来时，末尾应当有骨架。
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -2000));
+    await tester.pump();
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('snippet-skeleton')),
+      findsWidgets,
+      reason: '翻页中要有占位骨架，而不是让页面空着等',
+    );
+
+    api.secondPageGate.complete();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('snippet-skeleton')), findsNothing);
+    expect(find.byKey(const ValueKey('snippet-tile-q0')), findsOneWidget);
   });
 
   testWidgets('网格是懒加载：几百条只建看得见的那些', (tester) async {

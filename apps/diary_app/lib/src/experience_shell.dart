@@ -1070,15 +1070,24 @@ class _ExperienceShellState extends State<ExperienceShell>
               ),
               // **懒加载**：`SliverGrid.builder` 只建可见范围内的卡片，
               // 几百上千条也不会一次性铺出来。
-              itemCount: _capture.recent.length,
-              itemBuilder: (context, index) =>
-                  _snippetGridCard(_capture.recent[index]),
+              //
+              // 翻页中在末尾补一排**占位骨架**：用户看到的是「下面还有内容在来」，
+              // 而不是一个转圈把页面顶得跳一下。
+              itemCount:
+                  _capture.recent.length + (_capture.loadingMore ? 4 : 0),
+              itemBuilder: (context, index) => index < _capture.recent.length
+                  ? _snippetGridCard(_capture.recent[index])
+                  : _snippetSkeletonCard(),
             ),
           )
         else
           SliverList.builder(
-            itemCount: _capture.recent.length,
+            itemCount:
+                _capture.recent.length + (_capture.loadingMore ? 2 : 0),
             itemBuilder: (context, index) {
+              if (index >= _capture.recent.length) {
+                return _sliverContent(_snippetSkeletonRow(), desktop);
+              }
               final capture = _capture.recent[index];
               return _sliverContent(
                 _resultTile(
@@ -1929,6 +1938,68 @@ class _ExperienceShellState extends State<ExperienceShell>
     ],
   );
 
+  /// 网格里的占位骨架：和真卡一样大，只有几块淡色条。
+  ///
+  /// 尺寸必须和 `_snippetGridCard` 一致（同一套 padding 与行高），否则骨架出现
+  /// 的那一刻整页会抖一下。
+  Widget _snippetSkeletonCard() => SketchFrame(
+    key: const ValueKey('snippet-skeleton'),
+    fill: SketchColors.soft,
+    padding: const EdgeInsets.all(14),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            _skeletonBar(width: 76, height: 12),
+            const Spacer(),
+            _skeletonBar(width: 36, height: 12),
+          ],
+        ),
+        const SizedBox(height: 8),
+        _skeletonBar(width: 120, height: 16),
+        const SizedBox(height: 8),
+        _skeletonBar(width: double.infinity, height: 12),
+        const SizedBox(height: 6),
+        _skeletonBar(width: double.infinity, height: 12),
+        const SizedBox(height: 6),
+        _skeletonBar(width: 140, height: 12),
+      ],
+    ),
+  );
+
+  /// 列表里的占位骨架：和真卡一样的外框与行数。
+  Widget _snippetSkeletonRow() => Padding(
+    key: const ValueKey('snippet-skeleton'),
+    padding: const EdgeInsets.only(bottom: 11),
+    child: SketchFrame(
+      fill: SketchColors.soft,
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _skeletonBar(width: 150, height: 12),
+          const SizedBox(height: 9),
+          _skeletonBar(width: 180, height: 17),
+          const SizedBox(height: 8),
+          _skeletonBar(width: double.infinity, height: 12),
+          const SizedBox(height: 6),
+          _skeletonBar(width: double.infinity, height: 12),
+        ],
+      ),
+    ),
+  );
+
+  Widget _skeletonBar({required double width, required double height}) =>
+      Container(
+        width: width,
+        height: height,
+        decoration: BoxDecoration(
+          color: SketchColors.line,
+          borderRadius: BorderRadius.circular(4),
+        ),
+      );
+
   /// 网格里的一张卡：**固定尺寸**，二维铺开。
   ///
   /// 和列表卡的区别不是内容，是排布：列表一行一条、读起来顺；网格一行放多张，
@@ -1993,7 +2064,9 @@ class _ExperienceShellState extends State<ExperienceShell>
   Widget _timelineFooter() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      if (_capture.loadingMore)
+      // 已经有内容时，翻页的进度由末尾的占位骨架表示，不再额外顶一个转圈
+      // （转圈会把页面往下推一下，看起来像跳帧）。只有「一条都还没有」时才用它。
+      if (_capture.loadingMore && _capture.recent.isEmpty)
         const Center(
           child: Padding(
             padding: EdgeInsets.all(16),
