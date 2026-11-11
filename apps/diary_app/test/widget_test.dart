@@ -334,7 +334,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(api.pageRequests, 1);
 
-    await tester.drag(find.byType(CustomScrollView), const Offset(0, -2200));
+    // 片段页顶部多了「列表 / 表格」切换，内容整体下移；多拖一点才真的到底。
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -3000));
     await tester.pumpAndSettle();
     expect(api.pageRequests, greaterThan(1));
     final scrollable = find.descendant(
