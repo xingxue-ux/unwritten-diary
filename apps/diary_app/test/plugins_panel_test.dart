@@ -44,6 +44,7 @@ class _PluginsApi extends MockDiaryApi {
   final List<String> runs = [];
   final List<Map<String, Object?>> invocations = [];
   List<StyleProfile> styles = const [];
+  List<DiaryDay> days = const [];
 
   @override
   Future<PluginInvocationTicket> invokePlugin({
@@ -65,6 +66,7 @@ class _PluginsApi extends MockDiaryApi {
       'fromDayKey': fromDayKey,
       'toDayKey': toDayKey,
       'format': format,
+      'versionIds': versionIds,
     });
     return const PluginInvocationTicket(jobId: 'job_plugin_1');
   }
@@ -74,6 +76,14 @@ class _PluginsApi extends MockDiaryApi {
 
   @override
   Future<List<StyleProfile>> listStyles() async => styles;
+
+  @override
+  Future<DiaryDayPage> listDays({
+    String? fromDayKey,
+    String? toDayKey,
+    String? cursor,
+    int pageSize = 20,
+  }) async => DiaryDayPage(days: days);
 
   @override
   Future<PluginPackageReport> inspectPluginPackage(String ticket) async {
@@ -296,9 +306,18 @@ void main() {
           apiRange: '>=1.0.0 <2.0.0',
           entryKind: PluginEntryKind.code,
           state: PluginState.enabled,
+          // 代码型导出插件要选一天；这条测的是「失败如实显示」，所以给一天。
           activationEvents: ['export.start'],
         ),
       )
+      ..days = [
+        DiaryDay(
+          dayKey: '2026-11-08',
+          timeZone: 'Asia/Shanghai',
+          updatedAt: DateTime.utc(2026, 11, 8),
+          currentVersionId: 'ver-1',
+        ),
+      ]
       ..runResult = const PluginRunResult(
         runId: 'run_2',
         pluginId: 'demo.export',
@@ -444,6 +463,76 @@ void main() {
     expect(invocation['format'], 'markdown');
     expect(invocation['fromDayKey'], isNotNull);
     expect(invocation['toDayKey'], isNotNull);
+  });
+
+  testWidgets('代码型导出插件：选一天，把当前版本传下去', (tester) async {
+    // 仓库自带的 `example.export-diary-markdown` 是 Wasm 插件，`templates` 是空的。
+    // 它要的是「用户选定的日记版本」——不传就返回 2（没选日记）。
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'example.export-diary-markdown',
+          version: '1.0.0',
+          apiRange: '>=1.0 <2.0',
+          entryKind: PluginEntryKind.code,
+          state: PluginState.enabled,
+          activationEvents: ['export.start'],
+        ),
+      )
+      ..days = [
+        DiaryDay(
+          dayKey: '2026-11-08',
+          timeZone: 'Asia/Shanghai',
+          updatedAt: DateTime.utc(2026, 11, 8),
+          currentVersionId: 'ver-2026-11-08',
+        ),
+      ]
+      ..runResult = const PluginRunResult(
+        runId: 'run_export',
+        pluginId: 'example.export-diary-markdown',
+        activation: 'export.start',
+        status: 'succeeded',
+        output: '# 2026-11-08',
+      );
+    await pump(tester, api);
+
+    expect(find.text('导出哪一天的日记'), findsOneWidget);
+    await tester.tap(
+      find.byKey(
+        const ValueKey('plugin-run-example.export-diary-markdown-export.start'),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(api.invocations.single['versionIds'], ['ver-2026-11-08']);
+    expect(find.textContaining('跑完了'), findsOneWidget);
+  });
+
+  testWidgets('库里没有生成过日记时，代码型导出插件不假装能跑', (tester) async {
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'example.export-diary-markdown',
+          version: '1.0.0',
+          apiRange: '>=1.0 <2.0',
+          entryKind: PluginEntryKind.code,
+          state: PluginState.enabled,
+          activationEvents: ['export.start'],
+        ),
+      );
+    await pump(tester, api);
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey('plugin-run-example.export-diary-markdown-export.start'),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(api.runs, isEmpty, reason: '没有版本就不该发起调用');
+    expect(find.textContaining('还没有任何一天生成过日记'), findsWidgets);
   });
 
   testWidgets('没有 invoke 能力时不画运行按钮', (tester) async {

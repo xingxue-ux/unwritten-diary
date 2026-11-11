@@ -56,11 +56,19 @@ class _PluginsPanelState extends State<PluginsPanel> {
   List<StyleProfile> _styles = const [];
   bool _stylesLoaded = false;
 
+  /// 有当前版本的日记天。代码型导出插件（Wasm，没有模板）要的是
+  /// **用户选定的日记版本**——插件里 `run()` 返回 2 就是「没选日记」。
+  List<DiaryDay> _daysWithVersion = const [];
+  bool _daysLoaded = false;
+
   /// 每个插件选中的模板 / 风格 / 日期范围（按插件 id 记）。
   final Map<String, String> _templateChoice = {};
   final Map<String, String> _styleChoice = {};
   final Map<String, String> _fromDay = {};
   final Map<String, String> _toDay = {};
+
+  /// 每个插件选中的「导出哪一天」（按插件 id 记）。
+  final Map<String, String> _versionDay = {};
 
   bool get _canInstall =>
       widget.capabilities.contains('plugins.install') &&
@@ -90,6 +98,7 @@ class _PluginsPanelState extends State<PluginsPanel> {
       if (!mounted) return;
       setState(() => _plugins = plugins);
       await _loadStyles();
+      await _loadDays();
     } on DiaryException catch (failure) {
       if (mounted) setState(() => _error = failure.message);
     } on Object catch (failure) {
@@ -116,6 +125,42 @@ class _PluginsPanelState extends State<PluginsPanel> {
     } on Object {
       if (mounted) setState(() => _stylesLoaded = true);
     }
+  }
+
+  /// 代码型导出插件要「用户选定的日记版本」，所以这里读有当前版本的天。
+  Future<void> _loadDays() async {
+    if (_daysLoaded) return;
+    final needsVersions = _plugins.any(_needsVersions);
+    if (!needsVersions) return;
+    try {
+      final page = await widget.api.listDays(pageSize: 30);
+      if (!mounted) return;
+      setState(() {
+        _daysWithVersion = page.days
+            .where((day) => day.currentVersionId != null)
+            .toList();
+        _daysLoaded = true;
+      });
+    } on Object {
+      if (mounted) setState(() => _daysLoaded = true);
+    }
+  }
+
+  /// 这个插件要不要「选定的日记版本」：代码型（无模板）的导出插件。
+  ///
+  /// 声明式导出模板走的是日期范围（`fromDayKey` / `toDayKey`），代码插件走的是
+  /// `selectedVersionIds`——两条路不一样，界面不能只做一半。
+  bool _needsVersions(Plugin plugin) =>
+      plugin.entryKind == PluginEntryKind.code &&
+      plugin.activationEvents.contains('export.start');
+
+  DiaryDay? _selectedDay(Plugin plugin) {
+    if (_daysWithVersion.isEmpty) return null;
+    final chosen = _versionDay[plugin.id];
+    return _daysWithVersion
+            .where((day) => day.dayKey == chosen)
+            .firstOrNull ??
+        _daysWithVersion.first;
   }
 
   PluginTemplate? _selectedTemplate(Plugin plugin) {
@@ -266,6 +311,14 @@ class _PluginsPanelState extends State<PluginsPanel> {
       setState(() => _error = '这个模板要用一份风格，但你还没有保存过风格。先到「风格」里存一份。');
       return;
     }
+    final day = _needsVersions(plugin) ? _selectedDay(plugin) : null;
+    if (_needsVersions(plugin) && day == null) {
+      setState(
+        () => _error = '这个插件要导出「你选定的日记版本」，但库里还没有任何一天生成过日记。'
+            '先去「日记」里生成一天，再回来运行。',
+      );
+      return;
+    }
     setState(() {
       _busy = true;
       _pendingId = plugin.id;
@@ -281,6 +334,7 @@ class _PluginsPanelState extends State<PluginsPanel> {
         templateId: template?.id,
         format: template?.kind == 'export' ? template?.format : null,
         styleProfile: style,
+        versionIds: day?.currentVersionId == null ? null : [day!.currentVersionId!],
         fromDayKey: template?.kind == 'export'
             ? (_fromDay[plugin.id] ?? _todayKey())
             : null,
@@ -436,6 +490,10 @@ class _PluginsPanelState extends State<PluginsPanel> {
             const SizedBox(height: 12),
             _templateInputs(plugin),
           ],
+          if (_canInvoke && _needsVersions(plugin)) ...[
+            const SizedBox(height: 12),
+            _versionInput(plugin),
+          ],
           if (_canInvoke && plugin.activationEvents.isNotEmpty) ...[
             const SizedBox(height: 12),
             Wrap(
@@ -583,6 +641,45 @@ class _PluginsPanelState extends State<PluginsPanel> {
             ],
           ),
         ],
+      ],
+    );
+  }
+
+  /// 代码型导出插件：选一天导出。用这一天的**当前版本**作为「用户选定的日记版本」。
+  Widget _versionInput(Plugin plugin) {
+    final day = _selectedDay(plugin);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('导出哪一天的日记', style: TextStyle(fontSize: 13)),
+        const SizedBox(height: 6),
+        if (_daysWithVersion.isEmpty)
+          Text(
+            _daysLoaded
+                ? '库里还没有任何一天生成过日记。这个插件要的是「你选定的日记版本」，'
+                      '先去「日记」里生成一天再来。'
+                : '正在读取日记…',
+            style: const TextStyle(color: SketchColors.muted, fontSize: 12),
+          )
+        else
+          DropdownButton<String>(
+            key: ValueKey('plugin-version-${plugin.id}'),
+            value: day?.dayKey,
+            isExpanded: true,
+            items: [
+              for (final item in _daysWithVersion)
+                DropdownMenuItem(
+                  value: item.dayKey,
+                  child: Text(
+                    '${item.dayKey}（版本 ${item.currentVersionId}）',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+            onChanged: (value) => setState(() {
+              if (value != null) _versionDay[plugin.id] = value;
+            }),
+          ),
       ],
     );
   }

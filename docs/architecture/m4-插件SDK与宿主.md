@@ -263,11 +263,17 @@ CREATE TABLE IF NOT EXISTS plugin_grants (...);
   用 `plugins.run(jobId)` 读回来。插件自己报失败时任务行是 `failed`，不是 `succeeded`；
 - 声明式插件要带 `templateId`（模板列表现在随 `Plugin.templates` 一起返回），
   导出类插件可以带 `versionIds` / `fromDayKey` / `toDayKey`；
-- **界面真的能把这些输入收上来**（`plugins_panel.dart`）：有模板的插件先选模板；
-  `kind == style` 的模板再选一份用户保存过的风格（`StyleProfile` 随
-  `invokePlugin(styleProfile:)` 传给核心，核心不替用户编风格）；`kind == export`
-  的模板给出日期范围。没有保存过风格时如实说「先去存一份」，**不假装能跑**。
-  以前界面只传插件 id 与激活点，按下去只会得到「声明式插件需要 templateId」。
+- **界面真的能把这些输入收上来**（`plugins_panel.dart`）：
+  - 有模板的插件先选模板；`kind == style` 再选一份用户保存过的风格
+    （`StyleProfile` 随 `invokePlugin(styleProfile:)` 传给核心，核心不替用户编风格）；
+    `kind == export` 的模板给出日期范围；
+  - **代码型导出插件**（Wasm，`templates` 为空、激活点是 `export.start`）要的是
+    「用户选定的日记版本」：界面列出**有当前版本的天**，选一天就把那天的
+    `currentVersionId` 作为 `versionIds` 传下去。插件里 `run()` 返回 2 就是
+    「没选日记」，所以库里一天都没生成过时界面如实说「先去生成一天」，**不假装能跑**；
+  - 没有保存过风格时同样如实说「先去存一份」。
+  以前界面只传插件 id 与激活点，按下去只会得到「声明式插件需要 templateId」或
+  插件的「没选日记」。
 
 ## 11. 没有做到的（如实）
 
