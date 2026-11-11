@@ -331,6 +331,53 @@ class AiDiaryController extends ChangeNotifier {
     }
   }
 
+  /// 人工修改正文并存成**新版本**（`user_edit`），不覆盖基版。
+  ///
+  /// 契约的 `saveDiaryEdit` 一直有，但客户端生产路径从没调用过——用户在界面上
+  /// 只能看、只能采纳候选，不能自己改一个字。这条补的就是那个入口。
+  ///
+  /// 返回是否保存成功；失败时 [error] 里有下一步该做什么。
+  Future<bool> saveEdit({
+    required String baseVersionId,
+    required String body,
+  }) async {
+    final currentDay = day;
+    if (busy || currentDay == null) return false;
+    final trimmed = body.trim();
+    if (trimmed.isEmpty) {
+      error = '正文不能是空的。';
+      _notify();
+      return false;
+    }
+    final epoch = _viewEpoch;
+    final key = dayKey;
+    busy = true;
+    error = null;
+    _notify();
+    try {
+      await api.saveDiaryEdit(
+        baseVersionId: baseVersionId,
+        body: body,
+        expectedRevision: currentDay.revision,
+        operationId: 'edit-$key-${DateTime.now().microsecondsSinceEpoch}',
+      );
+      if (!_isCurrent(epoch)) return true;
+      await refresh(afterInFlight: true);
+      return true;
+    } on DiaryException catch (failure) {
+      if (_isCurrent(epoch)) error = nextStepFor(failure.code);
+      return false;
+    } on Object {
+      if (_isCurrent(epoch)) error = '没有保存，正文没变。';
+      return false;
+    } finally {
+      if (_isCurrent(epoch)) {
+        busy = false;
+        _notify();
+      }
+    }
+  }
+
   Future<void> cancel() async => _changeJob(retry: false);
   Future<void> retry() async => _changeJob(retry: true);
 

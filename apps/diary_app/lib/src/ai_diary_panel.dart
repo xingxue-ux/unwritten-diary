@@ -307,9 +307,24 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
         const SizedBox(height: 26),
         _sectionTitle('当前正文'),
         const SizedBox(height: 10),
-        if (controller.current case final current?)
-          _versionCard(current, isCurrent: true)
-        else
+        if (controller.current case final current?) ...[
+          _versionCard(current, isCurrent: true),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 9,
+            runSpacing: 9,
+            children: [
+              SketchAction(
+                key: const Key('diary-edit'),
+                label: '编辑正文',
+                icon: Icons.edit_outlined,
+                onPressed: controller.busy
+                    ? null
+                    : () => unawaited(_editVersion(controller, current)),
+              ),
+            ],
+          ),
+        ] else
           _hint('还没有正文。'),
         const SizedBox(height: 23),
         _sectionTitle('整理候选'),
@@ -363,6 +378,68 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
         ],
       ],
     );
+  }
+
+  /// 编辑当前正文并存成**新版本**。
+  ///
+  /// 保存走 `saveDiaryEdit`：新版本成为当前，旧当前版退成候选（仍可读回）。
+  /// 这里不覆盖任何东西——「人工改过的字不能被重新整理悄悄盖掉」是这条链的前提。
+  Future<void> _editVersion(
+    AiDiaryController controller,
+    DiaryVersion version,
+  ) async {
+    final text = TextEditingController(text: version.body);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('编辑正文'),
+        content: SizedBox(
+          width: 520,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '保存后会成为新的一版，当前这一版会退成候选，不会被覆盖。',
+                style: TextStyle(fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                key: const Key('diary-edit-field'),
+                controller: text,
+                minLines: 8,
+                maxLines: 16,
+                decoration: const InputDecoration(border: OutlineInputBorder()),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            key: const Key('diary-edit-save'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('保存为新版'),
+          ),
+        ],
+      ),
+    );
+    if (saved != true || !mounted) {
+      text.dispose();
+      return;
+    }
+    final ok = await controller.saveEdit(
+      baseVersionId: version.id,
+      body: text.text,
+    );
+    text.dispose();
+    if (!mounted) return;
+    if (ok) {
+      unawaited(CoreWakeupScheduler.afterCoreMutation(widget.api));
+    }
   }
 
   Widget _jobCard(AiDiaryController controller, Job job) => SketchFrame(
