@@ -61,6 +61,9 @@ class _PluginsPanelState extends State<PluginsPanel> {
   List<DiaryDay> _daysWithVersion = const [];
   bool _daysLoaded = false;
 
+  /// 翻到页数上限时置位：界面要如实说「只列出了最近一部分」。
+  bool _daysTruncated = false;
+
   /// 每个插件选中的模板 / 风格 / 日期范围（按插件 id 记）。
   final Map<String, String> _templateChoice = {};
   final Map<String, String> _styleChoice = {};
@@ -128,17 +131,43 @@ class _PluginsPanelState extends State<PluginsPanel> {
   }
 
   /// 代码型导出插件要「用户选定的日记版本」，所以这里读有当前版本的天。
+  ///
+  /// **必须翻页**：只取第一页（以前是 30 天）时，日记落在后面的页里就会被误报成
+  /// 「库里还没有任何一天生成过日记」——用户明明生成过，界面却说没有。
+  /// 翻到没有下一页为止，最多 [_maxDayPages] 页；到上限时如实说「只列出了最近
+  /// 一部分」，不假装全都在。
+  static const _maxDayPages = 20;
+  static const _dayPageSize = 100;
+
   Future<void> _loadDays() async {
     if (_daysLoaded) return;
     final needsVersions = _plugins.any(_needsVersions);
     if (!needsVersions) return;
     try {
-      final page = await widget.api.listDays(pageSize: 30);
+      final withVersion = <DiaryDay>[];
+      String? cursor;
+      var pages = 0;
+      var truncated = false;
+      while (true) {
+        final page = await widget.api.listDays(
+          cursor: cursor,
+          pageSize: _dayPageSize,
+        );
+        withVersion.addAll(
+          page.days.where((day) => day.currentVersionId != null),
+        );
+        pages++;
+        cursor = page.nextCursor;
+        if (cursor == null) break;
+        if (pages >= _maxDayPages) {
+          truncated = true;
+          break;
+        }
+      }
       if (!mounted) return;
       setState(() {
-        _daysWithVersion = page.days
-            .where((day) => day.currentVersionId != null)
-            .toList();
+        _daysWithVersion = withVersion;
+        _daysTruncated = truncated;
         _daysLoaded = true;
       });
     } on Object {
@@ -679,6 +708,14 @@ class _PluginsPanelState extends State<PluginsPanel> {
             onChanged: (value) => setState(() {
               if (value != null) _versionDay[plugin.id] = value;
             }),
+          ),
+        if (_daysTruncated)
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: Text(
+              '日记很多，这里只列出了最近的一部分。更早的那天可以先用「日记」翻到它再回来。',
+              style: TextStyle(color: SketchColors.muted, fontSize: 12),
+            ),
           ),
       ],
     );

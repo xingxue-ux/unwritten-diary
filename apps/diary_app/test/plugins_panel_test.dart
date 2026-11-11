@@ -77,13 +77,22 @@ class _PluginsApi extends MockDiaryApi {
   @override
   Future<List<StyleProfile>> listStyles() async => styles;
 
+  /// 按 `pageSize` 切页：用来验「日记落在第二页时也要能找到」。
+  int dayPagesRead = 0;
+
   @override
   Future<DiaryDayPage> listDays({
     String? fromDayKey,
     String? toDayKey,
     String? cursor,
     int pageSize = 20,
-  }) async => DiaryDayPage(days: days);
+  }) async {
+    dayPagesRead++;
+    final start = cursor == null ? 0 : int.parse(cursor);
+    final end = (start + pageSize).clamp(0, days.length);
+    final next = end < days.length ? '$end' : null;
+    return DiaryDayPage(days: days.sublist(start, end), nextCursor: next);
+  }
 
   @override
   Future<PluginPackageReport> inspectPluginPackage(String ticket) async {
@@ -507,6 +516,56 @@ void main() {
 
     expect(api.invocations.single['versionIds'], ['ver-2026-11-08']);
     expect(find.textContaining('跑完了'), findsOneWidget);
+  });
+
+  testWidgets('日记落在后面的页里也要能找到（不能只看第一页）', (tester) async {
+    // 32 天有记录、唯一有日记的那天在第二页：只取第一页会误报「还没有任何一天
+    // 生成过日记」——用户明明生成过。
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'example.export-diary-markdown',
+          version: '1.0.0',
+          apiRange: '>=1.0 <2.0',
+          entryKind: PluginEntryKind.code,
+          state: PluginState.enabled,
+          activationEvents: ['export.start'],
+        ),
+      )
+      // 250 天有记录（一页 100 天 ⇒ 3 页），唯一有日记的那天在最后一页。
+      ..days = [
+        for (var index = 0; index < 250; index++)
+          DiaryDay(
+            dayKey: '2025-01-01+$index',
+            timeZone: 'Asia/Shanghai',
+            updatedAt: DateTime.utc(2025, 1, 1).add(Duration(days: index)),
+          ),
+        DiaryDay(
+          dayKey: '2026-11-10',
+          timeZone: 'Asia/Shanghai',
+          updatedAt: DateTime.utc(2026, 11, 10),
+          currentVersionId: 'ver-late',
+        ),
+      ]
+      ..runResult = const PluginRunResult(
+        runId: 'run_late',
+        pluginId: 'example.export-diary-markdown',
+        activation: 'export.start',
+        status: 'succeeded',
+      );
+    await pump(tester, api);
+
+    expect(api.dayPagesRead, greaterThan(1), reason: '必须翻页才能找到那天');
+    expect(find.textContaining('2026-11-10'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey('plugin-run-example.export-diary-markdown-export.start'),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(api.invocations.single['versionIds'], ['ver-late']);
   });
 
   testWidgets('库里没有生成过日记时，代码型导出插件不假装能跑', (tester) async {

@@ -92,6 +92,34 @@ class AiFakeApi implements DiaryApi {
     return day;
   }
 
+  int edits = 0;
+  String? lastEditedBody;
+
+  @override
+  Future<DiaryVersion> saveDiaryEdit({
+    required String baseVersionId,
+    required String body,
+    required int expectedRevision,
+    required String operationId,
+  }) async {
+    edits++;
+    lastEditedBody = body;
+    expect(expectedRevision, day.revision, reason: '要带当前 revision，不能猜');
+    final version = DiaryVersion(
+      id: 'edit-$edits',
+      dayKey: day.dayKey,
+      body: body,
+      origin: DiaryVersionOrigin.userEdit,
+      createdAt: DateTime.utc(2026, 10, 18),
+    );
+    versions.insert(0, version);
+    day = day.copyWith(
+      currentVersionId: version.id,
+      revision: day.revision + 1,
+    );
+    return version;
+  }
+
   @override
   Future<Job> cancelJob({
     required String id,
@@ -196,6 +224,61 @@ void main() {
     await controller.retry();
     expect(api.retries, 1);
     expect(controller.job?.state, JobState.queued);
+  });
+
+  test('人工改正文存成新版本，不覆盖旧版', () async {
+    final directory = await Directory.systemTemp.createTemp('ai-diary-edit');
+    addTearDown(() => directory.delete(recursive: true));
+    final api = AiFakeApi();
+    api.versions.add(
+      DiaryVersion(
+        id: 'v1',
+        dayKey: '2026-10-18',
+        body: 'AI 写的原文。',
+        origin: DiaryVersionOrigin.generated,
+        createdAt: DateTime.utc(2026, 10, 18),
+      ),
+    );
+    api.day = api.day.copyWith(currentVersionId: 'v1', revision: 3);
+    final controller = AiDiaryController(
+      api,
+      FileAiLocalStore(File('${directory.path}/state.json')),
+    );
+    addTearDown(controller.dispose);
+    await controller.open('2026-10-18');
+    expect(controller.current?.body, 'AI 写的原文。');
+
+    final ok = await controller.saveEdit(
+      baseVersionId: 'v1',
+      body: '我自己改过的正文。',
+    );
+
+    expect(ok, isTrue);
+    expect(api.edits, 1);
+    expect(api.lastEditedBody, '我自己改过的正文。');
+    expect(controller.current?.body, '我自己改过的正文。');
+    expect(
+      api.versions.map((version) => version.body),
+      contains('AI 写的原文。'),
+      reason: '旧版必须还在，不能被覆盖',
+    );
+  });
+
+  test('空正文不提交，错误说清楚', () async {
+    final directory = await Directory.systemTemp.createTemp('ai-diary-empty');
+    addTearDown(() => directory.delete(recursive: true));
+    final api = AiFakeApi();
+    api.day = api.day.copyWith(currentVersionId: 'v1', revision: 2);
+    final controller = AiDiaryController(
+      api,
+      FileAiLocalStore(File('${directory.path}/state.json')),
+    );
+    addTearDown(controller.dispose);
+    await controller.open('2026-10-18');
+
+    expect(await controller.saveEdit(baseVersionId: 'v1', body: '   '), isFalse);
+    expect(api.edits, 0);
+    expect(controller.error, contains('不能是空的'));
   });
 
   test('a slow previous day cannot overwrite the newly opened day', () async {
