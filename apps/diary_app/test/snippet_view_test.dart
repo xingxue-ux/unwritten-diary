@@ -73,12 +73,16 @@ void main() {
     );
   });
 
-  testWidgets('可以切到表格视图，一行一条', (tester) async {
+  testWidgets('表格视图是二维网格：一行放多张、卡片一样大', (tester) async {
     await openSnippets(
       tester,
       _SnippetsApi([
-        _capture('a', '第一条正文。'),
-        _capture('b', '第二条正文。', day: 2),
+        for (var index = 0; index < 6; index++)
+          _capture(
+            'c$index',
+            index.isEven ? '短。' : '这一条长得多，足够折成三行显示，用来和别的卡比大小。',
+            day: index + 1,
+          ),
       ]),
     );
 
@@ -86,16 +90,34 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('snippet-view-表格')));
     await tester.pumpAndSettle();
 
-    expect(find.text('日期'), findsOneWidget);
-    expect(find.text('状态'), findsOneWidget);
-    expect(find.text('摘要'), findsOneWidget);
-    expect(find.byKey(const ValueKey('snippet-row-a')), findsOneWidget);
-    expect(find.byKey(const ValueKey('snippet-row-b')), findsOneWidget);
+    final tiles = [
+      for (var index = 0; index < 6; index++)
+        find.byKey(ValueKey('snippet-tile-c$index')),
+    ];
+    for (final tile in tiles) {
+      expect(tile, findsOneWidget);
+    }
 
-    // 切回列表。
+    // 二维：至少有两条卡在同一行（y 相同），也至少有两行（y 不同）。
+    final rects = tiles.map((tile) => tester.getRect(tile)).toList();
+    final sameRow = rects.where((rect) => (rect.top - rects.first.top).abs() < 0.5);
+    expect(
+      sameRow.length,
+      greaterThan(1),
+      reason: '一行要放多张，否则还是列表',
+    );
+    final rows = rects.map((rect) => rect.top.round()).toSet();
+    expect(rows.length, greaterThan(1), reason: '要铺成多行');
+
+    // 一样大：宽高都相同。
+    for (final rect in rects) {
+      expect(rect.width, closeTo(rects.first.width, 0.5));
+      expect(rect.height, closeTo(rects.first.height, 0.5));
+    }
+
+    // 切回列表：网格消失。
     await tester.tap(find.byKey(const ValueKey('snippet-view-列表')));
     await tester.pumpAndSettle();
-    expect(find.text('日期'), findsNothing);
-    expect(find.byKey(const ValueKey('snippet-row-a')), findsNothing);
+    expect(find.byKey(const ValueKey('snippet-tile-c0')), findsNothing);
   });
 }

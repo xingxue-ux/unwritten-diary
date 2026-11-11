@@ -1041,7 +1041,27 @@ class _ExperienceShellState extends State<ExperienceShell>
         ),
         if (_snippetView == '表格')
           SliverToBoxAdapter(
-            child: _sliverContent(_snippetTable(desktop), desktop),
+            // 走 `_sliverContent` 而不是自己算左右留白：页头也是它包的，
+            // 自己算会和页头对不齐（窗口宽度 ≠ 内容区宽度）。
+            child: _sliverContent(
+              GridView.builder(
+                key: const ValueKey('snippet-grid'),
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                  // 一行放多张：卡片宽度不超过 340，高度**固定**——网格里的卡
+                  // 必须一样大，否则二维排列会歪。
+                  maxCrossAxisExtent: 340,
+                  mainAxisExtent: 158,
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
+                ),
+                itemCount: _capture.recent.length,
+                itemBuilder: (context, index) =>
+                    _snippetGridCard(_capture.recent[index]),
+              ),
+              desktop,
+            ),
           )
         else
           SliverList.builder(
@@ -1898,95 +1918,63 @@ class _ExperienceShellState extends State<ExperienceShell>
     ],
   );
 
-  /// 表格视图：一行一条，列固定，方便一眼扫过去比对。
+  /// 网格里的一张卡：**固定尺寸**，二维铺开。
   ///
-  /// 用一张 `Table` 而不是「每行一个 `Row`」：只有同一张表里的列才会真的对齐。
-  Widget _snippetTable(bool desktop) {
-    final rows = _capture.recent;
-    if (rows.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 11),
-        child: _footnote('还没有记录。'),
-      );
-    }
-    const headerStyle = TextStyle(
-      color: SketchColors.muted,
-      fontSize: 12,
-      fontWeight: FontWeight.w700,
-    );
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 11),
-      child: SketchFrame(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-        child: Table(
-          columnWidths: const {
-            0: FixedColumnWidth(104),
-            1: FixedColumnWidth(76),
-            2: FlexColumnWidth(),
-            3: FixedColumnWidth(28),
-          },
-          defaultVerticalAlignment: TableCellVerticalAlignment.middle,
-          children: [
-            TableRow(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  child: Text('日期', style: headerStyle),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  child: Text('状态', style: headerStyle),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  child: Text('摘要', style: headerStyle),
-                ),
-                const SizedBox.shrink(),
-              ],
-            ),
-            for (final capture in rows)
-              TableRow(
-                children: [
-                  _tableCell(
-                    _compactDate(capture.occurredAt.toLocal()),
-                    key: ValueKey('snippet-row-${capture.id}'),
-                    onTap: () => _openDetail(capture.id),
+  /// 和列表卡的区别不是内容，是排布：列表一行一条、读起来顺；网格一行放多张，
+  /// 一屏能看到更多条，适合扫。两张卡的高度都由 `mainAxisExtent` 定死，
+  /// 不会因为摘要长短参差。
+  Widget _snippetGridCard(Capture capture) => InkWell(
+    key: ValueKey('snippet-tile-${capture.id}'),
+    onTap: () => _openDetail(capture.id),
+    child: SketchFrame(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _compactDate(capture.occurredAt.toLocal()),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: SketchColors.muted,
+                    fontSize: 12,
                   ),
-                  _tableCell(
-                    capture.state == CaptureState.draft
-                        ? uiStrings.t('state.draft')
-                        : uiStrings.t('state.committed'),
-                    onTap: () => _openDetail(capture.id),
-                  ),
-                  _tableCell(
-                    capture.draftText.trim().isEmpty
-                        ? '（没有文字，只有材料）'
-                        : capture.draftText.replaceAll('\n', ' '),
-                    onTap: () => _openDetail(capture.id),
-                  ),
-                  _tableCell('›', onTap: () => _openDetail(capture.id)),
-                ],
+                ),
               ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _tableCell(
-    String text, {
-    Key? key,
-    required VoidCallback onTap,
-  }) => InkWell(
-    key: key,
-    onTap: onTap,
-    child: Padding(
-      padding: const EdgeInsets.symmetric(vertical: 11),
-      child: Text(
-        text,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 13),
+              Text(
+                capture.state == CaptureState.draft
+                    ? uiStrings.t('state.draft')
+                    : uiStrings.t('state.committed'),
+                style: const TextStyle(color: SketchColors.muted, fontSize: 12),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            capture.state == CaptureState.draft ? '正在写的草稿' : '刚刚收好的记录',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: SketchColors.ink,
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Expanded(
+            child: Text(
+              capture.draftText.trim().isEmpty
+                  ? '（没有文字，只有材料）'
+                  : capture.draftText,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: SketchColors.text, fontSize: 13),
+            ),
+          ),
+        ],
       ),
     ),
   );
