@@ -1030,7 +1030,23 @@ class _ExperienceShellState extends State<ExperienceShell>
       }
       return false;
     },
-    child: CustomScrollView(
+    // 网格要用 `SliverGrid`（**懒加载**：只建屏幕里看得到的那些），而 Sliver 没法
+    // 像 `_sliverContent` 那样自己居中。这里先拿到**真实视口宽度**，再算出和页头
+    // 一致的左右留白——用窗口宽度算会偏，因为页面外面还有一圈边框。
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        final contentWidth = constraints.maxWidth > 1240
+            ? 1240.0
+            : constraints.maxWidth;
+        final gutter = (desktop ? 46.0 : 22.0) +
+            ((constraints.maxWidth - contentWidth) / 2).clamp(0.0, double.infinity);
+        return _timelineSlivers(desktop, gutter);
+      },
+    ),
+  );
+
+  Widget _timelineSlivers(bool desktop, double gutter) =>
+      CustomScrollView(
       key: const PageStorageKey('timeline-scroll'),
       slivers: [
         SliverToBoxAdapter(
@@ -1040,27 +1056,23 @@ class _ExperienceShellState extends State<ExperienceShell>
           ),
         ),
         if (_snippetView == '表格')
-          SliverToBoxAdapter(
-            // 走 `_sliverContent` 而不是自己算左右留白：页头也是它包的，
-            // 自己算会和页头对不齐（窗口宽度 ≠ 内容区宽度）。
-            child: _sliverContent(
-              GridView.builder(
-                key: const ValueKey('snippet-grid'),
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                  // 一行放多张：卡片宽度不超过 340，高度**固定**——网格里的卡
-                  // 必须一样大，否则二维排列会歪。
-                  maxCrossAxisExtent: 340,
-                  mainAxisExtent: 158,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                ),
-                itemCount: _capture.recent.length,
-                itemBuilder: (context, index) =>
-                    _snippetGridCard(_capture.recent[index]),
+          SliverPadding(
+            padding: EdgeInsets.symmetric(horizontal: gutter),
+            sliver: SliverGrid.builder(
+              key: const ValueKey('snippet-grid'),
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                // 一行放多张：卡片宽度不超过 340，高度**固定**——网格里的卡
+                // 必须一样大，否则二维排列会歪。
+                maxCrossAxisExtent: 340,
+                mainAxisExtent: 158,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 12,
               ),
-              desktop,
+              // **懒加载**：`SliverGrid.builder` 只建可见范围内的卡片，
+              // 几百上千条也不会一次性铺出来。
+              itemCount: _capture.recent.length,
+              itemBuilder: (context, index) =>
+                  _snippetGridCard(_capture.recent[index]),
             ),
           )
         else
@@ -1083,8 +1095,7 @@ class _ExperienceShellState extends State<ExperienceShell>
         SliverToBoxAdapter(child: _sliverContent(_timelineFooter(), desktop)),
         const SliverToBoxAdapter(child: SizedBox(height: 40)),
       ],
-    ),
-  );
+    );
 
   Widget _title(String title, String subtitle, {Widget? trailing}) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,

@@ -73,6 +73,33 @@ void main() {
     );
   });
 
+  testWidgets('网格是懒加载：几百条只建看得见的那些', (tester) async {
+    await openSnippets(
+      tester,
+      _SnippetsApi([
+        for (var index = 0; index < 300; index++)
+          _capture('lazy$index', '第 $index 条。', day: (index % 28) + 1),
+      ]),
+    );
+    await tester.tap(find.byKey(const ValueKey('snippet-view-表格')));
+    await tester.pumpAndSettle();
+
+    final built = find
+        .byWidgetPredicate(
+          (widget) =>
+              widget.key is ValueKey<String> &&
+              (widget.key! as ValueKey<String>).value.startsWith('snippet-tile-'),
+        )
+        .evaluate()
+        .length;
+    expect(built, greaterThan(0));
+    expect(
+      built,
+      lessThan(120),
+      reason: '300 条只该建屏幕里看得到的那几十张，不是一次全铺出来',
+    );
+  });
+
   testWidgets('表格视图是二维网格：一行放多张、卡片一样大', (tester) async {
     await openSnippets(
       tester,
