@@ -111,6 +111,9 @@ class _ExperienceShellState extends State<ExperienceShell>
   String _activeQuery = '';
   SearchHit? _selectedSearchHit;
 
+  /// 从搜索结果打开的那条记录（可能不在最近 20 条缓存里，所以单独存一份）。
+  Capture? _detailCapture;
+
   /// 当前打开的来源是什么类型、要定位到哪。搜索命中带来精确位置（音频时间点），
   /// 从记录详情进来时两者都为空——那时只提供「打开原件」。
   SourceKind? _revisionSourceKind;
@@ -902,13 +905,17 @@ class _ExperienceShellState extends State<ExperienceShell>
                         _revisionSourceKind = hit.sourceKind;
                         _revisionLocator = hit.locator;
                         unawaited(_revisions.open(sourceId: hit.sourceId!));
+                        setState(() {
+                          _selectedSearchHit = hit;
+                          _revisionView = '正文';
+                          _editingRevision = false;
+                          _detail = 'search-hit';
+                        });
+                        return;
                       }
-                      setState(() {
-                        _selectedSearchHit = hit;
-                        _revisionView = '正文';
-                        _editingRevision = false;
-                        _detail = 'search-hit';
-                      });
+                      // 纯文字命中没有 sourceId：以前这里只显示**截断的摘录**，
+                      // 用户点进去读不到完整正文。现在按 captureId 把整条记录读回来。
+                      unawaited(_openCaptureFromSearch(hit));
                     },
                   ),
                   desktop,
@@ -2863,6 +2870,38 @@ class _ExperienceShellState extends State<ExperienceShell>
     ),
   );
 
+  /// 从搜索结果打开一条**纯文字**记录：先按 id 读回完整记录，再走正常的记录详情。
+  ///
+  /// 命中可能不在最近 20 条缓存里，所以不能只查 `_capture.recent`。
+  Future<void> _openCaptureFromSearch(SearchHit hit) async {
+    try {
+      final capture = await widget.api.getCapture(hit.captureId);
+      if (!mounted) return;
+      _flushDraft();
+      if (capture.state == CaptureState.committed &&
+          capture.orderedSourceIds.isNotEmpty) {
+        _revisionSourceKind = null;
+        _revisionLocator = null;
+        unawaited(
+          _revisions.open(
+            sourceId: capture.orderedSourceIds.first,
+            captureId: capture.id,
+            captureRevision: capture.revision,
+            initialText: capture.draftText,
+          ),
+        );
+      }
+      setState(() {
+        _detailCapture = capture;
+        _revisionView = '正文';
+        _editingRevision = false;
+        _detail = capture.id;
+      });
+    } on Object {
+      if (mounted) _toast('这条记录暂时打不开，请稍后重试。');
+    }
+  }
+
   Widget _detailPage(bool desktop) {
     final detail = _detail!;
     if (detail == 'search-hit' && _selectedSearchHit != null) {
@@ -2912,7 +2951,8 @@ class _ExperienceShellState extends State<ExperienceShell>
         ],
       );
     }
-    final capture = _capture.recent.where((c) => c.id == detail).firstOrNull;
+    final capture = _capture.recent.where((c) => c.id == detail).firstOrNull ??
+        (_detailCapture?.id == detail ? _detailCapture : null);
     if (!widget.demoMode &&
         capture?.state == CaptureState.committed &&
         capture!.orderedSourceIds.isNotEmpty) {

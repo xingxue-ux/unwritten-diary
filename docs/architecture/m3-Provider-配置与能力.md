@@ -476,3 +476,18 @@ python3 tools/check_docs.py
 落地范围：`providers.test` 与 `list_provider_models` 两条用户显式检测入口（严格 loopback：
 `127.0.0.0/8` / `::1` / `localhost`）。私有网段不算本机，仍要凭据；生成作业的能力闸门
 本轮没有放宽（见「没有做到的」）。
+
+---
+
+# 平台层：改已有服务时保留凭据
+
+核心的语义是「`credentialRef` 为空 = 清掉凭据」（`provider/mod.rs`：「引用为空表示清掉
+凭据」）。所以界面在更新已有服务时**必须带上原来的引用**，否则用户只是改了显示名、
+或者点了一下「获取模型列表」，已存的密钥就没了——服务还在、还启用着，但连不上了。
+
+`ai_provider_panel.dart` 的 `_persist` 现在从 `_providers` 里取回原 `credentialRef`
+一并提交；只有用户明确要清掉（`clearSecret`）才传 `null`。
+
+桥接回归 `bridge_provider_credential_test.dart` 钉住两条：
+1. 带上原引用重新保存 → 引用不变、列模型仍然成功；
+2. 不带引用重新保存 → 核心确实把凭据清掉（这条是**反面**对照，提醒界面别走这条路）。

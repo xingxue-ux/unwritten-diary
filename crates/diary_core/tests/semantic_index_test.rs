@@ -377,7 +377,7 @@ fn without_a_model_keywords_keep_working_and_semantics_says_why() {
         semantic
             .warnings
             .iter()
-            .any(|warning| warning.contains("语义索引还没有生效的代次")),
+            .any(|warning| warning.contains("语义索引还没有建好")),
         "要明确说语义为什么没有结果：{:?}",
         semantic.warnings
     );
@@ -407,7 +407,7 @@ fn without_a_model_keywords_keep_working_and_semantics_says_why() {
         hybrid
             .warnings
             .iter()
-            .any(|warning| warning.contains("语义索引还没有生效的代次")),
+            .any(|warning| warning.contains("语义索引还没有建好")),
         "还要说清为什么退化：{:?}",
         hybrid.warnings
     );

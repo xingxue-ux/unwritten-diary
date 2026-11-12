@@ -472,8 +472,20 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          isCurrent ? '当前阅读版' : 'AI 整理候选 · 尚未采纳',
+          // **按来源标**，不能一律写「AI 整理候选」：人工改过的版本退成候选之后
+          // 也被这么标，用户就分不清哪一版是自己写的了。
+          switch ((isCurrent, version.origin)) {
+            (true, DiaryVersionOrigin.userEdit) => '当前阅读版 · 你改过的',
+            (true, _) => '当前阅读版',
+            (false, DiaryVersionOrigin.userEdit) => '人工修订 · 尚未采纳',
+            (false, _) => 'AI 整理候选 · 尚未采纳',
+          },
           style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          _versionTime(version.createdAt),
+          style: const TextStyle(color: SketchColors.muted, fontSize: 12),
         ),
         const SizedBox(height: 8),
         Text(
@@ -499,6 +511,16 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
       ],
     ),
   );
+
+  /// 版本时间：本地时区的「2026-11-12 21:30」。同一天有多版时靠它区分先后。
+  String _versionTime(DateTime value) {
+    final local = value.toLocal();
+    final month = local.month.toString().padLeft(2, '0');
+    final day = local.day.toString().padLeft(2, '0');
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '${local.year}-$month-$day $hour:$minute';
+  }
 
   Widget _sectionTitle(String label) => Text(
     label,
