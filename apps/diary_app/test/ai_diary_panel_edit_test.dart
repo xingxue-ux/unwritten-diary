@@ -25,6 +25,9 @@ class _DiaryApi implements DiaryApi {
   int edits = 0;
   String? lastBody;
 
+  /// 让保存失败（模拟写锁被占、revision 冲突等）。
+  bool failSave = false;
+
   @override
   Future<DiaryDay> getDay(String dayKey) async => day;
 
@@ -52,6 +55,12 @@ class _DiaryApi implements DiaryApi {
     required int expectedRevision,
     required String operationId,
   }) async {
+    if (failSave) {
+      throw const DiaryException(
+        code: DiaryErrorCode.invalidState,
+        message: '数据库被占用，这次没有写进去。',
+      );
+    }
     edits++;
     lastBody = body;
     final version = DiaryVersion(
@@ -73,6 +82,94 @@ class _DiaryApi implements DiaryApi {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  /// 保存要读本机状态文件（真实 I/O），假时钟推不动——用 runAsync 给它时间。
+  Future<void> settle(WidgetTester tester) async {
+    for (var i = 0; i < 8; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 40)),
+      );
+      await tester.pump();
+    }
+  }
+
+  testWidgets('保存失败时对话框不关、正文不丢、错误显示在框里', (tester) async {
+    final root = Directory.systemTemp.createTempSync('ai-panel-fail');
+    addTearDown(() => root.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(root.path);
+    tester.view.physicalSize = const Size(1200, 2000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final api = _DiaryApi(
+      day: DiaryDay(
+        dayKey: '2026-11-11',
+        timeZone: 'Asia/Shanghai',
+        updatedAt: DateTime.utc(2026, 11, 11),
+        currentVersionId: 'v1',
+        revision: 3,
+      ),
+      versions: [
+        DiaryVersion(
+          id: 'v1',
+          dayKey: '2026-11-11',
+          body: 'AI 写的原文。',
+          origin: DiaryVersionOrigin.generated,
+          createdAt: DateTime.utc(2026, 11, 11),
+        ),
+      ],
+    )..failSave = true;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: AiDiaryPanel(
+              api: api,
+              onOpenModel: () {},
+              initialDayKey: '2026-11-11',
+            ),
+          ),
+        ),
+      ),
+    );
+    for (var i = 0; i < 8; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 40)),
+      );
+      await tester.pump();
+    }
+
+    await tester.ensureVisible(find.byKey(const Key('diary-edit')));
+    await tester.tap(find.byKey(const Key('diary-edit')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('diary-edit-field')),
+      '我自己改过的正文，还没存上。',
+    );
+    await tester.tap(find.byKey(const Key('diary-edit-save')));
+    await settle(tester);
+
+    // 对话框还在、正文还在、错误在框里。
+    expect(find.byKey(const Key('diary-edit-field')), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byKey(const Key('diary-edit-field'))).controller?.text,
+      '我自己改过的正文，还没存上。',
+    );
+    expect(find.byKey(const Key('diary-edit-error')), findsOneWidget);
+    expect(api.edits, 0);
+
+    // 修好之后再点一次就能存上。
+    api.failSave = false;
+    await tester.tap(find.byKey(const Key('diary-edit-save')));
+    await settle(tester);
+    expect(api.edits, 1);
+    expect(api.lastBody, '我自己改过的正文，还没存上。');
+    // 保存成功后对话框才关。
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('diary-edit-field')), findsNothing);
+  });
 
   testWidgets('正式日记页有「编辑正文」，保存走 saveDiaryEdit', (tester) async {
     final root = Directory.systemTemp.createTempSync('ai-panel-edit');
@@ -136,7 +233,7 @@ void main() {
       '我自己改过的正文。',
     );
     await tester.tap(find.byKey(const Key('diary-edit-save')));
-    await tester.pumpAndSettle();
+    await settle(tester);
 
     expect(api.edits, 1);
     expect(api.lastBody, '我自己改过的正文。');

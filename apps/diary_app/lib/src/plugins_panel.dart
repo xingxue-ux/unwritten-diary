@@ -64,6 +64,9 @@ class _PluginsPanelState extends State<PluginsPanel> {
   /// 翻到页数上限时置位：界面要如实说「只列出了最近一部分」。
   bool _daysTruncated = false;
 
+  /// 实际扫过多少天（用于如实说明「查了多少」）。
+  int _daysScanned = 0;
+
   /// 每个插件选中的模板 / 风格 / 日期范围（按插件 id 记）。
   final Map<String, String> _templateChoice = {};
   final Map<String, String> _styleChoice = {};
@@ -168,6 +171,7 @@ class _PluginsPanelState extends State<PluginsPanel> {
       setState(() {
         _daysWithVersion = withVersion;
         _daysTruncated = truncated;
+        _daysScanned = pages * _dayPageSize;
         _daysLoaded = true;
       });
     } on Object {
@@ -675,6 +679,10 @@ class _PluginsPanelState extends State<PluginsPanel> {
   }
 
   /// 代码型导出插件：选一天导出。用这一天的**当前版本**作为「用户选定的日记版本」。
+  ///
+  /// 列表是**翻页扫出来的**，扫到上限还没找到时不能判「库里没有日记」——那只是
+  /// 「还没查完」。所以这里始终给一个**按日期直接查**的入口：`getDay(dayKey)`
+  /// 是 O(1) 的，不受扫描上限影响。
   Widget _versionInput(Plugin plugin) {
     final day = _selectedDay(plugin);
     return Column(
@@ -682,12 +690,18 @@ class _PluginsPanelState extends State<PluginsPanel> {
       children: [
         const Text('导出哪一天的日记', style: TextStyle(fontSize: 13)),
         const SizedBox(height: 6),
-        if (_daysWithVersion.isEmpty)
+        if (!_daysLoaded)
+          const Text(
+            '正在读取日记…',
+            style: TextStyle(color: SketchColors.muted, fontSize: 12),
+          )
+        else if (_daysWithVersion.isEmpty)
           Text(
-            _daysLoaded
-                ? '库里还没有任何一天生成过日记。这个插件要的是「你选定的日记版本」，'
-                      '先去「日记」里生成一天再来。'
-                : '正在读取日记…',
+            _daysTruncated
+                ? '已经查了最近 $_daysScanned 天，还没有找到生成过日记的一天——'
+                      '**这不等于库里没有**。用下面的「按日期选…」直接查更早的那天。'
+                : '库里还没有任何一天生成过日记。这个插件要的是「你选定的日记版本」，'
+                      '先去「日记」里生成一天再来。',
             style: const TextStyle(color: SketchColors.muted, fontSize: 12),
           )
         else
@@ -709,16 +723,56 @@ class _PluginsPanelState extends State<PluginsPanel> {
               if (value != null) _versionDay[plugin.id] = value;
             }),
           ),
-        if (_daysTruncated)
-          const Padding(
-            padding: EdgeInsets.only(top: 6),
+        const SizedBox(height: 8),
+        SketchAction(
+          key: ValueKey('plugin-pick-day-${plugin.id}'),
+          label: '按日期选…',
+          icon: Icons.event_outlined,
+          compact: true,
+          onPressed: () => unawaited(_pickDay(plugin)),
+        ),
+        if (_daysTruncated && _daysWithVersion.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
             child: Text(
-              '日记很多，这里只列出了最近的一部分。更早的那天可以先用「日记」翻到它再回来。',
-              style: TextStyle(color: SketchColors.muted, fontSize: 12),
+              '列表只扫了最近 $_daysScanned 天；更早的那天用「按日期选…」。',
+              style: const TextStyle(color: SketchColors.muted, fontSize: 12),
             ),
           ),
       ],
     );
+  }
+
+  /// 按日期直接查一天：不受「最多扫多少天」的限制。
+  Future<void> _pickDay(Plugin plugin) async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: now,
+      firstDate: DateTime(2000),
+      lastDate: now.add(const Duration(days: 365)),
+    );
+    if (picked == null || !mounted) return;
+    final key =
+        '${picked.year}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}';
+    try {
+      final day = await widget.api.getDay(key);
+      if (!mounted) return;
+      if (day.currentVersionId == null) {
+        setState(() => _error = '$key 这一天还没有生成过日记。先去「日记」里生成一天。');
+        return;
+      }
+      setState(() {
+        _error = null;
+        _daysWithVersion = [
+          day,
+          ..._daysWithVersion.where((item) => item.dayKey != key),
+        ];
+        _versionDay[plugin.id] = key;
+      });
+    } on Object catch (failure) {
+      if (mounted) setState(() => _error = '读不到 $key：$failure');
+    }
   }
 
   /// 运行结果：**候选内容不自动写进日记**，用户自己决定要不要用。

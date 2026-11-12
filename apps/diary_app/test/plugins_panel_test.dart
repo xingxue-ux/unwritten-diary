@@ -80,6 +80,20 @@ class _PluginsApi extends MockDiaryApi {
   /// 按 `pageSize` 切页：用来验「日记落在第二页时也要能找到」。
   int dayPagesRead = 0;
 
+  /// 按日期直接查（不受翻页上限影响）。
+  Map<String, DiaryDay> daysByKey = {};
+
+  @override
+  Future<DiaryDay> getDay(String dayKey) async {
+    final day = daysByKey[dayKey];
+    if (day != null) return day;
+    return DiaryDay(
+      dayKey: dayKey,
+      timeZone: 'Asia/Shanghai',
+      updatedAt: DateTime.utc(2026, 1, 1),
+    );
+  }
+
   @override
   Future<DiaryDayPage> listDays({
     String? fromDayKey,
@@ -592,6 +606,99 @@ void main() {
 
     expect(api.runs, isEmpty, reason: '没有版本就不该发起调用');
     expect(find.textContaining('还没有任何一天生成过日记'), findsWidgets);
+  });
+
+  testWidgets('扫到上限还没找到时，说「没查完」而不是「库里没有」', (tester) async {
+    // 2001 天、唯一有日记的那天在扫描上限之外：以前会误报「库里还没有任何一天
+    // 生成过日记」，用户明明有日记却导不出。
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'example.export-diary-markdown',
+          version: '1.0.0',
+          apiRange: '>=1.0 <2.0',
+          entryKind: PluginEntryKind.code,
+          state: PluginState.enabled,
+          activationEvents: ['export.start'],
+        ),
+      )
+      ..days = [
+        for (var index = 0; index < 2100; index++)
+          DiaryDay(
+            dayKey: '2025-01-01+$index',
+            timeZone: 'Asia/Shanghai',
+            updatedAt: DateTime.utc(2025, 1, 1).add(Duration(days: index)),
+          ),
+      ];
+    await pump(tester, api);
+
+    expect(find.textContaining('还没有找到生成过日记的一天'), findsOneWidget);
+    expect(find.textContaining('这不等于库里没有'), findsOneWidget);
+    expect(find.textContaining('库里还没有任何一天生成过日记'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('plugin-pick-day-example.export-diary-markdown')),
+      findsOneWidget,
+      reason: '必须有一条不受扫描上限影响的路',
+    );
+  });
+
+  testWidgets('按日期选：直接查到扫描范围之外的那天，并能导出', (tester) async {
+    // 日期选择器默认停在今天；把「今天」映射成一份扫描范围之外的日记，
+    // 直接点确定即可——不用在日历里翻月。
+    final now = DateTime.now();
+    final todayKey =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'example.export-diary-markdown',
+          version: '1.0.0',
+          apiRange: '>=1.0 <2.0',
+          entryKind: PluginEntryKind.code,
+          state: PluginState.enabled,
+          activationEvents: ['export.start'],
+        ),
+      )
+      ..days = [
+        for (var index = 0; index < 2100; index++)
+          DiaryDay(
+            dayKey: '2025-01-01+$index',
+            timeZone: 'Asia/Shanghai',
+            updatedAt: DateTime.utc(2025, 1, 1).add(Duration(days: index)),
+          ),
+      ]
+      ..daysByKey = {
+        todayKey: DiaryDay(
+          dayKey: todayKey,
+          timeZone: 'Asia/Shanghai',
+          updatedAt: DateTime.utc(2024, 5, 6),
+          currentVersionId: 'ver-old',
+        ),
+      }
+      ..runResult = const PluginRunResult(
+        runId: 'run_old',
+        pluginId: 'example.export-diary-markdown',
+        activation: 'export.start',
+        status: 'succeeded',
+      );
+    await pump(tester, api);
+
+    await tester.tap(
+      find.byKey(const ValueKey('plugin-pick-day-example.export-diary-markdown')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining(todayKey), findsWidgets);
+    await tester.tap(
+      find.byKey(
+        const ValueKey('plugin-run-example.export-diary-markdown-export.start'),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(api.invocations.single['versionIds'], ['ver-old']);
   });
 
   testWidgets('没有 invoke 能力时不画运行按钮', (tester) async {
