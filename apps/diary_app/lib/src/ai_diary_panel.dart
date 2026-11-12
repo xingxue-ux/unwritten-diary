@@ -384,60 +384,24 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
   ///
   /// 保存走 `saveDiaryEdit`：新版本成为当前，旧当前版退成候选（仍可读回）。
   /// 这里不覆盖任何东西——「人工改过的字不能被重新整理悄悄盖掉」是这条链的前提。
+  ///
+  /// **保存成功之前不关对话框**。以前是先 `pop` 再保存，保存失败时用户刚敲的字
+  /// 就跟着对话框一起没了：正文没被覆盖，但输入失去了恢复入口。现在失败时对话框
+  /// 留着、正文留着、错误显示在里面，可以直接重试或复制出来。
   Future<void> _editVersion(
     AiDiaryController controller,
     DiaryVersion version,
   ) async {
-    final text = TextEditingController(text: version.body);
     final saved = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('编辑正文'),
-        content: SizedBox(
-          width: 520,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                '保存后会成为新的一版，当前这一版会退成候选，不会被覆盖。',
-                style: TextStyle(fontSize: 12),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                key: const Key('diary-edit-field'),
-                controller: text,
-                minLines: 8,
-                maxLines: 16,
-                decoration: const InputDecoration(border: OutlineInputBorder()),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            key: const Key('diary-edit-save'),
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('保存为新版'),
-          ),
-        ],
+      // 点外面不关：误触一下就把整段输入丢掉，代价太大。
+      barrierDismissible: false,
+      builder: (context) => _EditVersionDialog(
+        controller: controller,
+        version: version,
       ),
     );
-    if (saved != true || !mounted) {
-      text.dispose();
-      return;
-    }
-    final ok = await controller.saveEdit(
-      baseVersionId: version.id,
-      body: text.text,
-    );
-    text.dispose();
-    if (!mounted) return;
-    if (ok) {
+    if (saved == true && mounted) {
       unawaited(CoreWakeupScheduler.afterCoreMutation(widget.api));
     }
   }
@@ -560,5 +524,105 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
     text,
     key: Key('hint-$text'),
     style: const TextStyle(color: SketchColors.muted, height: 1.5),
+  );
+}
+
+/// 编辑正文的对话框：**保存成功才关**。
+///
+/// 失败时把错误显示在框里、正文原样保留，用户可以重试、也可以先把内容复制出来。
+class _EditVersionDialog extends StatefulWidget {
+  const _EditVersionDialog({required this.controller, required this.version});
+
+  final AiDiaryController controller;
+  final DiaryVersion version;
+
+  @override
+  State<_EditVersionDialog> createState() => _EditVersionDialogState();
+}
+
+class _EditVersionDialogState extends State<_EditVersionDialog> {
+  late final TextEditingController _text = TextEditingController(
+    text: widget.version.body,
+  );
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    final ok = await widget.controller.saveEdit(
+      baseVersionId: widget.version.id,
+      body: _text.text,
+    );
+    if (!mounted) return;
+    if (ok) {
+      Navigator.of(context).pop(true);
+      return;
+    }
+    setState(() {
+      _saving = false;
+      // 控制器的 error 已经是「下一步该做什么」的人话；没有就兜一句。
+      _error = widget.controller.error ?? '没有保存成功，正文还在，可以再试一次。';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('编辑正文'),
+    content: SizedBox(
+      width: 520,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '保存后会成为新的一版，当前这一版会退成候选，不会被覆盖。',
+            style: TextStyle(fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            key: const Key('diary-edit-field'),
+            controller: _text,
+            minLines: 8,
+            maxLines: 16,
+            enabled: !_saving,
+            decoration: const InputDecoration(border: OutlineInputBorder()),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(
+              _error!,
+              key: const Key('diary-edit-error'),
+              style: const TextStyle(color: SketchColors.ink, fontSize: 13),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '你写的内容还在这个框里：可以再点一次「保存为新版」，也可以先复制出来。',
+              style: TextStyle(color: SketchColors.muted, fontSize: 12),
+            ),
+          ],
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: _saving ? null : () => Navigator.of(context).pop(false),
+        child: const Text('取消'),
+      ),
+      TextButton(
+        key: const Key('diary-edit-save'),
+        onPressed: _saving ? null : () => unawaited(_save()),
+        child: Text(_saving ? '正在保存…' : '保存为新版'),
+      ),
+    ],
   );
 }
