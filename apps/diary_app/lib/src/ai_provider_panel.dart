@@ -280,11 +280,17 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
     bool clearSecret = false,
   }) async {
     final secret = _secret.text.trim();
+    final id = _editingId ??
+        _formProviderId ??
+        'prv-${DateTime.now().microsecondsSinceEpoch}';
+    // **改已有服务时必须带上原来的凭据引用**。核心把「引用为空」解释成「清掉
+    // 凭据」（`provider/mod.rs` 里那句「引用为空表示清掉凭据」），所以这里漏传
+    // 一次，用户只是点了「获取模型列表」，已存的密钥就没了——服务还在、启用着，
+    // 但连不上了。只有用户明确要清掉（`clearSecret`）才传 null。
+    final existing = _providers.where((item) => item.id == id).firstOrNull;
     final saved = await widget.api.saveProvider(
       Provider(
-        id: _editingId ??
-            _formProviderId ??
-            'prv-${DateTime.now().microsecondsSinceEpoch}',
+        id: id,
         label: _name.text.trim().isEmpty
             ? (model.isEmpty ? uri.host : model)
             : _name.text.trim(),
@@ -293,6 +299,7 @@ class _AiProviderPanelState extends State<AiProviderPanel> {
         enabled: true,
         endpoint: uri.toString(),
         model: model.isEmpty ? null : model,
+        credentialRef: clearSecret ? null : existing?.credentialRef,
       ),
     );
     if (secret.isNotEmpty) {

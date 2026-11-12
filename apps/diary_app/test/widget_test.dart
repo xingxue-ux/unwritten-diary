@@ -227,6 +227,24 @@ class LargeCaptureApi extends MockDiaryApi {
   }
 
   @override
+  Future<Capture> getCapture(String id) async {
+    final index = int.tryParse(id.split('-').last) ?? 0;
+    final when = DateTime.utc(2026, 10, 12);
+    return Capture(
+      id: id,
+      revision: 1,
+      state: CaptureState.committed,
+      occurredAt: when.subtract(Duration(minutes: index)),
+      createdAt: when,
+      updatedAt: when,
+      timeZone: 'Asia/Shanghai',
+      utcOffsetMinutes: 480,
+      dayKey: '2026-10-12',
+      draftText: '测试片段 $index',
+    );
+  }
+
+  @override
   Future<void> cancelSearch(String sessionId) async {}
 
   @override
@@ -387,7 +405,7 @@ void main() {
   });
 
   testWidgets(
-    'core search result opens its own excerpt and returns to search',
+    'core search result opens the full record and returns to search',
     (tester) async {
       final api = LargeCaptureApi(count: 2);
       await tester.pumpWidget(DiaryApp(api: api));
@@ -399,9 +417,10 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('一段文字记录'));
       await tester.pumpAndSettle();
-      expect(find.text('返回搜索'), findsOneWidget);
-      expect(find.text('测试片段 1'), findsOneWidget);
-      await tester.tap(find.text('返回搜索'));
+      // 纯文字命中现在打开**整条记录**（按 captureId 回查），不是只显示摘录。
+      expect(find.textContaining('测试片段 1'), findsWidgets);
+      expect(find.text('返回'), findsOneWidget);
+      await tester.tap(find.text('返回'));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('global-search')), findsOneWidget);
     },

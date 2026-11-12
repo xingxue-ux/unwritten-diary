@@ -325,7 +325,7 @@ fn semantic_search(
     let coverage = semantic_coverage(core, &request.filters)?;
     if semantic::active_generation(core)?.is_none() {
         warnings.push(
-            "语义索引还没有生效的代次：先跑一次 build_semantic_index；这次没有结果\
+            "语义索引还没有建好：先在「搜索索引」里重建一次语义索引；这次没有结果\
              （没有退化成关键词，那会让「语义」这个标签撒谎）"
                 .to_owned(),
         );
@@ -482,12 +482,12 @@ fn as_keyword_only_hybrid(ordered: Vec<RankedRef>) -> Vec<RankedRef> {
 fn hybrid_evidence(core: &Core) -> Result<Option<String>> {
     if semantic::active_generation(core)?.is_none() {
         return Ok(Some(
-            "语义索引还没有生效的代次（先跑一次 build_semantic_index）".to_owned(),
+            "语义索引还没有建好（先在「搜索索引」里重建一次）".to_owned(),
         ));
     }
     if crate::chunks::counts(core, None)?.total == 0 {
         return Ok(Some(
-            "语义索引还没有可用的文本块（先跑一次 build_semantic_index）".to_owned(),
+            "语义索引还没有可用的文本块（先在「搜索索引」里重建一次）".to_owned(),
         ));
     }
     // 口径判据：生效代次是用**另一个模型**（或另一套口径）建的时候，语义这一路连候选
@@ -853,8 +853,8 @@ fn mark_unavailable(
     state.hybrid_upgrade = HybridUpgrade::Unavailable;
     state.phase = SearchPhase::KeywordReady;
     state.warnings.push(format!(
-        "升级到混合检索没有可融合的语义证据：{reason}；阶段保持 keyword_ready，\
-         结果仍只有关键词那一路（没有假装 hybrid_ready）"
+        "升级到混合检索时没有可融合的语义证据：{reason}；下面仍然只有关键词结果\
+         （没有假装已经融合）"
     ));
     materialize(core, state, &state.last_page)
 }
@@ -874,8 +874,7 @@ fn mark_no_evidence(
     state.phase = SearchPhase::KeywordReady;
     if let Some(reason) = reason {
         state.warnings.push(format!(
-            "升级没有融合：{reason}；阶段保持 keyword_ready，结果仍只有关键词那一路\
-             （没有假装 hybrid_ready）"
+            "这次没能融合语义结果：{reason}；下面仍然只有关键词结果（没有假装已经融合）"
         ));
     }
     materialize(core, state, &state.last_page)

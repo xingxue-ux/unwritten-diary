@@ -93,6 +93,78 @@ void main() {
     }
   }
 
+  testWidgets('人工版退成候选后标成「人工修订」，不冒充 AI 候选', (tester) async {
+    final root = Directory.systemTemp.createTempSync('ai-panel-label');
+    addTearDown(() => root.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(root.path);
+    tester.view.physicalSize = const Size(1200, 2000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final api = _DiaryApi(
+      day: DiaryDay(
+        dayKey: '2026-11-11',
+        timeZone: 'Asia/Shanghai',
+        updatedAt: DateTime.utc(2026, 11, 11),
+        currentVersionId: 'v2',
+        candidateVersionIds: const ['v1'],
+        revision: 4,
+      ),
+      versions: [
+        DiaryVersion(
+          id: 'v2',
+          dayKey: '2026-11-11',
+          body: 'AI 后来生成的一版。',
+          origin: DiaryVersionOrigin.generated,
+          createdAt: DateTime.utc(2026, 11, 11, 20),
+        ),
+        DiaryVersion(
+          id: 'v1',
+          dayKey: '2026-11-11',
+          body: '我自己写的一版。',
+          origin: DiaryVersionOrigin.userEdit,
+          createdAt: DateTime.utc(2026, 11, 11, 18),
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: AiDiaryPanel(
+              api: api,
+              onOpenModel: () {},
+              initialDayKey: '2026-11-11',
+            ),
+          ),
+        ),
+      ),
+    );
+    for (var i = 0; i < 8; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 40)),
+      );
+      await tester.pump();
+    }
+
+    expect(find.text('当前阅读版'), findsOneWidget);
+    expect(
+      find.text('人工修订 · 尚未采纳'),
+      findsOneWidget,
+      reason: '退成候选的人工版不能标成 AI 整理候选',
+    );
+    expect(find.text('AI 整理候选 · 尚未采纳'), findsNothing);
+    // 时间也要显示：同一天多版时靠它区分先后。按本地时区算，别写死字符串。
+    final local = DateTime.utc(2026, 11, 11, 18).toLocal();
+    final stamp = '${local.year}-${local.month.toString().padLeft(2, '0')}-'
+        '${local.day.toString().padLeft(2, '0')} '
+        '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+    expect(find.textContaining(stamp), findsOneWidget);
+  });
+
   testWidgets('保存失败时对话框不关、正文不丢、错误显示在框里', (tester) async {
     final root = Directory.systemTemp.createTempSync('ai-panel-fail');
     addTearDown(() => root.deleteSync(recursive: true));

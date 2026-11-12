@@ -690,7 +690,7 @@ pub(crate) fn status(core: &Core, source_scope: Option<&[String]>) -> Result<Ind
             )),
             crate::semantic::EmbedderReadiness::Configured
             | crate::semantic::EmbedderReadiness::Ready => Some(
-                "语义索引未就绪：还没有生效的向量代次（模型已就绪，等一次 build_semantic_index）"
+                "语义索引未就绪：还没有生效的向量代次（模型已就绪，等一次语义索引重建）"
                     .to_owned(),
             ),
         }
