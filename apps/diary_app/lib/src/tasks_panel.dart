@@ -63,6 +63,38 @@ class _TasksPanelState extends State<TasksPanel> {
     }
   }
 
+  /// 错误码 → 用户能读的一句话。**说清下一步**，不把枚举名丢给用户。
+  String _reasonText(Job job) {
+    final code = job.errorCode;
+    if (code == null) return '没有记录原因。';
+    return switch (code) {
+      DiaryErrorCode.providerNotConfigured => '还没有配置能用的模型服务，去「模型服务」里配一个。',
+      DiaryErrorCode.permissionDenied => '这个服务没有授权，去「模型服务」里确认授权。',
+      DiaryErrorCode.networkUnavailable => '网络暂时不可用，联网后会自动重试。',
+      DiaryErrorCode.providerTimeout => '服务响应太慢，稍后会自动重试。',
+      DiaryErrorCode.quotaExceeded => '服务的额度用完了，换个服务或稍后再试。',
+      DiaryErrorCode.rateLimited => '请求太频繁，稍后会自动重试。',
+      DiaryErrorCode.authenticationFailed => '密钥无效，去「模型服务」里重新填一次。',
+      DiaryErrorCode.modelUnavailable => '这个模型不可用，去「模型服务」里换一个。',
+      DiaryErrorCode.unsupportedFormat => '这个文件的格式还不支持，换个文件或先转成文本。',
+      DiaryErrorCode.integrityFailed => '文件内容与记录对不上，可能被改动过。',
+      DiaryErrorCode.invalidState => '当前状态不允许这一步；刷新后按最新状态再试。',
+      DiaryErrorCode.revisionConflict => '内容已被修改；刷新后重新操作。',
+      DiaryErrorCode.notFound => '要处理的内容不在了（可能已被删除）。',
+      DiaryErrorCode.storageFull => '磁盘空间不够了，清理一些空间再试。',
+      DiaryErrorCode.assetMissing => '原件文件不在了（可能被移动或删除）。',
+      DiaryErrorCode.invalidArgument => '这一步的参数不对，可能是版本不匹配。',
+      DiaryErrorCode.idempotencyConflict => '同一个操作用了不同的内容重试，已拒绝。',
+      DiaryErrorCode.pluginDenied => '插件没有这个权限，去插件页确认授权。',
+      DiaryErrorCode.pluginBudgetExceeded => '插件用完了这次允许的执行预算。',
+      DiaryErrorCode.incompatibleBackup => '备份包来自更新的版本，先升级应用。',
+      DiaryErrorCode.corruptedBackup => '备份包损坏了，换一个备份试试。',
+      DiaryErrorCode.searchExpired => '搜索会话过期了，重新搜一次。',
+      DiaryErrorCode.cursorExpired => '翻页游标过期了，重新加载这一页。',
+      DiaryErrorCode.unknown => '本机没有给出具体原因；可以在「诊断」里看这次运行的记录。',
+    };
+  }
+
   @override
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -165,7 +197,9 @@ class _TasksPanelState extends State<TasksPanel> {
           if (job.errorCode != null) ...[
             const SizedBox(height: 6),
             Text(
-              '原因：${job.errorCode}',
+              // 不能直接插值枚举：用户看到的是 `DiaryErrorCode.unknown`，
+              // 既看不懂也不知道下一步做什么。
+              '原因：${_reasonText(job)}',
               style: const TextStyle(color: SketchColors.muted, fontSize: 12),
             ),
           ],

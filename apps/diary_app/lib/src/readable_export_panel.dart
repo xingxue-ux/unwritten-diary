@@ -20,7 +20,9 @@ class _ReadableExportPanelState extends State<ReadableExportPanel> {
   late DateTime _from;
   late DateTime _to;
   String _format = 'markdown';
-  bool _includeAssets = false;
+  /// 这一版不支持随附原件（核心直接拒绝），所以恒为 false。
+  /// 开关保留但禁用，是为了让用户看到「有这个能力、现在还不能用」。
+  static const bool _includeAssets = false;
 
   ReadableExportController get controller => widget.controller;
 
@@ -100,12 +102,18 @@ class _ReadableExportPanelState extends State<ReadableExportPanel> {
                 ],
               ),
               const SizedBox(height: 10),
+              // **这一版只导出正文**：核心对 `includeAssets = true` 直接拒绝
+              // （「本构建的阅读导出只写当前日记正文，不随附原件」）。以前这里
+              // 是个能打开的开关，点生成必然失败——承诺了做不到的事。
               SwitchListTile(
+                key: const ValueKey('include-assets'),
                 contentPadding: EdgeInsets.zero,
                 title: const Text('附带原始材料'),
-                subtitle: const Text('文件会更大；正文始终包含在导出中。'),
-                value: _includeAssets,
-                onChanged: (value) => setState(() => _includeAssets = value),
+                subtitle: const Text(
+                  '这一版只导出正文，不随附原件（开关暂时不可用）。正文始终包含在导出中。',
+                ),
+                value: false,
+                onChanged: null,
               ),
               const SizedBox(height: 12),
               SketchAction(
