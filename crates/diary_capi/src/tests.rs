@@ -4994,22 +4994,24 @@ fn exports_create_writes_real_files_and_never_overwrites() {
         plain["path"]
     );
 
-    // includeAssets = true：核心明确拒绝（本构建只写正文），不静默忽略。
-    let message = expect_error(
-        &call(
-            handle,
-            "exports.create",
-            json!({
-                "request": {
-                    "from_day_key": day_key,
-                    "to_day_key": day_key,
-                    "include_assets": true,
-                },
-            }),
-        ),
-        "invalid_argument",
+    // includeAssets = true：现在支持了，产物是一个 zip（正文 + 原件 + 清单）。
+    let bundle = expect_ok(&call(
+        handle,
+        "exports.create",
+        json!({
+            "request": {
+                "from_day_key": day_key,
+                "to_day_key": day_key,
+                "include_assets": true,
+            },
+        }),
+    ));
+    assert!(
+        bundle["path"].as_str().unwrap().ends_with(".zip"),
+        "附带原件时产物是 zip：{}",
+        bundle["path"]
     );
-    assert!(message.contains("includeAssets"), "{message}");
+    assert_eq!(bundle["restorable"], json!(false), "阅读导出不是备份");
 
     // 不支持的格式、倒序范围、范围里没有当前正文：三种都是明确的错误。
     expect_error(
@@ -5066,8 +5068,8 @@ fn exports_create_writes_real_files_and_never_overwrites() {
     assert!(message.contains("沙箱"), "{message}");
     assert_eq!(
         std::fs::read_dir(dir.join("exports")).unwrap().count(),
-        3,
-        "被拒的导出不能留下任何文件（前三次的三份）"
+        4,
+        "被拒的导出不能留下任何文件（前四次成功的四份）"
     );
     debug_core(handle)
         .expect("句柄必须在登记表里")
