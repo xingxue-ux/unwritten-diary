@@ -12,9 +12,10 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use diary_core::{
     Core, CreateDraftInput, DiaryGenerationReason, ErrorCode, ExportRequest, HttpResponse,
-    JobState, Provider, ProviderCapability, ProviderTestStatus, ScriptedTransport, StyleProfile,
-    Transport,
+    ImportManifest, ImportOrigin, ImportRequest, JobState, Provider, ProviderCapability,
+    ProviderTestStatus, ScriptedTransport, StyleProfile, Transport,
 };
+use sha2::{Digest, Sha256};
 use rusqlite::Connection;
 
 // ------------------------------------------------------------------ 工具
@@ -508,6 +509,12 @@ fn explicit_style_overrides_settings_and_unset_settings_use_builtin_default() {
 
 // ------------------------------------------------------------------ 导出
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
 fn export_request(from: &str, to: &str, format: &str) -> ExportRequest {
     ExportRequest {
         from_day_key: from.to_owned(),
@@ -569,6 +576,84 @@ fn readable_export_writes_markdown_and_plain_text_from_current_bodies() {
     let job = core.get_job(&markdown.job_id).unwrap();
     assert_eq!(job.kind, "export");
     assert_eq!(job.state, JobState::Succeeded);
+}
+
+#[test]
+fn readable_export_with_assets_writes_a_zip_with_originals_and_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, _) = core_with_script(dir.path(), vec![chat_ok("十四号的日记。")]);
+    save_provider(&mut core);
+    let capture_id = capture_on(&mut core, "2026-10-14", "十四号的记录。", "op-14");
+
+    // 给这条记录挂一份原件（走真实的导入流程）。
+    let bytes = b"\x89PNG\r\n\x1a\n fake png bytes";
+    let ticket = core
+        .prepare_import(ImportRequest {
+            capture_id: &capture_id,
+            display_name: "截图.png",
+            mime_hint: Some("image/png"),
+            size_hint: Some(bytes.len() as i64),
+            origin: ImportOrigin::Picker,
+            operation_id: "op-asset",
+        })
+        .unwrap();
+    std::fs::write(&ticket.staging_ticket, bytes).unwrap();
+    core.finish_import(
+        &ticket.import_id,
+        &ticket.staging_ticket,
+        ImportManifest {
+            copied_bytes: bytes.len() as i64,
+            sha256: sha256_hex(bytes),
+            detected_mime: "image/png".to_owned(),
+            original_name: "截图.png".to_owned(),
+        },
+    )
+    .unwrap();
+    generate(&mut core, "2026-10-14", "op-gen-14");
+
+    let mut request = export_request("2026-10-14", "2026-10-14", "markdown");
+    request.include_assets = true;
+    let ticket_out = core.create_export(&request).unwrap();
+    assert!(ticket_out.path.ends_with(".zip"), "附带原件时产物是 zip");
+    assert!(!ticket_out.restorable);
+
+    let file = std::fs::File::open(&ticket_out.path).unwrap();
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+    let names = (0..archive.len())
+        .map(|index| archive.by_index(index).unwrap().name().to_owned())
+        .collect::<Vec<_>>();
+    assert!(names.iter().any(|name| name == "reading.md"), "{names:?}");
+    assert!(
+        names.iter().any(|name| name.starts_with("assets/001-")),
+        "原件要进包：{names:?}"
+    );
+    assert!(names.iter().any(|name| name == "manifest.json"));
+
+    // 正文与原件字节都要对得上。
+    let mut reading = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name("reading.md").unwrap(), &mut reading)
+        .unwrap();
+    assert!(reading.contains("十四号的日记。"));
+
+    let asset_name = names
+        .iter()
+        .find(|name| name.starts_with("assets/"))
+        .unwrap()
+        .clone();
+    let mut copied = Vec::new();
+    std::io::Read::read_to_end(&mut archive.by_name(&asset_name).unwrap(), &mut copied).unwrap();
+    assert_eq!(copied, bytes, "原件字节必须逐字节一致");
+
+    let mut manifest_text = String::new();
+    std::io::Read::read_to_string(
+        &mut archive.by_name("manifest.json").unwrap(),
+        &mut manifest_text,
+    )
+    .unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_text).unwrap();
+    assert_eq!(manifest["restorable"], serde_json::json!(false));
+    assert_eq!(manifest["dayKeys"], serde_json::json!(["2026-10-14"]));
+    assert_eq!(manifest["assets"][0]["sha256"], serde_json::json!(sha256_hex(bytes)));
 }
 
 #[test]
@@ -672,12 +757,6 @@ fn export_rejects_bad_arguments_and_paths_outside_the_sandbox() {
             .code(),
         ErrorCode::InvalidArgument
     );
-    // 附原件：本构建明确拒绝，不静默忽略。
-    let mut with_assets = export_request("2026-10-14", "2026-10-14", "markdown");
-    with_assets.include_assets = true;
-    let error = core.create_export(&with_assets).unwrap_err();
-    assert_eq!(error.code(), ErrorCode::InvalidArgument);
-    assert!(error.to_string().contains("includeAssets"));
     // 起点晚于终点。
     assert_eq!(
         core.create_export(&export_request("2026-10-15", "2026-10-14", "markdown"))
@@ -687,12 +766,22 @@ fn export_rejects_bad_arguments_and_paths_outside_the_sandbox() {
     );
 
     // 沙箱外：宿主上库在临时目录，强制启用 OHOS 判定后必须拒绝，且不创建导出目录。
+    // **放在成功导出之前**：一旦成功过一次，`exports/` 就已经在了，这条断言就失去意义。
     core.set_export_sandbox_only_for_test(true);
     let error = core
         .create_export(&export_request("2026-10-14", "2026-10-14", "markdown"))
         .unwrap_err();
     assert_eq!(error.code(), ErrorCode::PermissionDenied);
     assert!(!dir.path().join("exports").exists(), "拒绝时不能先建目录");
+    core.set_export_sandbox_only_for_test(false);
+
+    // 附原件：现在支持了——产物是 zip，正文与清单都在里面（细节见
+    // `readable_export_with_assets_writes_a_zip_with_originals_and_manifest`）。
+    let mut with_assets = export_request("2026-10-14", "2026-10-14", "markdown");
+    with_assets.include_assets = true;
+    let bundle = core.create_export(&with_assets).unwrap();
+    assert!(bundle.path.ends_with(".zip"));
+    assert!(!bundle.restorable, "附带原件也不是备份");
 }
 
 // ------------------------------------------------------------------ 天列表

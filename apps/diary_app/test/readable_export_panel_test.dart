@@ -4,14 +4,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:unwritten_diary/src/readable_export_controller.dart';
 import 'package:unwritten_diary/src/readable_export_panel.dart';
 
-/// 「附带原始材料」这一版做不到，就不能给一个能按的开关。
+/// 「附带原始材料」是真的能用的：打开后产物是 zip（正文 + 原件 + 清单）。
 ///
-/// 核心对 `includeAssets = true` 直接拒绝（「本构建的阅读导出只写当前日记正文」），
-/// 以前这里是个能打开的开关，点生成必然失败——承诺了做不到的事。
+/// 以前这个开关能打开、但核心直接拒绝，点生成必然失败。现在核心实现了，
+/// 开关也真的会把这个选择传给导出请求。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('附带原始材料的开关是禁用的，并说明原因', (tester) async {
+  testWidgets('附带原始材料的开关能打开，并把选择传给导出请求', (tester) async {
     final controller = ReadableExportController(
       MockDiaryApi(),
       capabilities: const {'exports.create'},
@@ -28,11 +28,19 @@ void main() {
     );
     await tester.pump();
 
-    final tile = tester.widget<SwitchListTile>(
+    var tile = tester.widget<SwitchListTile>(
       find.byKey(const ValueKey('include-assets')),
     );
-    expect(tile.onChanged, isNull, reason: '做不到的事不能给一个能按的开关');
+    expect(tile.onChanged, isNotNull, reason: '现在真的支持了，开关要能按');
     expect(tile.value, isFalse);
-    expect(find.textContaining('这一版只导出正文'), findsOneWidget);
+    expect(find.textContaining('正文始终包含在导出中'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('include-assets')));
+    await tester.pumpAndSettle();
+    tile = tester.widget<SwitchListTile>(
+      find.byKey(const ValueKey('include-assets')),
+    );
+    expect(tile.value, isTrue);
+    expect(find.textContaining('zip'), findsOneWidget);
   });
 }

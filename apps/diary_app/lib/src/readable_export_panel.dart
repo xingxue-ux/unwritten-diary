@@ -20,9 +20,8 @@ class _ReadableExportPanelState extends State<ReadableExportPanel> {
   late DateTime _from;
   late DateTime _to;
   String _format = 'markdown';
-  /// 这一版不支持随附原件（核心直接拒绝），所以恒为 false。
-  /// 开关保留但禁用，是为了让用户看到「有这个能力、现在还不能用」。
-  static const bool _includeAssets = false;
+  /// 是否把原件一起带走。打开时产物是**一个 zip**（正文 + `assets/` + 清单）。
+  bool _includeAssets = false;
 
   ReadableExportController get controller => widget.controller;
 
@@ -102,18 +101,17 @@ class _ReadableExportPanelState extends State<ReadableExportPanel> {
                 ],
               ),
               const SizedBox(height: 10),
-              // **这一版只导出正文**：核心对 `includeAssets = true` 直接拒绝
-              // （「本构建的阅读导出只写当前日记正文，不随附原件」）。以前这里
-              // 是个能打开的开关，点生成必然失败——承诺了做不到的事。
               SwitchListTile(
                 key: const ValueKey('include-assets'),
                 contentPadding: EdgeInsets.zero,
                 title: const Text('附带原始材料'),
-                subtitle: const Text(
-                  '这一版只导出正文，不随附原件（开关暂时不可用）。正文始终包含在导出中。',
+                subtitle: Text(
+                  _includeAssets
+                      ? '会打成一个 zip：正文 + 这一天的原件 + 清单。文件更大，但不是备份。'
+                      : '打开后连原件一起带走（zip）；正文始终包含在导出中。',
                 ),
-                value: false,
-                onChanged: null,
+                value: _includeAssets,
+                onChanged: (value) => setState(() => _includeAssets = value),
               ),
               const SizedBox(height: 12),
               SketchAction(
@@ -163,7 +161,9 @@ class _ReadableExportPanelState extends State<ReadableExportPanel> {
               if (controller.ticket?.packageTicket case final package?) ...[
                 const SizedBox(height: 8),
                 Text(
-                  '导出包：$package',
+                  package.endsWith('.zip')
+                      ? '导出包（zip，正文 + 原件）：$package'
+                      : '导出包：$package',
                   style: const TextStyle(
                     color: SketchColors.muted,
                     fontSize: 12,

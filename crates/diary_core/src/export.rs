@@ -56,13 +56,6 @@ pub(crate) fn create(core: &mut Core, request: &ExportRequest) -> Result<ExportT
             })
         }
     };
-    if request.include_assets {
-        return Err(CoreError::InvalidArgument {
-            reason: "本构建的阅读导出只写当前日记正文，不随附原件；\
-                     includeAssets = true 会明确拒绝，不静默忽略"
-                .to_owned(),
-        });
-    }
     // 解析后**按规范形绑定**：chrono 接受 `2026-10-5`，但 SQL 比的是字符串，
     // 字典序上 `2026-10-05 < 2026-10-5`，直接绑原始输入会把 10 月 1–19 日
     // 静默排除在范围外。范围比较也用解析后的日期，不用原始字符串。
@@ -96,7 +89,15 @@ pub(crate) fn create(core: &mut Core, request: &ExportRequest) -> Result<ExportT
     } else {
         format!("readable-export-{from}_{to}")
     };
-    let (path, byte_size) = write_new(&root, &stem, extension, content.as_bytes())?;
+    let (path, byte_size) = if request.include_assets {
+        // 附带原件时产物是**一个 zip**：正文 + `assets/` + 清单。
+        // 为什么是 zip 而不是目录：`ExportTicket` 只给一个路径，界面「另存为」
+        // 也是拷一个文件；目录会让这两条都要另开一套语义。
+        let assets = collect_assets(core, &from, &to)?;
+        write_bundle(&root, &stem, format, extension, &content, &days, &assets, created_at)?
+    } else {
+        write_new(&root, &stem, extension, content.as_bytes())?
+    };
 
     let path_text = display_path(&path);
     let job = match record_completed_job(core, &path_text) {
@@ -118,6 +119,202 @@ pub(crate) fn create(core: &mut Core, request: &ExportRequest) -> Result<ExportT
         created_at,
         restorable: false,
     })
+}
+
+/// 要随附的一份原件。
+struct ExportAsset {
+    /// 包内文件名（`assets/001-原名`），已去掉路径分隔符。
+    entry_name: String,
+    /// 文件库里的绝对路径。
+    source_path: PathBuf,
+    sha256: String,
+    byte_size: i64,
+    /// 它属于哪条来源（清单里如实记）。
+    source_id: String,
+    original_name: String,
+    mime_type: String,
+}
+
+/// 收这几天里**没进回收站**的记录所挂的原件，按内容哈希去重。
+///
+/// 只收「这一天真的有的材料」：日记正文可能是人工写的（没有 provenance），
+/// 也可能是从材料生成的——两种情况下用户想一起带走的都是那天的原始材料。
+fn collect_assets(core: &Core, from: &str, to: &str) -> Result<Vec<ExportAsset>> {
+    let root = core.root_dir()?.to_path_buf();
+    let sql = format!(
+        "SELECT a.id, a.object_ref, a.original_name, a.detected_mime, a.sha256, a.byte_size, \
+                s.source_id \
+         FROM captures c \
+         JOIN source_items s ON s.capture_id = c.id \
+         JOIN source_revisions r ON r.source_id = s.source_id \
+         JOIN assets a ON a.id = r.asset_id \
+         WHERE c.day_key >= ?1 AND c.day_key <= ?2 \
+           AND {} \
+           AND r.revision_id = COALESCE(s.current_revision_id, r.revision_id) \
+           AND a.storage_state = 'ready' \
+         ORDER BY c.day_key ASC, s.position ASC, a.id ASC",
+        crate::model::capture_not_trashed(Some("c"))
+    );
+    let mut statement = core.conn.prepare(&sql)?;
+    let rows = statement
+        .query_map(params![from, to], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut seen = std::collections::HashSet::new();
+    let mut assets = Vec::new();
+    for (asset_id, object_ref, original_name, mime_type, sha256, byte_size, source_id) in rows {
+        // 同一份内容只带一次（一张图被两条记录引用时不该出现两遍）。
+        if !seen.insert(sha256.clone()) {
+            continue;
+        }
+        let path = root.join(&object_ref);
+        if !path.is_file() {
+            // 原件不在文件库里：**不静默跳过**，如实报错——一份「附带原件」的导出
+            // 少了原件，比直接失败更糟。
+            return Err(CoreError::AssetMissing {
+                asset_id,
+                reason: format!("原件不在文件库里：{object_ref}"),
+            });
+        }
+        let sequence = assets.len() + 1;
+        assets.push(ExportAsset {
+            entry_name: format!("assets/{sequence:03}-{}", safe_file_name(&original_name)),
+            source_path: path,
+            sha256,
+            byte_size,
+            source_id,
+            original_name,
+            mime_type,
+        });
+    }
+    Ok(assets)
+}
+
+/// 包内文件名：只保留安全的字符，避免 `../` 之类的东西进 zip。
+fn safe_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            other => other,
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_start_matches('.').to_owned();
+    if trimmed.is_empty() {
+        "original".to_owned()
+    } else {
+        trimmed
+    }
+}
+
+/// 附带原件时的产物：一个 zip（正文 + `assets/` + 清单）。
+#[allow(clippy::too_many_arguments)]
+fn write_bundle(
+    directory: &Path,
+    stem: &str,
+    format: &str,
+    extension: &str,
+    content: &str,
+    days: &[ExportDay],
+    assets: &[ExportAsset],
+    created_at: chrono::DateTime<chrono::Utc>,
+) -> Result<(PathBuf, i64)> {
+    let reading_name = format!("reading.{extension}");
+    let manifest = serde_json::json!({
+        "kind": "readable_export",
+        // **这不是备份**：包里没有数据库与索引，恢复资料库要走 backups.*。
+        "restorable": false,
+        "format": format,
+        "createdAt": support::to_iso(created_at),
+        "dayKeys": days.iter().map(|day| day.day_key.clone()).collect::<Vec<_>>(),
+        "assets": assets
+            .iter()
+            .map(|asset| serde_json::json!({
+                "entry": asset.entry_name,
+                "originalName": asset.original_name,
+                "mimeType": asset.mime_type,
+                "sha256": asset.sha256,
+                "byteSize": asset.byte_size,
+                "sourceId": asset.source_id,
+            }))
+            .collect::<Vec<_>>(),
+        "note": "这是阅读导出（正文 + 原件），不是备份：没有数据库与索引，不能用来恢复资料库。",
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
+
+    for sequence in 1..=1000 {
+        let name = if sequence == 1 {
+            format!("{stem}.zip")
+        } else {
+            format!("{stem}-{sequence}.zip")
+        };
+        let path = directory.join(name);
+        let file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(CoreError::Io(error)),
+        };
+        match write_zip(file, &reading_name, content, assets, &manifest_bytes) {
+            Ok(byte_size) => return Ok((path, byte_size)),
+            Err(error) => {
+                let _ = std::fs::remove_file(&path);
+                return Err(error);
+            }
+        }
+    }
+    Err(CoreError::InvalidArgument {
+        reason: format!("导出目录里同名文件太多（已试到 {stem}-1000），换一个日期范围再试"),
+    })
+}
+
+fn write_zip(
+    file: File,
+    reading_name: &str,
+    content: &str,
+    assets: &[ExportAsset],
+    manifest_bytes: &[u8],
+) -> Result<i64> {
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
+
+    let mut file = file;
+    let mut zip = ZipWriter::new(&mut file);
+    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    // 原件用 Stored：媒体本来就压过，再压一遍只是白烧 CPU。
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+
+    zip.start_file(reading_name, deflated)
+        .map_err(zip_error("写正文"))?;
+    zip.write_all(content.as_bytes()).map_err(CoreError::Io)?;
+
+    for asset in assets {
+        zip.start_file(asset.entry_name.clone(), stored)
+            .map_err(zip_error("写原件条目"))?;
+        let mut input = File::open(&asset.source_path)?;
+        std::io::copy(&mut input, &mut zip)?;
+    }
+
+    zip.start_file("manifest.json", deflated)
+        .map_err(zip_error("写清单"))?;
+    zip.write_all(manifest_bytes).map_err(CoreError::Io)?;
+    zip.finish().map_err(zip_error("收尾"))?;
+    // zip 收尾会回填中央目录，长度以文件本身为准。
+    let byte_size = i64::try_from(file.metadata()?.len()).map_err(|_| CoreError::StorageFull)?;
+    Ok(byte_size)
+}
+
+fn zip_error(what: &'static str) -> impl Fn(zip::result::ZipError) -> CoreError {
+    move |error| CoreError::Io(std::io::Error::other(format!("{what}失败：{error}")))
 }
 
 /// 把当前版本与仍在天列表里的日子取出来（**正文 only**）。
