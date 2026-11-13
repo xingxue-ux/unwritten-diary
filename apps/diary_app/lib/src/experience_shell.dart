@@ -1081,21 +1081,21 @@ class _ExperienceShellState extends State<ExperienceShell>
               // 翻页中在末尾补一排**占位骨架**：用户看到的是「下面还有内容在来」，
               // 而不是一个转圈把页面顶得跳一下。
               itemCount:
-                  _capture.recent.length + (_capture.loadingMore ? 4 : 0),
-              itemBuilder: (context, index) => index < _capture.recent.length
-                  ? _snippetGridCard(_capture.recent[index])
+                  _capture.visible.length + (_capture.loadingMore ? 4 : 0),
+              itemBuilder: (context, index) => index < _capture.visible.length
+                  ? _snippetGridCard(_capture.visible[index])
                   : _snippetSkeletonCard(),
             ),
           )
         else
           SliverList.builder(
             itemCount:
-                _capture.recent.length + (_capture.loadingMore ? 2 : 0),
+                _capture.visible.length + (_capture.loadingMore ? 2 : 0),
             itemBuilder: (context, index) {
-              if (index >= _capture.recent.length) {
+              if (index >= _capture.visible.length) {
                 return _sliverContent(_snippetSkeletonRow(), desktop);
               }
-              final capture = _capture.recent[index];
+              final capture = _capture.visible[index];
               return _sliverContent(
                 _resultTile(
                   capture.state == CaptureState.draft ? '正在写的草稿' : '刚刚收好的记录',
@@ -1871,49 +1871,55 @@ class _ExperienceShellState extends State<ExperienceShell>
     bool uniform = false,
   }) => Padding(
     padding: const EdgeInsets.only(bottom: 11),
-    child: InkWell(
-      onTap: onTap,
-      child: SketchFrame(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              eyebrow,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: SketchColors.muted, fontSize: 12),
-            ),
-            const SizedBox(height: 7),
-            Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: SketchColors.ink,
-                fontSize: 17,
-                fontWeight: FontWeight.w700,
+    // **必须撑满可用宽度**：`_sliverContent` 里的 `Center` 给的是**松约束**，
+    // 不写 `width: double.infinity` 时卡片会缩到自己内容的宽度——摘要短的那条
+    // 就比长的窄一截，一列看下去宽窄不一。
+    child: SizedBox(
+      width: double.infinity,
+      child: InkWell(
+        onTap: onTap,
+        child: SketchFrame(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                eyebrow,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: SketchColors.muted, fontSize: 12),
               ),
-            ),
-            const SizedBox(height: 5),
-            if (uniform)
-              SizedBox(
-                height: 44,
-                child: Text(
+              const SizedBox(height: 7),
+              Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: SketchColors.ink,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 5),
+              if (uniform)
+                SizedBox(
+                  height: 44,
+                  child: Text(
+                    excerpt,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: SketchColors.text),
+                  ),
+                )
+              else
+                Text(
                   excerpt,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: SketchColors.text),
                 ),
-              )
-            else
-              Text(
-                excerpt,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: SketchColors.text),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     ),
@@ -1940,7 +1946,7 @@ class _ExperienceShellState extends State<ExperienceShell>
       const SizedBox(height: 18),
       if (widget.demoMode)
         _notice('这页混合展示示例材料和本次运行新写的文字。'),
-      if (_capture.recent.isEmpty && !_capture.loading)
+      if (_capture.visible.isEmpty && !_capture.loading)
         _footnote('还没有记录。'),
     ],
   );
@@ -1979,20 +1985,24 @@ class _ExperienceShellState extends State<ExperienceShell>
   Widget _snippetSkeletonRow() => Padding(
     key: const ValueKey('snippet-skeleton'),
     padding: const EdgeInsets.only(bottom: 11),
-    child: SketchFrame(
-      fill: SketchColors.soft,
-      padding: const EdgeInsets.all(18),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _skeletonBar(width: 150, height: 12),
-          const SizedBox(height: 9),
-          _skeletonBar(width: 180, height: 17),
-          const SizedBox(height: 8),
-          _skeletonBar(width: double.infinity, height: 12),
-          const SizedBox(height: 6),
-          _skeletonBar(width: double.infinity, height: 12),
-        ],
+    // 和真卡一样撑满：`_sliverContent` 给的是松约束。
+    child: SizedBox(
+      width: double.infinity,
+      child: SketchFrame(
+        fill: SketchColors.soft,
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _skeletonBar(width: 150, height: 12),
+            const SizedBox(height: 9),
+            _skeletonBar(width: 180, height: 17),
+            const SizedBox(height: 8),
+            _skeletonBar(width: double.infinity, height: 12),
+            const SizedBox(height: 6),
+            _skeletonBar(width: double.infinity, height: 12),
+          ],
+        ),
       ),
     ),
   );
@@ -2034,9 +2044,11 @@ class _ExperienceShellState extends State<ExperienceShell>
                 ),
               ),
               Text(
-                capture.state == CaptureState.draft
-                    ? uiStrings.t('state.draft')
-                    : uiStrings.t('state.committed'),
+                switch (capture.state) {
+                  CaptureState.draft => uiStrings.t('state.draft'),
+                  CaptureState.trashed => uiStrings.t('state.trashed'),
+                  _ => uiStrings.t('state.committed'),
+                },
                 style: const TextStyle(color: SketchColors.muted, fontSize: 12),
               ),
             ],

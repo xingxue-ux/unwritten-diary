@@ -41,6 +41,15 @@ class CaptureController extends ChangeNotifier {
 
   bool get hasMore => _nextCursor != null;
 
+  /// 时间线上能看到的记录：**不含回收站里的**。
+  ///
+  /// 核心的 `captures.list` 会把 trashed 也带回来（回收站页要用同一份数据），
+  /// 但「片段」是普通时间线——把已移入回收站的记录画在这里，等于告诉用户
+  /// 「删除没成功」，而它其实在回收站里好好的。
+  List<Capture> get visible => recent
+      .where((capture) => capture.state != CaptureState.trashed)
+      .toList(growable: false);
+
   bool get canChangeDate =>
       _draft == null && _createOperationId == null && _finishing == null;
   bool get finishing => _finishing != null;
@@ -77,6 +86,10 @@ class CaptureController extends ChangeNotifier {
         if (capture.state == CaptureState.draft) {
           _draft = capture;
           _savedText = capture.draftText;
+          // **连日期一起恢复**。以前只恢复正文，日期 UI 回退成「今天」，
+          // 于是「昨天写了一半的草稿」在界面上看着是今天的，提交后却写进昨天：
+          // 用户去今天的日记里找，找不到刚提交的材料。
+          occurredAt = capture.occurredAt.toLocal();
           if (text.isEmpty) {
             text = capture.draftText;
             phase = SavePhase.saved;
