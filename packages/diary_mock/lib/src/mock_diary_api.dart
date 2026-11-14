@@ -361,6 +361,7 @@ class MockDiaryApi
     return restored;
   }
 
+  @override
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
     '${invocation.memberName} 尚未在 F0 Mock 中实现，请按任务书扩展。',
   );
