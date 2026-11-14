@@ -42,5 +42,15 @@ void main() {
     );
     expect(tile.value, isTrue);
     expect(find.textContaining('zip'), findsOneWidget);
+
+    // 类型筛选：默认四类都带，取消「录音」就只带三类。
+    expect(find.byKey(const ValueKey('asset-kind-image')), findsOneWidget);
+    expect(find.byKey(const ValueKey('asset-kind-audio')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('asset-kind-audio')));
+    await tester.pumpAndSettle();
+    final audio = tester.widget<FilterChip>(
+      find.byKey(const ValueKey('asset-kind-audio')),
+    );
+    expect(audio.selected, isFalse);
   });
 }

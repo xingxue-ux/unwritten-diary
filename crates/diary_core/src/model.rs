@@ -2123,9 +2123,13 @@ pub struct ExportRequest {
     pub to_day_key: String,
     /// `markdown` / `plain_text`。
     pub format: String,
-    /// 契约字段。本构建的阅读导出只写正文，**不随附原件**；传 `true` 会明确拒绝，
-    /// 不静默忽略。
+    /// 是否把原件一起带走。为 `true` 时产物是一个 zip（正文 + `assets/` + 清单）。
     pub include_assets: bool,
+    /// 只带这些类型的原件（`image` / `audio` / `video` / `file`）；空表示全都带。
+    ///
+    /// 默认空：老调用方不传就是全带，行为与以前一致。
+    #[serde(default)]
+    pub asset_kinds: Vec<String>,
 }
 
 /// 可阅读导出的结果（#113）。

@@ -27,6 +27,7 @@ class ReadableExportController extends ChangeNotifier {
     required DateTime to,
     required String format,
     required bool includeAssets,
+    List<String> assetKinds = const [],
   }) async {
     if (!canCreate || working) return;
     if (from.isAfter(to)) {
@@ -47,6 +48,7 @@ class ReadableExportController extends ChangeNotifier {
           toDayKey: _dayKey(to),
           format: format,
           includeAssets: includeAssets,
+          assetKinds: assetKinds,
         ),
       );
       working = false;

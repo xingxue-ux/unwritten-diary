@@ -6630,13 +6630,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ExportRequest dco_decode_export_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return ExportRequest(
       fromDayKey: dco_decode_String(arr[0]),
       toDayKey: dco_decode_String(arr[1]),
       format: dco_decode_String(arr[2]),
       includeAssets: dco_decode_bool(arr[3]),
+      assetKinds: dco_decode_list_String(arr[4]),
     );
   }
 
@@ -9062,11 +9063,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_toDayKey = sse_decode_String(deserializer);
     var var_format = sse_decode_String(deserializer);
     var var_includeAssets = sse_decode_bool(deserializer);
+    var var_assetKinds = sse_decode_list_String(deserializer);
     return ExportRequest(
       fromDayKey: var_fromDayKey,
       toDayKey: var_toDayKey,
       format: var_format,
       includeAssets: var_includeAssets,
+      assetKinds: var_assetKinds,
     );
   }
 
@@ -12193,6 +12196,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.toDayKey, serializer);
     sse_encode_String(self.format, serializer);
     sse_encode_bool(self.includeAssets, serializer);
+    sse_encode_list_String(self.assetKinds, serializer);
   }
 
   @protected

@@ -6812,6 +6812,7 @@ const _: fn() = || {
         let _: String = ExportRequest.to_day_key;
         let _: String = ExportRequest.format;
         let _: bool = ExportRequest.include_assets;
+        let _: Vec<String> = ExportRequest.asset_kinds;
     }
     {
         let ExportTicket = None::<diary_core::model::ExportTicket>.unwrap();
@@ -7965,11 +7966,13 @@ impl SseDecode for diary_core::model::ExportRequest {
         let mut var_toDayKey = <String>::sse_decode(deserializer);
         let mut var_format = <String>::sse_decode(deserializer);
         let mut var_includeAssets = <bool>::sse_decode(deserializer);
+        let mut var_assetKinds = <Vec<String>>::sse_decode(deserializer);
         return diary_core::model::ExportRequest {
             from_day_key: var_fromDayKey,
             to_day_key: var_toDayKey,
             format: var_format,
             include_assets: var_includeAssets,
+            asset_kinds: var_assetKinds,
         };
     }
 }
@@ -11593,6 +11596,7 @@ impl flutter_rust_bridge::IntoDart for FrbWrapper<diary_core::model::ExportReque
             self.0.to_day_key.into_into_dart().into_dart(),
             self.0.format.into_into_dart().into_dart(),
             self.0.include_assets.into_into_dart().into_dart(),
+            self.0.asset_kinds.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -14017,6 +14021,7 @@ impl SseEncode for diary_core::model::ExportRequest {
         <String>::sse_encode(self.to_day_key, serializer);
         <String>::sse_encode(self.format, serializer);
         <bool>::sse_encode(self.include_assets, serializer);
+        <Vec<String>>::sse_encode(self.asset_kinds, serializer);
     }
 }
 

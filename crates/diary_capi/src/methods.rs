@@ -2034,6 +2034,9 @@ struct ExportRequestParams {
     format: Option<String>,
     #[serde(default, alias = "includeAssets")]
     include_assets: bool,
+    /// 只带这些类型的原件；空表示全都带。
+    #[serde(default, alias = "assetKinds")]
+    asset_kinds: Vec<String>,
 }
 
 impl ExportRequestParams {
@@ -2043,6 +2046,7 @@ impl ExportRequestParams {
             to_day_key: self.to_day_key,
             format: self.format.unwrap_or_else(|| "markdown".to_owned()),
             include_assets: self.include_assets,
+            asset_kinds: self.asset_kinds,
         }
     }
 }

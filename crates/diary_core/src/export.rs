@@ -93,7 +93,7 @@ pub(crate) fn create(core: &mut Core, request: &ExportRequest) -> Result<ExportT
         // 附带原件时产物是**一个 zip**：正文 + `assets/` + 清单。
         // 为什么是 zip 而不是目录：`ExportTicket` 只给一个路径，界面「另存为」
         // 也是拷一个文件；目录会让这两条都要另开一套语义。
-        let assets = collect_assets(core, &from, &to)?;
+        let assets = collect_assets(core, &from, &to, &request.asset_kinds)?;
         write_bundle(&root, &stem, format, extension, &content, &days, &assets, created_at)?
     } else {
         write_new(&root, &stem, extension, content.as_bytes())?
@@ -139,11 +139,27 @@ struct ExportAsset {
 ///
 /// 只收「这一天真的有的材料」：日记正文可能是人工写的（没有 provenance），
 /// 也可能是从材料生成的——两种情况下用户想一起带走的都是那天的原始材料。
-fn collect_assets(core: &Core, from: &str, to: &str) -> Result<Vec<ExportAsset>> {
+fn collect_assets(
+    core: &Core,
+    from: &str,
+    to: &str,
+    kinds: &[String],
+) -> Result<Vec<ExportAsset>> {
     let root = core.root_dir()?.to_path_buf();
+    // 类型筛选在 SQL 里做：`asset_kinds` 为空就是全带（老调用方的行为）。
+    let kind_filter = if kinds.is_empty() {
+        "1 = 1".to_owned()
+    } else {
+        let list = kinds
+            .iter()
+            .map(|kind| format!("'{}'", kind.replace('\'', "")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("s.kind IN ({list})")
+    };
     let sql = format!(
         "SELECT a.id, a.object_ref, a.original_name, a.detected_mime, a.sha256, a.byte_size, \
-                s.source_id \
+                s.source_id, c.day_key \
          FROM captures c \
          JOIN source_items s ON s.capture_id = c.id \
          JOIN source_revisions r ON r.source_id = s.source_id \
@@ -152,6 +168,7 @@ fn collect_assets(core: &Core, from: &str, to: &str) -> Result<Vec<ExportAsset>>
            AND {} \
            AND r.revision_id = COALESCE(s.current_revision_id, r.revision_id) \
            AND a.storage_state = 'ready' \
+           AND {kind_filter} \
          ORDER BY c.day_key ASC, s.position ASC, a.id ASC",
         crate::model::capture_not_trashed(Some("c"))
     );
@@ -166,13 +183,16 @@ fn collect_assets(core: &Core, from: &str, to: &str) -> Result<Vec<ExportAsset>>
                 row.get::<_, String>(4)?,
                 row.get::<_, i64>(5)?,
                 row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     let mut seen = std::collections::HashSet::new();
     let mut assets = Vec::new();
-    for (asset_id, object_ref, original_name, mime_type, sha256, byte_size, source_id) in rows {
+    for (asset_id, object_ref, original_name, mime_type, sha256, byte_size, source_id, day_key) in
+        rows
+    {
         // 同一份内容只带一次（一张图被两条记录引用时不该出现两遍）。
         if !seen.insert(sha256.clone()) {
             continue;
@@ -188,7 +208,11 @@ fn collect_assets(core: &Core, from: &str, to: &str) -> Result<Vec<ExportAsset>>
         }
         let sequence = assets.len() + 1;
         assets.push(ExportAsset {
-            entry_name: format!("assets/{sequence:03}-{}", safe_file_name(&original_name)),
+            // **按日期分目录**：跨月导出时一眼能看出哪份原件属于哪一天。
+            entry_name: format!(
+                "assets/{day_key}/{sequence:03}-{}",
+                safe_file_name(&original_name)
+            ),
             source_path: path,
             sha256,
             byte_size,

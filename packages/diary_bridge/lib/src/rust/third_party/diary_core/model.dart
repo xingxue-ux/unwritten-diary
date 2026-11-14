@@ -849,15 +849,20 @@ class ExportRequest {
   /// `markdown` / `plain_text`。
   final String format;
 
-  /// 契约字段。本构建的阅读导出只写正文，**不随附原件**；传 `true` 会明确拒绝，
-  /// 不静默忽略。
+  /// 是否把原件一起带走。为 `true` 时产物是一个 zip（正文 + `assets/` + 清单）。
   final bool includeAssets;
+
+  /// 只带这些类型的原件（`image` / `audio` / `video` / `file`）；空表示全都带。
+  ///
+  /// 默认空：老调用方不传就是全带，行为与以前一致。
+  final List<String> assetKinds;
 
   const ExportRequest({
     required this.fromDayKey,
     required this.toDayKey,
     required this.format,
     required this.includeAssets,
+    required this.assetKinds,
   });
 
   @override
@@ -865,7 +870,8 @@ class ExportRequest {
       fromDayKey.hashCode ^
       toDayKey.hashCode ^
       format.hashCode ^
-      includeAssets.hashCode;
+      includeAssets.hashCode ^
+      assetKinds.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -875,7 +881,8 @@ class ExportRequest {
           fromDayKey == other.fromDayKey &&
           toDayKey == other.toDayKey &&
           format == other.format &&
-          includeAssets == other.includeAssets;
+          includeAssets == other.includeAssets &&
+          assetKinds == other.assetKinds;
 }
 
 /// 可阅读导出的结果（#113）。
