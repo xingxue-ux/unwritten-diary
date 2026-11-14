@@ -2,6 +2,7 @@ import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:unwritten_diary/src/readable_export_controller.dart';
+import 'package:unwritten_diary/src/sketch_ui.dart';
 import 'package:unwritten_diary/src/readable_export_panel.dart';
 
 /// 「附带原始材料」是真的能用的：打开后产物是 zip（正文 + 原件 + 清单）。
@@ -52,5 +53,25 @@ void main() {
       find.byKey(const ValueKey('asset-kind-audio')),
     );
     expect(audio.selected, isFalse);
+
+    // 四类全不选 ≠ 「全都带」：核心把空集合解释成全带，所以界面必须挡住这一手。
+    for (final kind in const ['image', 'audio', 'video', 'file']) {
+      final chip = tester.widget<FilterChip>(
+        find.byKey(ValueKey('asset-kind-$kind')),
+      );
+      if (chip.selected) {
+        await tester.tap(find.byKey(ValueKey('asset-kind-$kind')));
+        await tester.pumpAndSettle();
+      }
+    }
+    expect(find.byKey(const ValueKey('asset-kinds-empty')), findsOneWidget);
+    final generate = tester.widget<SketchAction>(
+      find.byKey(const ValueKey('create-readable-export')),
+    );
+    expect(
+      generate.onPressed,
+      isNull,
+      reason: '一类都没选时不能生成——那会把用户排除的原件又带回来',
+    );
   });
 }

@@ -2311,7 +2311,14 @@ class _ExperienceShellState extends State<ExperienceShell>
         defaultLibraryPath: widget.defaultLibraryPath,
       ),
       'export' => ReadableExportPanel(controller: _readableExport),
-      'storage' => StorageTrashPanel(controller: _libraryCare),
+      'storage' => StorageTrashPanel(
+        controller: _libraryCare,
+        // 恢复之后时间线要重新读：不然回到「片段」看不到刚恢复的那条。
+        onRestored: () async {
+          await _capture.refresh();
+          if (mounted) setState(() {});
+        },
+      ),
       'recording' => _recordingPanel(),
       'loading' => _loadingPanel(),
       _ => _coverPanel(),

@@ -1,3 +1,4 @@
+import 'package:diary_api/diary_api.dart';
 import 'package:diary_mock/diary_mock.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -108,5 +109,66 @@ void main() {
   testWidgets('环境不支持切换时不显示按钮，不画一个按不动的入口', (tester) async {
     await pump(tester, restoredPath: '/tmp/restored/library.sqlite');
     expect(find.byKey(const ValueKey('open-restored-library')), findsNothing);
+  });
+
+  _restoreRefreshTests();
+}
+
+/// 从回收站恢复之后，普通「片段」时间线要能看到这条记录。
+///
+/// 以前恢复只重载回收站列表；时间线读的是缓存里的状态，那条还是 trashed，
+/// 于是用户恢复完回到「片段」看不到它——要重启才出现，看起来像恢复失败。
+void _restoreRefreshTests() {
+  testWidgets('恢复成功后通知时间线刷新', (tester) async {
+    final api = MockDiaryApi();
+    final seeded = await api.createDraft(operationId: 'op-seed');
+    final controller = LibraryCareController(
+      api,
+      capabilities: const {'captures.restore', 'captures.list'},
+      captureCount: 1,
+    );
+    addTearDown(controller.dispose);
+    var refreshed = 0;
+    controller.trashedCaptures = [
+      Capture(
+        id: seeded.id,
+        revision: 3,
+        state: CaptureState.trashed,
+        occurredAt: DateTime.utc(2026, 11, 11),
+        createdAt: DateTime.utc(2026, 11, 11),
+        updatedAt: DateTime.utc(2026, 11, 11),
+        timeZone: 'Asia/Shanghai',
+        utcOffsetMinutes: 480,
+        dayKey: '2026-11-11',
+        draftText: '被恢复的记录。',
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: StorageTrashPanel(
+              controller: controller,
+              onRestored: () async => refreshed++,
+            ),
+          ),
+        ),
+      ),
+    );
+    tester.view.physicalSize = const Size(1200, 2000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pump();
+
+    final restore = find.text('恢复').first;
+    await tester.ensureVisible(restore);
+    await tester.pump();
+    await tester.tap(restore);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(refreshed, 1, reason: '恢复成功后必须让时间线重新读一遍');
   });
 }
