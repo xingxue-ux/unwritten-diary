@@ -169,9 +169,25 @@ class BackupRestorePanel extends StatelessWidget {
 }
 
 class StorageTrashPanel extends StatelessWidget {
-  const StorageTrashPanel({super.key, required this.controller});
+  const StorageTrashPanel({
+    super.key,
+    required this.controller,
+    this.onRestored,
+  });
 
   final LibraryCareController controller;
+
+  /// 恢复成功后的回调：时间线（片段）要重新读一遍。
+  ///
+  /// 不刷新的话，用户从回收站恢复了一条记录，回到「片段」却看不到它——`visible`
+  /// 过滤读的是**缓存里的状态**，那条还是 trashed。要重启才出现，看起来像恢复失败。
+  final Future<void> Function()? onRestored;
+
+  Future<void> _restore(BuildContext context, Capture capture) async {
+    await controller.restoreCapture(capture);
+    if (!context.mounted) return;
+    await onRestored?.call();
+  }
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -255,7 +271,7 @@ class StorageTrashPanel extends StatelessWidget {
                     capture: capture,
                     canRestore: controller.canRestoreTrash,
                     canPurge: controller.canPreviewPurge && controller.canPurge,
-                    onRestore: () => controller.restoreCapture(capture),
+                    onRestore: () => _restore(context, capture),
                     onPurge: () => _previewAndConfirmPurge(context, capture),
                   ),
             ],

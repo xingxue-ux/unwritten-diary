@@ -113,6 +113,8 @@ class _ReadableExportPanelState extends State<ReadableExportPanel> {
                       ? '会打成一个 zip：正文 + 这一天的原件 + 清单。文件更大，但不是备份。'
                       : '打开后连原件一起带走（zip）；正文始终包含在导出中。',
                 ),
+                // 空集合在核心那里等于「全都带」，所以**不能**把「一类都没选」
+                // 原样传下去——那会把用户明确排除的原件又带回来。
                 value: _includeAssets,
                 onChanged: (value) => setState(() => _includeAssets = value),
               ),
@@ -143,13 +145,24 @@ class _ReadableExportPanelState extends State<ReadableExportPanel> {
                     ],
                   ),
                 ),
+              if (_includeAssets && _assetKinds.isEmpty) ...[
+                const SizedBox(height: 8),
+                const Text(
+                  '四类都不选就等于不带原件。要么至少留一类，要么把「附带原始材料」关掉。',
+                  key: ValueKey('asset-kinds-empty'),
+                  style: TextStyle(color: SketchColors.muted, fontSize: 12),
+                ),
+              ],
               const SizedBox(height: 12),
               SketchAction(
                 key: const ValueKey('create-readable-export'),
                 label: controller.working ? '正在导出…' : '生成阅读文档',
                 icon: Icons.article_outlined,
                 filled: true,
-                onPressed: controller.canCreate && !controller.working
+                onPressed:
+                    controller.canCreate &&
+                        !controller.working &&
+                        !(_includeAssets && _assetKinds.isEmpty)
                     ? () => controller.create(
                         from: _from,
                         to: _to,

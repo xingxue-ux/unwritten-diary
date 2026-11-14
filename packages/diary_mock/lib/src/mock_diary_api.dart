@@ -335,6 +335,32 @@ class MockDiaryApi
   }
 
   @override
+  /// 从回收站恢复：把状态改回 committed 并推进 revision。
+  ///
+  /// 以前 Mock 没实现这条，界面测试里点「恢复」会走 `noSuchMethod` 抛异常，
+  /// 于是「恢复后刷新时间线」这条路径在测试里根本跑不到。
+  @override
+  Future<Capture> restoreCapture({
+    required String id,
+    required int expectedRevision,
+    required String operationId,
+  }) async {
+    final capture = _captures[id];
+    if (capture == null) {
+      throw DiaryException(
+        code: DiaryErrorCode.notFound,
+        message: '回收站里没有这条记录。',
+      );
+    }
+    final restored = capture.copyWith(
+      state: CaptureState.committed,
+      revision: capture.revision + 1,
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _captures[id] = restored;
+    return restored;
+  }
+
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
     '${invocation.memberName} 尚未在 F0 Mock 中实现，请按任务书扩展。',
   );

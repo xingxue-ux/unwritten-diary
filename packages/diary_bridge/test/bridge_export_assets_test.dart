@@ -121,7 +121,11 @@ void main() {
     expect(file.existsSync(), isTrue);
     expect(file.lengthSync(), greaterThan(0));
     // zip 的本地文件头：PK\x03\x04。
-    final head = file.openSync().readSync(4);
+    //
+    // 用 `readAsBytes` 而不是 `openSync()`：后者返回的 `RandomAccessFile` 不关，
+    // Windows 上临时目录就删不掉（`PathAccessException / errno 32`），
+    // 整个桥接套件会在清理阶段挂掉。
+    final head = (await file.readAsBytes()).take(4).toList();
     expect(head, [0x50, 0x4B, 0x03, 0x04]);
   });
 }
