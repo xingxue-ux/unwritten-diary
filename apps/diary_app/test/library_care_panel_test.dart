@@ -171,4 +171,60 @@ void _restoreRefreshTests() {
 
     expect(refreshed, 1, reason: '恢复成功后必须让时间线重新读一遍');
   });
+
+  testWidgets('恢复后存储页的记录条数跟着变', (tester) async {
+    // 条数以前是构造时传进来的 final 标量：恢复完回到存储页还显示旧数字，
+    // 退出重进也不变——因为没人再算过。
+    final api = MockDiaryApi();
+    final seeded = await api.createDraft(operationId: 'op-seed');
+    final controller = LibraryCareController(
+      api,
+      capabilities: const {'captures.restore', 'captures.list'},
+      captureCount: 6,
+    );
+    addTearDown(controller.dispose);
+    controller.trashedCaptures = [
+      Capture(
+        id: seeded.id,
+        revision: 3,
+        state: CaptureState.trashed,
+        occurredAt: DateTime.utc(2026, 11, 11),
+        createdAt: DateTime.utc(2026, 11, 11),
+        updatedAt: DateTime.utc(2026, 11, 11),
+        timeZone: 'Asia/Shanghai',
+        utcOffsetMinutes: 480,
+        dayKey: '2026-11-11',
+        draftText: '被恢复的记录。',
+      ),
+    ];
+
+    tester.view.physicalSize = const Size(1200, 2000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: StorageTrashPanel(controller: controller),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.textContaining('资料库记录 · 6 条'), findsOneWidget);
+
+    final restore = find.text('恢复').first;
+    await tester.ensureVisible(restore);
+    await tester.pump();
+    await tester.tap(restore);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(
+      find.textContaining('资料库记录 · 1 条'),
+      findsOneWidget,
+      reason: '恢复之后条数要重新问核心，不能还显示启动时的旧数字',
+    );
+  });
 }
