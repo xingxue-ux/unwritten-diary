@@ -16,7 +16,23 @@ class LibraryCareController extends ChangeNotifier {
 
   final DiaryApi _api;
   final Set<String> capabilities;
-  final int captureCount;
+  /// 资料库里的记录条数。
+  ///
+  /// **不是启动时的快照**：恢复、移入回收站、永久清理都会改变它。以前它是构造时
+  /// 传进来的 `final` 标量，恢复完回到存储页还显示旧数字（6 条 vs 实际 7 条），
+  /// 退出重进也不变——因为没人再算过。
+  int captureCount;
+
+  /// 重新问核心要一次真实条数。拿不到就保留旧值，不编一个数出来。
+  Future<void> refreshCaptureCount() async {
+    try {
+      final snapshot = await _api.snapshot();
+      captureCount = snapshot.captureCount;
+      notifyListeners();
+    } on Object {
+      // 读不到就维持原值：显示旧数字比显示 0 好。
+    }
+  }
 
   LibraryCarePhase phase = LibraryCarePhase.idle;
   String? message;
@@ -262,6 +278,7 @@ class LibraryCareController extends ChangeNotifier {
       );
       message = '记录已恢复。';
       await loadTrash();
+      await refreshCaptureCount();
     } on DiaryException catch (error) {
       message = error.message;
       notifyListeners();
@@ -283,6 +300,8 @@ class LibraryCareController extends ChangeNotifier {
         operationId: _operationId('trash-capture'),
       );
       message = '记录已移入回收站。';
+      // 条数变了：存储页那个「资料库记录 · N 条」要跟着变。
+      await refreshCaptureCount();
       notifyListeners();
       return true;
     } on DiaryException catch (error) {
@@ -329,6 +348,7 @@ class LibraryCareController extends ChangeNotifier {
           ? '记录、预览中列出的原件，以及关联日记版本已永久清理。'
           : '记录及预览中列出的原件已永久清理；关联日记版本按你的选择保留。';
       await loadTrash();
+      await refreshCaptureCount();
       return true;
     } on DiaryException catch (error) {
       message = error.message;
