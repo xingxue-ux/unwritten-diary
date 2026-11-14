@@ -640,6 +640,51 @@ void main() {
       findsOneWidget,
       reason: '必须有一条不受扫描上限影响的路',
     );
+    expect(
+      find.byKey(const ValueKey('plugin-more-days-example.export-diary-markdown')),
+      findsOneWidget,
+      reason: '也可以直接接着往后扫，不用先知道是哪一天',
+    );
+  });
+
+  testWidgets('「继续往后找」能扫到上限之外的那一天', (tester) async {
+    // 2100 天、唯一有日记的那天在扫描上限之后：第一轮扫不到，
+    // 点一次「继续往后找」就该找到。
+    final api = _PluginsApi()
+      ..plugins.add(
+        const Plugin(
+          id: 'example.export-diary-markdown',
+          version: '1.0.0',
+          apiRange: '>=1.0 <2.0',
+          entryKind: PluginEntryKind.code,
+          state: PluginState.enabled,
+          activationEvents: ['export.start'],
+        ),
+      )
+      ..days = [
+        for (var index = 0; index < 2100; index++)
+          DiaryDay(
+            dayKey: '2025-01-01+$index',
+            timeZone: 'Asia/Shanghai',
+            updatedAt: DateTime.utc(2025, 1, 1).add(Duration(days: index)),
+          ),
+        DiaryDay(
+          dayKey: '2026-11-10',
+          timeZone: 'Asia/Shanghai',
+          updatedAt: DateTime.utc(2026, 11, 10),
+          currentVersionId: 'ver-far',
+        ),
+      ];
+    await pump(tester, api);
+    expect(find.textContaining('2026-11-10'), findsNothing);
+
+    await tester.tap(
+      find.byKey(const ValueKey('plugin-more-days-example.export-diary-markdown')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.textContaining('2026-11-10'), findsOneWidget);
   });
 
   testWidgets('按日期选：直接查到扫描范围之外的那天，并能导出', (tester) async {

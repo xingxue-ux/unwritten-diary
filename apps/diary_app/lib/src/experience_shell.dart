@@ -1011,8 +1011,33 @@ class _ExperienceShellState extends State<ExperienceShell>
           _coreSearch.hits.isEmpty)
         _notice('没有找到匹配内容。尚未处理的材料可能暂时无法检索。', icon: Icons.search_off),
       if (_coreSearch.snapshot?.warnings.isNotEmpty == true &&
-          _coreSearch.upgradeWarning == null)
+          _coreSearch.upgradeWarning == null) ...[
         _notice(_coreSearch.snapshot!.warnings.join(' · ')),
+        // 光说「语义索引还没建好」没用——给出**能按的下一步**。
+        if (_indexSettings.canRebuild &&
+            _indexSettings.status?.semanticIndexReady == false) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: SketchAction(
+              key: const ValueKey('search-rebuild-semantic'),
+              label: _indexSettings.scheduling ? '正在安排…' : '重建语义索引',
+              icon: Icons.auto_awesome_outlined,
+              compact: true,
+              onPressed: _indexSettings.scheduling
+                  ? null
+                  : () => unawaited(_rebuildSemanticFromSearch()),
+            ),
+          ),
+          if (_indexSettings.message != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              _indexSettings.message!,
+              style: const TextStyle(color: SketchColors.muted, fontSize: 12),
+            ),
+          ],
+        ],
+      ],
       if (_coreSearch.hits.isNotEmpty)
         Text(
           '找到的片段',
@@ -1841,6 +1866,13 @@ class _ExperienceShellState extends State<ExperienceShell>
           _notice('当前范围没有匹配项。待处理或未解析的材料，不等于内容不存在。', icon: Icons.search_off),
       ],
     );
+  }
+
+  /// 搜索页里直接安排一次语义索引重建，并把结果说清楚（排队 ≠ 完成）。
+  Future<void> _rebuildSemanticFromSearch() async {
+    await _indexSettings.rebuild();
+    if (!mounted) return;
+    setState(() {});
   }
 
   void _onSearchValueChanged() {

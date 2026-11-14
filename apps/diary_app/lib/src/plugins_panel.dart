@@ -67,6 +67,10 @@ class _PluginsPanelState extends State<PluginsPanel> {
   /// 实际扫过多少天（用于如实说明「查了多少」）。
   int _daysScanned = 0;
 
+  /// 下次「继续往后找」从哪儿接着扫。
+  String? _dayCursor;
+  bool _daysLoadingMore = false;
+
   /// 每个插件选中的模板 / 风格 / 日期范围（按插件 id 记）。
   final Map<String, String> _templateChoice = {};
   final Map<String, String> _styleChoice = {};
@@ -146,9 +150,26 @@ class _PluginsPanelState extends State<PluginsPanel> {
     if (_daysLoaded) return;
     final needsVersions = _plugins.any(_needsVersions);
     if (!needsVersions) return;
+    await _scanDays(fromStart: true);
+  }
+
+  /// 从上次停下的地方**继续往后找**。
+  ///
+  /// 扫描有上限（[`_maxDayPages`]），到上限时界面说的是「还没查完」。以前只有
+  /// 「按日期选」一条路；现在也能直接接着扫——用户不用先知道是哪一天。
+  Future<void> _loadMoreDays() async {
+    if (_daysLoadingMore) return;
+    setState(() => _daysLoadingMore = true);
+    await _scanDays(fromStart: false);
+    if (mounted) setState(() => _daysLoadingMore = false);
+  }
+
+  Future<void> _scanDays({required bool fromStart}) async {
     try {
-      final withVersion = <DiaryDay>[];
-      String? cursor;
+      final withVersion = fromStart
+          ? <DiaryDay>[]
+          : List<DiaryDay>.of(_daysWithVersion);
+      String? cursor = fromStart ? null : _dayCursor;
       var pages = 0;
       var truncated = false;
       while (true) {
@@ -157,7 +178,9 @@ class _PluginsPanelState extends State<PluginsPanel> {
           pageSize: _dayPageSize,
         );
         withVersion.addAll(
-          page.days.where((day) => day.currentVersionId != null),
+          page.days
+              .where((day) => day.currentVersionId != null)
+              .where((day) => !withVersion.any((item) => item.dayKey == day.dayKey)),
         );
         pages++;
         cursor = page.nextCursor;
@@ -171,7 +194,8 @@ class _PluginsPanelState extends State<PluginsPanel> {
       setState(() {
         _daysWithVersion = withVersion;
         _daysTruncated = truncated;
-        _daysScanned = pages * _dayPageSize;
+        _dayCursor = cursor;
+        _daysScanned += pages * _dayPageSize;
         _daysLoaded = true;
       });
     } on Object {
@@ -731,14 +755,25 @@ class _PluginsPanelState extends State<PluginsPanel> {
           compact: true,
           onPressed: () => unawaited(_pickDay(plugin)),
         ),
-        if (_daysTruncated && _daysWithVersion.isNotEmpty)
+        if (_daysTruncated) ...[
+          const SizedBox(height: 8),
+          SketchAction(
+            key: ValueKey('plugin-more-days-${plugin.id}'),
+            label: _daysLoadingMore ? '正在往后找…' : '继续往后找',
+            icon: Icons.expand_more,
+            compact: true,
+            onPressed: _daysLoadingMore
+                ? null
+                : () => unawaited(_loadMoreDays()),
+          ),
           Padding(
             padding: const EdgeInsets.only(top: 6),
             child: Text(
-              '列表只扫了最近 $_daysScanned 天；更早的那天用「按日期选…」。',
+              '已经查了 $_daysScanned 天，还没查完；可以继续往后找，也可以直接用「按日期选…」。',
               style: const TextStyle(color: SketchColors.muted, fontSize: 12),
             ),
           ),
+        ],
       ],
     );
   }

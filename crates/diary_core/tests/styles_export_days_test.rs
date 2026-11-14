@@ -521,6 +521,7 @@ fn export_request(from: &str, to: &str, format: &str) -> ExportRequest {
         to_day_key: to.to_owned(),
         format: format.to_owned(),
         include_assets: false,
+        asset_kinds: Vec::new(),
     }
 }
 
@@ -624,8 +625,10 @@ fn readable_export_with_assets_writes_a_zip_with_originals_and_manifest() {
         .collect::<Vec<_>>();
     assert!(names.iter().any(|name| name == "reading.md"), "{names:?}");
     assert!(
-        names.iter().any(|name| name.starts_with("assets/001-")),
-        "原件要进包：{names:?}"
+        names
+            .iter()
+            .any(|name| name.starts_with("assets/2026-10-14/")),
+        "原件按日期分目录：{names:?}"
     );
     assert!(names.iter().any(|name| name == "manifest.json"));
 
@@ -654,6 +657,71 @@ fn readable_export_with_assets_writes_a_zip_with_originals_and_manifest() {
     assert_eq!(manifest["restorable"], serde_json::json!(false));
     assert_eq!(manifest["dayKeys"], serde_json::json!(["2026-10-14"]));
     assert_eq!(manifest["assets"][0]["sha256"], serde_json::json!(sha256_hex(bytes)));
+}
+
+#[test]
+fn readable_export_can_leave_out_asset_kinds() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut core, _) = core_with_script(dir.path(), vec![chat_ok("十四号的日记。")]);
+    save_provider(&mut core);
+    let capture_id = capture_on(&mut core, "2026-10-14", "十四号的记录。", "op-14");
+
+    // 一份图片 + 一段文字材料。
+    let png = b"\x89PNG\r\n\x1a\n fake png bytes";
+    let ticket = core
+        .prepare_import(ImportRequest {
+            capture_id: &capture_id,
+            display_name: "截图.png",
+            mime_hint: Some("image/png"),
+            size_hint: Some(png.len() as i64),
+            origin: ImportOrigin::Picker,
+            operation_id: "op-asset",
+        })
+        .unwrap();
+    std::fs::write(&ticket.staging_ticket, png).unwrap();
+    core.finish_import(
+        &ticket.import_id,
+        &ticket.staging_ticket,
+        ImportManifest {
+            copied_bytes: png.len() as i64,
+            sha256: sha256_hex(png),
+            detected_mime: "image/png".to_owned(),
+            original_name: "截图.png".to_owned(),
+        },
+    )
+    .unwrap();
+    generate(&mut core, "2026-10-14", "op-gen-14");
+
+    // 只要文字：图片不进包。
+    let mut request = export_request("2026-10-14", "2026-10-14", "markdown");
+    request.include_assets = true;
+    request.asset_kinds = vec!["text".to_owned()];
+    let ticket_out = core.create_export(&request).unwrap();
+    let file = std::fs::File::open(&ticket_out.path).unwrap();
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+    let names = (0..archive.len())
+        .map(|index| archive.by_index(index).unwrap().name().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        !names.iter().any(|name| name.contains("截图")),
+        "只要文字时不该带图片：{names:?}"
+    );
+    assert!(names.iter().any(|name| name == "reading.md"));
+
+    // 只要图片：图片在包里。
+    let mut only_images = export_request("2026-10-14", "2026-10-14", "markdown");
+    only_images.include_assets = true;
+    only_images.asset_kinds = vec!["image".to_owned()];
+    let ticket_out = core.create_export(&only_images).unwrap();
+    let file = std::fs::File::open(&ticket_out.path).unwrap();
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+    let names = (0..archive.len())
+        .map(|index| archive.by_index(index).unwrap().name().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        names.iter().any(|name| name.contains("截图")),
+        "只要图片时图片要在包里：{names:?}"
+    );
 }
 
 #[test]

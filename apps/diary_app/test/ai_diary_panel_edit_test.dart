@@ -24,6 +24,7 @@ class _DiaryApi implements DiaryApi {
   final List<DiaryVersion> versions;
   int edits = 0;
   String? lastBody;
+  final List<String> adopted = [];
 
   /// 让保存失败（模拟写锁被占、revision 冲突等）。
   bool failSave = false;
@@ -47,6 +48,17 @@ class _DiaryApi implements DiaryApi {
     String? cursor,
     int pageSize = 20,
   }) async => const JobPage(jobs: []);
+
+  @override
+  Future<DiaryDay> setCurrentVersion({
+    required String dayKey,
+    required String versionId,
+    required int expectedRevision,
+  }) async {
+    adopted.add(versionId);
+    day = day.copyWith(currentVersionId: versionId, revision: day.revision + 1);
+    return day;
+  }
 
   @override
   Future<DiaryVersion> saveDiaryEdit({
@@ -163,6 +175,93 @@ void main() {
         '${local.hour.toString().padLeft(2, '0')}:'
         '${local.minute.toString().padLeft(2, '0')}';
     expect(find.textContaining(stamp), findsOneWidget);
+  });
+
+  testWidgets('全部版本能展开：旧版可见、能设为当前、能对比', (tester) async {
+    final root = Directory.systemTemp.createTempSync('ai-panel-history');
+    addTearDown(() => root.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(root.path);
+    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final api = _DiaryApi(
+      day: DiaryDay(
+        dayKey: '2026-11-11',
+        timeZone: 'Asia/Shanghai',
+        updatedAt: DateTime.utc(2026, 11, 11),
+        currentVersionId: 'v3',
+        candidateVersionIds: const ['v2'],
+        revision: 5,
+      ),
+      versions: [
+        DiaryVersion(
+          id: 'v3',
+          dayKey: '2026-11-11',
+          body: '第三版。',
+          origin: DiaryVersionOrigin.generated,
+          createdAt: DateTime.utc(2026, 11, 11, 20),
+        ),
+        DiaryVersion(
+          id: 'v2',
+          dayKey: '2026-11-11',
+          body: '第二版。',
+          origin: DiaryVersionOrigin.generated,
+          createdAt: DateTime.utc(2026, 11, 11, 19),
+        ),
+        // 被换掉、既不是当前也不是候选的旧版——以前界面上完全看不到。
+        DiaryVersion(
+          id: 'v1',
+          dayKey: '2026-11-11',
+          body: '第一版。',
+          origin: DiaryVersionOrigin.userEdit,
+          createdAt: DateTime.utc(2026, 11, 11, 18),
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: AiDiaryPanel(
+              api: api,
+              onOpenModel: () {},
+              initialDayKey: '2026-11-11',
+            ),
+          ),
+        ),
+      ),
+    );
+    for (var i = 0; i < 8; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 40)),
+      );
+      await tester.pump();
+    }
+
+    expect(find.text('全部版本（3）'), findsOneWidget);
+    expect(find.byKey(const ValueKey('version-row-v1')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('toggle-all-versions')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('version-row-v1')), findsOneWidget);
+    expect(find.textContaining('人工修订 · 历史'), findsOneWidget);
+
+    // 对比：能看到逐行差异。
+    await tester.tap(find.byKey(const ValueKey('version-diff-v1')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('逐行差异'), findsOneWidget);
+    expect(find.text('- 第三版。'), findsOneWidget);
+    expect(find.text('+ 第一版。'), findsOneWidget);
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+
+    // 设为当前：走 adopt。
+    await tester.tap(find.byKey(const ValueKey('version-adopt-v1')));
+    await settle(tester);
+    expect(api.adopted, contains('v1'));
   });
 
   testWidgets('保存失败时对话框不关、正文不丢、错误显示在框里', (tester) async {

@@ -23,6 +23,9 @@ class _ReadableExportPanelState extends State<ReadableExportPanel> {
   /// 是否把原件一起带走。打开时产物是**一个 zip**（正文 + `assets/` + 清单）。
   bool _includeAssets = false;
 
+  /// 只带这些类型的原件；空 = 全都带。
+  final Set<String> _assetKinds = {'image', 'audio', 'video', 'file'};
+
   ReadableExportController get controller => widget.controller;
 
   @override
@@ -113,6 +116,33 @@ class _ReadableExportPanelState extends State<ReadableExportPanel> {
                 value: _includeAssets,
                 onChanged: (value) => setState(() => _includeAssets = value),
               ),
+              if (_includeAssets)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4, bottom: 6),
+                  child: Wrap(
+                    spacing: 8,
+                    children: [
+                      for (final kind in const {
+                        'image': '图片',
+                        'audio': '录音',
+                        'video': '视频',
+                        'file': '文件',
+                      }.entries)
+                        FilterChip(
+                          key: ValueKey('asset-kind-${kind.key}'),
+                          label: Text(kind.value),
+                          selected: _assetKinds.contains(kind.key),
+                          onSelected: (selected) => setState(() {
+                            if (selected) {
+                              _assetKinds.add(kind.key);
+                            } else {
+                              _assetKinds.remove(kind.key);
+                            }
+                          }),
+                        ),
+                    ],
+                  ),
+                ),
               const SizedBox(height: 12),
               SketchAction(
                 key: const ValueKey('create-readable-export'),
@@ -125,6 +155,9 @@ class _ReadableExportPanelState extends State<ReadableExportPanel> {
                         to: _to,
                         format: _format,
                         includeAssets: _includeAssets,
+                        assetKinds: _includeAssets
+                            ? _assetKinds.toList(growable: false)
+                            : const [],
                       )
                     : null,
               ),

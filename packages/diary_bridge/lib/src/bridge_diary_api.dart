@@ -1180,6 +1180,7 @@ class BridgeDiaryApi
           toDayKey: request.toDayKey,
           format: request.format,
           includeAssets: request.includeAssets,
+          assetKinds: request.assetKinds,
         ),
       ),
     );

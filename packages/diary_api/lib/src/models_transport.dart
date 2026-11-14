@@ -1622,6 +1622,7 @@ class ExportRequest {
     required this.toDayKey,
     this.format = 'markdown',
     this.includeAssets = false,
+    this.assetKinds = const [],
   });
 
   final String fromDayKey;
@@ -1629,13 +1630,25 @@ class ExportRequest {
   final String format;
   final bool includeAssets;
 
+  /// 只带这些类型的原件（`image` / `audio` / `video` / `file`）；空表示全都带。
+  final List<String> assetKinds;
+
   @override
   bool operator ==(Object other) =>
       other is ExportRequest &&
       other.fromDayKey == fromDayKey &&
       other.toDayKey == toDayKey &&
       other.format == format &&
-      other.includeAssets == includeAssets;
+      other.includeAssets == includeAssets &&
+      _sameKinds(other.assetKinds, assetKinds);
+
+  static bool _sameKinds(List<String> left, List<String> right) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
+  }
 
   @override
   int get hashCode => Object.hash(fromDayKey, toDayKey, format, includeAssets);

@@ -7,6 +7,7 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
 import 'ai_diary_controller.dart';
+import 'text_diff.dart';
 import 'provider_consent.dart';
 import 'core_wakeup.dart';
 import 'sketch_ui.dart';
@@ -42,6 +43,9 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
   /// 点「整理这一天」之后、票据回来之前。
   bool _generating = false;
   String? _setupError;
+
+  /// 是否展开「全部版本」。默认收起：大多数人只关心当前版和候选。
+  bool _showAllVersions = false;
 
   static String _key(DateTime day) =>
       '${day.year.toString().padLeft(4, '0')}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
@@ -327,6 +331,8 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
         ] else
           _hint('还没有正文。'),
         const SizedBox(height: 23),
+        _allVersionsSection(controller),
+        const SizedBox(height: 23),
         _sectionTitle('整理候选'),
         const SizedBox(height: 10),
         if (controller.candidates.isEmpty)
@@ -462,6 +468,151 @@ class _AiDiaryPanelState extends State<AiDiaryPanel> {
         ? ''
         : ' · ${AiDiaryController.nextStepFor(job.errorCode!)}';
     return '$phase$reason';
+  }
+
+  /// 全部版本：当前版和候选之外的旧版也能翻出来看，还能和当前版逐行对比。
+  ///
+  /// 以前这一页只有「当前版 + 候选」，被采纳过又换掉的版本在界面上就再也看不到了
+  /// （数据一直在库里，只是没有入口）。
+  Widget _allVersionsSection(AiDiaryController controller) {
+    final versions = controller.versions;
+    if (versions.length <= 1 + controller.candidates.length) {
+      return const SizedBox.shrink();
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(child: _sectionTitle('全部版本（${versions.length}）')),
+            TextButton(
+              key: const Key('toggle-all-versions'),
+              onPressed: () =>
+                  setState(() => _showAllVersions = !_showAllVersions),
+              child: Text(_showAllVersions ? '收起' : '展开'),
+            ),
+          ],
+        ),
+        if (_showAllVersions) ...[
+          const SizedBox(height: 6),
+          for (final version in versions) ...[
+            _versionRow(controller, version),
+            const SizedBox(height: 8),
+          ],
+        ],
+      ],
+    );
+  }
+
+  Widget _versionRow(AiDiaryController controller, DiaryVersion version) {
+    final isCurrent = controller.current?.id == version.id;
+    final isCandidate = controller.candidates.any(
+      (item) => item.id == version.id,
+    );
+    final origin = version.origin == DiaryVersionOrigin.userEdit
+        ? '人工修订'
+        : 'AI 整理';
+    final marker = isCurrent
+        ? '当前'
+        : isCandidate
+        ? '候选'
+        : '历史';
+    return SketchFrame(
+      key: ValueKey('version-row-${version.id}'),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              '${_versionTime(version.createdAt)} · $origin · $marker',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          if (!isCurrent)
+            TextButton(
+              key: ValueKey('version-adopt-${version.id}'),
+              onPressed: controller.busy
+                  ? null
+                  : () => unawaited(controller.adopt(version.id)),
+              child: const Text('设为当前'),
+            ),
+          TextButton(
+            key: ValueKey('version-diff-${version.id}'),
+            onPressed: () => unawaited(_showDiff(controller, version)),
+            child: const Text('和当前对比'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 逐行对比这一版和当前正文。
+  Future<void> _showDiff(
+    AiDiaryController controller,
+    DiaryVersion version,
+  ) async {
+    final current = controller.current;
+    if (current == null) return;
+    final lines = diffLines(current.body, version.body);
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('和当前对比 · ${_versionTime(version.createdAt)}'),
+        content: SizedBox(
+          width: 640,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  '下面是这一版相对当前正文的逐行差异：绿色是新增，红色是删掉的。',
+                  style: TextStyle(fontSize: 12, color: SketchColors.muted),
+                ),
+                const SizedBox(height: 10),
+                if (!hasChanges(lines))
+                  const Text('这一版和当前正文逐行相同。')
+                else
+                  for (final line in lines)
+                    Container(
+                      color: switch (line.kind) {
+                        'added' => const Color(0x1A2E7D32),
+                        'removed' => const Color(0x1AC62828),
+                        _ => null,
+                      },
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
+                      child: Text(
+                        switch (line.kind) {
+                          'added' => '+ ${line.text}',
+                          'removed' => '- ${line.text}',
+                          _ => '  ${line.text}',
+                        },
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: switch (line.kind) {
+                            'added' => const Color(0xFF2E7D32),
+                            'removed' => const Color(0xFFC62828),
+                            _ => SketchColors.muted,
+                          },
+                        ),
+                      ),
+                    ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _versionCard(
