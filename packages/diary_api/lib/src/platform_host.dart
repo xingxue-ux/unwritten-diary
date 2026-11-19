@@ -97,8 +97,47 @@ class PlaybackHandle {
   String toString() => 'PlaybackHandle($playbackId)';
 }
 
+/// 票据用途。
+///
+/// `PlatformHost.resolveTicket` 必须知道用途：一张票据不该被跨用途复用
+/// （拿备份目标票据去读备份包、或拿去当录音暂存目录）。
+enum TicketPurpose {
+  /// 备份包要写到哪里（契约 `BackupRequest.targetTicket`）。
+  backupTarget,
+
+  /// 要检查 / 恢复的既有备份包（`inspectBackup` 与 `restoreBackup` 的 `packageTicket`）。
+  backupPackage,
+
+  /// 录音暂存范围（`startRecording(stagingTicket:)`）。
+  recordingStaging,
+
+  /// 从视频里导出音轨的目标位置（`prepareVideoAudioTrack(targetTicket:)`）。
+  videoAudioTarget,
+}
+
 /// 系统能力接口。
 abstract class PlatformHost {
+  // -------------------------------------------------------------- 票据
+
+  /// 把限域票据解析成本机可访问的**绝对路径**（issue #170 方案 A）。
+  ///
+  /// 契约里凡是出现「票据」的地方——`startRecording(stagingTicket:)`、
+  /// `prepareVideoAudioTrack(targetTicket:)`、`BackupRequest.targetTicket`、
+  /// `inspectBackup(packageTicket:)`、`restoreBackup(packageTicket:)`——都由**宿主**
+  /// 先解析，核心只认路径。这条边界只写一次，避免每个接入方各自发明约定：
+  /// C ABI（PR #153）与 Dart 适配层（PR #163）各踩过一次「把票据当路径」。
+  ///
+  /// 默认实现是**恒等映射**（票据本身就是路径）：桌面端文件选择器给的就是真实路径，
+  /// 既有实现因此不用改。需要限域的平台（鸿蒙沙箱、Android SAF）覆盖它，把票据映射
+  /// 到自己的受控目录；票据无效 / 过期 / 不属于本次授权时抛 [ArgumentError]
+  /// （对应契约错误码 `invalid_argument`），**不要静默回退成"当成路径"**。
+  Future<String> resolveTicket(
+    String ticket, {
+    required TicketPurpose purpose,
+  }) async {
+    return ticket;
+  }
+
   // -------------------------------------------------------------- 权限
 
   Future<PermissionStatus> queryPermission(SystemPermission permission);
